@@ -1,0 +1,9 @@
+{
+    "name": "no-installer",
+    "version": "1.0.0",
+    "release": "ga",
+    "platforms": [{"type": "host"}],
+    "resources": ["no-installer/ga/bin.tar.gz"],
+    "installation": {
+    }
+}

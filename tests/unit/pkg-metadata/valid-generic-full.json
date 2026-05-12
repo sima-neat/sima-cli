@@ -1,0 +1,22 @@
+{
+    "name": "sima-analyzer",
+    "version": "2.1.0",
+    "release": "beta",
+    "description": "A tool for pipeline analysis",
+    "platforms": [
+        {"type": "devkit", "compatible_with": ["modalix-ea", "mlsoc"]},
+        {"type": "palette"},
+        {"type": "host", "os": ["mac"]}
+    ],
+    "resources": [
+        "sima-analyzer/beta/bundle.tar.gz",
+        "https://external.com/tool.sh"
+    ],
+    "prerequisite": {
+        "wheel_url": "sima-analyzer/beta/precheck.whl",
+        "entry_point": "check_env:verify"
+    },
+    "installation": {
+        "script": "install.sh"
+    }
+}

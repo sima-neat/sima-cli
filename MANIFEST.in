@@ -1,0 +1,14 @@
+include README.md
+include LICENSE
+include requirements.txt
+
+# Include all Python source files
+recursive-include sima_cli *.py
+
+recursive-include tests *.py
+
+include pyproject.toml
+include setup.cfg
+include setup.py
+include sima_cli/data/*.yaml
+include sima_cli/sdk/*.json

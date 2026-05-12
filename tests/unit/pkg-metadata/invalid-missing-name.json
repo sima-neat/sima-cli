@@ -1,0 +1,6 @@
+{
+    "version": "1.0.0",
+    "release": "ga",
+    "platforms": [{"type": "host", "os": ["linux"]}],
+    "resources": ["tool/ga/thing.tar.gz"]
+}

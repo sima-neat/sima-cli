@@ -1,0 +1,762 @@
+#!/usr/bin/env python3
+
+import os
+import ipaddress
+import platform
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+from pathlib import Path
+from typing import List, Optional, Tuple
+import click
+from rich.console import Console
+from rich.panel import Panel
+
+from sima_cli.sdk.preinstall import ensure_colima_resources_for_neat_sdk, syscheck
+from sima_cli.sdk.config import IMAGE_CONFIG
+from sima_cli.sdk.linux_shared_network import configure_linux_shared_devkit_network
+from sima_cli.utils.net import get_local_ip_candidates
+
+from sima_cli.sdk.utils import (
+    create_config_json,
+    find_available_ports,
+    get_container_status,
+    get_all_containers,
+    get_workspace,
+    get_local_sima_images,
+    prompt_image_selection,
+    confirm_to_remove_exiting_container,
+    sanitize_container_name,
+    ensure_simasdkbridge_network,
+    start_docker_container,
+    bootstrap_devkit_container,
+    print_section,
+    extract_short_name,
+    is_neat_sdk_image,
+    check_os,
+    container_user_mapping_unavailable,
+    detect_current_user,
+    select_containers,
+)
+
+# ─────────────────────────────────────────────
+# Entrypoint for setup/start
+# ─────────────────────────────────────────────
+def is_container_running(name: str) -> bool:
+    """Return True if the container is running."""
+    try:
+        status = subprocess.check_output(
+            ["docker", "inspect", "-f", "{{.State.Running}}", name],
+            text=True
+        ).strip()
+        return status == "true"
+    except subprocess.CalledProcessError:
+        return False
+
+def _has_cmd(name: str) -> bool:
+    return (
+        subprocess.run(
+            ["bash", "-lc", "command -v {} >/dev/null 2>&1".format(shlex.quote(name))],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _find_executable(name: str) -> Optional[str]:
+    candidates = [
+        shutil.which(name),
+        f"/usr/sbin/{name}",
+        f"/sbin/{name}",
+        f"/usr/bin/{name}",
+        f"/bin/{name}",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _linux_nfs_install_hint() -> str:
+    distro_ids = set()
+    os_release = Path("/etc/os-release")
+    if os_release.exists():
+        try:
+            for line in os_release.read_text().splitlines():
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key not in {"ID", "ID_LIKE"}:
+                    continue
+                distro_ids.update(part.strip().strip('"').lower() for part in value.split())
+        except OSError:
+            pass
+
+    if {"ubuntu", "debian"} & distro_ids:
+        return "Install it with: sudo apt-get install -y nfs-kernel-server"
+    if {"fedora", "rhel", "centos", "rocky", "almalinux"} & distro_ids:
+        return "Install it with: sudo dnf install -y nfs-utils"
+    if "arch" in distro_ids:
+        return "Install it with: sudo pacman -S nfs-utils"
+    return "Install your host NFS server package and ensure `exportfs` is on the root PATH."
+
+
+def _install_linux_nfs_server() -> None:
+    commands = []
+    if _has_cmd("apt-get"):
+        commands = [
+            ["sudo", "apt-get", "update"],
+            ["sudo", "apt-get", "install", "-y", "nfs-kernel-server"],
+        ]
+    elif _has_cmd("dnf"):
+        commands = [["sudo", "dnf", "install", "-y", "nfs-utils"]]
+    elif _has_cmd("yum"):
+        commands = [["sudo", "yum", "install", "-y", "nfs-utils"]]
+    elif _has_cmd("zypper"):
+        commands = [["sudo", "zypper", "install", "-y", "nfs-kernel-server"]]
+    elif _has_cmd("pacman"):
+        commands = [["sudo", "pacman", "-S", "--noconfirm", "nfs-utils"]]
+    else:
+        raise RuntimeError(
+            "Linux NFS server tooling is not installed and no supported package manager was detected. "
+            f"{_linux_nfs_install_hint()}"
+        )
+
+    print("ℹ️  `exportfs` was not found. Installing host NFS server tooling...")
+    for command in commands:
+        subprocess.run(command, check=True)
+
+
+def _is_linux_virtual_iface(iface: str) -> bool:
+    prefixes = ("lo", "docker", "br-", "veth", "virbr", "tun", "tap", "wg", "zt", "tailscale", "vmnet", "vboxnet")
+    return iface.startswith(prefixes)
+
+
+def _is_usable_host_ipv4(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return bool(
+        addr.version == 4
+        and not addr.is_loopback
+        and not addr.is_multicast
+        and not addr.is_unspecified
+    )
+
+
+def _detect_physical_ipv4s_macos() -> List[Tuple[str, str]]:
+    try:
+        out = subprocess.check_output(["ifconfig"], text=True)
+    except Exception:
+        return []
+
+    found = []  # type: List[Tuple[str, str]]
+    iface = ""
+    status = ""
+    inet = None  # type: Optional[str]
+    is_physical = False
+
+    def flush_current() -> None:
+        if iface and is_physical and status == "active" and inet and _is_usable_host_ipv4(inet):
+            found.append((iface, inet))
+
+    for line in out.splitlines():
+        m = re.match(r"^([a-zA-Z0-9]+): flags=", line)
+        if m:
+            flush_current()
+            iface = m.group(1)
+            status = ""
+            inet = None
+            is_physical = iface.startswith("en")
+            continue
+        if not iface:
+            continue
+        s = line.strip()
+        if s.startswith("status:"):
+            status = s.split(":", 1)[1].strip()
+        elif s.startswith("inet "):
+            parts = s.split()
+            if len(parts) >= 2:
+                inet = parts[1]
+
+    flush_current()
+    return found
+
+
+def _detect_physical_ipv4s_linux() -> List[Tuple[str, str]]:
+    if not _has_cmd("ip"):
+        return []
+    try:
+        out = subprocess.check_output(["ip", "-o", "-4", "addr", "show", "up"], text=True)
+    except Exception:
+        return []
+
+    found = []  # type: List[Tuple[str, str]]
+    for line in out.splitlines():
+        m = re.match(r"^\d+:\s+([^\s]+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/\d+", line)
+        if not m:
+            continue
+        iface, ip = m.group(1), m.group(2)
+        if _is_linux_virtual_iface(iface) or not _is_usable_host_ipv4(ip):
+            continue
+        if iface.startswith(("en", "eth")):
+            found.append((iface, ip))
+    return found
+
+
+def _detect_local_ip_candidates() -> List[Tuple[str, str]]:
+    candidates = []  # type: List[Tuple[str, str]]
+    try:
+        candidates.extend([
+            (iface, ip)
+            for iface, ip in get_local_ip_candidates()
+            if _is_usable_host_ipv4(ip)
+        ])
+    except Exception:
+        pass
+
+    if sys.platform == "darwin":
+        candidates.extend(_detect_physical_ipv4s_macos())
+    elif sys.platform.startswith("linux"):
+        candidates.extend(_detect_physical_ipv4s_linux())
+
+    seen = set()
+    deduped = []
+    for iface, ip in candidates:
+        key = (iface, ip)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((iface, ip))
+    return deduped
+
+
+def _routed_ipv4_for_target(target_ip: str) -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((target_ip, 80))
+        routed_ip = s.getsockname()[0]
+        return routed_ip if _is_usable_host_ipv4(routed_ip) else ""
+    except OSError:
+        return ""
+    finally:
+        s.close()
+
+
+def _detect_host_ip(devkit_ip: Optional[str]) -> Tuple[str, str, List[Tuple[str, str]]]:
+    candidates = _detect_local_ip_candidates()
+
+    # Prefer the source IP selected by the kernel for the actual DevKit route.
+    # Accept it only when it belongs to a non-VPN local interface candidate;
+    # otherwise a tunnel route such as utun/tun/wg could leak into NFS setup.
+    if devkit_ip:
+        routed_ip = _routed_ipv4_for_target(devkit_ip)
+        if routed_ip:
+            for iface, ip in candidates:
+                if ip == routed_ip:
+                    return ip, iface, candidates
+
+            candidate_text = ", ".join("{}:{}".format(iface, ip) for iface, ip in candidates) or "none"
+            print(
+                "⚠️  DevKit {} is routed via host IP {}, but that IP is not on a supported "
+                "non-VPN interface. Ignoring it for DevKit sync. Local candidates: {}".format(
+                    devkit_ip,
+                    routed_ip,
+                    candidate_text,
+                )
+            )
+            if candidates:
+                iface, ip = candidates[0]
+                return ip, iface, candidates
+
+            raise RuntimeError(
+                "DevKit {} is routed via host IP {}, but no supported non-VPN host interface "
+                "was found for DevKit sync.".format(devkit_ip, routed_ip)
+            )
+
+        if candidates:
+            iface, ip = candidates[0]
+            return ip, iface, candidates
+
+        raise RuntimeError("Could not determine a host IP for DevKit sync.")
+
+    if candidates:
+        iface, ip = candidates[0]
+        return ip, iface, candidates
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((devkit_ip or "8.8.8.8", 80))
+        return s.getsockname()[0], "auto", []
+    finally:
+        s.close()
+
+
+def _print_devkit_nfs_banner(workspace: str, devkit_ip: str, host_os: str) -> None:
+    console = Console()
+    platform_label = "macOS" if host_os == "darwin" else "Linux"
+    console.print(
+        Panel(
+            "\n".join(
+                [
+                    "DevKit workspace sync is being enabled.",
+                    f"The host workspace '{workspace}' will be shared over NFS so DevKit {devkit_ip} can access it.",
+                    f"You may be prompted for your {platform_label} host administrator password to install or configure the host NFS service.",
+                ]
+            ),
+            title="DevKit NFS Setup",
+            border_style="yellow",
+            expand=False,
+        )
+    )
+
+
+def _configure_nfs_export(host_dir: Path, devkit_ip: Optional[str], host_os: str, host_ip: str) -> None:
+    host_path = str(host_dir.resolve())
+    if host_os == "darwin":
+        uid = os.getuid()
+        gid = os.getgid()
+        if devkit_ip:
+            line = f"{host_path} -alldirs -mapall={uid}:{gid} {devkit_ip}"
+        else:
+            iface = ipaddress.IPv4Interface(f"{host_ip}/24")
+            network = str(iface.network.network_address)
+            mask = str(iface.network.netmask)
+            line = f"{host_path} -alldirs -mapall={uid}:{gid} -network {network} -mask {mask}"
+        script = (
+            "set -eu; "
+            "touch /etc/exports; "
+            f"tmpf=$(mktemp); awk -v p={shlex.quote(host_path)} '"
+            "/^[[:space:]]*#/ || NF==0 { print; next } "
+            "{ path=$1 } "
+            "(path==p) || (index(path, p \"/\")==1) || (index(p, path \"/\")==1) { next } "
+            "{ print }' /etc/exports > \"$tmpf\"; "
+            f"echo {shlex.quote(line)} >> \"$tmpf\"; "
+            "cp \"$tmpf\" /etc/exports; rm -f \"$tmpf\"; "
+            "nfsd checkexports; "
+            "if ! nfsd restart; then "
+            "echo 'Warning: nfsd restart failed; checking whether nfsd is already running.' >&2; "
+            "nfsd status | grep -q 'nfsd is running'; "
+            "fi"
+        )
+        subprocess.run(["sudo", "sh", "-c", script], check=True)
+        return
+
+    if host_os == "linux":
+        exportfs_cmd = _find_executable("exportfs")
+        if not exportfs_cmd:
+            _install_linux_nfs_server()
+            exportfs_cmd = _find_executable("exportfs")
+        if not exportfs_cmd:
+            raise RuntimeError(
+                "Linux NFS server tooling install completed, but `exportfs` is still not available. "
+                f"{_linux_nfs_install_hint()}"
+            )
+        systemctl_cmd = _find_executable("systemctl") or "systemctl"
+        client = devkit_ip if devkit_ip else "*"
+        line = f"{host_path} {client}(rw,sync,no_subtree_check,no_root_squash,insecure)"
+        script = (
+            "set -eu; "
+            "mkdir -p /etc/exports.d; "
+            "clean_exports_file() { "
+            "f=\"$1\"; [ -f \"$f\" ] || return 0; tmpf=$(mktemp); "
+            f"awk -v p={shlex.quote(host_path)} '"
+            "/^[[:space:]]*#/ || NF==0 { print; next } "
+            "{ path=$1 } "
+            "(path==p) || (index(path, p \"/\")==1) || (index(p, path \"/\")==1) { next } "
+            "{ print }' \"$f\" > \"$tmpf\"; "
+            "cp \"$tmpf\" \"$f\"; rm -f \"$tmpf\"; "
+            "}; "
+            "touch /etc/exports; "
+            "clean_exports_file /etc/exports; "
+            "for f in /etc/exports.d/*; do [ -f \"$f\" ] || continue; clean_exports_file \"$f\"; done; "
+            f"echo {shlex.quote(line)} > /etc/exports.d/neat-sdk.exports; "
+            f"{shlex.quote(exportfs_cmd)} -ra; "
+            f"({shlex.quote(systemctl_cmd)} restart nfs-server || "
+            f"{shlex.quote(systemctl_cmd)} restart nfs-kernel-server || true)"
+        )
+        subprocess.run(["sudo", "sh", "-c", script], check=True)
+        return
+
+    raise RuntimeError("Host NFS setup is only implemented for macOS/Linux")
+
+
+def _setup_devkit_share(devkit_ip: str, workspace: str, selected_images: List[str], noninteractive: bool = False):
+    if not devkit_ip:
+        return {}
+    if not any(is_neat_sdk_image(image) for image in selected_images):
+        print("ℹ️  Ignoring --devkit because selected images do not match a supported Neat SDK pattern: ghcr.io/sima-neat/sdk*, local sdk*, or legacy ghcr.io/sima-neat/elxr*.")
+        return {}
+
+    host_os = platform.system().lower()
+    host_dir = Path(workspace)
+    host_ip, auto_iface, auto_candidates = _detect_host_ip(devkit_ip)
+
+    _print_devkit_nfs_banner(workspace, devkit_ip, host_os)
+    _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)
+    configure_linux_shared_devkit_network(devkit_ip)
+    print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
+
+    if auto_iface != "auto":
+        print("ℹ️  Detected host IP for DevKit sync: {} (interface: {})".format(host_ip, auto_iface))
+        if len(auto_candidates) > 1:
+            others = ", ".join(["{}:{}".format(i, ip) for i, ip in auto_candidates[1:]])
+            print("ℹ️  Multiple physical interfaces detected; using first. Others: {}".format(others))
+    else:
+        print("ℹ️  Detected host IP for DevKit sync: {} (auto)".format(host_ip))
+
+    return {
+        "devkit_ip": devkit_ip,
+        "host_ip": host_ip,
+        "workspace": workspace,
+        "host_platform": host_os,
+        "bootstrap_interactive": not noninteractive,
+        "noninteractive": noninteractive,
+    }
+
+
+def _is_x86_platform() -> bool:
+    machine = platform.machine().lower()
+    return machine in {"x86_64", "amd64", "i386", "i686", "x86"}
+
+
+MODEL_SDK_EXTENSION_REQUIRED_GB = 20
+
+
+def _format_gb(byte_count: int) -> str:
+    return f"{byte_count / (1024 ** 3):.1f} GB"
+
+
+def _setup_sdk_extensions(
+    selected_images: List[str],
+    noninteractive: bool = False,
+    yes_to_all: bool = False,
+) -> str:
+    if not any(is_neat_sdk_image(image) for image in selected_images):
+        return ""
+
+    if not _is_x86_platform():
+        click.secho("⚠️  SDK extensions are not available on ARM64 platforms yet; skipping /sdk-extensions mount.", fg="yellow")
+        return ""
+
+    default_extensions_dir = Path.home() / "sima-sdk-extensions"
+    home_usage = shutil.disk_usage(Path.home())
+    click.echo(
+        "ℹ️  Model SDK extension may require about "
+        f"{MODEL_SDK_EXTENSION_REQUIRED_GB} GB of additional disk space. "
+        f"Available under {Path.home()}: {_format_gb(home_usage.free)}."
+    )
+    if home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
+        click.secho(
+            "⚠️  The default home filesystem may not have enough free space for the Model SDK extension.",
+            fg="yellow",
+        )
+
+    if noninteractive or yes_to_all:
+        extensions_dir = default_extensions_dir
+        click.echo(f"ℹ️  Using default SDK extensions directory: {extensions_dir}")
+    else:
+        response = input(f"Enter SDK extensions directory [{default_extensions_dir}]: ").strip()
+        extensions_dir = Path(response).expanduser() if response else default_extensions_dir
+
+    extensions_dir = Path(os.path.realpath(str(extensions_dir)))
+    extensions_dir.mkdir(parents=True, exist_ok=True)
+    print(f"✅ SDK extensions directory configured: {extensions_dir}")
+    return str(extensions_dir)
+
+
+def _container_exists(container_name: str) -> bool:
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    return container_name in result.stdout.splitlines()
+
+
+def _get_container_host_port(container_name: str, container_port: int = 8084) -> Optional[int]:
+    format_expr = "{{(index (index .NetworkSettings.Ports \"%d/tcp\") 0).HostPort}}" % container_port
+    inspect = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            format_expr,
+            container_name,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if inspect.returncode != 0:
+        return None
+
+    value = (inspect.stdout or "").strip()
+    if not value.isdigit():
+        return None
+
+    port = int(value)
+    if port <= 0:
+        return None
+    return port
+
+
+def _refresh_mpk_config_json(
+    selected_images: List[str],
+    noninteractive: bool = False,
+    yes_to_all: bool = False,
+) -> None:
+    """
+    Recreate config.json based on the current SDK selection and copy it into
+    the MPK container so MPK always sees fresh Yocto/eLxr mappings.
+    """
+    all_sdk_containers = get_all_containers(running_containers_only=False)
+
+    # Discover MPK containers globally, not only from the current selection.
+    existing_mpk_containers = []
+    for c in all_sdk_containers:
+        name = c.get("Names") or c.get("Name") or c.get("name") or ""
+        image = c.get("Image") or c.get("image") or ""
+        if "mpk" in name.lower() or "mpk" in image.lower():
+            existing_mpk_containers.append(name)
+
+    # Keep fallback compatibility with name sanitization-based detection.
+    if not existing_mpk_containers:
+        mpk_images = [
+            image
+            for image in selected_images
+            if IMAGE_CONFIG.get(extract_short_name(image), {}).get("port_mapping_required")
+        ]
+        existing_mpk_containers = [
+            sanitize_container_name(image)
+            for image in mpk_images
+            if _container_exists(sanitize_container_name(image))
+        ]
+
+    if not existing_mpk_containers:
+        print("ℹ️  No MPK container present; skipping config sync.")
+        return
+
+    # Remove duplicates while preserving order.
+    seen = set()
+    existing_mpk_containers = [
+        c for c in existing_mpk_containers if not (c in seen or seen.add(c))
+    ]
+
+    if len(existing_mpk_containers) == 1:
+        mpk_container = existing_mpk_containers[0]
+    elif noninteractive or yes_to_all:
+        mpk_container = sorted(existing_mpk_containers)[0]
+        print(
+            "ℹ️  Multiple MPK containers detected; non-interactive mode selected "
+            f"'{mpk_container}' for config sync."
+        )
+    else:
+        selection = select_containers(existing_mpk_containers, single_select=True)
+        if not selection:
+            print("ℹ️  No MPK container selected; skipping config sync.")
+            return
+        mpk_container = selection[0] if isinstance(selection, list) else selection
+
+    mpk_port = _get_container_host_port(mpk_container, container_port=8084)
+    if mpk_port is None:
+        print(f"⚠️  Could not resolve host port for '{mpk_container}'. Skipping MPK config sync.")
+        return
+
+    # Build config from selected images plus any existing Yocto/eLxr/Neat SDK images,
+    # so setup of one tool still keeps MPK config aware of the other.
+    config_image_sources = list(selected_images)
+    for c in all_sdk_containers:
+        image = c.get("Image") or c.get("image") or ""
+        if extract_short_name(image) in {"yocto", "elxr", "neat"}:
+            config_image_sources.append(image)
+
+    # Remove duplicates while preserving order.
+    seen_sources = set()
+    config_image_sources = [
+        img for img in config_image_sources if not (img in seen_sources or seen_sources.add(img))
+    ]
+
+    config_path = create_config_json(
+        file_path="config.json",
+        selected_images=config_image_sources,
+        port=mpk_port,
+    )
+    if not config_path:
+        print("⚠️  Failed to regenerate config.json for MPK sync.")
+        return
+
+    subprocess.run(
+        ["docker", "exec", "-u", "root", mpk_container, "mkdir", "-p", "/home/docker/.simaai"],
+        check=False,
+    )
+    subprocess.run(
+        ["docker", "cp", config_path, f"{mpk_container}:/home/docker/.simaai/config.json"],
+        check=True,
+    )
+    print(f"✅ MPK config.json refreshed in '{mpk_container}' using host port {mpk_port}.")
+
+
+def _reject_if_windows_native_neat_sdk(
+    selected_images: List[str],
+    console: Console,
+) -> None:
+    """On native Windows + Neat SDK, abort and direct the user into WSL2.
+
+    Docker Desktop on Windows runs Linux containers in a WSL2 VM. Any path on
+    a Windows drive (C:\\, D:\\, /mnt/c) is exposed to that VM via the 9p
+    filesystem, which is ~10-30× slower than ext4 for many-small-file
+    workloads — SDK install, pip install, model compilation, and container
+    I/O all suffer materially. Legacy SDKs (mpk/yocto/elxr/modelsdk) on
+    Windows are intentionally left alone here.
+
+    sys.platform == "win32" is only True on native Windows Python; Python
+    invoked from inside a WSL2 distro reports "linux" and will not trigger
+    this rejection.
+    """
+    if check_os() != "windows":
+        return
+    if not any(is_neat_sdk_image(img) for img in selected_images):
+        return
+
+    console.print(
+        Panel(
+            "[red]Neat SDK setup is not supported when sima-cli is run directly on Windows.[/red]\n\n"
+            "Docker Desktop on Windows uses a WSL2 backend, and files on Windows drives "
+            "(C:\\, D:\\) are accessed through the [bold]9p[/bold] protocol — typically "
+            "[bold]10-30× slower[/bold] than native Linux ext4. SDK install, pip install, "
+            "model compilation, and container I/O are all unusably slow as a result.\n\n"
+            "[green]Required setup:[/green] run sima-cli from inside a WSL2 Ubuntu distro.\n"
+            "  1. From PowerShell:  [cyan]wsl --install -d Ubuntu[/cyan]\n"
+            "  2. Open Ubuntu, then install sima-cli following the official guide:\n"
+            "     [cyan]https://docs.sima.ai/pages/sima_cli/main.html[/cyan]\n"
+            "  3. Keep working files under [cyan]~/[/cyan] — do [bold]NOT[/bold] use [cyan]/mnt/c/[/cyan]\n"
+            "     ([cyan]/mnt/c[/cyan] is the same 9p mount and just as slow as running on Windows natively).\n"
+            "  4. Re-run [cyan]sima-cli sdk setup[/cyan] from inside Ubuntu\n\n"
+            "Docker Desktop's WSL integration shares the same engine, so no separate Docker install is needed.",
+            title="🛑 Unsupported — Windows Native",
+            border_style="red",
+            expand=False,
+        )
+    )
+    sys.exit(1)
+
+
+def setup_and_start(
+    noninteractive: bool = False,
+    start_only: bool = False,
+    yes_to_all: bool = False,
+    devkit_ip: str = "",
+):
+    """Main entry for SDK setup and container start."""
+
+    console = Console()
+
+    if not start_only:
+        console.print(Panel("🔧 SiMa.ai SDK Setup", border_style="cyan", expand=False))
+        ensure_simasdkbridge_network()
+        syscheck(force_install=yes_to_all, noninteractive=noninteractive)
+
+    images = get_local_sima_images()
+    selected_images = prompt_image_selection(images, noninteractive)
+
+    if not start_only:
+        _reject_if_windows_native_neat_sdk(selected_images, console)
+        if any(is_neat_sdk_image(img) for img in selected_images):
+            ensure_colima_resources_for_neat_sdk(
+                yes_to_all=yes_to_all,
+                noninteractive=noninteractive,
+            )
+
+
+    # Step 2: Check running containers
+    print("\n🔍 Checking for running SDK containers...")
+    container_statuses = get_container_status()
+
+    if container_statuses:
+        count = len(container_statuses)
+        print(f"✅ Found {count} SDK container{'s' if count > 1 else ''}:")
+        for cname, status in container_statuses.items():
+            print(f"   • {cname:<30} | {status}")
+    else:
+        print("ℹ️  No Running SDK containers found.")
+
+    # ──────────────────────────────────────────────
+    # Start containers
+    # ──────────────────────────────────────────────
+    workspace = get_workspace(yes_to_all, noninteractive=noninteractive)
+    uid = os.getuid() if hasattr(os, "getuid") else 900
+    gid = os.getgid() if hasattr(os, "getgid") else 900
+    devkit_env = _setup_devkit_share(devkit_ip, workspace, selected_images, noninteractive=noninteractive)
+    sdk_extensions_dir = _setup_sdk_extensions(
+        selected_images,
+        noninteractive=noninteractive,
+        yes_to_all=yes_to_all,
+    )
+    
+    for img in selected_images:
+        container_name = sanitize_container_name(img)
+        print_section(f"🔄 CONTAINER START SEQUENCE for {container_name}")
+        existing_container = confirm_to_remove_exiting_container(
+            container_name,
+            yes_to_all=(yes_to_all or noninteractive),
+        )
+
+        if existing_container == None:
+            # Get image configuration
+            config = IMAGE_CONFIG.get(extract_short_name(img), {"privileged": False, "port_mapping_required": False})
+
+            # Dynamically allocate a free port if required
+            port = find_available_ports(1)[0] if config["port_mapping_required"] else 0
+
+            # config.json is relevant to MPK only; use the mapped host port.
+            if config["port_mapping_required"]:
+                create_config_json(file_path="config.json", selected_images=selected_images, port=port)
+
+            start_docker_container(
+                uid=uid,
+                gid=gid,
+                port=port,
+                workspace=workspace,
+                image=img,
+                privileged=config["privileged"],
+                port_mapping_required=config["port_mapping_required"],
+                devkit_env=devkit_env,
+                sdk_extensions_dir=sdk_extensions_dir,
+                noninteractive=noninteractive,
+                yes_to_all=yes_to_all,
+            )
+        else:
+            if not is_container_running(existing_container):
+                subprocess.run(["docker", "start", existing_container], check=True)
+
+            if devkit_env and is_neat_sdk_image(img):
+                bootstrap_devkit_container(existing_container, devkit_env)
+
+            if len(selected_images) == 1:
+                exec_cmd = ["docker", "exec", "-it"]
+                fallback_cmd = ["docker", "exec", "-it", existing_container, "bash", "-l"]
+                if check_os() in ["linux", "macos"]:
+                    exec_cmd.extend(["-u", detect_current_user()[0]])
+                exec_cmd.extend([existing_container, "bash", "-l"])
+                first = subprocess.run(exec_cmd, check=False)
+                if (
+                    first.returncode != 0
+                    and check_os() in ["linux", "macos"]
+                    and container_user_mapping_unavailable(existing_container, detect_current_user()[0])
+                ):
+                    print("⚠️ User mapping unavailable in this container; retrying without -u.")
+                    subprocess.run(fallback_cmd, check=False)
+
+    _refresh_mpk_config_json(selected_images, noninteractive=noninteractive, yes_to_all=yes_to_all)
+    console.print("\n[bold green]✅ All selected containers started successfully![/bold green]")
+
+if __name__ == "__main__":
+    setup_and_start()

@@ -1,0 +1,7 @@
+{
+    "name": "badtool",
+    "version": "1.0.0",
+    "release": "ga",
+    "platforms": [{"type": "unknown", "os": ["ubuntu"]}],
+    "resources": ["badtool/ga/res.tar.gz"]
+}

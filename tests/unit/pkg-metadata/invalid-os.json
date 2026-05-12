@@ -1,0 +1,7 @@
+{
+    "name": "bad-os",
+    "version": "1.0.0",
+    "release": "ga",
+    "platforms": [{"type": "generic", "os": ["solaris"]}],
+    "resources": ["bad-os/ga/pkg.tar.gz"]
+}

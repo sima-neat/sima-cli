@@ -1,0 +1,21 @@
+artifactory:
+  url: "https://developer.sima.ai"
+
+auth:
+  auth_url: "/login"
+  validate_url: "artifactory/api/security/encryptedPassword"
+
+auth-prod:
+  domain: auth.sima.ai
+  audience: https://docs.sima.ai
+  scopes: openid profile offline_access
+  client-id: KAiQPJ1kblG78OLffqu8b9AwtQXCOZoi
+
+auth-dev:
+  domain: auth-dev.sima.ai 
+  audience: https://docs-dev.sima.ai
+  scopes: openid profile offline_access
+  client-id: Rjrv1TXE5VWjMmCmWyT6OmLYEN1K5AIS
+
+download:
+  download_url: "https://docs.sima.ai/pkg_downloads/"

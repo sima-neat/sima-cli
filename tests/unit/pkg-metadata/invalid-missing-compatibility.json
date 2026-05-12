@@ -1,0 +1,7 @@
+{
+    "name": "devkit-bad",
+    "version": "1.0.0",
+    "release": "ga",
+    "platforms": [{"type": "board"}],
+    "resources": ["devkit-bad/ga/pkg.tar.gz"]
+}

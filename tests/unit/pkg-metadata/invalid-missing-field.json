@@ -1,0 +1,10 @@
+{
+    "name": "bad-prereq",
+    "version": "1.0.0",
+    "release": "ga",
+    "platforms": [{"type": "host"}],
+    "resources": ["bad-prereq/ga/thing.tar.gz"],
+    "prerequisite": {
+        "entry_point": "check:run"
+    }
+}

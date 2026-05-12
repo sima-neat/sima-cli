@@ -1,0 +1,16 @@
+# build-model.sima
+
+echo "Starting model build..."
+
+mpk {
+  cd /var/log/simaai
+  ls
+  mpk device list
+  mpk
+}
+
+mpk {
+  mpk project create . 
+}
+
+echo "✅ All done!"

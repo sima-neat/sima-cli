@@ -1,0 +1,7 @@
+{
+  "name": "Palette SDK",
+  "python": "3.10.0",
+  "docker": "20.10.10",
+  "min_cores": 4,
+  "min_ram_gb": 16
+}

@@ -1,0 +1,9 @@
+artifactory:
+  url: "https://artifacts.eng.sima.ai"
+
+auth:
+  internal_url: "access/api/v1/tokens"
+  validate_url: "artifactory/api/security/encryptedPassword"
+
+download:
+  download_url: "artifactory/"

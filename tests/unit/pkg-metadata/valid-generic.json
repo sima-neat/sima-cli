@@ -1,0 +1,9 @@
+{
+    "name": "test-tool",
+    "version": "1.0.0",
+    "release": "ga",
+    "platforms": [
+        {"type": "host", "os": ["linux", "windows"]}
+    ],
+    "resources": ["test-tool/ga/bin.tar.gz"]
+}

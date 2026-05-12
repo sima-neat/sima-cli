@@ -36,6 +36,18 @@ def test_choose_ref_noninteractive_prefers_main():
     assert installer.choose_ref(["feature/foo", "main"], ["v2.1.5"], True) == "main"
 
 
+def test_choose_ref_auto_selects_single_branch():
+    installer = load_installer()
+
+    assert installer.choose_ref(["main"], [], False) == "main"
+
+
+def test_choose_ref_auto_selects_single_release():
+    installer = load_installer()
+
+    assert installer.choose_ref([], ["v2.1.5"], False) == "v2.1.5"
+
+
 def test_resolve_ref_fetches_branches_when_not_provided():
     installer = load_installer()
 

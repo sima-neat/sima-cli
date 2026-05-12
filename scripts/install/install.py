@@ -55,15 +55,6 @@ def normalize_index(payload: Dict[str, Any]) -> Tuple[List[str], List[str]]:
 
 
 def choose_ref(branches: List[str], releases: List[str], noninteractive: bool) -> str:
-    if noninteractive or not sys.stdin.isatty():
-        if "main" in branches:
-            return "main"
-        if branches:
-            return branches[0]
-        if releases:
-            return releases[-1]
-        raise SystemExit("No branches or releases found in branches.json")
-
     choices: List[Tuple[str, str]] = []
     for name in branches:
         label = f"branch: {name}"
@@ -72,6 +63,18 @@ def choose_ref(branches: List[str], releases: List[str], noninteractive: bool) -
         choices.append((name, label))
     for name in releases:
         choices.append((name, f"release: {name}"))
+
+    if len(choices) == 1:
+        return choices[0][0]
+
+    if noninteractive or not sys.stdin.isatty():
+        if "main" in branches:
+            return "main"
+        if branches:
+            return branches[0]
+        if releases:
+            return releases[-1]
+        raise SystemExit("No branches or releases found in branches.json")
 
     if not choices:
         raise SystemExit("No branches or releases found in branches.json")

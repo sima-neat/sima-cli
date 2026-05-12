@@ -14,33 +14,46 @@
 
 ## 📦 Installation
 
-Install from the latest `main` build:
+Install from the stable installer script. By default these commands install the latest `main` build.
 
-### Linux / macOS
+### Linux, macOS, and DevKit
 
 ```bash
-curl -fsSL https://tools.sima-neat.com/sima-cli-install.py -o sima-cli-install.py
+curl -fsSL https://artifacts.sima-neat.com/tools/sima-cli-install.py -o sima-cli-install.py
 python3 sima-cli-install.py main latest
 ```
 
-### Windows PowerShell
-
-```powershell
-Invoke-WebRequest https://tools.sima-neat.com/sima-cli-install.py -OutFile sima-cli-install.py
-python .\sima-cli-install.py main latest
-```
-
-Run without arguments to choose from available branches and releases:
+To choose from available branches and releases interactively:
 
 ```bash
 python3 sima-cli-install.py
 ```
 
-Install a specific branch or release:
+To install a specific branch or release:
 
 ```bash
 python3 sima-cli-install.py feature/my-branch latest
 python3 sima-cli-install.py v2.1.6 latest
+```
+
+### Windows PowerShell
+
+```powershell
+Invoke-WebRequest https://artifacts.sima-neat.com/tools/sima-cli-install.py -OutFile sima-cli-install.py
+python .\sima-cli-install.py main latest
+```
+
+To choose from available branches and releases interactively:
+
+```powershell
+python .\sima-cli-install.py
+```
+
+To install a specific branch or release:
+
+```powershell
+python .\sima-cli-install.py feature/my-branch latest
+python .\sima-cli-install.py v2.1.6 latest
 ```
 
 Public PyPI releases can also be installed directly:

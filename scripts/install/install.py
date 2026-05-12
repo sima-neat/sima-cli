@@ -219,6 +219,25 @@ def run_helper(package_dir: Path, wheel_path: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
+def install_wheel_current_env(wheel_path: Path) -> None:
+    print(f"Installing sima-cli wheel into current Python environment: {sys.executable}")
+    env = os.environ.copy()
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "--force-reinstall",
+            str(wheel_path),
+        ],
+        check=True,
+        env=env,
+    )
+
+
 def _pypi_install_dir() -> Path:
     if platform.system().lower() == "windows":
         return Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".sima-cli-env"
@@ -310,6 +329,23 @@ def install(args: argparse.Namespace) -> None:
     if is_pypi_release_ref(ref):
         if args.version != "latest":
             raise SystemExit("When installing a PyPI release ref such as v2.1.5, omit the artifact version argument.")
+        if args.current_env:
+            version = version_from_release_ref(ref)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-cache-dir",
+                    "--force-reinstall",
+                    "--index-url",
+                    PUBLIC_PYPI_SIMPLE_URL,
+                    f"sima-cli=={version}",
+                ],
+                check=True,
+            )
+            return
         install_from_pypi(ref)
         return
 
@@ -325,7 +361,10 @@ def install(args: argparse.Namespace) -> None:
         download_file(package_url, package_path)
         package_dir = extract_package(package_path, tmpdir)
         wheel_path = find_one(package_dir, "*.whl")
-        run_helper(package_dir, wheel_path)
+        if args.current_env:
+            install_wheel_current_env(wheel_path)
+        else:
+            run_helper(package_dir, wheel_path)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -342,6 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--noninteractive",
         action="store_true",
         help="Do not prompt; defaults to main latest when no ref is provided.",
+    )
+    parser.add_argument(
+        "--current-env",
+        action="store_true",
+        help="Install into the current Python environment instead of creating or using the managed sima-cli venv.",
     )
     return parser
 

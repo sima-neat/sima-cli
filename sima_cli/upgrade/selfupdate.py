@@ -49,7 +49,7 @@ def _print_windows_dev_update_cmd() -> None:
     )
     console.print("[cyan]Run these commands in a new PowerShell window:[/cyan]")
     console.print("[green]Invoke-WebRequest https://artifacts.sima-neat.com/tools/sima-cli-install.py -OutFile sima-cli-install.py[/green]")
-    console.print("[green]python .\\sima-cli-install.py[/green]")
+    console.print("[green]python .\\sima-cli-install.py --current-env[/green]")
 
 
 def _update_from_dev_installer(python_exec: str) -> None:
@@ -67,7 +67,7 @@ def _update_from_dev_installer(python_exec: str) -> None:
     with urllib.request.urlopen(req, timeout=30) as resp, open(installer_path, "wb") as f:
         f.write(resp.read())
     console.print("[cyan]📦 Running dev installer...[/cyan]")
-    subprocess.run([python_exec, installer_path], check=True)
+    subprocess.run([python_exec, installer_path, "--current-env"], check=True)
 
 
 def _download_wheel_from_pypi(python_exec: str, version: str = None) -> str:

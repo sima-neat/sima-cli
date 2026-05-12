@@ -73,6 +73,32 @@ def test_fetch_pypi_releases_reads_available_release_versions():
         assert installer.fetch_pypi_releases() == ["v2.1.4", "v2.1.5"]
 
 
+def test_fetch_pypi_releases_can_limit_to_recent_versions():
+    installer = load_installer()
+
+    with patch.object(
+        installer,
+        "fetch_json",
+        return_value={
+            "releases": {
+                "2.1.1": [{}],
+                "2.1.2": [{}],
+                "2.1.3": [{}],
+                "2.1.4": [{}],
+                "2.1.5": [{}],
+                "2.1.6": [{}],
+            }
+        },
+    ):
+        assert installer.fetch_pypi_releases(limit=5) == [
+            "v2.1.2",
+            "v2.1.3",
+            "v2.1.4",
+            "v2.1.5",
+            "v2.1.6",
+        ]
+
+
 def test_resolve_ref_fetches_branches_when_not_provided():
     installer = load_installer()
 

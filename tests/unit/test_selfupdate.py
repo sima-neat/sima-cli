@@ -21,7 +21,12 @@ def test_selfupdate_dev_runs_downloaded_installer_on_non_windows():
     assert req.full_url == selfupdate_module.DEV_INSTALLER_URL
     assert req.get_header("User-agent") == "sima-cli-selfupdate/1"
     run.assert_called_once()
-    assert run.call_args.args[0][-2:] == ["/tmp/sima-dev/sima-cli-install.py", "--current-env"]
+    assert run.call_args.args[0][-4:] == [
+        "/tmp/sima-dev/sima-cli-install.py",
+        "--current-env",
+        "--pypi-release-limit",
+        "5",
+    ]
     assert run.call_args.kwargs["check"]
 
 
@@ -35,7 +40,7 @@ def test_selfupdate_dev_prints_windows_instructions():
 
     assert result.exit_code == 0
     assert "Invoke-WebRequest" in result.output
-    assert "python .\\sima-cli-install.py --current-env" in result.output
+    assert "python .\\sima-cli-install.py --current-env --pypi-release-limit 5" in result.output
     urlopen.assert_not_called()
     run.assert_not_called()
 

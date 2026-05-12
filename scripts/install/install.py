@@ -77,13 +77,16 @@ def _version_sort_key(version: str) -> Tuple[Tuple[int, ...], str]:
     return tuple(numeric), version
 
 
-def fetch_pypi_releases() -> List[str]:
+def fetch_pypi_releases(limit: Optional[int] = None) -> List[str]:
     payload = fetch_json(PUBLIC_PYPI_JSON_URL)
     releases = payload.get("releases", {})
     if not isinstance(releases, dict):
         return []
     versions = [version for version, files in releases.items() if files]
-    return [f"v{version}" for version in sorted(versions, key=_version_sort_key)]
+    sorted_versions = sorted(versions, key=_version_sort_key)
+    if limit is not None and limit > 0:
+        sorted_versions = sorted_versions[-limit:]
+    return [f"v{version}" for version in sorted_versions]
 
 
 def choose_ref(branches: List[str], releases: List[str], noninteractive: bool) -> str:
@@ -132,13 +135,21 @@ def choose_ref(branches: List[str], releases: List[str], noninteractive: bool) -
         print("Choice out of range.")
 
 
-def resolve_ref(base_url: str, requested_ref: Optional[str], noninteractive: bool) -> str:
+def resolve_ref(
+    base_url: str,
+    requested_ref: Optional[str],
+    noninteractive: bool,
+    pypi_release_limit: Optional[int] = None,
+) -> str:
     if requested_ref:
         return requested_ref
     payload = fetch_json(f"{base_url}/branches.json")
     branches, releases = normalize_index(payload)
     try:
-        releases = sorted(set(releases + fetch_pypi_releases()), key=lambda item: _version_sort_key(item.lstrip("v")))
+        releases = sorted(
+            set(releases + fetch_pypi_releases(limit=pypi_release_limit)),
+            key=lambda item: _version_sort_key(item.lstrip("v")),
+        )
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
         print(f"Warning: could not fetch releases from PyPI ({exc}); continuing with artifact index releases only.", file=sys.stderr)
     return choose_ref(branches, releases, noninteractive)
@@ -325,7 +336,12 @@ def install_from_pypi(ref: str) -> None:
 
 def install(args: argparse.Namespace) -> None:
     base_url = args.base_url.rstrip("/")
-    ref = resolve_ref(base_url, args.ref, args.noninteractive)
+    ref = resolve_ref(
+        base_url,
+        args.ref,
+        args.noninteractive,
+        pypi_release_limit=getattr(args, "pypi_release_limit", None),
+    )
     if is_pypi_release_ref(ref):
         if args.version != "latest":
             raise SystemExit("When installing a PyPI release ref such as v2.1.5, omit the artifact version argument.")
@@ -386,6 +402,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--current-env",
         action="store_true",
         help="Install into the current Python environment instead of creating or using the managed sima-cli venv.",
+    )
+    parser.add_argument(
+        "--pypi-release-limit",
+        type=int,
+        default=None,
+        help="Limit how many recent PyPI releases are included in interactive release selection.",
     )
     return parser
 

@@ -60,7 +60,12 @@ def _update_from_dev_installer(python_exec: str) -> None:
     tmpdir = tempfile.mkdtemp(prefix="sima_dev_selfupdate_")
     installer_path = os.path.join(tmpdir, "sima-cli-install.py")
     console.print(f"[cyan]⬇️  Fetching dev installer from:[/cyan] {DEV_INSTALLER_URL}")
-    urllib.request.urlretrieve(DEV_INSTALLER_URL, installer_path)
+    req = urllib.request.Request(
+        DEV_INSTALLER_URL,
+        headers={"User-Agent": "sima-cli-selfupdate/1"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp, open(installer_path, "wb") as f:
+        f.write(resp.read())
     console.print("[cyan]📦 Running dev installer...[/cyan]")
     subprocess.run([python_exec, installer_path], check=True)
 

@@ -518,6 +518,12 @@ sima-cli selfupdate
 - Update sima-cli to the latest version from PyPI.
 
 ```bash
+sima-cli selfupdate --dev
+```
+
+- Update from the latest tested artifact installer. On Windows, this prints the PowerShell commands to run in a new shell.
+
+```bash
 sima-cli selfupdate -v 0.0.46
 ```
 

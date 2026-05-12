@@ -16,12 +16,14 @@ import sys
 import tempfile
 import subprocess
 import glob
+import urllib.request
 import click
 from rich.console import Console
 
 from sima_cli.download.downloader import download_file_from_url
 
 console = Console()
+DEV_INSTALLER_URL = "https://artifacts.sima-neat.com/tools/sima-cli-install.py"
 
 
 def _is_windows() -> bool:
@@ -39,6 +41,28 @@ def _print_windows_manual_update_cmd(python_exec: str, wheel_path: str) -> None:
     )
     console.print("[cyan]Run this command to update:[/cyan]")
     console.print(f"[green]{cmd}[/green]")
+
+
+def _print_windows_dev_update_cmd() -> None:
+    console.print(
+        "[yellow]⚠️  Automatic dev self-update is not supported on Windows while sima-cli is running.[/yellow]"
+    )
+    console.print("[cyan]Run these commands in a new PowerShell window:[/cyan]")
+    console.print("[green]Invoke-WebRequest https://artifacts.sima-neat.com/tools/sima-cli-install.py -OutFile sima-cli-install.py[/green]")
+    console.print("[green]python .\\sima-cli-install.py[/green]")
+
+
+def _update_from_dev_installer(python_exec: str) -> None:
+    if _is_windows():
+        _print_windows_dev_update_cmd()
+        return
+
+    tmpdir = tempfile.mkdtemp(prefix="sima_dev_selfupdate_")
+    installer_path = os.path.join(tmpdir, "sima-cli-install.py")
+    console.print(f"[cyan]⬇️  Fetching dev installer from:[/cyan] {DEV_INSTALLER_URL}")
+    urllib.request.urlretrieve(DEV_INSTALLER_URL, installer_path)
+    console.print("[cyan]📦 Running dev installer...[/cyan]")
+    subprocess.run([python_exec, installer_path], check=True)
 
 
 def _download_wheel_from_pypi(python_exec: str, version: str = None) -> str:
@@ -68,8 +92,13 @@ def _download_wheel_from_pypi(python_exec: str, version: str = None) -> str:
     "-m", "--manual-url",
     help="Manual wheel URL (cannot be combined with --version)."
 )
+@click.option(
+    "--dev",
+    is_flag=True,
+    help="Self-update from the tested artifact installer instead of public PyPI.",
+)
 @click.pass_context
-def selfupdate(ctx, version, manual_url):
+def selfupdate(ctx, version, manual_url, dev):
     """
     Update sima-cli manually from PyPI or a direct wheel URL.
 
@@ -82,6 +111,7 @@ def selfupdate(ctx, version, manual_url):
       - No options: update to the latest PyPI release
       - --version: update to the specified PyPI version
       - --manual-url: install from a direct wheel link
+      - --dev: run the tested artifact installer
     
     \b
     Rules:
@@ -94,11 +124,17 @@ def selfupdate(ctx, version, manual_url):
 
       sima-cli selfupdate
 
+      sima-cli selfupdate --dev
+
       sima-cli selfupdate -v 0.0.45
 
       sima-cli selfupdate -m https://.../sima_cli-0.0.46.whl
 
     """
+    if dev and (version or manual_url):
+        console.print("[red]❌ Error:[/red] Cannot use --dev with -v or -m.")
+        sys.exit(1)
+
     if version and manual_url:
         console.print("[red]❌ Error:[/red] Cannot use -v and -m together.")
         sys.exit(1)
@@ -108,8 +144,12 @@ def selfupdate(ctx, version, manual_url):
     python_exec = sys.executable
 
     try:
+        # Case 0: Dev artifact installer
+        if dev:
+            _update_from_dev_installer(python_exec)
+
         # Case 1: Manual URL (direct .whl)
-        if manual_url:
+        elif manual_url:
             _update_from_url(python_exec, manual_url, internal)
 
         # Case 2: Version + internal → build internal Artifactory URL

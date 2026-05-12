@@ -1,5 +1,6 @@
 import os
 import shutil
+import sys
 import click
 from sima_cli.utils.env import get_environment_type
 from sima_cli.update.updater import perform_update
@@ -29,6 +30,16 @@ from sima_cli.install.registry import register_packages_commands
 from sima_cli.upgrade.selfupdate import register_selfupdate_command
 from sima_cli.playbooks import register_playbook_commands
 
+def _configure_stdio_errors() -> None:
+    for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 # Entry point for the CLI tool using Click's command group decorator
 @click.group(context_settings=dict(help_option_names=["-h", "--help", "-?"], max_content_width=120))
 @click.option('-i', '--internal', is_flag=True, help="Use internal Artifactory resources, Authorized Sima employees only")
@@ -40,6 +51,7 @@ def main(ctx, internal):
     Global Options:
       --internal  Use internal Artifactory resources (can also be set via env variable SIMA_CLI_INTERNAL=1)
     """
+    _configure_stdio_errors()
     check_for_update('sima-cli')
     ctx.ensure_object(dict)
 

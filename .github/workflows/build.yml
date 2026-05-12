@@ -50,14 +50,49 @@ jobs:
         run: |
           scripts/run-tests.sh unit
 
-      - name: Run compatibility tests
-        if: always() && steps.build-wheel.outcome == 'success'
-        run: |
-          python scripts/check_py_compatibility.py sima_cli
-          scripts/run-tests.sh compat --versions "3.12" --strict
-
       - name: Delete wheel
         if: always()
         run: |
           rm -f dist/*.whl
           find dist -maxdepth 1 -type f -print
+
+  compatibility-test:
+    name: Compatibility Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.8"
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set package version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="$(python scripts/set_build_version.py --tag "${GITHUB_REF_NAME}")"
+          else
+            ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+            version="$(python scripts/set_build_version.py --ref "${ref_name}" --sha "${GITHUB_SHA}")"
+          fi
+          echo "Testing sima-cli ${version}"
+
+      - name: Run compatibility tests
+        run: |
+          python scripts/check_py_compatibility.py sima_cli --targets "${{ matrix.python-version }}"
+          scripts/run-tests.sh compat --versions "${{ matrix.python-version }}" --strict

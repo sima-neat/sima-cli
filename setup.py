@@ -17,14 +17,14 @@ setup(
         "sima_cli": ["data/*.yaml", "sdk/*.json"],
     },
     install_requires=[
-        "click==8.0",
-        "requests>=2.33.0",
-        "tqdm==4.64",
-        "InquirerPy==0.3.4",
-        "tftpy==0.8.6",
-        "psutil==7.0.0",
+        "click>=8.0,<9.0",
+        "requests>=2.33.0,<3.0",
+        "tqdm>=4.64,<5.0",
+        "InquirerPy>=0.3.4,<0.4",
+        "tftpy>=0.8.6,<0.9",
+        "psutil>=7.0.0,<8.0",
         "huggingface-hub>=0.34.0,<1.0",
-        "rich>=13.7"
+        "rich>=13.7,<14.0"
     ],
     entry_points={
         "console_scripts": [

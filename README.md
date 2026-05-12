@@ -1,5 +1,13 @@
 # 🛠️ sima-cli – SiMa Developer Portal CLI Tool
 
+[![Python 3.8](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/build.yml?branch=main&job=Compatibility%20Python%203.8&label=python%203.8)](https://github.com/sima-neat/sima-cli/actions/workflows/build.yml)
+[![Python 3.9](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/build.yml?branch=main&job=Compatibility%20Python%203.9&label=python%203.9)](https://github.com/sima-neat/sima-cli/actions/workflows/build.yml)
+[![Python 3.10](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/build.yml?branch=main&job=Compatibility%20Python%203.10&label=python%203.10)](https://github.com/sima-neat/sima-cli/actions/workflows/build.yml)
+[![Python 3.11](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/build.yml?branch=main&job=Compatibility%20Python%203.11&label=python%203.11)](https://github.com/sima-neat/sima-cli/actions/workflows/build.yml)
+[![Python 3.12](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/build.yml?branch=main&job=Compatibility%20Python%203.12&label=python%203.12)](https://github.com/sima-neat/sima-cli/actions/workflows/build.yml)
+[![Python 3.13](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/build.yml?branch=main&job=Compatibility%20Python%203.13&label=python%203.13)](https://github.com/sima-neat/sima-cli/actions/workflows/build.yml)
+[![Python 3.14](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/build.yml?branch=main&job=Compatibility%20Python%203.14&label=python%203.14)](https://github.com/sima-neat/sima-cli/actions/workflows/build.yml)
+
 `sima-cli` is a command-line interface (CLI) utility designed to interact with the SiMa Developer Portal. It supports downloading models and apps from the Model/App Zoo, performing firmware updates, and authenticating against internal or external environments.
 
 ---

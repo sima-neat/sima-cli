@@ -164,3 +164,38 @@ jobs:
       aws_access_key_id: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       aws_secret_access_key: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
       r2_account_id: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+
+  publish-tools-installer:
+    name: Publish Stable Installer
+    runs-on: ubuntu-latest
+    needs: [publish-r2]
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    environment: CloudFlare-R2
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ENDPOINT_URL: https://${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+
+    steps:
+      - name: Download built installer artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: wheel-sima-cli
+          path: dist
+
+      - name: Install aws cli tooling
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install awscli
+
+      - name: Upload stable installer to tools bucket path
+        run: |
+          set -euo pipefail
+          test -f dist/install.py
+          aws s3 cp \
+            --endpoint-url "${R2_ENDPOINT_URL}" \
+            dist/install.py \
+            s3://neat-artifacts/tools/sima-cli-install.py \
+            --content-type text/x-python

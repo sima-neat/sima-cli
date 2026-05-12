@@ -19,28 +19,28 @@ Install from the latest `main` build:
 ### Linux / macOS
 
 ```bash
-curl -fsSL https://artifacts.sima-neat.com/sima-cli/install.py -o /tmp/sima-cli-install.py
-python3 /tmp/sima-cli-install.py main latest
+curl -fsSL https://tools.sima-neat.com/sima-cli-install.py -o sima-cli-install.py
+python3 sima-cli-install.py main latest
 ```
 
 ### Windows PowerShell
 
 ```powershell
-Invoke-WebRequest https://artifacts.sima-neat.com/sima-cli/install.py -OutFile $env:TEMP\sima-cli-install.py
-python $env:TEMP\sima-cli-install.py main latest
+Invoke-WebRequest https://tools.sima-neat.com/sima-cli-install.py -OutFile sima-cli-install.py
+python .\sima-cli-install.py main latest
 ```
 
 Run without arguments to choose from available branches and releases:
 
 ```bash
-python3 /tmp/sima-cli-install.py
+python3 sima-cli-install.py
 ```
 
 Install a specific branch or release:
 
 ```bash
-python3 /tmp/sima-cli-install.py feature/my-branch latest
-python3 /tmp/sima-cli-install.py v2.1.6 latest
+python3 sima-cli-install.py feature/my-branch latest
+python3 sima-cli-install.py v2.1.6 latest
 ```
 
 Public PyPI releases can also be installed directly:

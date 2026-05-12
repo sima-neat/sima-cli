@@ -29,6 +29,7 @@ def _iter_py_files(root: pathlib.Path) -> Iterable[pathlib.Path]:
 
 def _find_pep604_and_match(nodes: ast.AST) -> List[Tuple[int, str]]:
     violations: List[Tuple[int, str]] = []
+    match_node_type = getattr(ast, "Match", None)
     for node in ast.walk(nodes):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             annots = []
@@ -48,7 +49,7 @@ def _find_pep604_and_match(nodes: ast.AST) -> List[Tuple[int, str]]:
             a = node.annotation
             if isinstance(a, ast.BinOp) and isinstance(a.op, ast.BitOr):
                 violations.append((a.lineno, "PEP604 union (use Optional/Union)"))
-        if isinstance(node, ast.Match):
+        if match_node_type is not None and isinstance(node, match_node_type):
             violations.append((node.lineno, "match/case requires Python 3.10+"))
     return violations
 

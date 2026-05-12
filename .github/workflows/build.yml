@@ -47,6 +47,41 @@ jobs:
           python -m build --wheel
           ls -lh dist/*.whl
 
+      - name: Package installer assets
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+
+          dist = Path("dist")
+          wheel = sorted(dist.glob("*.whl"))[-1]
+          version = wheel.name.split("-")[1]
+          package = dist / f"sima-cli-package-{version}.zip"
+          metadata = {
+              "wheel": wheel.name,
+              "helpers": [
+                  "sima-cli-installer.sh",
+                  "sima-cli-install.bat",
+              ],
+              "commit": os.environ["GITHUB_SHA"],
+              "ref": os.environ.get("GITHUB_HEAD_REF") or os.environ["GITHUB_REF_NAME"],
+          }
+
+          with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+              zf.write(wheel, wheel.name)
+              zf.write("scripts/install/sima-cli-installer.sh", "sima-cli-installer.sh")
+              zf.write("scripts/install/sima-cli-install.bat", "sima-cli-install.bat")
+              zf.writestr("install_metadata.json", json.dumps(metadata, indent=2) + "\n")
+
+          target_stub = dist / "install.py"
+          target_stub.write_text(Path("scripts/install/install.py").read_text(encoding="utf-8"), encoding="utf-8")
+          print(f"Created {package}")
+          print(f"Created {target_stub}")
+          PY
+          ls -lh dist
+
       - name: Install built wheel
         run: |
           python -m pip install dist/*.whl
@@ -60,7 +95,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: wheel-sima-cli
-          path: dist/*.whl
+          path: dist/*
           if-no-files-found: error
           retention-days: 1
 
@@ -122,8 +157,8 @@ jobs:
       artifact_root: sima-cli
       project_name: sima-cli
       artifact_pattern: wheel-sima-cli
-      artifact_glob: dist/*.whl
-      min_artifact_count: 1
+      artifact_glob: dist/*
+      min_artifact_count: 3
       aws_region: auto
     secrets:
       aws_access_key_id: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}

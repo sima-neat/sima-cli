@@ -290,9 +290,21 @@ jobs:
     steps:
       - name: Set up Python
         uses: actions/setup-python@v6
-        if: runner.os != 'Windows'
         with:
           python-version: "3.12"
+
+      - name: Download installer on native Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://artifacts.sima-neat.com/tools/sima-cli-install.py -OutFile sima-cli-install.py
+
+      - name: Install candidate on native Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python .\sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
+          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" version
 
       - name: Set up WSL2 Ubuntu on Windows
         if: runner.os == 'Windows'

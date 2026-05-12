@@ -40,6 +40,8 @@ python3 sima-cli-install.py feature/my-branch latest
 python3 sima-cli-install.py v2.1.6 latest
 ```
 
+Release tags such as `v2.1.6` are installed from public PyPI. Branch names install tested artifacts from `artifacts.sima-neat.com`.
+
 ### Windows PowerShell
 
 ```powershell
@@ -59,6 +61,8 @@ To install a specific branch or release:
 python .\sima-cli-install.py feature/my-branch latest
 python .\sima-cli-install.py v2.1.6 latest
 ```
+
+Release tags such as `v2.1.6` are installed from public PyPI. Branch names install tested artifacts from `artifacts.sima-neat.com`.
 
 Public PyPI releases can also be installed directly:
 
@@ -512,6 +516,12 @@ sima-cli selfupdate
 ```
 
 - Update sima-cli to the latest version from PyPI.
+
+```bash
+sima-cli selfupdate --dev
+```
+
+- Update from the latest tested artifact installer. On Windows, this prints the PowerShell commands to run in a new shell.
 
 ```bash
 sima-cli selfupdate -v 0.0.46

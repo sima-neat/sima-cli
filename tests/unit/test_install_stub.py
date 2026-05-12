@@ -48,6 +48,31 @@ def test_choose_ref_auto_selects_single_release():
     assert installer.choose_ref([], ["v2.1.5"], False) == "v2.1.5"
 
 
+def test_pypi_release_ref_parsing():
+    installer = load_installer()
+
+    assert installer.is_pypi_release_ref("v2.1.5")
+    assert installer.version_from_release_ref("v2.1.5") == "2.1.5"
+    assert not installer.is_pypi_release_ref("main")
+
+
+def test_fetch_pypi_releases_reads_available_release_versions():
+    installer = load_installer()
+
+    with patch.object(
+        installer,
+        "fetch_json",
+        return_value={
+            "releases": {
+                "2.1.4": [{"filename": "sima_cli-2.1.4-py3-none-any.whl"}],
+                "2.1.5": [{"filename": "sima_cli-2.1.5-py3-none-any.whl"}],
+                "2.1.6": [],
+            }
+        },
+    ):
+        assert installer.fetch_pypi_releases() == ["v2.1.4", "v2.1.5"]
+
+
 def test_resolve_ref_fetches_branches_when_not_provided():
     installer = load_installer()
 
@@ -88,3 +113,49 @@ def test_artifact_url_uses_explicit_url_or_base_filename():
         installer.artifact_url("https://example.invalid/sima-cli", {"filename": "pkg.zip"})
         == "https://example.invalid/sima-cli/pkg.zip"
     )
+
+
+def test_install_uses_pypi_for_release_ref():
+    installer = load_installer()
+
+    class Args:
+        base_url = "https://example.invalid/sima-cli"
+        ref = "v2.1.5"
+        version = "latest"
+        noninteractive = True
+        current_env = False
+
+    with patch.object(installer, "install_from_pypi") as install_from_pypi, \
+         patch.object(installer, "resolve_metadata") as resolve_metadata:
+        installer.install(Args())
+
+    install_from_pypi.assert_called_once_with("v2.1.5")
+    resolve_metadata.assert_not_called()
+
+
+def test_install_artifact_current_env_installs_wheel_without_helper():
+    installer = load_installer()
+
+    class Args:
+        base_url = "https://example.invalid/sima-cli"
+        ref = "main"
+        version = "abc1234"
+        noninteractive = True
+        current_env = True
+
+    metadata = {
+        "artifacts": [
+            {"filename": "sima-cli-package-2.1.5.zip", "url": "https://cdn/pkg.zip"},
+        ],
+    }
+
+    with patch.object(installer, "resolve_metadata", return_value=metadata), \
+         patch.object(installer, "download_file"), \
+         patch.object(installer, "extract_package", return_value=Path("/tmp/package")), \
+         patch.object(installer, "find_one", return_value=Path("/tmp/package/sima_cli-2.1.5.whl")), \
+         patch.object(installer, "install_wheel_current_env") as install_current, \
+         patch.object(installer, "run_helper") as run_helper:
+        installer.install(Args())
+
+    install_current.assert_called_once_with(Path("/tmp/package/sima_cli-2.1.5.whl"))
+    run_helper.assert_not_called()

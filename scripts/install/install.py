@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,8 @@ DEFAULT_BASE_URL = os.environ.get(
     "SIMA_CLI_ARTIFACT_BASE_URL",
     "https://artifacts.sima-neat.com/sima-cli",
 ).rstrip("/")
+PUBLIC_PYPI_JSON_URL = "https://pypi.org/pypi/sima-cli/json"
+PUBLIC_PYPI_SIMPLE_URL = "https://pypi.org/simple"
 
 
 def branch_key(ref: str) -> str:
@@ -52,6 +55,35 @@ def normalize_index(payload: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     if not tags:
         tags = sorted({str(x).strip() for x in payload.get("releases", []) if str(x).strip()})
     return branches, tags
+
+
+def is_pypi_release_ref(ref: str) -> bool:
+    return re.fullmatch(r"v\d+\.\d+\.\d+(?:[a-zA-Z0-9_.-]+)?", ref or "") is not None
+
+
+def version_from_release_ref(ref: str) -> str:
+    if not is_pypi_release_ref(ref):
+        raise SystemExit(f"PyPI release refs must look like v2.1.5, got: {ref}")
+    return ref[1:]
+
+
+def _version_sort_key(version: str) -> Tuple[Tuple[int, ...], str]:
+    numeric = []
+    for part in re.split(r"[._+-]", version):
+        if part.isdigit():
+            numeric.append(int(part))
+        else:
+            break
+    return tuple(numeric), version
+
+
+def fetch_pypi_releases() -> List[str]:
+    payload = fetch_json(PUBLIC_PYPI_JSON_URL)
+    releases = payload.get("releases", {})
+    if not isinstance(releases, dict):
+        return []
+    versions = [version for version, files in releases.items() if files]
+    return [f"v{version}" for version in sorted(versions, key=_version_sort_key)]
 
 
 def choose_ref(branches: List[str], releases: List[str], noninteractive: bool) -> str:
@@ -105,6 +137,10 @@ def resolve_ref(base_url: str, requested_ref: Optional[str], noninteractive: boo
         return requested_ref
     payload = fetch_json(f"{base_url}/branches.json")
     branches, releases = normalize_index(payload)
+    try:
+        releases = sorted(set(releases + fetch_pypi_releases()), key=lambda item: _version_sort_key(item.lstrip("v")))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+        print(f"Warning: could not fetch releases from PyPI ({exc}); continuing with artifact index releases only.", file=sys.stderr)
     return choose_ref(branches, releases, noninteractive)
 
 
@@ -183,9 +219,136 @@ def run_helper(package_dir: Path, wheel_path: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
+def install_wheel_current_env(wheel_path: Path) -> None:
+    print(f"Installing sima-cli wheel into current Python environment: {sys.executable}")
+    env = os.environ.copy()
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "--force-reinstall",
+            str(wheel_path),
+        ],
+        check=True,
+        env=env,
+    )
+
+
+def _pypi_install_dir() -> Path:
+    if platform.system().lower() == "windows":
+        return Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".sima-cli-env"
+    return Path.home() / ".sima-cli" / ".venv"
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    if platform.system().lower() == "windows":
+        return venv_dir / "Scripts" / "python.exe"
+    python = venv_dir / "bin" / "python3"
+    if python.exists():
+        return python
+    return venv_dir / "bin" / "python"
+
+
+def _venv_binary(venv_dir: Path) -> Path:
+    if platform.system().lower() == "windows":
+        return venv_dir / "Scripts" / "sima-cli.exe"
+    return venv_dir / "bin" / "sima-cli"
+
+
+def _append_line_once(path: Path, line: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        if line not in existing.splitlines():
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except OSError:
+        return
+
+
+def _configure_pypi_shell_path(venv_dir: Path) -> None:
+    if platform.system().lower() == "windows":
+        scripts = str(venv_dir / "Scripts")
+        subprocess.run(["setx", "PATH", f"%PATH%;{scripts}"], check=False)
+        return
+
+    rc_file = Path.home() / (".zshrc" if platform.system().lower() == "darwin" else ".bashrc")
+    _append_line_once(rc_file, f'export PATH="$PATH:{venv_dir / "bin"}"')
+    aliases = {
+        "sima-cli": str(venv_dir / "bin" / "sima-cli"),
+        "sdk": "sima-cli sdk",
+        "mpk": "sima-cli sdk mpk",
+        "modelsdk": "sima-cli sdk model",
+        "yocto": "sima-cli sdk yocto",
+        "elxr": "sima-cli sdk elxr",
+    }
+    for name, command in aliases.items():
+        _append_line_once(rc_file, f"alias {name}='{command}'")
+
+
+def install_from_pypi(ref: str) -> None:
+    version = version_from_release_ref(ref)
+    venv_dir = _pypi_install_dir()
+    print(f"Installing sima-cli {version} from public PyPI")
+    if not venv_dir.exists():
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+
+    python = _venv_python(venv_dir)
+    if not python.exists():
+        raise SystemExit(f"No Python interpreter found in virtual environment at {venv_dir}")
+
+    env = os.environ.copy()
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    subprocess.run([str(python), "-m", "pip", "install", "--upgrade", "pip"], check=True, env=env)
+    subprocess.run(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "--force-reinstall",
+            "--index-url",
+            PUBLIC_PYPI_SIMPLE_URL,
+            f"sima-cli=={version}",
+        ],
+        check=True,
+        env=env,
+    )
+    _configure_pypi_shell_path(venv_dir)
+    print(f"sima-cli successfully installed from PyPI: {_venv_binary(venv_dir)}")
+
+
 def install(args: argparse.Namespace) -> None:
     base_url = args.base_url.rstrip("/")
     ref = resolve_ref(base_url, args.ref, args.noninteractive)
+    if is_pypi_release_ref(ref):
+        if args.version != "latest":
+            raise SystemExit("When installing a PyPI release ref such as v2.1.5, omit the artifact version argument.")
+        if args.current_env:
+            version = version_from_release_ref(ref)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-cache-dir",
+                    "--force-reinstall",
+                    "--index-url",
+                    PUBLIC_PYPI_SIMPLE_URL,
+                    f"sima-cli=={version}",
+                ],
+                check=True,
+            )
+            return
+        install_from_pypi(ref)
+        return
+
     tag = resolve_tag(base_url, ref, args.version)
     metadata = resolve_metadata(base_url, ref, tag)
     package = find_artifact(metadata, ".zip", "sima-cli-package")
@@ -198,7 +361,10 @@ def install(args: argparse.Namespace) -> None:
         download_file(package_url, package_path)
         package_dir = extract_package(package_path, tmpdir)
         wheel_path = find_one(package_dir, "*.whl")
-        run_helper(package_dir, wheel_path)
+        if args.current_env:
+            install_wheel_current_env(wheel_path)
+        else:
+            run_helper(package_dir, wheel_path)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -215,6 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--noninteractive",
         action="store_true",
         help="Do not prompt; defaults to main latest when no ref is provided.",
+    )
+    parser.add_argument(
+        "--current-env",
+        action="store_true",
+        help="Install into the current Python environment instead of creating or using the managed sima-cli venv.",
     )
     return parser
 

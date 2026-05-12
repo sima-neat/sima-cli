@@ -1135,6 +1135,7 @@ def start_docker_container(
     sdk_extensions_dir=None,
     noninteractive=False,
     yes_to_all=False,
+    no_insight=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -1255,6 +1256,7 @@ def start_docker_container(
                 devkit_env=devkit_env,
                 yes_to_all=yes_to_all,
                 noninteractive=noninteractive,
+                no_insight=no_insight,
             )
             launch_cmd = list(base_docker_cmd)
             append_neat_docker_args(launch_cmd, neat_run_config)

@@ -654,6 +654,7 @@ def setup_and_start(
     start_only: bool = False,
     yes_to_all: bool = False,
     devkit_ip: str = "",
+    no_insight: bool = False,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -732,8 +733,16 @@ def setup_and_start(
                 sdk_extensions_dir=sdk_extensions_dir,
                 noninteractive=noninteractive,
                 yes_to_all=yes_to_all,
+                no_insight=no_insight,
             )
         else:
+            if no_insight and is_neat_sdk_image(img):
+                raise RuntimeError(
+                    "Cannot apply --no-insight to an existing Neat SDK container because Docker "
+                    "port mappings are immutable. Remove and recreate the container when prompted, "
+                    f"or run: docker rm -f {existing_container}"
+                )
+
             if not is_container_running(existing_container):
                 subprocess.run(["docker", "start", existing_container], check=True)
 

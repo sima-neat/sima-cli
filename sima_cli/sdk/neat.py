@@ -152,52 +152,11 @@ def _allocate_first_available_port_range(
     )
 
 
-def allocate_neat_ports() -> Tuple[Dict, List[str]]:
+def allocate_neat_ports(no_insight: bool = False) -> Tuple[Dict, List[str]]:
     reserved = set()
-    main_ui = _allocate_single_port(9900, "tcp", reserved)
-    video_ui = _allocate_single_port(8081, "tcp", reserved)
-    web_ssh = _allocate_single_port(8022, "tcp", reserved)
-    rtsp_tcp = _allocate_single_port(8554, "tcp", reserved)
-    video_udp_start, video_udp_end = _allocate_port_range(9000, 9079, "udp", reserved)
-    metadata_udp_start, metadata_udp_end = _allocate_port_range(9100, 9179, "udp", reserved)
-    webrtc_udp_start, webrtc_udp_end = _allocate_first_available_port_range(
-        NEAT_WEBRTC_UDP_SEARCH_START,
-        NEAT_WEBRTC_UDP_SEARCH_END,
-        NEAT_WEBRTC_UDP_PORT_COUNT,
-        "udp",
-        reserved,
-        "WebRTC",
-    )
 
     port_map = {
         "schema": NEAT_PORT_MAP_SCHEMA,
-        "mainUI": {"protocol": "tcp", "host": main_ui, "container": 9900},
-        "videoUI": {"protocol": "tcp", "host": video_ui, "container": 8081},
-        "webSSH": {"protocol": "tcp", "host": web_ssh, "container": 8022},
-        "rtsp": {
-            "tcp": {"host": rtsp_tcp, "container": 8554},
-        },
-        "videoUDP": {
-            "protocol": "udp",
-            "containerStart": 9000,
-            "containerEnd": 9079,
-            "hostStart": video_udp_start,
-            "hostEnd": video_udp_end,
-        },
-        "metadataUDP": {
-            "protocol": "udp",
-            "containerStart": 9100,
-            "containerEnd": 9179,
-            "hostStart": metadata_udp_start,
-            "hostEnd": metadata_udp_end,
-        },
-        "webRTC": {
-            "protocol": "udp",
-            "containerStart": webrtc_udp_start,
-            "containerEnd": webrtc_udp_end,
-            "hostStart": webrtc_udp_start,
-            "hostEnd": webrtc_udp_end,
-        },
         "cert": {
             "mount": "/sdk-cert",
             "certFile": "/sdk-cert/neat-sdk.pem",
@@ -205,15 +164,66 @@ def allocate_neat_ports() -> Tuple[Dict, List[str]]:
         },
     }
 
-    port_args = [
-        f"{main_ui}:9900/tcp",
-        f"{video_ui}:8081/tcp",
-        f"{web_ssh}:8022/tcp",
-        f"{rtsp_tcp}:8554/tcp",
-        f"{video_udp_start}-{video_udp_end}:9000-9079/udp",
-        f"{metadata_udp_start}-{metadata_udp_end}:9100-9179/udp",
-        f"{webrtc_udp_start}-{webrtc_udp_end}:{webrtc_udp_start}-{webrtc_udp_end}/udp",
-    ]
+    port_args = []
+
+    if not no_insight:
+        web_ssh = _allocate_single_port(8022, "tcp", reserved)
+        rtsp_tcp = _allocate_single_port(8554, "tcp", reserved)
+        main_ui = _allocate_single_port(9900, "tcp", reserved)
+        video_ui = _allocate_single_port(8081, "tcp", reserved)
+        video_udp_start, video_udp_end = _allocate_port_range(9000, 9079, "udp", reserved)
+        metadata_udp_start, metadata_udp_end = _allocate_port_range(9100, 9179, "udp", reserved)
+        webrtc_udp_start, webrtc_udp_end = _allocate_first_available_port_range(
+            NEAT_WEBRTC_UDP_SEARCH_START,
+            NEAT_WEBRTC_UDP_SEARCH_END,
+            NEAT_WEBRTC_UDP_PORT_COUNT,
+            "udp",
+            reserved,
+            "WebRTC",
+        )
+
+        port_map.update(
+            {
+                "mainUI": {"protocol": "tcp", "host": main_ui, "container": 9900},
+                "videoUI": {"protocol": "tcp", "host": video_ui, "container": 8081},
+                "webSSH": {"protocol": "tcp", "host": web_ssh, "container": 8022},
+                "rtsp": {
+                    "tcp": {"host": rtsp_tcp, "container": 8554},
+                },
+                "videoUDP": {
+                    "protocol": "udp",
+                    "containerStart": 9000,
+                    "containerEnd": 9079,
+                    "hostStart": video_udp_start,
+                    "hostEnd": video_udp_end,
+                },
+                "metadataUDP": {
+                    "protocol": "udp",
+                    "containerStart": 9100,
+                    "containerEnd": 9179,
+                    "hostStart": metadata_udp_start,
+                    "hostEnd": metadata_udp_end,
+                },
+                "webRTC": {
+                    "protocol": "udp",
+                    "containerStart": webrtc_udp_start,
+                    "containerEnd": webrtc_udp_end,
+                    "hostStart": webrtc_udp_start,
+                    "hostEnd": webrtc_udp_end,
+                },
+            }
+        )
+        port_args.extend(
+            [
+                f"{web_ssh}:8022/tcp",
+                f"{main_ui}:9900/tcp",
+                f"{video_ui}:8081/tcp",
+                f"{rtsp_tcp}:8554/tcp",
+                f"{video_udp_start}-{video_udp_end}:9000-9079/udp",
+                f"{metadata_udp_start}-{metadata_udp_end}:9100-9179/udp",
+                f"{webrtc_udp_start}-{webrtc_udp_end}:{webrtc_udp_start}-{webrtc_udp_end}/udp",
+            ]
+        )
     return port_map, port_args
 
 
@@ -443,11 +453,12 @@ def prepare_neat_container_run(
     devkit_env: Optional[dict] = None,
     yes_to_all: bool = False,
     noninteractive: bool = False,
+    no_insight: bool = False,
 ) -> NeatRunConfig:
     container_dir = Path(workspace) / f".{container_name}"
     config_dir = container_dir / "insight-config"
     cert_dir = container_dir / "sdk-cert"
-    port_map, port_args = allocate_neat_ports()
+    port_map, port_args = allocate_neat_ports(no_insight=no_insight)
     webrtc_host_ip = _detect_webrtc_host_ip(devkit_env)
     cert_file, key_file = _ensure_certificates(
         cert_dir,
@@ -481,34 +492,41 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
 def print_neat_setup_summary(config: NeatRunConfig) -> None:
     port_map = config.port_map
     print("🔌 Neat SDK port map:")
-    print(f"   mainUI:      http://localhost:{port_map['mainUI']['host']}")
-    print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")
-    print(f"   webSSH:      http://localhost:{port_map['webSSH']['host']}")
-    print(f"   rtsp:        rtsp://localhost:{port_map['rtsp']['tcp']['host']}")
-    print(
-        "   videoUDP:    {}-{}/udp -> {}-{}/udp".format(
-            port_map["videoUDP"]["hostStart"],
-            port_map["videoUDP"]["hostEnd"],
-            port_map["videoUDP"]["containerStart"],
-            port_map["videoUDP"]["containerEnd"],
+    if "mainUI" in port_map:
+        print(f"   mainUI:      http://localhost:{port_map['mainUI']['host']}")
+    if "videoUI" in port_map:
+        print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")
+    if "webSSH" in port_map:
+        print(f"   webSSH:      http://localhost:{port_map['webSSH']['host']}")
+    if "rtsp" in port_map:
+        print(f"   rtsp:        rtsp://localhost:{port_map['rtsp']['tcp']['host']}")
+    if "videoUDP" in port_map:
+        print(
+            "   videoUDP:    {}-{}/udp -> {}-{}/udp".format(
+                port_map["videoUDP"]["hostStart"],
+                port_map["videoUDP"]["hostEnd"],
+                port_map["videoUDP"]["containerStart"],
+                port_map["videoUDP"]["containerEnd"],
+            )
         )
-    )
-    print(
-        "   metadataUDP: {}-{}/udp -> {}-{}/udp".format(
-            port_map["metadataUDP"]["hostStart"],
-            port_map["metadataUDP"]["hostEnd"],
-            port_map["metadataUDP"]["containerStart"],
-            port_map["metadataUDP"]["containerEnd"],
+    if "metadataUDP" in port_map:
+        print(
+            "   metadataUDP: {}-{}/udp -> {}-{}/udp".format(
+                port_map["metadataUDP"]["hostStart"],
+                port_map["metadataUDP"]["hostEnd"],
+                port_map["metadataUDP"]["containerStart"],
+                port_map["metadataUDP"]["containerEnd"],
+            )
         )
-    )
-    print(
-        "   webRTC:      {}-{}/udp -> {}-{}/udp".format(
-            port_map["webRTC"]["hostStart"],
-            port_map["webRTC"]["hostEnd"],
-            port_map["webRTC"]["containerStart"],
-            port_map["webRTC"]["containerEnd"],
+    if "webRTC" in port_map:
+        print(
+            "   webRTC:      {}-{}/udp -> {}-{}/udp".format(
+                port_map["webRTC"]["hostStart"],
+                port_map["webRTC"]["hostEnd"],
+                port_map["webRTC"]["containerStart"],
+                port_map["webRTC"]["containerEnd"],
+            )
         )
-    )
     if config.webrtc_host_ip:
         print(f"   iceHost:     {config.webrtc_host_ip}")
     print(f"   config:      {config.port_map_host_path}")

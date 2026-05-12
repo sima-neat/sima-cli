@@ -18,6 +18,7 @@ from sima_cli.sdk.install import (
     _detect_local_ip_candidates,
     _setup_devkit_share,
     _setup_sdk_extensions,
+    setup_and_start,
 )
 from sima_cli.sdk.commands import launch_sdk_tool
 from sima_cli.sdk.cmdexec import exec_container_cmd
@@ -767,6 +768,27 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("9100-9179:9100-9179/udp", port_args)
         self.assertIn("40000-40199:40000-40199/udp", port_args)
 
+    def test_neat_port_allocator_no_insight_skips_insight_ports(self):
+        with patch("sima_cli.sdk.neat._is_port_available", return_value=True):
+            port_map, port_args = allocate_neat_ports(no_insight=True)
+
+        self.assertNotIn("mainUI", port_map)
+        self.assertNotIn("videoUI", port_map)
+        self.assertNotIn("videoUDP", port_map)
+        self.assertNotIn("metadataUDP", port_map)
+        self.assertNotIn("webRTC", port_map)
+        self.assertNotIn("rtsp", port_map)
+        self.assertNotIn("webSSH", port_map)
+        self.assertEqual(port_args, [])
+        for mapping in port_args:
+            self.assertNotIn("8022", mapping)
+            self.assertNotIn("8554", mapping)
+            self.assertNotIn("9900", mapping)
+            self.assertNotIn("8081", mapping)
+            self.assertNotIn("9000-9079", mapping)
+            self.assertNotIn("9100-9179", mapping)
+            self.assertNotIn("40000", mapping)
+
     def test_neat_port_allocator_moves_udp_range_as_contiguous_block(self):
         def is_available(port, protocol):
             if protocol == "udp" and port == 9006:
@@ -822,6 +844,27 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertEqual(config.port_map["schema"], "sima.neat.port-map.v1")
             self.assertEqual(config.port_map["cert"]["certFile"], "/sdk-cert/neat-sdk.pem")
             self.assertEqual(config.webrtc_host_ip, "10.0.0.76")
+
+    def test_prepare_neat_container_run_accepts_no_insight(self):
+        with TemporaryDirectory() as tmpdir:
+            cert_file = Path(tmpdir) / ".sdk-latest" / "sdk-cert" / "neat-sdk.pem"
+            key_file = Path(tmpdir) / ".sdk-latest" / "sdk-cert" / "neat-sdk-key.pem"
+            with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
+                 patch("sima_cli.sdk.neat._ensure_certificates", return_value=(cert_file, key_file)), \
+                 patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="10.0.0.76"):
+                config = prepare_neat_container_run(
+                    tmpdir,
+                    "sdk-latest",
+                    yes_to_all=True,
+                    noninteractive=True,
+                    no_insight=True,
+                )
+
+            self.assertNotIn("mainUI", config.port_map)
+            self.assertNotIn("videoUI", config.port_map)
+            self.assertNotIn("rtsp", config.port_map)
+            self.assertNotIn("webSSH", config.port_map)
+            self.assertEqual(config.port_args, [])
 
     def test_mkcert_missing_noninteractive_accepts_default_install(self):
         with patch("sima_cli.sdk.neat.platform.system", return_value="Darwin"), \
@@ -947,6 +990,64 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("CONTAINER_HOST_IP=10.0.0.76", docker_cmd)
         self.assertIn(f"{neat_config.config_host_dir}:/home/docker/.insight-config", docker_cmd)
         self.assertIn(f"{neat_config.cert_host_dir}:/sdk-cert", docker_cmd)
+
+    def test_start_neat_container_passes_no_insight_to_prepare(self):
+        with TemporaryDirectory() as tmpdir:
+            neat_config = NeatRunConfig(
+                port_map={
+                    "schema": "sima.neat.port-map.v1",
+                    "cert": {"mount": "/sdk-cert", "certFile": "/sdk-cert/neat-sdk.pem", "keyFile": "/sdk-cert/neat-sdk-key.pem"},
+                },
+                port_args=[],
+                config_host_dir=f"{tmpdir}/.sdk-latest/insight-config",
+                cert_host_dir=f"{tmpdir}/.sdk-latest/sdk-cert",
+                port_map_host_path=f"{tmpdir}/.sdk-latest/insight-config/neat-port-map.json",
+                cert_file_host_path=f"{tmpdir}/.sdk-latest/sdk-cert/neat-sdk.pem",
+                key_file_host_path=f"{tmpdir}/.sdk-latest/sdk-cert/neat-sdk-key.pem",
+                webrtc_host_ip="",
+            )
+            docker_result = Mock(returncode=0, stdout="container-id\n", stderr="")
+            with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.utils.os.makedirs"), \
+                 patch("sima_cli.sdk.utils.configure_container"), \
+                 patch("sima_cli.sdk.utils.detect_current_user", return_value=("devuser", 1000, 1000)), \
+                 patch("sima_cli.sdk.neat.prepare_neat_container_run", return_value=neat_config) as prepare, \
+                 patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils.subprocess.run", return_value=docker_result) as run:
+                start_docker_container(
+                    uid=1000,
+                    gid=1000,
+                    port=0,
+                    workspace=tmpdir,
+                    image="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest",
+                    no_insight=True,
+                )
+
+        self.assertTrue(prepare.call_args.kwargs["no_insight"])
+        docker_cmd = run.call_args[0][0]
+        self.assertNotIn("8022:8022/tcp", docker_cmd)
+        self.assertNotIn("8554:8554/tcp", docker_cmd)
+        self.assertNotIn("9900:9900/tcp", docker_cmd)
+        self.assertNotIn("8081:8081/tcp", docker_cmd)
+        self.assertNotIn("9000-9079:9000-9079/udp", docker_cmd)
+        self.assertNotIn("9100-9179:9100-9179/udp", docker_cmd)
+        self.assertNotIn("40000-40199:40000-40199/udp", docker_cmd)
+
+    def test_setup_no_insight_refuses_existing_neat_container(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value=None), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="ghcr.io-sima-neat-sdk-latest"):
+            with self.assertRaisesRegex(RuntimeError, "Cannot apply --no-insight"):
+                setup_and_start(no_insight=True, yes_to_all=False, noninteractive=False)
 
     def test_start_neat_container_uses_valid_short_hostname_for_long_image_tag(self):
         with TemporaryDirectory() as tmpdir:

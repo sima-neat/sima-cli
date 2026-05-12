@@ -302,13 +302,6 @@ jobs:
           update: "true"
           additional-packages: ca-certificates curl python3 python3-venv python3-pip docker.io
 
-      - name: Start Docker on macOS
-        if: runner.os == 'macOS'
-        run: |
-          brew install docker colima
-          colima start --cpu 4 --memory 8 --disk 60
-          docker info
-
       - name: Verify Docker on Ubuntu
         if: runner.os == 'Linux'
         run: |
@@ -342,13 +335,20 @@ jobs:
           curl -fsSL https://artifacts.sima-neat.com/tools/sima-cli-install.py -o sima-cli-install.py
 
       - name: Install candidate
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && runner.os != 'macOS'
         run: |
           python3 sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
           "$HOME/.sima-cli/.venv/bin/sima-cli" version
           "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
+
+      - name: Install candidate on macOS
+        if: runner.os == 'macOS'
+        run: |
+          python3 sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
+          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          echo "Skipping Neat SDK container setup on GitHub-hosted macOS: no reliable Docker backend is available."
 
       - name: Install candidate in WSL2
         if: runner.os == 'Windows'

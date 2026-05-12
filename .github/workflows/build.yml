@@ -194,6 +194,15 @@ jobs:
         run: |
           set -euo pipefail
           test -f dist/install.py
+
+          aws s3 rm \
+            --endpoint-url "${R2_ENDPOINT_URL}" \
+            s3://neat-artifacts/tools/ \
+            --recursive \
+            --exclude "*" \
+            --include "sima_cli-*.whl" \
+            --include "sima-cli-package-*.zip"
+
           aws s3 cp \
             --endpoint-url "${R2_ENDPOINT_URL}" \
             dist/install.py \

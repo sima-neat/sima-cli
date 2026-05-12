@@ -18,7 +18,7 @@ setup(
     },
     install_requires=[
         "click==8.0",
-        "requests==2.25",
+        "requests>=2.33.0",
         "tqdm==4.64",
         "InquirerPy==0.3.4",
         "tftpy==0.8.6",

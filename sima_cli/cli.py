@@ -37,7 +37,9 @@ def _configure_stdio_errors() -> None:
         try:
             stream.reconfigure(errors="replace")
         except (OSError, ValueError):
-            pass
+            # Best-effort only: some stream implementations do not support
+            # runtime reconfiguration; safely continue with default behavior.
+            continue
 
 
 # Entry point for the CLI tool using Click's command group decorator

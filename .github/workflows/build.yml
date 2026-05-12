@@ -5,6 +5,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+
 jobs:
   build-test:
     name: Build wheel and test
@@ -49,6 +55,14 @@ jobs:
         id: unit-tests
         run: |
           scripts/run-tests.sh unit
+
+      - name: Upload wheel for publish
+        uses: actions/upload-artifact@v6
+        with:
+          name: wheel-sima-cli
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Delete wheel
         if: always()
@@ -96,3 +110,22 @@ jobs:
         run: |
           python scripts/check_py_compatibility.py sima_cli --targets "${{ matrix.python-version }}"
           scripts/run-tests.sh compat --versions "${{ matrix.python-version }}" --strict
+
+  publish-r2:
+    name: Publish Wheel + Metadata
+    uses: sima-neat/.github/.github/workflows/reusable-publish-download-artifacts.yml@main
+    needs: [build-test, compatibility-test]
+    if: github.event_name != 'pull_request'
+    with:
+      bucket: neat-artifacts
+      environment_name: CloudFlare-R2
+      artifact_root: sima-cli
+      project_name: sima-cli
+      artifact_pattern: wheel-sima-cli
+      artifact_glob: dist/*.whl
+      min_artifact_count: 1
+      aws_region: auto
+    secrets:
+      aws_access_key_id: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      aws_secret_access_key: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      r2_account_id: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}

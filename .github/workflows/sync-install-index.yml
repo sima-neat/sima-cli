@@ -1,0 +1,33 @@
+name: Sync Install Index
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  delete:
+  release:
+    types: [published, unpublished, deleted]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  sync-branches-json:
+    name: Sync branches.json (branches + tags)
+    if: github.event_name != 'pull_request'
+    uses: sima-neat/.github/.github/workflows/reusable-sync-install-index.yml@main
+    with:
+      bucket: neat-artifacts
+      environment_name: CloudFlare-R2
+      artifact_root: sima-cli
+      aws_region: auto
+    secrets:
+      aws_access_key_id: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      aws_secret_access_key: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      r2_account_id: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}

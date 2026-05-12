@@ -290,32 +290,75 @@ jobs:
     steps:
       - name: Set up Python
         uses: actions/setup-python@v6
+        if: runner.os != 'Windows'
         with:
           python-version: "3.12"
+
+      - name: Set up WSL2 Ubuntu on Windows
+        if: runner.os == 'Windows'
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          update: "true"
+          additional-packages: ca-certificates curl python3 python3-venv python3-pip docker.io
+
+      - name: Start Docker on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew install docker colima
+          colima start --cpu 4 --memory 8 --disk 60
+          docker info
+
+      - name: Verify Docker on Ubuntu
+        if: runner.os == 'Linux'
+        run: |
+          docker info
+
+      - name: Start Docker in WSL2
+        if: runner.os == 'Windows'
+        shell: wsl-bash {0}
+        run: |
+          sudo nohup dockerd > /tmp/dockerd.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+              docker info
+              sudo chmod 666 /var/run/docker.sock
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/dockerd.log
+          exit 1
 
       - name: Download installer
         if: runner.os != 'Windows'
         run: |
           curl -fsSL https://artifacts.sima-neat.com/tools/sima-cli-install.py -o sima-cli-install.py
 
-      - name: Download installer on Windows
+      - name: Download installer in WSL2
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: wsl-bash {0}
         run: |
-          Invoke-WebRequest https://artifacts.sima-neat.com/tools/sima-cli-install.py -OutFile sima-cli-install.py
+          curl -fsSL https://artifacts.sima-neat.com/tools/sima-cli-install.py -o sima-cli-install.py
 
       - name: Install candidate
         if: runner.os != 'Windows'
         run: |
           python3 sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
           "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
+          docker rm -f ghcr.io-sima-neat-sdk-latest || true
+          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
 
-      - name: Install candidate on Windows
+      - name: Install candidate in WSL2
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: wsl-bash {0}
         run: |
-          python .\sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
-          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" version
+          python3 sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
+          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
+          docker rm -f ghcr.io-sima-neat-sdk-latest || true
+          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
 
   promote-latest:
     name: Promote Tested Latest

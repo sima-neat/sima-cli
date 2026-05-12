@@ -1034,6 +1034,25 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("9100-9179:9100-9179/udp", docker_cmd)
         self.assertNotIn("40000-40199:40000-40199/udp", docker_cmd)
 
+    def test_setup_no_model_sdk_skips_extension_directory_and_passes_flag(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions") as setup_extensions, \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container:
+            setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
+
+        setup_extensions.assert_not_called()
+        self.assertEqual(start_container.call_args.kwargs["sdk_extensions_dir"], "")
+        self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
+
     def test_setup_no_insight_refuses_existing_neat_container(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
@@ -1285,6 +1304,20 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         prompt.assert_not_called()
         self.assertEqual(run_command.call_count, 2)
+
+    def test_configure_container_skips_model_sdk_extension_when_requested(self):
+        with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
+             patch("sima_cli.sdk.utils.run_command"), \
+             patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
+             patch("sima_cli.sdk.utils.ensure_sima_cli_installed"), \
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed") as model_sdk, \
+             patch("sima_cli.sdk.utils._sync_codex_skills"), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks"):
+            from sima_cli.sdk.utils import configure_container
+
+            configure_container("container", no_model_sdk=True)
+
+        model_sdk.assert_not_called()
 
     def test_install_neat_playbooks_skips_non_neat_image(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="artifacts.eng.sima.ai/elxr:2.1.0"), \

@@ -168,8 +168,13 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     is_flag=True,
     help="Start Neat SDK without Insight UI/video/WebRTC port mappings.",
 )
+@click.option(
+    "--no-model-sdk",
+    is_flag=True,
+    help="Skip Model SDK extension setup. Intended for CI installation tests.",
+)
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight):
+def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
@@ -178,6 +183,7 @@ def setup(ctx, yes, noninteractive, devkit, no_insight):
             yes_to_all=yes,
             devkit_ip=devkit_ip,
             no_insight=no_insight,
+            no_model_sdk=no_model_sdk,
         )
     except subprocess.CalledProcessError as e:
         raise click.ClickException(f"SDK setup failed while running: {' '.join(e.cmd)}") from e

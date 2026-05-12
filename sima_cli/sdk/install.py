@@ -655,6 +655,7 @@ def setup_and_start(
     yes_to_all: bool = False,
     devkit_ip: str = "",
     no_insight: bool = False,
+    no_model_sdk: bool = False,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -696,11 +697,16 @@ def setup_and_start(
     uid = os.getuid() if hasattr(os, "getuid") else 900
     gid = os.getgid() if hasattr(os, "getgid") else 900
     devkit_env = _setup_devkit_share(devkit_ip, workspace, selected_images, noninteractive=noninteractive)
-    sdk_extensions_dir = _setup_sdk_extensions(
-        selected_images,
-        noninteractive=noninteractive,
-        yes_to_all=yes_to_all,
-    )
+    if no_model_sdk:
+        sdk_extensions_dir = ""
+        if any(is_neat_sdk_image(img) for img in selected_images):
+            click.echo("ℹ️  Skipping Model SDK extension setup because --no-model-sdk was specified.")
+    else:
+        sdk_extensions_dir = _setup_sdk_extensions(
+            selected_images,
+            noninteractive=noninteractive,
+            yes_to_all=yes_to_all,
+        )
     
     for img in selected_images:
         container_name = sanitize_container_name(img)
@@ -734,6 +740,7 @@ def setup_and_start(
                 noninteractive=noninteractive,
                 yes_to_all=yes_to_all,
                 no_insight=no_insight,
+                no_model_sdk=no_model_sdk,
             )
         else:
             if no_insight and is_neat_sdk_image(img):

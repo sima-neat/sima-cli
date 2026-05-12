@@ -919,6 +919,7 @@ def configure_container(
     configure_network=False,
     noninteractive=False,
     yes_to_all=False,
+    no_model_sdk=False,
 ):
     """
     Configure container user mappings and permissions:
@@ -1017,11 +1018,14 @@ def configure_container(
 
     # Ensure sima-cli is available for the configured default user.
     ensure_sima_cli_installed(sdk_container_name, login_name)
-    ensure_model_sdk_extension_installed(
-        sdk_container_name,
-        login_name,
-        auto_install=(noninteractive or yes_to_all),
-    )
+    if no_model_sdk:
+        print("ℹ️  Skipping Model SDK extension installation because --no-model-sdk was specified.")
+    else:
+        ensure_model_sdk_extension_installed(
+            sdk_container_name,
+            login_name,
+            auto_install=(noninteractive or yes_to_all),
+        )
     _sync_codex_skills(sdk_container_name, login_name, uid, gid)
     install_neat_playbooks(sdk_container_name, login_name)
 
@@ -1135,6 +1139,8 @@ def start_docker_container(
     sdk_extensions_dir=None,
     noninteractive=False,
     yes_to_all=False,
+    no_insight=False,
+    no_model_sdk=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -1255,6 +1261,7 @@ def start_docker_container(
                 devkit_env=devkit_env,
                 yes_to_all=yes_to_all,
                 noninteractive=noninteractive,
+                no_insight=no_insight,
             )
             launch_cmd = list(base_docker_cmd)
             append_neat_docker_args(launch_cmd, neat_run_config)
@@ -1303,6 +1310,7 @@ def start_docker_container(
         port_mapping_required,
         noninteractive=noninteractive,
         yes_to_all=yes_to_all,
+        no_model_sdk=no_model_sdk,
     )
 
     if devkit_env and neat_sdk_image:

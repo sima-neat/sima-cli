@@ -10,6 +10,7 @@ env:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   build-test:
@@ -146,8 +147,8 @@ jobs:
           python scripts/check_py_compatibility.py sima_cli --targets "${{ matrix.python-version }}"
           scripts/run-tests.sh compat --versions "${{ matrix.python-version }}" --strict
 
-  publish-r2:
-    name: Publish Wheel + Metadata
+  publish-r2-candidate:
+    name: Publish Candidate Artifacts
     uses: sima-neat/.github/.github/workflows/reusable-publish-download-artifacts.yml@main
     needs: [build-test, compatibility-test]
     if: github.event_name != 'pull_request'
@@ -160,15 +161,287 @@ jobs:
       artifact_glob: dist/*
       min_artifact_count: 3
       aws_region: auto
+      publish_index: false
     secrets:
       aws_access_key_id: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       aws_secret_access_key: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
       r2_account_id: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
 
+  publish-candidate-index:
+    name: Publish Candidate Metadata
+    runs-on: ubuntu-latest
+    needs: [publish-r2-candidate]
+    if: github.event_name != 'pull_request'
+    environment: CloudFlare-R2
+    outputs:
+      branch_key: ${{ steps.meta.outputs.branch_key }}
+      ref_name: ${{ steps.meta.outputs.ref_name }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ENDPOINT_URL: https://${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: wheel-sima-cli
+          path: dist
+
+      - name: Install aws cli tooling
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install awscli
+
+      - name: Publish candidate metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          branch_key="$(python3 - <<'PY'
+          import os
+          ref_name = os.environ.get("GITHUB_HEAD_REF") or os.environ["GITHUB_REF_NAME"]
+          print(ref_name.replace("/", "-").replace(" ", "-"))
+          PY
+          )"
+          short_sha="$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)"
+          {
+            echo "branch_key=${branch_key}"
+            echo "ref_name=${ref_name}"
+            echo "short_sha=${short_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          base_url = "https://artifacts.sima-neat.com/sima-cli"
+          ref_name = os.environ.get("GITHUB_HEAD_REF") or os.environ["GITHUB_REF_NAME"]
+          branch_key = ref_name.replace("/", "-").replace(" ", "-")
+          short_sha = os.environ["GITHUB_SHA"][:7]
+
+          artifacts = []
+          wheels = []
+          for artifact in sorted(Path("dist").glob("*")):
+              if not artifact.is_file():
+                  continue
+              h = hashlib.sha256()
+              with artifact.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              entry = {
+                  "filename": artifact.name,
+                  "url": f"{base_url}/{artifact.name}",
+                  "size": artifact.stat().st_size,
+                  "sha256": h.hexdigest(),
+              }
+              artifacts.append(entry)
+              if artifact.suffix == ".whl":
+                  wheel_entry = dict(entry)
+                  wheel_entry["platform_tag"] = artifact.name.rsplit("-", 1)[-1].replace(".whl", "")
+                  wheels.append(wheel_entry)
+
+          payload = {
+              "project": "sima-cli",
+              "branch": ref_name,
+              "branch_key": branch_key,
+              "short_sha": short_sha,
+              "commit": os.environ["GITHUB_SHA"],
+              "created_at_utc": datetime.now(timezone.utc).isoformat(),
+              "artifacts": artifacts,
+              "wheels": wheels,
+          }
+
+          index_dir = Path("_work/index")
+          index_dir.mkdir(parents=True, exist_ok=True)
+          (index_dir / f"{short_sha}.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          aws s3 cp \
+            --endpoint-url "${R2_ENDPOINT_URL}" \
+            "_work/index/${short_sha}.json" \
+            "s3://neat-artifacts/sima-cli/${branch_key}/${short_sha}.json" \
+            --content-type application/json
+
+  e2e-install:
+    name: E2E Install (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    needs: [publish-candidate-index]
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Ubuntu x86
+            os: ubuntu-24.04
+          - name: Ubuntu ARM64
+            os: ubuntu-24.04-arm
+          - name: Windows
+            os: windows-latest
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        if: runner.os != 'Windows'
+        with:
+          python-version: "3.12"
+
+      - name: Set up WSL2 Ubuntu on Windows
+        if: runner.os == 'Windows'
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          update: "true"
+          additional-packages: ca-certificates curl python3 python3-venv python3-pip docker.io
+
+      - name: Verify Docker on Ubuntu
+        if: runner.os == 'Linux'
+        run: |
+          docker info
+
+      - name: Start Docker in WSL2
+        if: runner.os == 'Windows'
+        shell: wsl-bash {0}
+        run: |
+          sudo nohup dockerd > /tmp/dockerd.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+              docker info
+              sudo chmod 666 /var/run/docker.sock
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/dockerd.log
+          exit 1
+
+      - name: Download installer
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL https://artifacts.sima-neat.com/tools/sima-cli-install.py -o sima-cli-install.py
+
+      - name: Download installer in WSL2
+        if: runner.os == 'Windows'
+        shell: wsl-bash {0}
+        run: |
+          curl -fsSL https://artifacts.sima-neat.com/tools/sima-cli-install.py -o sima-cli-install.py
+
+      - name: Install candidate
+        if: runner.os != 'Windows' && runner.os != 'macOS'
+        run: |
+          python3 sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
+          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
+          docker rm -f ghcr.io-sima-neat-sdk-latest || true
+          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
+
+      - name: Install candidate on macOS
+        if: runner.os == 'macOS'
+        run: |
+          python3 sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
+          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          echo "Skipping Neat SDK container setup on GitHub-hosted macOS: no reliable Docker backend is available."
+
+      - name: Install candidate in WSL2
+        if: runner.os == 'Windows'
+        shell: wsl-bash {0}
+        run: |
+          python3 sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
+          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
+          docker rm -f ghcr.io-sima-neat-sdk-latest || true
+          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
+
+  promote-latest:
+    name: Promote Tested Latest
+    runs-on: ubuntu-latest
+    needs: [publish-candidate-index, e2e-install]
+    if: github.event_name != 'pull_request'
+    environment: CloudFlare-R2
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ENDPOINT_URL: https://${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Install aws cli tooling
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install awscli
+
+      - name: Promote commit as latest and refresh branches.json
+        run: |
+          set -euo pipefail
+          mkdir -p _work/index
+          printf '%s\n' "${{ needs.publish-candidate-index.outputs.short_sha }}" > _work/index/latest.tag
+
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def paged_list(url_template, field):
+              items = []
+              page = 1
+              while True:
+                  req = urllib.request.Request(url_template.format(page=page), headers=headers)
+                  with urllib.request.urlopen(req) as resp:
+                      batch = json.loads(resp.read().decode("utf-8"))
+                  if not batch:
+                      break
+                  for item in batch:
+                      val = str(item.get(field, "")).strip()
+                      if val:
+                          items.append(val)
+                  if len(batch) < 100:
+                      break
+                  page += 1
+              return sorted(set(items))
+
+          payload = {
+              "branches": paged_list(f"https://api.github.com/repos/{repo}/branches?per_page=100&page={{page}}", "name"),
+              "tags": paged_list(f"https://api.github.com/repos/{repo}/tags?per_page=100&page={{page}}", "name"),
+          }
+          payload["releases"] = payload["tags"]
+          Path("_work/index/branches.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          aws s3 cp \
+            --endpoint-url "${R2_ENDPOINT_URL}" \
+            _work/index/latest.tag \
+            "s3://neat-artifacts/sima-cli/${{ needs.publish-candidate-index.outputs.branch_key }}/latest.tag" \
+            --content-type text/plain
+
+          aws s3 cp \
+            --endpoint-url "${R2_ENDPOINT_URL}" \
+            _work/index/branches.json \
+            s3://neat-artifacts/sima-cli/branches.json \
+            --content-type application/json
+
   publish-tools-installer:
     name: Publish Stable Installer
     runs-on: ubuntu-latest
-    needs: [publish-r2]
+    needs: [promote-latest]
     if: github.event_name == 'push' && github.ref_name == 'main'
     environment: CloudFlare-R2
     env:
@@ -208,3 +481,60 @@ jobs:
             dist/install.py \
             s3://neat-artifacts/tools/sima-cli-install.py \
             --content-type text/x-python
+
+  cleanup-github-artifacts:
+    name: Delete GitHub Artifacts
+    runs-on: ubuntu-latest
+    needs:
+      - build-test
+      - compatibility-test
+      - publish-r2-candidate
+      - publish-candidate-index
+      - e2e-install
+      - promote-latest
+      - publish-tools-installer
+    if: always()
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Delete workflow run artifacts
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          token = os.environ["GH_TOKEN"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def request(url, method="GET"):
+              req = urllib.request.Request(url, headers=headers, method=method)
+              with urllib.request.urlopen(req) as resp:
+                  return resp.read()
+
+          list_url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100"
+          artifacts = json.loads(request(list_url).decode("utf-8")).get("artifacts", [])
+          for artifact in artifacts:
+              artifact_id = artifact["id"]
+              name = artifact.get("name", artifact_id)
+              delete_url = f"https://api.github.com/repos/{repo}/actions/artifacts/{artifact_id}"
+              try:
+                  request(delete_url, method="DELETE")
+                  print(f"Deleted GitHub artifact: {name}")
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      print(f"GitHub artifact already deleted: {name}")
+                      continue
+                  raise
+          if not artifacts:
+              print("No GitHub artifacts found for this run.")
+          PY

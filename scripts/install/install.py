@@ -139,8 +139,8 @@ def resolve_ref(base_url: str, requested_ref: Optional[str], noninteractive: boo
     branches, releases = normalize_index(payload)
     try:
         releases = sorted(set(releases + fetch_pypi_releases()), key=lambda item: _version_sort_key(item.lstrip("v")))
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
-        pass
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+        print(f"Warning: could not fetch releases from PyPI ({exc}); continuing with artifact index releases only.", file=sys.stderr)
     return choose_ref(branches, releases, noninteractive)
 
 

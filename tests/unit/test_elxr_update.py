@@ -1,8 +1,11 @@
 import unittest
+from unittest.mock import patch
 
 from sima_cli.update.elxr import (
     EXTERNAL_REPO_URL,
     INTERNAL_REPO_URL,
+    SIMAAI_OTA_FALLBACK,
+    _resolve_simaai_ota,
     _select_elxr_repo_channel,
 )
 
@@ -84,6 +87,23 @@ class TestElxrRepoChannel(unittest.TestCase):
         self.assertIn(f"# {EXTERNAL_TRIXIE_REPO_LINE}", updated)
         self.assertIn(INTERNAL_TRIXIE_REPO_LINE, updated)
         self.assertNotIn("bookworm non-free", updated)
+
+
+class TestSimaaiOtaResolution(unittest.TestCase):
+    @patch("sima_cli.update.elxr.shutil.which", return_value="/opt/bin/simaai-ota")
+    def test_uses_path_command_when_available(self, _mock_which):
+        self.assertEqual(_resolve_simaai_ota(), "/opt/bin/simaai-ota")
+
+    @patch("sima_cli.update.elxr.os.access", return_value=True)
+    @patch("sima_cli.update.elxr.os.path.isfile", return_value=True)
+    @patch("sima_cli.update.elxr.shutil.which", return_value=None)
+    def test_falls_back_to_usr_bin_when_not_on_path(self, _mock_which, _mock_isfile, _mock_access):
+        self.assertEqual(_resolve_simaai_ota(), SIMAAI_OTA_FALLBACK)
+
+    @patch("sima_cli.update.elxr.os.path.isfile", return_value=False)
+    @patch("sima_cli.update.elxr.shutil.which", return_value=None)
+    def test_returns_command_name_when_no_known_binary_found(self, _mock_which, _mock_isfile):
+        self.assertEqual(_resolve_simaai_ota(), "simaai-ota")
 
 
 if __name__ == "__main__":

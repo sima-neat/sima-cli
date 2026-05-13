@@ -2,6 +2,8 @@ import subprocess
 import click
 from typing import Optional, List, Tuple
 import re
+import os
+import shutil
 
 from sima_cli.utils.env import is_devkit_running_elxr
 
@@ -10,10 +12,22 @@ EXTERNAL_REPO_URL = "https://repo.sima.ai/elxr/deb/release"
 INTERNAL_REPO_URL = "http://sw-web.eng.sima.ai/deb/pre-release"
 DEFAULT_REPO_SUITE = "bookworm"
 REPO_COMPONENT = "non-free"
+SIMAAI_OTA_FALLBACK = "/usr/bin/simaai-ota"
 
 
 def _repo_line(repo_url: str, suite: str) -> str:
     return f"deb {repo_url} {suite} {REPO_COMPONENT}"
+
+
+def _resolve_simaai_ota() -> str:
+    return (
+        shutil.which("simaai-ota")
+        or (
+            SIMAAI_OTA_FALLBACK
+            if os.path.isfile(SIMAAI_OTA_FALLBACK) and os.access(SIMAAI_OTA_FALLBACK, os.X_OK)
+            else "simaai-ota"
+        )
+    )
 
 
 def _normalize_apt_source_line(line: str) -> str:
@@ -277,6 +291,7 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
     # -----------------------------
     # Main interaction loop
     # -----------------------------
+    simaai_ota = _resolve_simaai_ota()
     while True:
 
         # If user did not pass a version, show the update type menu
@@ -296,7 +311,7 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
                 return
 
             if choice == "latest":
-                cmd = ["simaai-ota", "-f", "-o"]
+                cmd = [simaai_ota, "-f", "-o"]
                 desc = "Update all packages to the latest"
                 break
 
@@ -348,16 +363,16 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
                     if same_version_choice == "back":
                         continue
 
-                    cmd = ["simaai-ota", "-f", "-o", "-v", selected]
+                    cmd = [simaai_ota, "-f", "-o", "-v", selected]
                     desc = f"Force reinstall specific version {selected}"
                 else:
-                    cmd = ["simaai-ota", "-f", "-o", "-v", selected]
+                    cmd = [simaai_ota, "-f", "-o", "-v", selected]
                     desc = f"Update to specific version {selected}"
                 break
 
         else:
             # version_or_url specified by user (non-interactive)
-            cmd = ["simaai-ota", "-f", "-o", "-v", version_or_url]
+            cmd = [simaai_ota, "-f", "-o", "-v", version_or_url]
             desc = f"Update to specific version {version_or_url}"
             break
 

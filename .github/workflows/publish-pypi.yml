@@ -1,0 +1,111 @@
+name: Publish PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing release tag to publish, for example v2.1.5
+        required: true
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-pypi:
+    name: Publish Release To PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: PyPI
+      url: https://pypi.org/project/sima-cli/
+
+    steps:
+      - name: Verify maintainer permission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          actor = os.environ["ACTOR"]
+          repo = os.environ["REPO"]
+          token = os.environ["GH_TOKEN"]
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/collaborators/{actor}/permission",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(req) as resp:
+              permission = json.loads(resp.read().decode("utf-8")).get("permission", "")
+
+          if permission not in {"admin", "maintain"}:
+              print(f"Actor {actor} has repository permission '{permission}', but PyPI publishing requires admin or maintain.", file=sys.stderr)
+              sys.exit(1)
+          print(f"Actor {actor} authorized with repository permission '{permission}'.")
+          PY
+
+      - name: Validate tag input
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag_name }}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([._-][0-9A-Za-z]+)*$ ]]; then
+            echo "Release tag must look like v2.1.5, got: ${tag}" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify tag version matches pyproject.toml
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import sys
+          import tomllib
+
+          expected = os.environ["EXPECTED_VERSION"]
+          with open("pyproject.toml", "rb") as f:
+              actual = tomllib.load(f)["project"]["version"]
+
+          if actual != expected:
+              print(f"pyproject.toml version {actual} does not match release tag version {expected}", file=sys.stderr)
+              sys.exit(1)
+          print(f"Publishing sima-cli {actual} to PyPI.")
+          PY
+        env:
+          EXPECTED_VERSION: ${{ steps.tag.outputs.version }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+          ls -lh dist
+
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -16,10 +16,45 @@ permissions:
 
 jobs:
   create-release:
-    name: Create Draft Release
+    name: Create Draft Prerelease
     runs-on: ubuntu-latest
+    environment:
+      name: Release
 
     steps:
+      - name: Verify maintainer permission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          actor = os.environ["ACTOR"]
+          repo = os.environ["REPO"]
+          token = os.environ["GH_TOKEN"]
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/collaborators/{actor}/permission",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(req) as resp:
+              permission = json.loads(resp.read().decode("utf-8")).get("permission", "")
+
+          if permission not in {"admin", "maintain"}:
+              print(f"Actor {actor} has repository permission '{permission}', but release creation requires admin or maintain.", file=sys.stderr)
+              sys.exit(1)
+          print(f"Actor {actor} authorized with repository permission '{permission}'.")
+          PY
+
       - name: Check out repository
         uses: actions/checkout@v6
         with:
@@ -44,6 +79,37 @@ jobs:
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
+      - name: Generate release notes from commits
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          previous_tag="$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)"
+
+          {
+            echo "## ${tag}"
+            echo
+            if [[ -n "${previous_tag}" ]]; then
+              echo "Changes since ${previous_tag}:"
+              range="${previous_tag}..HEAD"
+            else
+              echo "Changes in this release:"
+              range="HEAD"
+            fi
+            echo
+
+            if [[ -n "$(git log --first-parent --format=%H "${range}")" ]]; then
+              git log --first-parent --reverse --pretty=format:'- %s (%h)' "${range}"
+              echo
+            else
+              echo "- No commits found since ${previous_tag}."
+            fi
+
+            echo
+            echo "Review and edit these notes before publishing the release."
+          } > release-notes.md
+
+          cat release-notes.md
+
       - name: Create and push tag
         run: |
           set -euo pipefail
@@ -53,7 +119,7 @@ jobs:
           git tag -a "${tag}" -m "Release ${tag}"
           git push origin "refs/tags/${tag}"
 
-      - name: Create draft release with generated notes
+      - name: Create draft prerelease with commit notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -61,7 +127,8 @@ jobs:
           tag="${{ steps.tag.outputs.tag }}"
           gh release create "${tag}" \
             --draft \
-            --generate-notes \
+            --prerelease \
+            --notes-file release-notes.md \
             --title "${tag}" \
             --verify-tag
 

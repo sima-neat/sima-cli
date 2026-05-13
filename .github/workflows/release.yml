@@ -18,8 +18,6 @@ jobs:
   create-release:
     name: Create Draft Prerelease
     runs-on: ubuntu-latest
-    environment:
-      name: Release
 
     steps:
       - name: Verify maintainer permission

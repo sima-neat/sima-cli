@@ -656,6 +656,7 @@ def setup_and_start(
     devkit_ip: str = "",
     no_insight: bool = False,
     no_model_sdk: bool = False,
+    workspace: Optional[str] = None,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -693,7 +694,11 @@ def setup_and_start(
     # ──────────────────────────────────────────────
     # Start containers
     # ──────────────────────────────────────────────
-    workspace = get_workspace(yes_to_all, noninteractive=noninteractive)
+    workspace = get_workspace(
+        yes_to_all,
+        noninteractive=noninteractive,
+        workspace_override=workspace,
+    )
     uid = os.getuid() if hasattr(os, "getuid") else 900
     gid = os.getgid() if hasattr(os, "getgid") else 900
     devkit_env = _setup_devkit_share(devkit_ip, workspace, selected_images, noninteractive=noninteractive)

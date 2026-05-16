@@ -1,6 +1,7 @@
 import socket
 import subprocess
 import unittest
+from click.testing import CliRunner
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -20,7 +21,7 @@ from sima_cli.sdk.install import (
     _setup_sdk_extensions,
     setup_and_start,
 )
-from sima_cli.sdk.commands import launch_sdk_tool
+from sima_cli.sdk.commands import launch_sdk_tool, sdk
 from sima_cli.sdk.cmdexec import exec_container_cmd
 from sima_cli.sdk.neat import (
     _ensure_certificates,
@@ -209,6 +210,35 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(selected, str(workspace.resolve()))
             self.assertTrue(workspace.is_dir())
             self.assertEqual((home / ".simaai" / ".mount").read_text(), str(workspace.resolve()))
+
+    def test_get_workspace_override_creates_and_persists_it(self):
+        with TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            workspace = Path(tmpdir) / "aws-workspace"
+            home.mkdir()
+
+            def fake_expanduser(path):
+                return str(home) if path == "~" else str(home / path[2:]) if path.startswith("~/") else path
+
+            with patch("sima_cli.sdk.utils.get_running_containers", side_effect=AssertionError("should not inspect containers")), \
+                 patch("sima_cli.sdk.utils.os.path.expanduser", side_effect=fake_expanduser), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                selected = get_workspace(workspace_override=str(workspace))
+
+            self.assertEqual(selected, str(workspace.resolve()))
+            self.assertTrue(workspace.is_dir())
+            self.assertEqual((home / ".simaai" / ".mount").read_text(), str(workspace.resolve()))
+
+    def test_sdk_setup_workspace_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "--workspace", "/tmp/aws-workspace", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(setup_start.call_args.kwargs["workspace"], "/tmp/aws-workspace")
+        self.assertTrue(setup_start.call_args.kwargs["yes_to_all"])
+        self.assertTrue(setup_start.call_args.kwargs["noninteractive"])
 
     def test_setup_devkit_share_marks_noninteractive_bootstrap(self):
         with TemporaryDirectory() as tmpdir:

@@ -173,8 +173,14 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     is_flag=True,
     help="Skip Model SDK extension setup. Intended for CI installation tests.",
 )
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, dir_okay=True),
+    default=None,
+    help="Host workspace directory to mount into SDK containers instead of ~/workspace.",
+)
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk):
+def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, workspace):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
@@ -184,6 +190,7 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk):
             devkit_ip=devkit_ip,
             no_insight=no_insight,
             no_model_sdk=no_model_sdk,
+            workspace=workspace,
         )
     except subprocess.CalledProcessError as e:
         raise click.ClickException(f"SDK setup failed while running: {' '.join(e.cmd)}") from e

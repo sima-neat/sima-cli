@@ -504,7 +504,7 @@ def get_running_containers():
     return running
 
 
-def get_workspace(yes_to_all=False, noninteractive=False):
+def get_workspace(yes_to_all=False, noninteractive=False, workspace_override=None):
     """
     Determine the workspace:
     - If at least one container is running, read from ~/.simaai/.mount
@@ -514,6 +514,17 @@ def get_workspace(yes_to_all=False, noninteractive=False):
     home = os.path.expanduser("~")
     simaai_dir = os.path.join(home, ".simaai")
     mount_file = os.path.join(simaai_dir, ".mount")
+
+    if workspace_override:
+        workspace = os.path.realpath(os.path.expanduser(workspace_override))
+        if not os.path.isdir(workspace):
+            os.makedirs(workspace, exist_ok=True)
+            print(f"📂 Created workspace: {workspace}")
+        print(f"✅ Workspace set to: {workspace}")
+        os.makedirs(simaai_dir, exist_ok=True)
+        with open(mount_file, "w") as f:
+            f.write(workspace)
+        return workspace
 
     running_containers = get_running_containers()
 

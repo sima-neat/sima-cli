@@ -157,16 +157,16 @@ def allocate_neat_ports(no_insight: bool = False) -> Tuple[Dict, List[str]]:
 
     port_map = {
         "schema": NEAT_PORT_MAP_SCHEMA,
-        "cert": {
-            "mount": "/sdk-cert",
-            "certFile": "/sdk-cert/neat-sdk.pem",
-            "keyFile": "/sdk-cert/neat-sdk-key.pem",
-        },
     }
 
     port_args = []
 
     if not no_insight:
+        port_map["cert"] = {
+            "mount": "/sdk-cert",
+            "certFile": "/sdk-cert/neat-sdk.pem",
+            "keyFile": "/sdk-cert/neat-sdk-key.pem",
+        }
         web_ssh = _allocate_single_port(8022, "tcp", reserved)
         rtsp_tcp = _allocate_single_port(8554, "tcp", reserved)
         main_ui = _allocate_single_port(9900, "tcp", reserved)
@@ -454,11 +454,24 @@ def prepare_neat_container_run(
     yes_to_all: bool = False,
     noninteractive: bool = False,
     no_insight: bool = False,
+    minimal: bool = False,
 ) -> NeatRunConfig:
+    no_insight = no_insight or minimal
     container_dir = Path(workspace) / f".{container_name}"
     config_dir = container_dir / "insight-config"
     cert_dir = container_dir / "sdk-cert"
     port_map, port_args = allocate_neat_ports(no_insight=no_insight)
+    if no_insight:
+        return NeatRunConfig(
+            port_map=port_map,
+            port_args=port_args,
+            config_host_dir="",
+            cert_host_dir="",
+            port_map_host_path="",
+            cert_file_host_path="",
+            key_file_host_path="",
+            webrtc_host_ip="",
+        )
     webrtc_host_ip = _detect_webrtc_host_ip(devkit_env)
     cert_file, key_file = _ensure_certificates(
         cert_dir,
@@ -480,13 +493,16 @@ def prepare_neat_container_run(
 
 
 def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> None:
-    docker_cmd.extend(["-e", f"MTX_RTSPTRANSPORTS={NEAT_MEDIAMTX_RTSP_TRANSPORTS}"])
+    if config.port_args or config.config_host_dir:
+        docker_cmd.extend(["-e", f"MTX_RTSPTRANSPORTS={NEAT_MEDIAMTX_RTSP_TRANSPORTS}"])
     if config.webrtc_host_ip:
         docker_cmd.extend(["-e", f"CONTAINER_HOST_IP={config.webrtc_host_ip}"])
     for mapping in config.port_args:
         docker_cmd.extend(["-p", mapping])
-    docker_cmd.extend(["-v", f"{config.config_host_dir}:/home/docker/.insight-config"])
-    docker_cmd.extend(["-v", f"{config.cert_host_dir}:/sdk-cert"])
+    if config.config_host_dir:
+        docker_cmd.extend(["-v", f"{config.config_host_dir}:/home/docker/.insight-config"])
+    if config.cert_host_dir:
+        docker_cmd.extend(["-v", f"{config.cert_host_dir}:/sdk-cert"])
 
 
 def print_neat_setup_summary(config: NeatRunConfig) -> None:
@@ -529,8 +545,10 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         )
     if config.webrtc_host_ip:
         print(f"   iceHost:     {config.webrtc_host_ip}")
-    print(f"   config:      {config.port_map_host_path}")
-    print(f"   certs:       {config.cert_host_dir}")
+    if config.port_map_host_path:
+        print(f"   config:      {config.port_map_host_path}")
+    if config.cert_host_dir:
+        print(f"   certs:       {config.cert_host_dir}")
 
 
 def is_docker_port_collision_error(error_text: str) -> bool:

@@ -656,6 +656,8 @@ def setup_and_start(
     devkit_ip: str = "",
     no_insight: bool = False,
     no_model_sdk: bool = False,
+    minimal: bool = False,
+    workspace: Optional[str] = None,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -693,20 +695,29 @@ def setup_and_start(
     # ──────────────────────────────────────────────
     # Start containers
     # ──────────────────────────────────────────────
-    workspace = get_workspace(yes_to_all, noninteractive=noninteractive)
+    workspace = get_workspace(
+        yes_to_all,
+        noninteractive=noninteractive,
+        workspace_override=workspace,
+    )
     uid = os.getuid() if hasattr(os, "getuid") else 900
     gid = os.getgid() if hasattr(os, "getgid") else 900
     devkit_env = _setup_devkit_share(devkit_ip, workspace, selected_images, noninteractive=noninteractive)
-    if no_model_sdk:
+    skip_model_sdk = no_model_sdk or minimal
+    skip_insight = no_insight or minimal
+    if skip_model_sdk:
         sdk_extensions_dir = ""
         if any(is_neat_sdk_image(img) for img in selected_images):
-            click.echo("ℹ️  Skipping Model SDK extension setup because --no-model-sdk was specified.")
+            reason = "--minimal" if minimal else "--no-model-sdk"
+            click.echo(f"ℹ️  Skipping Model SDK extension setup because {reason} was specified.")
     else:
         sdk_extensions_dir = _setup_sdk_extensions(
             selected_images,
             noninteractive=noninteractive,
             yes_to_all=yes_to_all,
         )
+    if minimal and any(is_neat_sdk_image(img) for img in selected_images):
+        click.echo("ℹ️  Skipping Insight setup because --minimal was specified.")
     
     for img in selected_images:
         container_name = sanitize_container_name(img)
@@ -739,13 +750,15 @@ def setup_and_start(
                 sdk_extensions_dir=sdk_extensions_dir,
                 noninteractive=noninteractive,
                 yes_to_all=yes_to_all,
-                no_insight=no_insight,
-                no_model_sdk=no_model_sdk,
+                no_insight=skip_insight,
+                no_model_sdk=skip_model_sdk,
+                minimal=minimal,
             )
         else:
-            if no_insight and is_neat_sdk_image(img):
+            if skip_insight and is_neat_sdk_image(img):
+                option = "--minimal" if minimal else "--no-insight"
                 raise RuntimeError(
-                    "Cannot apply --no-insight to an existing Neat SDK container because Docker "
+                    f"Cannot apply {option} to an existing Neat SDK container because Docker "
                     "port mappings are immutable. Remove and recreate the container when prompted, "
                     f"or run: docker rm -f {existing_container}"
                 )

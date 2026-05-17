@@ -17,3 +17,4 @@ deploy.sh
 .codex/
 .venv/
 build/
+.ghcr.io-sima-neat*/

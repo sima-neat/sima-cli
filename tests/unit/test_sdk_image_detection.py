@@ -1,6 +1,7 @@
 import socket
 import subprocess
 import unittest
+from click.testing import CliRunner
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -20,7 +21,7 @@ from sima_cli.sdk.install import (
     _setup_sdk_extensions,
     setup_and_start,
 )
-from sima_cli.sdk.commands import launch_sdk_tool
+from sima_cli.sdk.commands import launch_sdk_tool, sdk
 from sima_cli.sdk.cmdexec import exec_container_cmd
 from sima_cli.sdk.neat import (
     _ensure_certificates,
@@ -209,6 +210,44 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(selected, str(workspace.resolve()))
             self.assertTrue(workspace.is_dir())
             self.assertEqual((home / ".simaai" / ".mount").read_text(), str(workspace.resolve()))
+
+    def test_get_workspace_override_creates_and_persists_it(self):
+        with TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "home"
+            workspace = Path(tmpdir) / "aws-workspace"
+            home.mkdir()
+
+            def fake_expanduser(path):
+                return str(home) if path == "~" else str(home / path[2:]) if path.startswith("~/") else path
+
+            with patch("sima_cli.sdk.utils.get_running_containers", side_effect=AssertionError("should not inspect containers")), \
+                 patch("sima_cli.sdk.utils.os.path.expanduser", side_effect=fake_expanduser), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                selected = get_workspace(workspace_override=str(workspace))
+
+            self.assertEqual(selected, str(workspace.resolve()))
+            self.assertTrue(workspace.is_dir())
+            self.assertEqual((home / ".simaai" / ".mount").read_text(), str(workspace.resolve()))
+
+    def test_sdk_setup_workspace_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "--workspace", "/tmp/aws-workspace", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(setup_start.call_args.kwargs["workspace"], "/tmp/aws-workspace")
+        self.assertTrue(setup_start.call_args.kwargs["yes_to_all"])
+        self.assertTrue(setup_start.call_args.kwargs["noninteractive"])
+
+    def test_sdk_setup_minimal_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "--minimal", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(setup_start.call_args.kwargs["minimal"])
 
     def test_setup_devkit_share_marks_noninteractive_bootstrap(self):
         with TemporaryDirectory() as tmpdir:
@@ -779,6 +818,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("webRTC", port_map)
         self.assertNotIn("rtsp", port_map)
         self.assertNotIn("webSSH", port_map)
+        self.assertNotIn("cert", port_map)
         self.assertEqual(port_args, [])
         for mapping in port_args:
             self.assertNotIn("8022", mapping)
@@ -847,11 +887,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_prepare_neat_container_run_accepts_no_insight(self):
         with TemporaryDirectory() as tmpdir:
-            cert_file = Path(tmpdir) / ".sdk-latest" / "sdk-cert" / "neat-sdk.pem"
-            key_file = Path(tmpdir) / ".sdk-latest" / "sdk-cert" / "neat-sdk-key.pem"
             with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
-                 patch("sima_cli.sdk.neat._ensure_certificates", return_value=(cert_file, key_file)), \
-                 patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="10.0.0.76"):
+                 patch("sima_cli.sdk.neat._ensure_certificates") as certs, \
+                 patch("sima_cli.sdk.neat._detect_webrtc_host_ip") as webrtc:
                 config = prepare_neat_container_run(
                     tmpdir,
                     "sdk-latest",
@@ -865,6 +903,31 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertNotIn("rtsp", config.port_map)
             self.assertNotIn("webSSH", config.port_map)
             self.assertEqual(config.port_args, [])
+            self.assertEqual(config.config_host_dir, "")
+            self.assertEqual(config.cert_host_dir, "")
+            self.assertEqual(config.port_map_host_path, "")
+            certs.assert_not_called()
+            webrtc.assert_not_called()
+
+    def test_prepare_neat_container_run_minimal_skips_insight_certificates(self):
+        with TemporaryDirectory() as tmpdir:
+            with patch("sima_cli.sdk.neat._ensure_certificates") as certs, \
+                 patch("sima_cli.sdk.neat._detect_webrtc_host_ip") as webrtc:
+                config = prepare_neat_container_run(
+                    tmpdir,
+                    "sdk-latest",
+                    yes_to_all=True,
+                    noninteractive=True,
+                    minimal=True,
+                )
+
+            self.assertEqual(config.port_args, [])
+            self.assertEqual(config.config_host_dir, "")
+            self.assertEqual(config.cert_host_dir, "")
+            self.assertEqual(config.port_map_host_path, "")
+            self.assertEqual(config.webrtc_host_ip, "")
+            certs.assert_not_called()
+            webrtc.assert_not_called()
 
     def test_mkcert_missing_noninteractive_accepts_default_install(self):
         with patch("sima_cli.sdk.neat.platform.system", return_value="Darwin"), \
@@ -1034,6 +1097,67 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("9100-9179:9100-9179/udp", docker_cmd)
         self.assertNotIn("40000-40199:40000-40199/udp", docker_cmd)
 
+    def test_start_neat_container_minimal_passes_no_insight_to_prepare_and_configure(self):
+        with TemporaryDirectory() as tmpdir:
+            neat_config = NeatRunConfig(
+                port_map={"schema": "sima.neat.port-map.v1"},
+                port_args=[],
+                config_host_dir="",
+                cert_host_dir="",
+                port_map_host_path="",
+                cert_file_host_path="",
+                key_file_host_path="",
+                webrtc_host_ip="",
+            )
+            docker_result = Mock(returncode=0, stdout="container-id\n", stderr="")
+            with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.utils.configure_container") as configure, \
+                 patch("sima_cli.sdk.utils.detect_current_user", return_value=("devuser", 1000, 1000)), \
+                 patch("sima_cli.sdk.neat.prepare_neat_container_run", return_value=neat_config) as prepare, \
+                 patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils.subprocess.run", return_value=docker_result) as run:
+                start_docker_container(
+                    uid=1000,
+                    gid=1000,
+                    port=0,
+                    workspace=tmpdir,
+                    image="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest",
+                    minimal=True,
+                )
+
+        self.assertTrue(prepare.call_args.kwargs["no_insight"])
+        self.assertTrue(configure.call_args.kwargs["minimal"])
+        docker_cmd = run.call_args[0][0]
+        self.assertNotIn("/home/docker/.insight-config", docker_cmd)
+        self.assertNotIn("/sdk-cert", docker_cmd)
+
+    def test_start_neat_container_minimal_does_not_create_insight_certificates(self):
+        with TemporaryDirectory() as tmpdir:
+            docker_result = Mock(returncode=0, stdout="container-id\n", stderr="")
+            with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.utils.configure_container"), \
+                 patch("sima_cli.sdk.utils.detect_current_user", return_value=("devuser", 1000, 1000)), \
+                 patch("sima_cli.sdk.neat._ensure_certificates") as certs, \
+                 patch("sima_cli.sdk.neat._detect_webrtc_host_ip") as webrtc, \
+                 patch("sima_cli.sdk.utils.subprocess.run", return_value=docker_result) as run:
+                start_docker_container(
+                    uid=1000,
+                    gid=1000,
+                    port=0,
+                    workspace=tmpdir,
+                    image="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest",
+                    minimal=True,
+                )
+
+        certs.assert_not_called()
+        webrtc.assert_not_called()
+        docker_cmd = run.call_args[0][0]
+        self.assertNotIn("/home/docker/.insight-config", docker_cmd)
+        self.assertNotIn("/sdk-cert", docker_cmd)
+        self.assertNotIn("CONTAINER_HOST_IP=", docker_cmd)
+
     def test_setup_no_model_sdk_skips_extension_directory_and_passes_flag(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
@@ -1052,6 +1176,27 @@ table ip6 nm-shared-enx6c1ff720d573 {
         setup_extensions.assert_not_called()
         self.assertEqual(start_container.call_args.kwargs["sdk_extensions_dir"], "")
         self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
+
+    def test_setup_minimal_skips_extension_directory_and_passes_flags(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions") as setup_extensions, \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container:
+            setup_and_start(minimal=True, yes_to_all=True, noninteractive=True)
+
+        setup_extensions.assert_not_called()
+        self.assertEqual(start_container.call_args.kwargs["sdk_extensions_dir"], "")
+        self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
+        self.assertTrue(start_container.call_args.kwargs["minimal"])
+        self.assertTrue(start_container.call_args.kwargs["no_insight"])
 
     def test_setup_no_insight_refuses_existing_neat_container(self):
         image = "ghcr.io/sima-neat/sdk:latest"
@@ -1318,6 +1463,22 @@ table ip6 nm-shared-enx6c1ff720d573 {
             configure_container("container", no_model_sdk=True)
 
         model_sdk.assert_not_called()
+
+    def test_configure_container_minimal_skips_sima_cli_model_sdk_and_playbooks(self):
+        with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
+             patch("sima_cli.sdk.utils.run_command"), \
+             patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
+             patch("sima_cli.sdk.utils.ensure_sima_cli_installed") as sima_cli_install, \
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed") as model_sdk, \
+             patch("sima_cli.sdk.utils._sync_codex_skills"), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks") as playbooks:
+            from sima_cli.sdk.utils import configure_container
+
+            configure_container("container", minimal=True)
+
+        sima_cli_install.assert_not_called()
+        model_sdk.assert_not_called()
+        playbooks.assert_not_called()
 
     def test_install_neat_playbooks_skips_non_neat_image(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="artifacts.eng.sima.ai/elxr:2.1.0"), \

@@ -345,13 +345,14 @@ sima-cli packages show <PACKAGE_NAME> [--version VERSION]
 ### Setup SDK
 
 ```bash
-sima-cli sdk setup [--noninteractive] [-y] [--workspace PATH] [--no-model-sdk] [--no-insight]
+sima-cli sdk setup [--noninteractive] [-y] [--workspace PATH] [--no-model-sdk] [--no-insight] [--minimal]
 ```
 
 - Initialize SDK environment and select components to start.
 - Use `--workspace PATH` to mount a host directory other than `~/workspace` into SDK containers.
 - Use `--no-model-sdk` to skip Model SDK extension setup.
 - Use `--no-insight` to start Neat SDK without Insight UI/video/WebRTC port mappings.
+- Use `--minimal` for CI compilation jobs. It skips optional Neat SDK setup extras, including Insight setup, installing `sima-cli`, Model SDK extensions, and coding agent playbooks inside the container.
 
 ### Start SDK Containers
 

@@ -931,6 +931,7 @@ def configure_container(
     noninteractive=False,
     yes_to_all=False,
     no_model_sdk=False,
+    minimal=False,
 ):
     """
     Configure container user mappings and permissions:
@@ -941,6 +942,7 @@ def configure_container(
       - If configure_network=True, computes and stores .hash for /usr/local/simaai/plugins
     """
     platform_os = check_os()
+    no_model_sdk = no_model_sdk or minimal
 
     # Detect current host user
     if platform_os in ["linux", "macos"]:
@@ -1027,10 +1029,15 @@ def configure_container(
 
     _copy_sima_cli_auth_cache_to_container(sdk_container_name, login_name, uid, gid)
 
-    # Ensure sima-cli is available for the configured default user.
-    ensure_sima_cli_installed(sdk_container_name, login_name)
+    # Ensure sima-cli is available for the configured default user unless this
+    # setup is only preparing a lightweight CI compilation container.
+    if minimal:
+        print("ℹ️  Skipping sima-cli installation because --minimal was specified.")
+    else:
+        ensure_sima_cli_installed(sdk_container_name, login_name)
     if no_model_sdk:
-        print("ℹ️  Skipping Model SDK extension installation because --no-model-sdk was specified.")
+        reason = "--minimal" if minimal else "--no-model-sdk"
+        print(f"ℹ️  Skipping Model SDK extension installation because {reason} was specified.")
     else:
         ensure_model_sdk_extension_installed(
             sdk_container_name,
@@ -1038,7 +1045,10 @@ def configure_container(
             auto_install=(noninteractive or yes_to_all),
         )
     _sync_codex_skills(sdk_container_name, login_name, uid, gid)
-    install_neat_playbooks(sdk_container_name, login_name)
+    if minimal:
+        print("ℹ️  Skipping Neat coding agent playbook installation because --minimal was specified.")
+    else:
+        install_neat_playbooks(sdk_container_name, login_name)
 
     # ---- Optional Network & Syslog Configuration ----
     if configure_network:
@@ -1152,6 +1162,7 @@ def start_docker_container(
     yes_to_all=False,
     no_insight=False,
     no_model_sdk=False,
+    minimal=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -1163,6 +1174,7 @@ def start_docker_container(
     # ─────────────────────────────────────────────
     # Generate container name
     # ─────────────────────────────────────────────
+    no_insight = no_insight or minimal
     container_name = sanitize_container_name(image)
     hostname = sanitize_container_hostname(container_name)
     print(f"🚀 Starting container '{container_name}' using image '{image}'")
@@ -1273,6 +1285,7 @@ def start_docker_container(
                 yes_to_all=yes_to_all,
                 noninteractive=noninteractive,
                 no_insight=no_insight,
+                minimal=minimal,
             )
             launch_cmd = list(base_docker_cmd)
             append_neat_docker_args(launch_cmd, neat_run_config)
@@ -1322,6 +1335,7 @@ def start_docker_container(
         noninteractive=noninteractive,
         yes_to_all=yes_to_all,
         no_model_sdk=no_model_sdk,
+        minimal=minimal,
     )
 
     if devkit_env and neat_sdk_image:

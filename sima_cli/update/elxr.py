@@ -4,15 +4,20 @@ from typing import Optional, List, Tuple
 import re
 import os
 import shutil
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 from sima_cli.utils.env import is_devkit_running_elxr
 
 APT_SOURCE_FILE = "/etc/apt/sources.list.d/0000mirror.list"
+BUILDINFO_FILES = ["/etc/build", "/etc/buildinfo"]
 EXTERNAL_REPO_URL = "https://repo.sima.ai/elxr/deb/release"
 INTERNAL_REPO_URL = "http://sw-web.eng.sima.ai/deb/pre-release"
 DEFAULT_REPO_SUITE = "bookworm"
 REPO_COMPONENT = "non-free"
 SIMAAI_OTA_FALLBACK = "/usr/bin/simaai-ota"
+ELXR_UPDATE_DOC_URL = "https://docs.sima.ai/pages/tech-notes/elxr-conversion.html"
 
 
 def _repo_line(repo_url: str, suite: str) -> str:
@@ -181,6 +186,35 @@ def _get_installed_palette_version() -> Optional[str]:
     return version if version else None
 
 
+def _get_installed_elxr_distro_version() -> Optional[str]:
+    """Return ELXR DISTRO_VERSION from /etc/build or /etc/buildinfo, if available."""
+    pattern = re.compile(r"^\s*DISTRO_VERSION\s*=\s*(\S+)\s*$")
+
+    for path in BUILDINFO_FILES:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    match = pattern.match(line)
+                    if match:
+                        return match.group(1)
+        except OSError:
+            continue
+
+    return None
+
+
+def _is_current_elxr_version(
+    requested_version: str,
+    installed_palette_version: Optional[str],
+    installed_distro_version: Optional[str],
+) -> bool:
+    return requested_version in {
+        version
+        for version in (installed_palette_version, installed_distro_version)
+        if version
+    }
+
+
 def _get_available_palette_versions() -> List[str]:
     """Parse apt policy output and return available simaai-palette-modalix versions."""
     try:
@@ -230,6 +264,37 @@ def _get_available_palette_versions() -> List[str]:
     return versions
 
 
+def _show_unsupported_specific_elxr_update(
+    requested_version: str,
+    current_version: Optional[str] = None,
+    latest_version: Optional[str] = None,
+) -> None:
+    details = [
+        "Updating ELXR to a specific version is not currently supported by `sima-cli update`.",
+        "Downgrades and non-latest upgrade paths are not reliable enough to automate safely.",
+    ]
+    if current_version:
+        details.append(f"Current simaai-palette-modalix version: {current_version}")
+    if requested_version:
+        details.append(f"Requested simaai-palette-modalix version: {requested_version}")
+    if latest_version:
+        details.append(f"Latest available simaai-palette-modalix version: {latest_version}")
+    details.extend([
+        "",
+        "Use `sima-cli update` without a version to update to the latest supported build.",
+        f"For full-system conversion/update guidance, see: {ELXR_UPDATE_DOC_URL}",
+    ])
+
+    Console().print(
+        Panel(
+            Text("\n".join(details), style="yellow"),
+            title="[yellow]Unsupported ELXR Update Path[/yellow]",
+            border_style="yellow",
+            expand=False,
+        )
+    )
+
+
 def print_current_versions():
     p1 = subprocess.Popen(
         ["dpkg", "-l"],
@@ -265,8 +330,6 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
 
     print_current_versions()
 
-    from InquirerPy import inquirer
-
     if not _ensure_elxr_repo_channel(internal):
         return
 
@@ -292,6 +355,9 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
     # Main interaction loop
     # -----------------------------
     simaai_ota = _resolve_simaai_ota()
+    if version_or_url is None:
+        from InquirerPy import inquirer
+
     while True:
 
         # If user did not pass a version, show the update type menu
@@ -321,6 +387,8 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
                 # -----------------------------
                 versions = _get_available_palette_versions()
                 installed_version = _get_installed_palette_version()
+                installed_distro_version = _get_installed_elxr_distro_version()
+                latest_version = versions[0] if versions else None
 
                 if not versions:
                     click.echo("❌ No versions found in APT policy, aborting.")
@@ -346,8 +414,7 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
                     click.echo("❌ Update cancelled")
                     return
 
-                # A version was selected
-                if installed_version and selected == installed_version:
+                if _is_current_elxr_version(selected, installed_version, installed_distro_version):
                     same_version_choice = inquirer.select(
                         message=(
                             f"Version {selected} is already running. "
@@ -365,16 +432,44 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
 
                     cmd = [simaai_ota, "-f", "-o", "-v", selected]
                     desc = f"Force reinstall specific version {selected}"
-                else:
-                    cmd = [simaai_ota, "-f", "-o", "-v", selected]
-                    desc = f"Update to specific version {selected}"
-                break
+                    break
+
+                _show_unsupported_specific_elxr_update(
+                    requested_version=selected,
+                    current_version=installed_distro_version or installed_version,
+                    latest_version=latest_version,
+                )
+                warning_choice = inquirer.select(
+                    message="What would you like to do next?",
+                    choices=[
+                        {"name": "⬅️  Back to previous menu", "value": "back"},
+                        {"name": "❌ Cancel", "value": "cancel"},
+                    ],
+                    default="back",
+                ).execute()
+
+                if warning_choice == "cancel":
+                    click.echo("❌ Update cancelled")
+                    return
+
+                continue
 
         else:
             # version_or_url specified by user (non-interactive)
-            cmd = [simaai_ota, "-f", "-o", "-v", version_or_url]
-            desc = f"Update to specific version {version_or_url}"
-            break
+            versions = _get_available_palette_versions()
+            installed_version = _get_installed_palette_version()
+            installed_distro_version = _get_installed_elxr_distro_version()
+            if _is_current_elxr_version(version_or_url, installed_version, installed_distro_version):
+                cmd = [simaai_ota, "-f", "-o", "-v", version_or_url]
+                desc = f"Force reinstall specific version {version_or_url}"
+                break
+
+            _show_unsupported_specific_elxr_update(
+                requested_version=version_or_url,
+                current_version=installed_distro_version or installed_version,
+                latest_version=versions[0] if versions else None,
+            )
+            return
 
     # -----------------------------
     # Execute update

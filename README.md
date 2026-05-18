@@ -118,6 +118,33 @@ sima-cli download <URL> [-d DEST]
 
 ---
 
+## 🔥 Vulcan Artifacts
+
+```bash
+sima-cli vulcan download --env production core main
+```
+
+- Downloads tested artifacts from Vulcan artifact hosting.
+- Environment URLs:
+  - `dev`: `https://artifacts.neat.paconsultings.com`
+  - `staging`: `https://artifacts.stg.neat.sima.ai`
+  - `production`: `https://artifacts.neat.sima.ai`
+- Usage:
+  - `sima-cli vulcan --env {dev|staging|production} download [REPO] [BRANCH_OR_TAG]`
+  - `sima-cli vulcan download --env {dev|staging|production} [REPO] [BRANCH_OR_TAG]`
+  - If `REPO` is omitted, the CLI prompts for a repository.
+  - If `BRANCH_OR_TAG` is omitted, the CLI downloads `branches.json` and prompts for a branch.
+  - For automation, pass both values and add `--json` for structured output.
+- Each download reads `latest.tag`, fetches `manifest.json`, downloads manifest-listed artifacts, and verifies size and SHA256 values when present.
+
+Example:
+
+```bash
+sima-cli vulcan --env dev download internals develop --output ./artifacts --json
+```
+
+---
+
 ## 🔧 Firmware Update
 
 ```bash

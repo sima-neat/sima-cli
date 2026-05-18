@@ -29,6 +29,7 @@ from sima_cli.app_zoo.commands import register_appzoo_commands
 from sima_cli.install.registry import register_packages_commands
 from sima_cli.upgrade.selfupdate import register_selfupdate_command
 from sima_cli.playbooks import register_playbook_commands
+from sima_cli.vulcan import register_vulcan_commands
 
 def _configure_stdio_errors() -> None:
     for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
@@ -89,6 +90,7 @@ def main(ctx, internal):
 # ----------------------
 register_sdk_commands(main)
 register_playbook_commands(main)
+register_vulcan_commands(main)
 
 
 # ----------------------

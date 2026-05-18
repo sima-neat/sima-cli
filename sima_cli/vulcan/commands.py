@@ -10,6 +10,9 @@ from .artifacts import (
 )
 
 
+AVAILABLE_ENVIRONMENTS = {"dev"}
+
+
 @click.group(name="vulcan", help="Discover and download Vulcan build artifacts.")
 @click.option(
     "--env",
@@ -71,6 +74,12 @@ def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, j
         or "production"
     ).lower()
     resolved_base_url = base_url or ctx.obj.get("vulcan_base_url")
+
+    if resolved_environment not in AVAILABLE_ENVIRONMENTS:
+        raise click.ClickException(
+            f"Vulcan {resolved_environment} environment is not yet available to use. "
+            "Please use --env dev for now."
+        )
 
     try:
         result, warning = download_vulcan_artifacts(

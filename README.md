@@ -129,6 +129,7 @@ sima-cli vulcan download --env production core main
   - `dev`: `https://artifacts.neat.paconsultings.com`
   - `staging`: `https://artifacts.stg.neat.sima.ai`
   - `production`: `https://artifacts.neat.sima.ai`
+- `staging` and `production` are not yet available for Vulcan downloads; use `--env dev` for now.
 - Usage:
   - `sima-cli vulcan --env {dev|staging|production} download [REPO] [BRANCH_OR_TAG]`
   - `sima-cli vulcan download --env {dev|staging|production} [REPO] [BRANCH_OR_TAG]`

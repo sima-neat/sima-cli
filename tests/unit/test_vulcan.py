@@ -155,16 +155,25 @@ class VulcanCommandTests(unittest.TestCase):
         runner = CliRunner()
         with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
             download_mock.return_value = (
-                _fake_result(environment="staging", base_url=ENV_BASE_URLS["staging"]),
+                _fake_result(environment="dev", base_url=ENV_BASE_URLS["dev"]),
                 None,
             )
             result = runner.invoke(
                 main,
-                ["vulcan", "--env", "dev", "download", "--env", "staging", "core", "main"],
+                ["vulcan", "--env", "production", "download", "--env", "dev", "core", "main"],
             )
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(download_mock.call_args.kwargs["environment"], "staging")
+        self.assertEqual(download_mock.call_args.kwargs["environment"], "dev")
+
+    def test_vulcan_download_rejects_unavailable_environments(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
+            result = runner.invoke(main, ["vulcan", "--env", "staging", "download", "core", "main"])
+
+        self.assertNotEqual(result.exit_code, 0, result.output)
+        self.assertIn("Vulcan staging environment is not yet available to use", result.output)
+        download_mock.assert_not_called()
 
 
 if __name__ == "__main__":

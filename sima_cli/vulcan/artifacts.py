@@ -8,7 +8,7 @@ import sys
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 from InquirerPy import inquirer
@@ -44,11 +44,11 @@ class DownloadResult:
     latest_tag: str
     manifest_url: str
     output_dir: Path
-    files: tuple[Path, ...]
+    files: Tuple[Path, ...]
 
 
 class ArtifactClient:
-    def __init__(self, session: requests.Session | None = None) -> None:
+    def __init__(self, session: Optional[requests.Session] = None) -> None:
         self.session = session or requests.Session()
 
     def read_bytes(self, url: str) -> bytes:
@@ -93,14 +93,14 @@ def ref_key(ref: str) -> str:
     return urllib.parse.quote(value, safe="")
 
 
-def repository_choices() -> list[str]:
+def repository_choices() -> List[str]:
     configured = os.environ.get("SIMA_VULCAN_REPOS", "").strip()
     if configured:
         return sorted({item.strip() for item in configured.split(",") if item.strip()})
     return sorted(DEFAULT_REPOSITORIES)
 
 
-def load_branch_choices(client: ArtifactClient, base_url: str, repository: str) -> list[dict[str, str]]:
+def load_branch_choices(client: ArtifactClient, base_url: str, repository: str) -> List[Dict[str, str]]:
     branches_url = join_url(base_url, repository, "branches.json")
     payload = client.read_json(branches_url)
     branches = payload.get("branches")
@@ -144,7 +144,7 @@ def select_from_menu(title: str, choices: Sequence[str]) -> str:
     return str(selected)
 
 
-def resolve_repository(repository: str | None) -> str:
+def resolve_repository(repository: Optional[str]) -> str:
     if repository:
         return repository.strip()
     return select_from_menu("Repositories", repository_choices())
@@ -154,8 +154,8 @@ def resolve_ref(
     client: ArtifactClient,
     base_url: str,
     repository: str,
-    requested_ref: str | None,
-) -> tuple[str, str]:
+    requested_ref: Optional[str],
+) -> Tuple[str, str]:
     if requested_ref:
         value = requested_ref.strip()
         return value, ref_key(value)
@@ -176,7 +176,7 @@ def read_latest_tag(client: ArtifactClient, base_url: str, repository: str, key:
     return latest_tag
 
 
-def read_manifest(client: ArtifactClient, base_url: str, repository: str, key: str) -> tuple[str, dict[str, Any]]:
+def read_manifest(client: ArtifactClient, base_url: str, repository: str, key: str) -> Tuple[str, Dict[str, Any]]:
     manifest_url = join_url(base_url, repository, key, "manifest.json")
     payload = client.read_json(manifest_url)
     if not isinstance(payload, dict):
@@ -184,7 +184,7 @@ def read_manifest(client: ArtifactClient, base_url: str, repository: str, key: s
     return manifest_url, payload
 
 
-def manifest_artifacts(manifest: dict[str, Any], patterns: Sequence[str]) -> list[dict[str, Any]]:
+def manifest_artifacts(manifest: Dict[str, Any], patterns: Sequence[str]) -> List[Dict[str, Any]]:
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list):
         raise VulcanArtifactError("manifest.json does not contain an artifacts list.")
@@ -225,10 +225,10 @@ def _safe_relative_path(raw: str) -> Path:
 def download_artifacts(
     client: ArtifactClient,
     base_url: str,
-    manifest: dict[str, Any],
-    artifacts: Iterable[dict[str, Any]],
+    manifest: Dict[str, Any],
+    artifacts: Iterable[Dict[str, Any]],
     output_dir: Path,
-) -> list[Path]:
+) -> List[Path]:
     written = []
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -271,14 +271,14 @@ def write_latest_tag(output_dir: Path, latest_tag: str) -> Path:
     return path
 
 
-def warn_manifest_mismatch(manifest: dict[str, Any], latest_tag: str) -> str | None:
+def warn_manifest_mismatch(manifest: Dict[str, Any], latest_tag: str) -> Optional[str]:
     commit = str(manifest.get("commit", "")).strip()
     if commit and not commit.startswith(latest_tag):
         return f"latest.tag ({latest_tag}) does not match manifest commit ({commit})."
     return None
 
 
-def result_to_json(result: DownloadResult) -> dict[str, Any]:
+def result_to_json(result: DownloadResult) -> Dict[str, Any]:
     return {
         "environment": result.environment,
         "base_url": result.base_url,
@@ -295,13 +295,13 @@ def result_to_json(result: DownloadResult) -> dict[str, Any]:
 def download_vulcan_artifacts(
     *,
     environment: str,
-    repository: str | None,
-    ref: str | None,
+    repository: Optional[str],
+    ref: Optional[str],
     output: str,
     artifact_patterns: Sequence[str] = (),
-    base_url: str | None = None,
-    client: ArtifactClient | None = None,
-) -> tuple[DownloadResult, str | None]:
+    base_url: Optional[str] = None,
+    client: Optional[ArtifactClient] = None,
+) -> Tuple[DownloadResult, Optional[str]]:
     client = client or ArtifactClient()
     resolved_base_url = normalize_base_url(base_url or ENV_BASE_URLS[environment])
     resolved_repository = resolve_repository(repository)

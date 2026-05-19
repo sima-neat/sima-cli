@@ -167,6 +167,7 @@ def _extract_required_files(tar_path: str, board: str, update_type: str = 'stand
     """
     Extract required files from a .tar.gz or .tar archive into the same folder
     and return the full paths to the extracted files (with subfolder if present).
+    Netboot archives are extracted in full.
     Skips files that already exist. If a .wic.gz file is extracted, it will be decompressed,
     unless the decompressed .wic file already exists.
 
@@ -191,24 +192,12 @@ def _extract_required_files(tar_path: str, board: str, update_type: str = 'stand
     if env_type == "host" and _os == "linux":
         target_filenames.add("sima_pcie_host_pkg.sh")
 
+    extract_all = update_type == 'netboot'
+
     if update_type == 'bootimg':
         target_filenames = {
             f"simaai-image-{_flavor}-{board}.wic.gz",
             f"simaai-image-{_flavor}-{board}.wic.bmap"
-        }
-    elif update_type == 'netboot':
-        target_filenames = {
-            "Image",
-            "netboot.scr.uimg",
-            f"{board}-hhhl.dtb",
-            f"{board}-som.dtb",
-            f"{board}-dvt.dtb",
-            f"{board}-hhhl_x16.dtb",
-            f"pcie-4rc-2rc-2rc.dtbo",
-            f"elxr-minimal-{board}-arm64.cpio.gz",
-            f"simaai-image-{_flavor}-{board}.wic.gz",
-            f"simaai-image-{_flavor}-{board}.wic.bmap",
-            f"simaai-image-{_flavor}-{board}.cpio.gz"
         }
 
     extracted_paths = []
@@ -242,7 +231,10 @@ def _extract_required_files(tar_path: str, board: str, update_type: str = 'stand
             for member in tar.getmembers():
                 base_name = os.path.basename(member.name)
 
-                if base_name in target_filenames or base_name.endswith(".img.gz"):
+                if member.isdir():
+                    continue
+
+                if extract_all or base_name in target_filenames or base_name.endswith(".img.gz"):
                     full_dest_path = os.path.join(extract_dir, member.name)
 
                     if os.path.exists(full_dest_path):

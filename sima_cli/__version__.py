@@ -1,2 +1,2 @@
 # sima_cli/__version__.py
-__version__ = "2.1.6"
+__version__ = "2.1.7"

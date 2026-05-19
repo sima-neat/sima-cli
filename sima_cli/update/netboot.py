@@ -2,8 +2,10 @@ from sima_cli.update.updater import download_image
 from sima_cli.utils.net import get_local_ip_candidates
 from sima_cli.update.remote import wait_for_ssh, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session
 from sima_cli.utils.env import get_environment_type
+import ipaddress
 import os
 import platform
+import subprocess
 import threading
 import socket
 import select
@@ -11,6 +13,9 @@ import time
 import logging
 import click
 from errno import EINTR
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 from tftpy import TftpServer, TftpException, TftpTimeout, TftpTimeoutExpectACK, DEF_TFTP_PORT, DEF_TIMEOUT_RETRIES
 from tftpy.TftpContexts import TftpContextServer
 from tftpy.TftpPacketFactory import TftpPacketFactory
@@ -21,10 +26,53 @@ SOCK_TIMEOUT = 2    # Timeout for faster retransmits
 
 log = logging.getLogger("tftpy.InteractiveTftpServer")
 emmc_image_paths = []
+troot_image_path = None
 custom_rootfs = ''
+console = Console()
 
-def flash_emmc(client_manager, emmc_image_paths):
-    """Flash eMMC on a selected client device."""
+
+def _ping_host(ip, timeout_seconds=3):
+    """Return whether a host responds to one ping within the timeout."""
+    system = platform.system()
+    if system == "Windows":
+        cmd = ["ping", "-n", "1", "-w", str(timeout_seconds * 1000), ip]
+    elif system == "Darwin":
+        cmd = ["ping", "-c", "1", "-W", str(timeout_seconds * 1000), ip]
+    else:
+        cmd = ["ping", "-c", "1", "-W", str(timeout_seconds), ip]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def _validate_override_ip(ip):
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        click.echo(f"❌ Invalid IP address: {ip}")
+        return False
+
+    click.echo(f"🏓 Pinging override IP: {ip}")
+    if not _ping_host(ip):
+        click.echo(f"❌ {ip} did not respond to ping. Aborting flash.")
+        return False
+    return True
+
+
+def _select_flash_target(client_manager, override_ip=None):
+    if override_ip:
+        if _validate_override_ip(override_ip):
+            return override_ip
+        return None
+
     clients = [
         (ip, info) for ip, info in client_manager.get_client_info()
         if info.get("state") == "Connected"
@@ -35,24 +83,56 @@ def flash_emmc(client_manager, emmc_image_paths):
 
     if not clients:
         click.echo("📭 No connected clients available to flash.")
-        return
+        return None
 
     if len(clients) == 1:
-        selected_ip = clients[0][0]
-    else:
-        click.echo("👥 Multiple connected clients found. Select one to flash:")
-        for idx, (ip, info) in enumerate(clients, 1):
-            board_info = info.get("board_info") or "Unknown"
-            click.echo(f"   {idx}. {ip} - {board_info}")
-        while True:
-            choice = input("Enter the number of the client to flash: ").strip()
-            if choice.isdigit() and 1 <= int(choice) <= len(clients):
-                selected_ip = clients[int(choice) - 1][0]
-                break
-            click.echo("❌ Invalid choice. Try again.")
+        return clients[0][0]
+
+    click.echo("👥 Multiple connected clients found. Select one to flash:")
+    for idx, (ip, info) in enumerate(clients, 1):
+        board_info = info.get("board_info") or "Unknown"
+        click.echo(f"   {idx}. {ip} - {board_info}")
+    while True:
+        choice = input("Enter the number of the client to flash: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(clients):
+            return clients[int(choice) - 1][0]
+        click.echo("❌ Invalid choice. Try again.")
+
+
+def _print_troot_programming_warning():
+    console.print(
+        Panel(
+            Text(
+                "tRoot programming is about to start.\n"
+                "Do not power off or disconnect the device while programming is in progress.",
+                style="yellow",
+            ),
+            title="[yellow]Do Not Power Off Device[/yellow]",
+            border_style="yellow",
+            expand=False,
+        )
+    )
+
+
+def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_path=None):
+    """Flash eMMC on a selected client device."""
+    selected_ip = _select_flash_target(client_manager, override_ip=override_ip)
+    if not selected_ip:
+        return
 
     click.echo(f"📡 Selected client: {selected_ip}")
     remote_dir = "/tmp"
+
+    if troot_image_path:
+        click.echo(f"📤 Copying tRoot image {troot_image_path} to {selected_ip}:{remote_dir}")
+        success = copy_file_to_remote_board(
+            selected_ip, troot_image_path, remote_dir, passwd=DEFAULT_PASSWORD
+        )
+        if not success:
+            click.echo(f"❌ Failed to copy {troot_image_path} to {selected_ip}. Aborting.")
+            return
+    else:
+        click.echo("⚠️  tRoot image troot_blob.be was not found; continuing with eMMC image transfer.")
 
     for path in emmc_image_paths:
         click.echo(f"📤 Copying {path} to {selected_ip}:{remote_dir}")
@@ -65,6 +145,11 @@ def flash_emmc(client_manager, emmc_image_paths):
 
     try:
         ssh = init_ssh_session(selected_ip, password=DEFAULT_PASSWORD)
+
+        if troot_image_path:
+            _print_troot_programming_warning()
+            troot_remote_path = f"/tmp/{os.path.basename(troot_image_path)}"
+            run_remote_command(ssh, f"sudo troot_upgrade {troot_remote_path}")
 
         # Step a: Check if eMMC exists
         check_cmd = "[ -e /dev/mmcblk0 ] || (echo '❌ /dev/mmcblk0 not found'; exit 1)"
@@ -331,14 +416,18 @@ class InteractiveTftpServer(TftpServer):
 
 def run_cli(client_manager):
     """Run the interactive CLI for netboot commands."""
-    click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'f' to flash eMMC, or 'q' to quit.\n")
+    click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
     while True:
         try:
-            user_input = input("netboot> ").strip().lower()
-            if user_input in {"q", "quit", "exit"}:
+            user_input = input("netboot> ").strip()
+            parts = user_input.split()
+            command = parts[0].lower() if parts else ""
+            args = parts[1:]
+
+            if command in {"q", "quit", "exit"}:
                 click.echo("🛑 Shutting down TFTP server.")
                 return True
-            elif user_input == "c":
+            elif command == "c":
                 client_info = client_manager.get_client_info()
                 if client_info:
                     click.echo("🧾 TFTP client IPs and status:")
@@ -352,13 +441,22 @@ def run_cli(client_manager):
                             click.echo(f"     Board Info: {board_info}")
                 else:
                     click.echo("📭 No TFTP client requests received yet.")
-            elif user_input == "f":
+            elif command == "f":
+                if len(args) > 1:
+                    click.echo("❌ Usage: f [ip]")
+                    continue
+                override_ip = args[0] if args else None
                 click.echo(f"🔧 Initiating eMMC flash {emmc_image_paths}.")
-                flash_emmc(client_manager, emmc_image_paths)
-            elif user_input == "":
+                flash_emmc(
+                    client_manager,
+                    emmc_image_paths,
+                    override_ip=override_ip,
+                    troot_image_path=troot_image_path,
+                )
+            elif command == "":
                 continue
             else:
-                click.echo("❓ Unknown command. Try 'c' to print client list, 'f' to flash emmc, or 'q'.")
+                click.echo("❓ Unknown command. Try 'c' to print client list, 'f [ip]' to flash emmc, or 'q'.")
         except (KeyboardInterrupt, EOFError):
             click.echo("\n🛑 Exiting netboot session.")
             return True
@@ -380,6 +478,7 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
         RuntimeError: If the download or TFTP setup fails.
     """
     global emmc_image_paths
+    global troot_image_path
     global custom_rootfs
 
     if platform.system() == "Windows":
@@ -403,6 +502,7 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
         wic_gz_file = next((f for f in file_list if f.endswith(".wic.gz")), None)
         bmap_file = next((f for f in file_list if f.endswith(".wic.bmap")), None)
         elxr_img_file = next((f for f in file_list if f.endswith(".img.gz")), None)
+        troot_image_path = next((f for f in file_list if os.path.basename(f) == "troot_blob.be"), None)
         emmc_image_paths = [p for p in [wic_gz_file, bmap_file, elxr_img_file] if p]
 
         # Check global custom_rootfs before doing anything else
@@ -415,6 +515,7 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
             wic_gz_file = next(iter(glob.glob(os.path.join(custom_rootfs, "*.wic.gz"))), None)
             bmap_file   = next(iter(glob.glob(os.path.join(custom_rootfs, "*.wic.bmap"))), None)
             exlr_file   = next(iter(glob.glob(os.path.join(custom_rootfs, "*.img.gz"))), None)
+            troot_image_path = next(iter(glob.glob(os.path.join(custom_rootfs, "troot_blob.be"))), None)
 
             if not (wic_gz_file and bmap_file):
                 raise RuntimeError(
@@ -425,6 +526,7 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
             click.echo(f"📁 Using custom_rootfs: {custom_rootfs}")
 
         click.echo(f"📁 eMMC image paths are: {emmc_image_paths}")
+        click.echo(f"📁 tRoot image path is: {troot_image_path}")
 
     except Exception as e:
         raise RuntimeError(f"❌ Failed to download and extract netboot image: {e}")

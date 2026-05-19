@@ -434,6 +434,11 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
                     desc = f"Force reinstall specific version {selected}"
                     break
 
+                if latest_version and selected == latest_version:
+                    cmd = [simaai_ota, "-f", "-o", "-v", selected]
+                    desc = f"Update to latest version {selected}"
+                    break
+
                 _show_unsupported_specific_elxr_update(
                     requested_version=selected,
                     current_version=installed_distro_version or installed_version,
@@ -459,15 +464,21 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
             versions = _get_available_palette_versions()
             installed_version = _get_installed_palette_version()
             installed_distro_version = _get_installed_elxr_distro_version()
+            latest_version = versions[0] if versions else None
             if _is_current_elxr_version(version_or_url, installed_version, installed_distro_version):
                 cmd = [simaai_ota, "-f", "-o", "-v", version_or_url]
                 desc = f"Force reinstall specific version {version_or_url}"
                 break
 
+            if latest_version and version_or_url == latest_version:
+                cmd = [simaai_ota, "-f", "-o", "-v", version_or_url]
+                desc = f"Update to latest version {version_or_url}"
+                break
+
             _show_unsupported_specific_elxr_update(
                 requested_version=version_or_url,
                 current_version=installed_distro_version or installed_version,
-                latest_version=versions[0] if versions else None,
+                latest_version=latest_version,
             )
             return
 

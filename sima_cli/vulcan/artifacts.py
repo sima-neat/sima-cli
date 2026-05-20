@@ -237,16 +237,6 @@ def parse_install_target(target: str) -> Tuple[str, str, str]:
             )
         return repository, ref, spec
 
-    if "/" in ref_spec:
-        ref, spec = ref_spec.rsplit("/", 1)
-        ref = ref.strip()
-        spec = spec.strip()
-        if not ref or not spec:
-            raise VulcanArtifactError(
-                "Install target must use repo@branch/spec when specifying both branch and spec."
-            )
-        return repository, ref, spec
-
     if ref_spec == "latest" or _looks_like_commit_spec(ref_spec):
         return repository, "main", ref_spec
 

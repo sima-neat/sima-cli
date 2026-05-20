@@ -139,12 +139,6 @@ class VulcanArtifactTests(unittest.TestCase):
             ("internals", "release/2.1", "50649e9aa0ba"),
         )
 
-    def test_parse_install_target_accepts_slash_branch_and_spec_for_compatibility(self):
-        self.assertEqual(
-            parse_install_target("internals@release/2.1/50649e9aa0ba"),
-            ("internals", "release/2.1", "50649e9aa0ba"),
-        )
-
     def test_parse_install_target_accepts_main_commit_shorthand(self):
         self.assertEqual(
             parse_install_target("internals@50649e9aa0ba"),

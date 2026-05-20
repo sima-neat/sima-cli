@@ -149,8 +149,7 @@ def install(ctx, target, environment, base_url, install_dir, force, json_output)
     """Install a Vulcan package from TARGET.
 
     TARGET supports REPO, REPO@branch, REPO@branch:spec, REPO@latest, or
-    REPO@githash. REPO@branch/spec is also accepted for compatibility. If no
-    branch or spec is provided, latest main is used.
+    REPO@githash. If no branch or spec is provided, latest main is used.
     """
     resolved_environment = (
         environment

@@ -15,10 +15,13 @@ from sima_cli.sdk.linux_shared_network import (
 )
 from sima_cli.sdk.install import (
     _configure_nfs_export,
+    _detect_existing_linux_nfs_export,
     _detect_host_ip,
     _detect_local_ip_candidates,
+    _parse_export_line,
     _setup_devkit_share,
     _setup_sdk_extensions,
+    ParsedNfsExport,
     setup_and_start,
 )
 from sima_cli.sdk.commands import launch_sdk_tool, sdk
@@ -288,6 +291,7 @@ class TestSdkImageDetection(unittest.TestCase):
             with patch("sima_cli.sdk.install._detect_host_ip", return_value=("10.0.0.76", "en0", [("en0", "10.0.0.76")])), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner"), \
                  patch("sima_cli.sdk.install._configure_nfs_export"), \
+                 patch("sima_cli.sdk.install._detect_existing_linux_nfs_export", return_value=None), \
                  patch("sima_cli.sdk.install.configure_linux_shared_devkit_network"):
                 env = _setup_devkit_share(
                     "10.0.0.20",
@@ -299,6 +303,90 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(env["devkit_ip"], "10.0.0.20")
             self.assertFalse(env["bootstrap_interactive"])
             self.assertTrue(env["noninteractive"])
+
+    def test_parse_export_line_reads_clients_and_options(self):
+        exports = _parse_export_line(
+            "/scratch/srv/nfs/share 192.168.0.0/20(rw,sync,no_subtree_check,crossmnt) *(ro)"
+        )
+
+        self.assertEqual(len(exports), 2)
+        self.assertEqual(exports[0].path, Path("/scratch/srv/nfs/share"))
+        self.assertEqual(exports[0].client, "192.168.0.0/20")
+        self.assertIn("crossmnt", exports[0].options)
+        self.assertEqual(exports[1].client, "*")
+
+    def test_detect_existing_linux_nfs_export_uses_pseudo_root_path(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "scratch" / "srv" / "nfs"
+            share = root / "share"
+            workspace = share / "workspace"
+            workspace.mkdir(parents=True)
+            exports = [
+                ParsedNfsExport(root, "192.168.0.0/20", ("rw", "sync", "crossmnt", "fsid=0")),
+                ParsedNfsExport(share, "192.168.0.0/20", ("rw", "sync", "crossmnt")),
+            ]
+
+            with patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.install._read_linux_exports", return_value=exports):
+                detected = _detect_existing_linux_nfs_export(workspace, "192.168.4.20", "192.168.1.10")
+
+        self.assertIsNotNone(detected)
+        self.assertEqual(detected.server, "192.168.1.10")
+        self.assertEqual(detected.local_export_path, str(share.resolve()))
+        self.assertEqual(detected.export_path, "/share/workspace")
+
+    def test_setup_devkit_share_reuses_existing_linux_export(self):
+        with TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "share" / "workspace"
+            workspace.mkdir(parents=True)
+            exports = [
+                ParsedNfsExport(Path(tmpdir), "192.168.0.0/20", ("rw", "sync", "crossmnt", "fsid=0")),
+                ParsedNfsExport(Path(tmpdir) / "share", "192.168.0.0/20", ("rw", "sync", "crossmnt")),
+            ]
+
+            with patch("sima_cli.sdk.install._detect_host_ip", return_value=("192.168.1.10", "eno1", [("eno1", "192.168.1.10")])), \
+                 patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
+                 patch("sima_cli.sdk.install._print_devkit_nfs_banner") as banner, \
+                 patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
+                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                env = _setup_devkit_share(
+                    "192.168.4.20",
+                    str(workspace),
+                    ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                    noninteractive=True,
+                )
+
+        banner.assert_not_called()
+        configure_export.assert_not_called()
+        configure_network.assert_called_once_with("192.168.4.20")
+        self.assertEqual(env["host_ip"], "192.168.1.10")
+        self.assertEqual(env["workspace"], "/share/workspace")
+        self.assertFalse(env["bootstrap_interactive"])
+
+    def test_setup_devkit_share_fails_when_existing_export_blocks_devkit_ip(self):
+        with TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "share" / "workspace"
+            workspace.mkdir(parents=True)
+            exports = [
+                ParsedNfsExport(Path(tmpdir), "192.168.0.0/20", ("rw", "sync", "crossmnt", "fsid=0")),
+                ParsedNfsExport(Path(tmpdir) / "share", "192.168.0.0/20", ("rw", "sync", "crossmnt")),
+            ]
+
+            with patch("sima_cli.sdk.install._detect_host_ip", return_value=("192.168.1.10", "eno1", [("eno1", "192.168.1.10")])), \
+                 patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
+                 patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
+                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                with self.assertRaisesRegex(RuntimeError, "not allowed by the export client"):
+                    _setup_devkit_share(
+                        "192.168.135.40",
+                        str(workspace),
+                        ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                    )
+
+        configure_export.assert_not_called()
+        configure_network.assert_not_called()
 
     def test_detect_host_ip_uses_routable_non_vpn_candidate(self):
         candidates = [("en0", "192.168.1.10"), ("feth0", "10.10.1.2")]

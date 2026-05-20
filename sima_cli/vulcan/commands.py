@@ -15,7 +15,59 @@ from sima_cli.install.metadata_installer import install_from_metadata
 AVAILABLE_ENVIRONMENTS = {"dev"}
 
 
-@click.group(name="vulcan", help="Discover and download Vulcan build artifacts.")
+def install_vulcan_package(
+    *,
+    target,
+    environment,
+    base_url=None,
+    install_dir=".",
+    force=False,
+    json_output=False,
+):
+    resolved_environment = (environment or "production").lower()
+
+    if resolved_environment not in AVAILABLE_ENVIRONMENTS:
+        raise click.ClickException(
+            f"Vulcan {resolved_environment} environment is not yet available to use. "
+            "Please use --env dev for now."
+        )
+
+    try:
+        result = resolve_install_metadata_url(
+            environment=resolved_environment,
+            target=target,
+            base_url=base_url,
+        )
+    except VulcanArtifactError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if json_output:
+        click.echo(json.dumps({
+            "environment": result.environment,
+            "base_url": result.base_url,
+            "repository": result.repository,
+            "ref": result.ref,
+            "ref_key": result.ref_key,
+            "requested_spec": result.requested_spec,
+            "resolved_spec": result.resolved_spec,
+            "metadata_url": result.metadata_url,
+        }, indent=2))
+        return None
+
+    click.echo(f"Environment: {result.environment}")
+    click.echo(f"Repository:  {result.repository}")
+    click.echo(f"Ref:         {result.ref}")
+    click.echo(f"Spec:        {result.resolved_spec}")
+    click.echo(f"Metadata:    {result.metadata_url}")
+    return install_from_metadata(
+        metadata_url=result.metadata_url,
+        internal=False,
+        install_dir=install_dir,
+        force=force,
+    )
+
+
+@click.group(name="vulcan", help="Discover and download Vulcan build artifacts.", hidden=True)
 @click.option(
     "--env",
     "environment",
@@ -151,51 +203,13 @@ def install(ctx, target, environment, base_url, install_dir, force, json_output)
     TARGET supports REPO, REPO@branch, REPO@branch:spec, REPO@latest, or
     REPO@githash. If no branch or spec is provided, latest main is used.
     """
-    resolved_environment = (
-        environment
-        or ctx.obj.get("vulcan_environment")
-        or "production"
-    ).lower()
-    resolved_base_url = base_url or ctx.obj.get("vulcan_base_url")
-
-    if resolved_environment not in AVAILABLE_ENVIRONMENTS:
-        raise click.ClickException(
-            f"Vulcan {resolved_environment} environment is not yet available to use. "
-            "Please use --env dev for now."
-        )
-
-    try:
-        result = resolve_install_metadata_url(
-            environment=resolved_environment,
-            target=target,
-            base_url=resolved_base_url,
-        )
-    except VulcanArtifactError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    if json_output:
-        click.echo(json.dumps({
-            "environment": result.environment,
-            "base_url": result.base_url,
-            "repository": result.repository,
-            "ref": result.ref,
-            "ref_key": result.ref_key,
-            "requested_spec": result.requested_spec,
-            "resolved_spec": result.resolved_spec,
-            "metadata_url": result.metadata_url,
-        }, indent=2))
-        return None
-
-    click.echo(f"Environment: {result.environment}")
-    click.echo(f"Repository:  {result.repository}")
-    click.echo(f"Ref:         {result.ref}")
-    click.echo(f"Spec:        {result.resolved_spec}")
-    click.echo(f"Metadata:    {result.metadata_url}")
-    return install_from_metadata(
-        metadata_url=result.metadata_url,
-        internal=False,
+    return install_vulcan_package(
+        target=target,
+        environment=environment or ctx.obj.get("vulcan_environment") or "production",
+        base_url=base_url or ctx.obj.get("vulcan_base_url"),
         install_dir=install_dir,
         force=force,
+        json_output=json_output,
     )
 
 

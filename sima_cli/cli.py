@@ -30,6 +30,7 @@ from sima_cli.install.registry import register_packages_commands
 from sima_cli.upgrade.selfupdate import register_selfupdate_command
 from sima_cli.playbooks import register_playbook_commands
 from sima_cli.vulcan import register_vulcan_commands
+from sima_cli.vulcan.commands import ENV_BASE_URLS, install_vulcan_package
 
 def _configure_stdio_errors() -> None:
     for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
@@ -505,6 +506,30 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
 @click.option("-v", "--version", help="SDK version (required for SDK-dependent components unless --metadata is provided)")
 @click.option("-m", "--mirror", help="URL to a metadata.json file for generic installation")
 @click.option("-t", "--tag", help="Tag of the package (optional)")
+@click.option("--vulcan", "use_vulcan", is_flag=True, help="Install from Vulcan artifacts using the Vulcan package resolver.")
+@click.option(
+    "--env",
+    "vulcan_environment",
+    type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
+    default=None,
+    help="Vulcan artifact environment. Used with --vulcan. Defaults to production.",
+)
+@click.option(
+    "--base-url",
+    "vulcan_base_url",
+    default=None,
+    envvar="SIMA_VULCAN_BASE_URL",
+    help="Override the Vulcan artifact base URL. Used with --vulcan.",
+)
+@click.option(
+    "-d",
+    "--install-dir",
+    default=".",
+    show_default=True,
+    type=click.Path(file_okay=False, dir_okay=True, path_type=str),
+    help="Directory where Vulcan package resources are downloaded and installed. Used with --vulcan.",
+)
+@click.option("--json", "json_output", is_flag=True, help="With --vulcan, print resolved metadata URL and exit.")
 @click.option(
     "-f",
     "--force",
@@ -513,7 +538,7 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
     help="Force installation even if compatibility checks fail.",
 )
 @click.pass_context
-def install_cmd(ctx, component, version, mirror, tag, force):
+def install_cmd(ctx, component, version, mirror, tag, use_vulcan, vulcan_environment, vulcan_base_url, install_dir, json_output, force):
     """
     Install SiMa packages.
 
@@ -547,6 +572,20 @@ def install_cmd(ctx, component, version, mirror, tag, force):
         sima-cli install samples/llima -v 1.7.0
     """
     internal = ctx.obj.get("internal", False)
+
+    if use_vulcan:
+        if mirror:
+            raise click.ClickException("--mirror cannot be used with --vulcan.")
+        if not component:
+            raise click.ClickException("You must specify a Vulcan target when using --vulcan.")
+        return install_vulcan_package(
+            target=component,
+            environment=vulcan_environment or "production",
+            base_url=vulcan_base_url,
+            install_dir=install_dir,
+            force=force,
+            json_output=json_output,
+        )
 
     # Metadata-based installation path
     if mirror:

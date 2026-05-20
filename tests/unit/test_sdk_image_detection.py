@@ -939,6 +939,95 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(mkcert, "/opt/homebrew/bin/mkcert")
         install.assert_called_once_with(["brew", "install", "mkcert"])
 
+    def test_mkcert_linux_ubuntu_2004_enables_universe_before_install(self):
+        def which(name):
+            return {
+                "add-apt-repository": "/usr/bin/add-apt-repository",
+                "mkcert": "/usr/bin/mkcert",
+            }.get(name)
+
+        with patch("sima_cli.sdk.neat.platform.system", return_value="Linux"), \
+             patch("sima_cli.sdk.neat._is_wsl", return_value=False), \
+             patch("sima_cli.sdk.neat._os_release_ids", return_value={"ubuntu", "debian"}), \
+             patch("sima_cli.sdk.neat._os_release_value", return_value="20.04"), \
+             patch("sima_cli.sdk.neat.shutil.which", side_effect=which), \
+             patch("sima_cli.sdk.neat._run_install_command") as install, \
+             patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            mkcert = _install_mkcert(yes_to_all=False, noninteractive=True)
+
+        self.assertEqual(mkcert, "/usr/bin/mkcert")
+        self.assertEqual(
+            [call.args[0] for call in install.call_args_list],
+            [
+                ["sudo", "add-apt-repository", "-y", "universe"],
+                ["sudo", "apt-get", "update"],
+                ["sudo", "apt-get", "install", "-y", "mkcert", "libnss3-tools"],
+            ],
+        )
+
+    def test_mkcert_linux_ubuntu_2004_installs_add_apt_repository_when_missing(self):
+        def which(name):
+            return "/usr/bin/mkcert" if name == "mkcert" else None
+
+        with patch("sima_cli.sdk.neat.platform.system", return_value="Linux"), \
+             patch("sima_cli.sdk.neat._is_wsl", return_value=False), \
+             patch("sima_cli.sdk.neat._os_release_ids", return_value={"ubuntu", "debian"}), \
+             patch("sima_cli.sdk.neat._os_release_value", return_value="20.04"), \
+             patch("sima_cli.sdk.neat.shutil.which", side_effect=which), \
+             patch("sima_cli.sdk.neat._run_install_command") as install, \
+             patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            mkcert = _install_mkcert(yes_to_all=False, noninteractive=True)
+
+        self.assertEqual(mkcert, "/usr/bin/mkcert")
+        self.assertEqual(
+            [call.args[0] for call in install.call_args_list],
+            [
+                ["sudo", "apt-get", "update"],
+                ["sudo", "apt-get", "install", "-y", "software-properties-common"],
+                ["sudo", "add-apt-repository", "-y", "universe"],
+                ["sudo", "apt-get", "update"],
+                ["sudo", "apt-get", "install", "-y", "mkcert", "libnss3-tools"],
+            ],
+        )
+
+    def test_mkcert_linux_newer_ubuntu_does_not_enable_universe(self):
+        with patch("sima_cli.sdk.neat.platform.system", return_value="Linux"), \
+             patch("sima_cli.sdk.neat._is_wsl", return_value=False), \
+             patch("sima_cli.sdk.neat._os_release_ids", return_value={"ubuntu", "debian"}), \
+             patch("sima_cli.sdk.neat._os_release_value", return_value="22.04"), \
+             patch("sima_cli.sdk.neat.shutil.which", return_value="/usr/bin/mkcert"), \
+             patch("sima_cli.sdk.neat._run_install_command") as install, \
+             patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            mkcert = _install_mkcert(yes_to_all=False, noninteractive=True)
+
+        self.assertEqual(mkcert, "/usr/bin/mkcert")
+        self.assertEqual(
+            [call.args[0] for call in install.call_args_list],
+            [
+                ["sudo", "apt-get", "update"],
+                ["sudo", "apt-get", "install", "-y", "mkcert", "libnss3-tools"],
+            ],
+        )
+
+    def test_mkcert_linux_debian_does_not_enable_ubuntu_universe(self):
+        with patch("sima_cli.sdk.neat.platform.system", return_value="Linux"), \
+             patch("sima_cli.sdk.neat._is_wsl", return_value=False), \
+             patch("sima_cli.sdk.neat._os_release_ids", return_value={"debian"}), \
+             patch("sima_cli.sdk.neat._os_release_value", return_value="12"), \
+             patch("sima_cli.sdk.neat.shutil.which", return_value="/usr/bin/mkcert"), \
+             patch("sima_cli.sdk.neat._run_install_command") as install, \
+             patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            mkcert = _install_mkcert(yes_to_all=False, noninteractive=True)
+
+        self.assertEqual(mkcert, "/usr/bin/mkcert")
+        self.assertEqual(
+            [call.args[0] for call in install.call_args_list],
+            [
+                ["sudo", "apt-get", "update"],
+                ["sudo", "apt-get", "install", "-y", "mkcert", "libnss3-tools"],
+            ],
+        )
+
     def test_ensure_certificates_falls_back_when_mkcert_install_fails(self):
         with TemporaryDirectory() as tmpdir:
             cert_dir = Path(tmpdir)

@@ -311,6 +311,23 @@ def _os_release_ids() -> set:
     return ids
 
 
+def _os_release_value(name: str) -> str:
+    path = Path("/etc/os-release")
+    if not path.exists():
+        return ""
+    try:
+        for line in path.read_text().splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key == name:
+                return value.strip().strip('"')
+    except OSError:
+        # Best-effort OS detection: if /etc/os-release is unreadable, fall back to empty value.
+        pass
+    return ""
+
+
 def _manual_mkcert_instructions() -> str:
     system = platform.system()
     if system == "Darwin":
@@ -318,12 +335,30 @@ def _manual_mkcert_instructions() -> str:
     if system == "Windows":
         return "Install mkcert with: winget install FiloSottile.mkcert"
     if system == "Linux":
-        return "Install mkcert with: sudo apt-get install -y mkcert libnss3-tools"
+        return (
+            "Install mkcert with: sudo apt-get update && sudo apt-get install -y mkcert libnss3-tools. "
+            "On Ubuntu 20.04, enable universe first with: sudo add-apt-repository universe"
+        )
     return "Install mkcert from https://github.com/FiloSottile/mkcert"
 
 
 def _run_install_command(command: List[str]) -> None:
     subprocess.run(command, check=True)
+
+
+def _install_mkcert_linux() -> None:
+    ids = _os_release_ids()
+    if not ({"ubuntu", "debian"} & ids):
+        raise RuntimeError(f"Automatic mkcert install is only supported on Ubuntu/Debian Linux. {_manual_mkcert_instructions()}")
+
+    if "ubuntu" in ids and _os_release_value("VERSION_ID") == "20.04":
+        if not shutil.which("add-apt-repository"):
+            _run_install_command(["sudo", "apt-get", "update"])
+            _run_install_command(["sudo", "apt-get", "install", "-y", "software-properties-common"])
+        _run_install_command(["sudo", "add-apt-repository", "-y", "universe"])
+
+    _run_install_command(["sudo", "apt-get", "update"])
+    _run_install_command(["sudo", "apt-get", "install", "-y", "mkcert", "libnss3-tools"])
 
 
 def _install_mkcert(yes_to_all: bool, noninteractive: bool) -> str:
@@ -347,11 +382,7 @@ def _install_mkcert(yes_to_all: bool, noninteractive: bool) -> str:
     elif system == "Linux":
         if _is_wsl():
             click.secho("⚠️  WSL detected. mkcert trust installed inside WSL may not trust certificates in Windows browsers.", fg="yellow")
-        ids = _os_release_ids()
-        if not ({"ubuntu", "debian"} & ids):
-            raise RuntimeError(f"Automatic mkcert install is only supported on Ubuntu/Debian Linux. {_manual_mkcert_instructions()}")
-        _run_install_command(["sudo", "apt-get", "update"])
-        _run_install_command(["sudo", "apt-get", "install", "-y", "mkcert", "libnss3-tools"])
+        _install_mkcert_linux()
     elif system == "Windows":
         if shutil.which("winget"):
             _run_install_command(["winget", "install", "FiloSottile.mkcert"])

@@ -133,7 +133,13 @@ class VulcanArtifactTests(unittest.TestCase):
     def test_parse_install_target_defaults_to_latest_main(self):
         self.assertEqual(parse_install_target("internals"), ("internals", "main", "latest"))
 
-    def test_parse_install_target_accepts_branch_and_spec(self):
+    def test_parse_install_target_accepts_colon_branch_and_spec(self):
+        self.assertEqual(
+            parse_install_target("internals@release/2.1:50649e9aa0ba"),
+            ("internals", "release/2.1", "50649e9aa0ba"),
+        )
+
+    def test_parse_install_target_accepts_slash_branch_and_spec_for_compatibility(self):
         self.assertEqual(
             parse_install_target("internals@release/2.1/50649e9aa0ba"),
             ("internals", "release/2.1", "50649e9aa0ba"),
@@ -174,7 +180,7 @@ class VulcanArtifactTests(unittest.TestCase):
 
         result = resolve_install_metadata_url(
             environment="dev",
-            target="internals@vulcan-prep/50649e9aa0ba",
+            target="internals@vulcan-prep:50649e9aa0ba",
             base_url=base_url,
             client=client,
         )

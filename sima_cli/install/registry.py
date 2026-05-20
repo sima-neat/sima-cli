@@ -19,6 +19,7 @@ import json
 import click
 import datetime
 from pathlib import Path
+from sima_cli.install.package_builder import build_metadata, write_metadata
 from rich.table import Table
 from rich.console import Console
 from rich.syntax import Syntax
@@ -73,6 +74,44 @@ def show_metadata(name, version):
         reg.show_metadata(name, version)
     except ValueError as e:
         Console().print(f"[red]Error:[/red] {e}")
+
+
+@packages.command("build", help="Build package metadata.json from an artifacts folder.")
+@click.argument(
+    "artifacts_folder",
+    metavar="ARTIFACTS_FOLDER",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--name", help="Package name. Defaults to gh:<org>/<repo> for GitHub repos.")
+@click.option("--version", help="Package version. Defaults to exact git tag or short commit hash.")
+@click.option("--description", help="Package description. Defaults to the GitHub repo description when available.")
+@click.option(
+    "--install-script",
+    required=True,
+    help="Install script file inside ARTIFACTS_FOLDER, or a single-line shell command.",
+)
+@click.option(
+    "--selectables",
+    help="Optional resources in 'name1:file1;name2:file2' format.",
+)
+def build_package_metadata(artifacts_folder, name, version, description, install_script, selectables):
+    """
+    Generate ARTIFACTS_FOLDER/metadata.json for sima-cli package installation.
+    """
+    try:
+        metadata = build_metadata(
+            artifacts_folder=artifacts_folder,
+            name=name,
+            version=version,
+            description=description,
+            install_script=install_script,
+            selectables=selectables,
+        )
+        output_path = write_metadata(artifacts_folder, metadata)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(f"✅ Package metadata written to: {output_path}")
 
 # ------------------------------------------------------------------------------------------------------------
 # Register the group to main CLI entrypoint, skip this group if it's running inside the SDK container already

@@ -936,6 +936,10 @@ def _is_platform_compatible(metadata: dict, force: bool = False) -> bool:
     platforms = metadata.get("platforms", [])
     board_ver, _ = get_sima_build_version()
 
+    if not platforms:
+        click.echo("ℹ️  No platform restrictions specified; treating package as compatible with all platforms.")
+        return True
+
     # Detect current OS and version
     os_name = platform.system().lower()  # 'darwin', 'windows', 'linux'
     os_version = "Unknown"

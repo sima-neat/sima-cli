@@ -20,6 +20,7 @@ def install_vulcan_package(
     target,
     environment,
     base_url=None,
+    package_type=None,
     install_dir=".",
     force=False,
     json_output=False,
@@ -37,6 +38,7 @@ def install_vulcan_package(
             environment=resolved_environment,
             target=target,
             base_url=base_url,
+            package_type=package_type,
         )
     except VulcanArtifactError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -189,6 +191,12 @@ def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, j
     help="Directory where package resources are downloaded and installed.",
 )
 @click.option(
+    "-t",
+    "--type",
+    "package_type",
+    help="Install metadata variant metadata-<type>.json instead of metadata.json.",
+)
+@click.option(
     "-f",
     "--force",
     is_flag=True,
@@ -197,7 +205,7 @@ def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, j
 )
 @click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
 @click.pass_context
-def install(ctx, target, environment, base_url, install_dir, force, json_output):
+def install(ctx, target, environment, base_url, install_dir, package_type, force, json_output):
     """Install a Vulcan package from TARGET.
 
     TARGET supports REPO, REPO@branch, REPO@branch:spec, REPO@latest, or
@@ -207,6 +215,7 @@ def install(ctx, target, environment, base_url, install_dir, force, json_output)
         target=target,
         environment=environment or ctx.obj.get("vulcan_environment") or "production",
         base_url=base_url or ctx.obj.get("vulcan_base_url"),
+        package_type=package_type,
         install_dir=install_dir,
         force=force,
         json_output=json_output,

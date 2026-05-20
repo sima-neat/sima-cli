@@ -29,6 +29,8 @@ DEFAULT_REPOSITORIES = [
     "sima-cli",
 ]
 
+DEFAULT_METADATA_FILENAME = "metadata.json"
+
 
 class VulcanArtifactError(RuntimeError):
     pass
@@ -249,11 +251,23 @@ def _looks_like_commit_spec(value: str) -> bool:
     return all(char in "0123456789abcdefABCDEF" for char in value)
 
 
+def metadata_filename(package_type: Optional[str] = None) -> str:
+    if package_type is None:
+        return DEFAULT_METADATA_FILENAME
+    normalized = package_type.strip()
+    if not normalized:
+        return DEFAULT_METADATA_FILENAME
+    if not all(char.isalnum() or char in "._-" for char in normalized):
+        raise VulcanArtifactError("metadata type must contain only letters, numbers, dots, underscores, or hyphens")
+    return f"metadata-{normalized}.json"
+
+
 def resolve_install_metadata_url(
     *,
     environment: str,
     target: str,
     base_url: Optional[str] = None,
+    package_type: Optional[str] = None,
     client: Optional[ArtifactClient] = None,
 ) -> InstallMetadataResult:
     client = client or ArtifactClient()
@@ -269,7 +283,7 @@ def resolve_install_metadata_url(
             resolved_spec = github_ref_short_sha(client, repository, ref_name)
     else:
         resolved_spec = requested_spec
-    metadata_url = join_url(resolved_base_url, repository, key, resolved_spec, "metadata.json")
+    metadata_url = join_url(resolved_base_url, repository, key, resolved_spec, metadata_filename(package_type))
     return InstallMetadataResult(
         environment=environment,
         base_url=resolved_base_url,

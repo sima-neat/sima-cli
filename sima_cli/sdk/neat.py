@@ -323,6 +323,7 @@ def _os_release_value(name: str) -> str:
             if key == name:
                 return value.strip().strip('"')
     except OSError:
+        # Best-effort OS detection: if /etc/os-release is unreadable, fall back to empty value.
         pass
     return ""
 

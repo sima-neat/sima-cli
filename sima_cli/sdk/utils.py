@@ -916,6 +916,8 @@ def install_neat_playbooks(sdk_container_name: str, login_name: str) -> None:
             "exec",
             "-u",
             login_name,
+            "-e",
+            "SIMA_CLI_CHECK_FOR_UPDATE=0",
             sdk_container_name,
             "bash",
             "-lc",

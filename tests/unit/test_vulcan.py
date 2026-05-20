@@ -323,6 +323,58 @@ class VulcanCommandTests(unittest.TestCase):
         )
         install_mock.assert_not_called()
 
+    def test_top_level_install_forwards_vulcan_options(self):
+        runner = CliRunner()
+        with patch("sima_cli.cli.install_vulcan_package") as install_mock:
+            result = runner.invoke(
+                main,
+                [
+                    "install",
+                    "--vulcan",
+                    "--env",
+                    "dev",
+                    "--base-url",
+                    "https://artifacts.example.invalid",
+                    "-d",
+                    "tmp",
+                    "-f",
+                    "internals@vulcan-prep:f47d4e286bca",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        install_mock.assert_called_once_with(
+            target="internals@vulcan-prep:f47d4e286bca",
+            environment="dev",
+            base_url="https://artifacts.example.invalid",
+            install_dir="tmp",
+            force=True,
+            json_output=False,
+        )
+
+    def test_top_level_install_vulcan_json_forwards_without_installing_legacy_path(self):
+        runner = CliRunner()
+        with patch("sima_cli.cli.install_vulcan_package") as install_mock:
+            result = runner.invoke(main, ["install", "--vulcan", "--env", "dev", "--json", "internals"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(install_mock.call_args.kwargs["json_output"])
+
+    def test_top_level_install_vulcan_requires_target(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["install", "--vulcan", "--env", "dev"])
+
+        self.assertNotEqual(result.exit_code, 0, result.output)
+        self.assertIn("You must specify a Vulcan target", result.output)
+
+    def test_sdk_help_is_visible(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("sdk", result.output)
+        self.assertNotIn("vulcan", result.output)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,7 @@ console = Console()
 # ------------------------------------------------------------
 # Group Definition
 # ------------------------------------------------------------
-@click.group(hidden=True, context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.group(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
 @click.option(
     "-v", "--version",
     "version_filter",

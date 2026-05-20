@@ -2,9 +2,10 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import requests
 
@@ -131,16 +132,27 @@ def _format_size(total_bytes: int) -> str:
     return "1KB"
 
 
-def collect_artifact_resources(artifacts_folder: Path) -> Tuple[List[str], Dict[str, Path], int]:
+def _matches_exclude_pattern(resource: str, patterns: Sequence[str]) -> bool:
+    filename = Path(resource).name
+    return any(pattern and (pattern in resource or pattern in filename) for pattern in patterns)
+
+
+def collect_artifact_resources(
+    artifacts_folder: Path,
+    exclude_patterns: Optional[Sequence[str]] = None,
+) -> Tuple[List[str], Dict[str, Path], int]:
     resources = []
     resource_paths = {}
     total_size = 0
+    normalized_excludes = [pattern.strip() for pattern in (exclude_patterns or []) if pattern.strip()]
 
     for path in sorted(artifacts_folder.rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(artifacts_folder).as_posix()
-        if rel == METADATA_FILENAME:
+        if rel == METADATA_FILENAME or re.fullmatch(r"metadata-[A-Za-z0-9_.-]+\.json", rel):
+            continue
+        if _matches_exclude_pattern(rel, normalized_excludes):
             continue
         resources.append(rel)
         resource_paths[rel] = path
@@ -229,12 +241,13 @@ def build_metadata(
     description: Optional[str] = None,
     install_script: str = "",
     selectables: Optional[str] = None,
+    exclude: Optional[Sequence[str]] = None,
 ) -> Dict:
     artifacts_folder = artifacts_folder.expanduser().resolve()
     if not artifacts_folder.is_dir():
         raise ValueError("artifacts-folder is not a directory: {}".format(artifacts_folder))
 
-    resources, resource_paths, total_size = collect_artifact_resources(artifacts_folder)
+    resources, resource_paths, total_size = collect_artifact_resources(artifacts_folder, exclude_patterns=exclude)
     if not resources:
         raise ValueError("artifacts-folder does not contain any artifact files")
 
@@ -273,7 +286,19 @@ def build_metadata(
     }
 
 
-def write_metadata(artifacts_folder: Path, metadata: Dict) -> Path:
-    output_path = artifacts_folder.expanduser().resolve() / METADATA_FILENAME
+def metadata_filename(variant: Optional[str] = None) -> str:
+    if variant is None:
+        return METADATA_FILENAME
+
+    normalized = variant.strip()
+    if not normalized:
+        return METADATA_FILENAME
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", normalized):
+        raise ValueError("variant must contain only letters, numbers, dots, underscores, or hyphens")
+    return "metadata-{}.json".format(normalized)
+
+
+def write_metadata(artifacts_folder: Path, metadata: Dict, variant: Optional[str] = None) -> Path:
+    output_path = artifacts_folder.expanduser().resolve() / metadata_filename(variant)
     output_path.write_text(json.dumps(metadata, indent=4) + "\n", encoding="utf-8")
     return output_path

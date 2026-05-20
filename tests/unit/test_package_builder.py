@@ -7,7 +7,7 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from sima_cli.cli import main
-from sima_cli.install.package_builder import build_metadata, parse_selectables, resolve_install_script
+from sima_cli.install.package_builder import build_metadata, metadata_filename, parse_selectables, resolve_install_script
 
 
 class PackageBuilderTests(unittest.TestCase):
@@ -39,6 +39,72 @@ class PackageBuilderTests(unittest.TestCase):
             self.assertEqual(set(metadata["resources-checksum"]), {"install.sh", "models/model.bin"})
             self.assertRegex(metadata["resources-checksum"]["install.sh"], r"^[a-f0-9]{64}$")
             self.assertEqual(metadata["size"]["download"], metadata["size"]["install"])
+
+    def test_build_metadata_ignores_metadata_variants(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "payload.txt").write_text("payload", encoding="utf-8")
+            (artifacts / "metadata.json").write_text("{}", encoding="utf-8")
+            (artifacts / "metadata-full.json").write_text("{}", encoding="utf-8")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                metadata = build_metadata(
+                    artifacts_folder=artifacts,
+                    name="demo",
+                    version="1.0.0",
+                    install_script="install.sh",
+                )
+
+            self.assertEqual(metadata["resources"], ["install.sh", "payload.txt"])
+
+    def test_build_metadata_excludes_partial_resource_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "neat-runtime.deb").write_bytes(b"runtime")
+            (artifacts / "neat-internals-dev.deb").write_bytes(b"internals")
+            (artifacts / "models").mkdir()
+            (artifacts / "models" / "large-model.tar.gz").write_bytes(b"model")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                metadata = build_metadata(
+                    artifacts_folder=artifacts,
+                    name="demo",
+                    version="1.0.0",
+                    install_script="install.sh",
+                    exclude=("internals", "large-model"),
+                )
+
+            self.assertEqual(metadata["resources"], ["install.sh", "neat-runtime.deb"])
+            self.assertEqual(set(metadata["resources-checksum"]), {"install.sh", "neat-runtime.deb"})
+            self.assertEqual(metadata["size"]["download"], metadata["size"]["install"])
+
+    def test_build_metadata_rejects_selectable_excluded_by_pattern(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "demo-full.tar.gz").write_bytes(b"demo")
+
+            with self.assertRaisesRegex(ValueError, "selectable resource is not in artifacts-folder"):
+                build_metadata(
+                    artifacts_folder=artifacts,
+                    name="demo",
+                    version="1.0.0",
+                    install_script="install.sh",
+                    selectables="Demo:demo-full.tar.gz",
+                    exclude=("full",),
+                )
+
+    def test_metadata_filename_supports_variants(self):
+        self.assertEqual(metadata_filename(None), "metadata.json")
+        self.assertEqual(metadata_filename(""), "metadata.json")
+        self.assertEqual(metadata_filename("full"), "metadata-full.json")
+        self.assertEqual(metadata_filename("minimum_2.0"), "metadata-minimum_2.0.json")
+
+    def test_metadata_filename_rejects_unsafe_variant(self):
+        with self.assertRaisesRegex(ValueError, "variant"):
+            metadata_filename("../full")
 
     def test_install_script_uses_command_when_no_artifact_file_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,6 +198,8 @@ class PackageBuilderTests(unittest.TestCase):
                         "install.sh",
                         "--selectables",
                         "Optional Payload:optional.bin",
+                        "--exclude",
+                        "ignored",
                     ],
                 )
 
@@ -145,6 +213,101 @@ class PackageBuilderTests(unittest.TestCase):
             self.assertEqual(metadata["installation"]["script"], "./install.sh")
             self.assertEqual(metadata["selectable-resources"][0]["name"], "Optional Payload")
             self.assertEqual(metadata["selectable-resources"][0]["resource"], "optional.bin")
+
+    def test_packages_build_command_writes_variant_metadata_json(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "payload.txt").write_text("payload", encoding="utf-8")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                result = runner.invoke(
+                    main,
+                    [
+                        "packages",
+                        "build",
+                        str(artifacts),
+                        "--name",
+                        "demo",
+                        "--version",
+                        "1.0.0",
+                        "--install-script",
+                        "install.sh",
+                        "--variant",
+                        "minimum",
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertFalse((artifacts / "metadata.json").exists())
+            metadata_path = artifacts / "metadata-minimum.json"
+            self.assertTrue(metadata_path.exists())
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["name"], "demo")
+            self.assertEqual(metadata["resources"], ["install.sh", "payload.txt"])
+
+    def test_packages_build_command_excludes_partial_matches(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "neat-runtime.deb").write_text("runtime", encoding="utf-8")
+            (artifacts / "neat-internals-dev.deb").write_text("internals", encoding="utf-8")
+            (artifacts / "debug-symbols.tar.gz").write_text("debug", encoding="utf-8")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                result = runner.invoke(
+                    main,
+                    [
+                        "packages",
+                        "build",
+                        str(artifacts),
+                        "--name",
+                        "demo",
+                        "--version",
+                        "1.0.0",
+                        "--install-script",
+                        "install.sh",
+                        "--exclude",
+                        "internals",
+                        "--exclude",
+                        "debug",
+                        "--variant",
+                        "minimum",
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            metadata = json.loads((artifacts / "metadata-minimum.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["resources"], ["install.sh", "neat-runtime.deb"])
+            self.assertEqual(set(metadata["resources-checksum"]), {"install.sh", "neat-runtime.deb"})
+
+    def test_packages_build_command_rejects_unsafe_variant(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+
+            result = runner.invoke(
+                main,
+                [
+                    "packages",
+                    "build",
+                    str(artifacts),
+                    "--name",
+                    "demo",
+                    "--version",
+                    "1.0.0",
+                    "--install-script",
+                    "install.sh",
+                    "--variant",
+                    "../minimum",
+                ],
+            )
+
+            self.assertNotEqual(result.exit_code, 0, result.output)
+            self.assertIn("variant must contain only", result.output)
 
 
 if __name__ == "__main__":

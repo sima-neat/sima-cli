@@ -185,6 +185,36 @@ class VulcanArtifactTests(unittest.TestCase):
             f"{base_url}/internals/vulcan-prep/50649e9aa0ba/metadata.json",
         )
 
+    def test_resolve_install_metadata_url_uses_metadata_type_variant(self):
+        base_url = "https://example.invalid"
+        client = FakeClient({f"{base_url}/internals/main/latest.tag": "50649e9aa0ba\n"})
+
+        result = resolve_install_metadata_url(
+            environment="dev",
+            target="internals@main",
+            base_url=base_url,
+            package_type="minimum",
+            client=client,
+        )
+
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/internals/main/50649e9aa0ba/metadata-minimum.json",
+        )
+
+    def test_resolve_install_metadata_url_rejects_unsafe_metadata_type(self):
+        base_url = "https://example.invalid"
+        client = FakeClient({f"{base_url}/internals/main/latest.tag": "50649e9aa0ba\n"})
+
+        with self.assertRaisesRegex(VulcanArtifactError, "metadata type"):
+            resolve_install_metadata_url(
+                environment="dev",
+                target="internals@main",
+                base_url=base_url,
+                package_type="../minimum",
+                client=client,
+            )
+
     def test_resolve_install_metadata_url_falls_back_to_github_tag_commit(self):
         base_url = "https://example.invalid"
         tag_sha = "1234567890abcdef1234567890abcdef12345678"
@@ -286,8 +316,40 @@ class VulcanCommandTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(resolve_mock.call_args.kwargs["environment"], "dev")
         self.assertEqual(resolve_mock.call_args.kwargs["target"], "internals")
+        self.assertIsNone(resolve_mock.call_args.kwargs["package_type"])
         install_mock.assert_called_once_with(
             metadata_url=f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata.json",
+            internal=False,
+            install_dir=".",
+            force=False,
+        )
+
+    def test_vulcan_install_forwards_metadata_type(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.resolve_install_metadata_url") as resolve_mock, patch(
+            "sima_cli.vulcan.commands.install_from_metadata"
+        ) as install_mock:
+            resolve_mock.return_value = type(
+                "Result",
+                (),
+                {
+                    "environment": "dev",
+                    "base_url": ENV_BASE_URLS["dev"],
+                    "repository": "internals",
+                    "ref": "main",
+                    "ref_key": "main",
+                    "requested_spec": "latest",
+                    "resolved_spec": "50649e9aa0ba",
+                    "metadata_url": f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata-minimum.json",
+                },
+            )()
+
+            result = runner.invoke(main, ["vulcan", "--env", "dev", "install", "internals@main", "-t", "minimum"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(resolve_mock.call_args.kwargs["package_type"], "minimum")
+        install_mock.assert_called_once_with(
+            metadata_url=f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata-minimum.json",
             internal=False,
             install_dir=".",
             force=False,
@@ -338,6 +400,8 @@ class VulcanCommandTests(unittest.TestCase):
                     "-d",
                     "tmp",
                     "-f",
+                    "-t",
+                    "minimum",
                     "internals@vulcan-prep:f47d4e286bca",
                 ],
             )
@@ -347,6 +411,7 @@ class VulcanCommandTests(unittest.TestCase):
             target="internals@vulcan-prep:f47d4e286bca",
             environment="dev",
             base_url="https://artifacts.example.invalid",
+            package_type="minimum",
             install_dir="tmp",
             force=True,
             json_output=False,

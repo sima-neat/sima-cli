@@ -94,9 +94,18 @@ def show_metadata(name, version):
     "--selectables",
     help="Optional resources in 'name1:file1;name2:file2' format.",
 )
-def build_package_metadata(artifacts_folder, name, version, description, install_script, selectables):
+@click.option(
+    "--exclude",
+    multiple=True,
+    help="Exclude artifact files whose relative path or filename contains this text. May be repeated.",
+)
+@click.option(
+    "--variant",
+    help="Optional metadata variant name. Writes metadata-<variant>.json instead of metadata.json.",
+)
+def build_package_metadata(artifacts_folder, name, version, description, install_script, selectables, exclude, variant):
     """
-    Generate ARTIFACTS_FOLDER/metadata.json for sima-cli package installation.
+    Generate metadata.json, or metadata-<variant>.json, for sima-cli package installation.
     """
     try:
         metadata = build_metadata(
@@ -106,8 +115,9 @@ def build_package_metadata(artifacts_folder, name, version, description, install
             description=description,
             install_script=install_script,
             selectables=selectables,
+            exclude=exclude,
         )
-        output_path = write_metadata(artifacts_folder, metadata)
+        output_path = write_metadata(artifacts_folder, metadata, variant=variant)
     except ValueError as exc:
         raise click.ClickException(str(exc))
 

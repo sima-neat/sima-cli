@@ -505,7 +505,7 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
 @click.argument("component", required=False)
 @click.option("-v", "--version", help="SDK version (required for SDK-dependent components unless --metadata is provided)")
 @click.option("-m", "--mirror", help="URL to a metadata.json file for generic installation")
-@click.option("-t", "--tag", help="Tag of the package (optional)")
+@click.option("-t", "--tag", help="Tag of the package. With --vulcan, metadata variant type such as minimum.")
 @click.option("--vulcan", "use_vulcan", is_flag=True, help="Install from Vulcan artifacts using the Vulcan package resolver.")
 @click.option(
     "--env",
@@ -582,6 +582,7 @@ def install_cmd(ctx, component, version, mirror, tag, use_vulcan, vulcan_environ
             target=component,
             environment=vulcan_environment or "production",
             base_url=vulcan_base_url,
+            package_type=tag,
             install_dir=install_dir,
             force=force,
             json_output=json_output,

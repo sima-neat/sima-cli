@@ -242,7 +242,10 @@ def _extract_required_files(tar_path: str, board: str, update_type: str = 'stand
                         extracted_paths.append(full_dest_path)
                     else:
                         os.makedirs(os.path.dirname(full_dest_path), exist_ok=True)
-                        tar.extract(member, path=extract_dir)
+                        try:
+                            tar.extract(member, path=extract_dir, filter="data")
+                        except TypeError:
+                            tar.extract(member, path=extract_dir)
                         click.echo(f"✅ Extracted: {full_dest_path}")
                         extracted_paths.append(full_dest_path)
 

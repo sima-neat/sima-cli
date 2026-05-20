@@ -6,8 +6,10 @@ from .artifacts import (
     ENV_BASE_URLS,
     VulcanArtifactError,
     download_vulcan_artifacts,
+    resolve_install_metadata_url,
     result_to_json,
 )
+from sima_cli.install.metadata_installer import install_from_metadata
 
 
 AVAILABLE_ENVIRONMENTS = {"dev"}
@@ -109,6 +111,92 @@ def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, j
     click.echo("Files:")
     for path in result.files:
         click.echo(f"  {path}")
+
+
+@vulcan_group.command("install")
+@click.argument("target")
+@click.option(
+    "--env",
+    "environment",
+    type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
+    default=None,
+    help="Artifact environment. Overrides `sima-cli vulcan --env`.",
+)
+@click.option(
+    "--base-url",
+    default=None,
+    envvar="SIMA_VULCAN_BASE_URL",
+    help="Override the artifact base URL. Overrides `sima-cli vulcan --base-url`.",
+)
+@click.option(
+    "-d",
+    "--install-dir",
+    default=".",
+    show_default=True,
+    type=click.Path(file_okay=False, dir_okay=True, path_type=str),
+    help="Directory where package resources are downloaded and installed.",
+)
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Force installation even if compatibility checks fail.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
+@click.pass_context
+def install(ctx, target, environment, base_url, install_dir, force, json_output):
+    """Install a Vulcan package from TARGET.
+
+    TARGET supports REPO, REPO@branch, REPO@branch:spec, REPO@latest, or
+    REPO@githash. If no branch or spec is provided, latest main is used.
+    """
+    resolved_environment = (
+        environment
+        or ctx.obj.get("vulcan_environment")
+        or "production"
+    ).lower()
+    resolved_base_url = base_url or ctx.obj.get("vulcan_base_url")
+
+    if resolved_environment not in AVAILABLE_ENVIRONMENTS:
+        raise click.ClickException(
+            f"Vulcan {resolved_environment} environment is not yet available to use. "
+            "Please use --env dev for now."
+        )
+
+    try:
+        result = resolve_install_metadata_url(
+            environment=resolved_environment,
+            target=target,
+            base_url=resolved_base_url,
+        )
+    except VulcanArtifactError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if json_output:
+        click.echo(json.dumps({
+            "environment": result.environment,
+            "base_url": result.base_url,
+            "repository": result.repository,
+            "ref": result.ref,
+            "ref_key": result.ref_key,
+            "requested_spec": result.requested_spec,
+            "resolved_spec": result.resolved_spec,
+            "metadata_url": result.metadata_url,
+        }, indent=2))
+        return None
+
+    click.echo(f"Environment: {result.environment}")
+    click.echo(f"Repository:  {result.repository}")
+    click.echo(f"Ref:         {result.ref}")
+    click.echo(f"Spec:        {result.resolved_spec}")
+    click.echo(f"Metadata:    {result.metadata_url}")
+    return install_from_metadata(
+        metadata_url=result.metadata_url,
+        internal=False,
+        install_dir=install_dir,
+        force=force,
+    )
 
 
 def register_vulcan_commands(main):

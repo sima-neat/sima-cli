@@ -578,7 +578,7 @@ def install_cmd(ctx, component, version, mirror, tag, use_vulcan, vulcan_environ
             raise click.ClickException("--mirror cannot be used with --vulcan.")
         if not component:
             raise click.ClickException("You must specify a Vulcan target when using --vulcan.")
-        return install_vulcan_package(
+        install_vulcan_package(
             target=component,
             environment=vulcan_environment or "production",
             base_url=vulcan_base_url,
@@ -586,13 +586,15 @@ def install_cmd(ctx, component, version, mirror, tag, use_vulcan, vulcan_environ
             force=force,
             json_output=json_output,
         )
+        return None
 
     # Metadata-based installation path
     if mirror:
         if component:
             click.echo(f"⚠️ Component '{component}' is ignored when using --metadata. Proceeding with metadata-based installation.")
         click.echo(f"🔧 Installing generic component from metadata URL: {mirror}")
-        return install_from_metadata(metadata_url=mirror, internal=internal, force=force)
+        install_from_metadata(metadata_url=mirror, internal=internal, force=force)
+        return None
 
     # No component and no metadata: error
     if not component:
@@ -601,11 +603,13 @@ def install_cmd(ctx, component, version, mirror, tag, use_vulcan, vulcan_environ
 
     # if user specified gh: as component, treat it the same as -m
     if component.startswith("gh:"):
-        return install_from_metadata(metadata_url=component, internal=False, force=force)
+        install_from_metadata(metadata_url=component, internal=False, force=force)
+        return None
     
     # if the user specified cr: or ghcr: as component, install from container registry
     if component.startswith("cr:") or component.startswith("ghcr:"):
-        return install_from_cr(resource_spec=component, internal=internal)
+        install_from_cr(resource_spec=component, internal=internal)
+        return None
 
     version = resolve_version(version)
 
@@ -640,6 +644,7 @@ def install_cmd(ctx, component, version, mirror, tag, use_vulcan, vulcan_environ
             ctx.exit(1)
 
     click.echo("✅ Installation complete.")
+    return None
 
 
 # ----------------------

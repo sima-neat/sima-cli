@@ -184,7 +184,7 @@ def install(ctx, target, environment, base_url, install_dir, force, json_output)
             "resolved_spec": result.resolved_spec,
             "metadata_url": result.metadata_url,
         }, indent=2))
-        return
+        return None
 
     click.echo(f"Environment: {result.environment}")
     click.echo(f"Repository:  {result.repository}")

@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 import click
@@ -315,6 +316,151 @@ def _print_devkit_nfs_banner(workspace: str, devkit_ip: str, host_os: str) -> No
     )
 
 
+@dataclass(frozen=True)
+class ExistingNfsExport:
+    server: str
+    export_path: str
+    local_export_path: str
+    client: str
+    client_allowed: bool
+
+
+@dataclass(frozen=True)
+class ParsedNfsExport:
+    path: Path
+    client: str
+    options: Tuple[str, ...]
+
+
+def _parse_export_line(line: str) -> List[ParsedNfsExport]:
+    try:
+        parts = shlex.split(line, comments=True)
+    except ValueError:
+        return []
+    if len(parts) < 2:
+        return []
+
+    export_path = Path(parts[0])
+    exports = []
+    for client_spec in parts[1:]:
+        client, _, option_text = client_spec.partition("(")
+        if not client or client.startswith("-"):
+            continue
+        options = tuple(
+            option.strip()
+            for option in option_text.rstrip(")").split(",")
+            if option.strip()
+        )
+        exports.append(ParsedNfsExport(path=export_path, client=client, options=options))
+    return exports
+
+
+def _read_linux_exports() -> List[ParsedNfsExport]:
+    exports: List[ParsedNfsExport] = []
+    paths = [Path("/etc/exports")]
+    exports_d = Path("/etc/exports.d")
+    if exports_d.is_dir():
+        paths.extend(sorted(exports_d.glob("*")))
+
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            logical_line = ""
+            for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw_line.rstrip()
+                if line.endswith("\\"):
+                    logical_line += line[:-1] + " "
+                    continue
+                logical_line += line
+                exports.extend(_parse_export_line(logical_line))
+                logical_line = ""
+            if logical_line:
+                exports.extend(_parse_export_line(logical_line))
+        except OSError:
+            continue
+    return exports
+
+
+def _export_allows_client(client: str, devkit_ip: str) -> bool:
+    if client in {"*", "<world>"}:
+        return True
+    try:
+        devkit_addr = ipaddress.ip_address(devkit_ip)
+    except ValueError:
+        return client == devkit_ip
+
+    try:
+        if "/" in client:
+            return devkit_addr in ipaddress.ip_network(client, strict=False)
+        return devkit_addr == ipaddress.ip_address(client)
+    except ValueError:
+        # Hostnames, netgroups, and wildcard domains are hard to prove locally.
+        # Treat them as usable exports; a later mount will be authoritative.
+        return True
+
+
+def _relative_path(parent: Path, child: Path) -> Optional[Path]:
+    try:
+        return child.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return None
+
+
+def _join_nfs_path(base: str, relative: Path) -> str:
+    if str(relative) in {"", "."}:
+        return base or "/"
+    relative_text = relative.as_posix()
+    if base == "/":
+        return f"/{relative_text}"
+    return f"{base.rstrip('/')}/{relative_text}"
+
+
+def _resolve_client_visible_export_path(workspace: Path, matching_export: ParsedNfsExport, exports: List[ParsedNfsExport]) -> str:
+    workspace_path = workspace.resolve()
+
+    fsid0_exports = [
+        export
+        for export in exports
+        if any(option.lower() == "fsid=0" for option in export.options)
+        and _relative_path(export.path, workspace_path) is not None
+    ]
+    if fsid0_exports:
+        root_export = max(fsid0_exports, key=lambda export: len(str(export.path.resolve())))
+        relative_to_root = _relative_path(root_export.path, workspace_path)
+        if relative_to_root is not None:
+            return _join_nfs_path("/", relative_to_root)
+
+    relative_to_export = _relative_path(matching_export.path, workspace_path)
+    if relative_to_export is None:
+        return str(workspace_path)
+    return _join_nfs_path(str(matching_export.path.resolve()), relative_to_export)
+
+
+def _detect_existing_linux_nfs_export(workspace: Path, devkit_ip: str, host_ip: str) -> Optional[ExistingNfsExport]:
+    if platform.system().lower() != "linux":
+        return None
+
+    workspace_path = workspace.resolve()
+    exports = [
+        export
+        for export in _read_linux_exports()
+        if _relative_path(export.path, workspace_path) is not None
+    ]
+    if not exports:
+        return None
+
+    allowed_exports = [export for export in exports if _export_allows_client(export.client, devkit_ip)]
+    matching_export = max(allowed_exports or exports, key=lambda export: len(str(export.path.resolve())))
+    return ExistingNfsExport(
+        server=host_ip,
+        export_path=_resolve_client_visible_export_path(workspace_path, matching_export, exports),
+        local_export_path=str(matching_export.path.resolve()),
+        client=matching_export.client,
+        client_allowed=bool(allowed_exports),
+    )
+
+
 def _configure_nfs_export(host_dir: Path, devkit_ip: Optional[str], host_os: str, host_ip: str) -> None:
     host_path = str(host_dir.resolve())
     if host_os == "darwin":
@@ -395,6 +541,41 @@ def _setup_devkit_share(devkit_ip: str, workspace: str, selected_images: List[st
     host_os = platform.system().lower()
     host_dir = Path(workspace)
     host_ip, auto_iface, auto_candidates = _detect_host_ip(devkit_ip)
+
+    existing_export = _detect_existing_linux_nfs_export(host_dir, devkit_ip, host_ip)
+    if existing_export:
+        print(
+            "ℹ️  Workspace is already covered by an existing NFS export: {} -> {}.".format(
+                existing_export.local_export_path,
+                existing_export.client,
+            )
+        )
+        if not existing_export.client_allowed:
+            raise RuntimeError(
+                "Workspace is under an existing admin-managed NFS export, but DevKit {} is not allowed "
+                "by the export client '{}'. Ask an admin to add an export entry that covers {} for the "
+                "DevKit IP/subnet, then rerun setup. sima-cli will not try to modify this admin-managed "
+                "export without permission.".format(
+                    devkit_ip,
+                    existing_export.client,
+                    existing_export.local_export_path,
+                )
+            )
+        print(
+            "ℹ️  Reusing admin-managed NFS export for DevKit sync: {}:{}.".format(
+                existing_export.server,
+                existing_export.export_path,
+            )
+        )
+        configure_linux_shared_devkit_network(devkit_ip)
+        return {
+            "devkit_ip": devkit_ip,
+            "host_ip": existing_export.server,
+            "workspace": existing_export.export_path,
+            "host_platform": host_os,
+            "bootstrap_interactive": not noninteractive,
+            "noninteractive": noninteractive,
+        }
 
     _print_devkit_nfs_banner(workspace, devkit_ip, host_os)
     _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)

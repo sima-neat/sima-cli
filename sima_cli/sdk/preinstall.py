@@ -87,17 +87,24 @@ def check_docker(min_version):
     return not passed, ["Docker", f"≥ {min_version}", ver or "N/A", "✅ PASS" if passed else "❌ FAIL"]
 
 
+def _bytes_to_gb(total_bytes: int) -> float:
+    """Convert memory bytes to decimal GB to match vendor/system RAM sizing."""
+    return total_bytes / 1_000_000_000
+
+
 def check_cpu_ram(min_cores, min_ram_gb):
     import psutil
     cores = psutil.cpu_count(logical=False)
-    ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+    total_memory = psutil.virtual_memory().total
+    ram_gb = _bytes_to_gb(total_memory)
+    ram_display = f"{ram_gb:.1f} GB"
     passed = cores >= min_cores and ram_gb >= min_ram_gb
     console.print(
-        f"{'✅' if passed else '❌'} {cores} cores / {ram_gb:.1f} GB RAM "
+        f"{'✅' if passed else '❌'} {cores} cores / {ram_display} RAM "
         f"(Required ≥ {min_cores} cores / {min_ram_gb} GB)",
         style="green" if passed else "red",
     )
-    return not passed, ["CPU/RAM", f"≥{min_cores} cores / ≥{min_ram_gb} GB", f"{cores} / {ram_gb:.1f} GB", "✅ PASS" if passed else "❌ FAIL"]
+    return not passed, ["CPU/RAM", f"≥{min_cores} cores / ≥{min_ram_gb} GB", f"{cores} / {ram_display}", "✅ PASS" if passed else "❌ FAIL"]
 
 
 def check_rosetta_and_firewall(use_sudo=False):

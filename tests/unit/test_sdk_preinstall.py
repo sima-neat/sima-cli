@@ -1,9 +1,11 @@
 import unittest
+import types
 from unittest.mock import patch
 
 from sima_cli.sdk.preinstall import (
     ensure_colima_resources_for_neat_sdk,
     check_rosetta_and_firewall,
+    check_cpu_ram,
     _parse_colima_status,
 )
 
@@ -24,6 +26,18 @@ class TestSdkPreinstall(unittest.TestCase):
         self.assertEqual(_parse_colima_status({"cpu": 4, "memory": 8589934592}), (4, 8.0))
         self.assertEqual(_parse_colima_status({"cpu": 4, "memory": 8192}), (4, 8.0))
         self.assertEqual(_parse_colima_status({"cpu": 4, "memory": 8}), (4, 8.0))
+
+    def test_cpu_ram_check_uses_decimal_gb_for_physical_memory(self):
+        fake_psutil = types.SimpleNamespace(
+            cpu_count=lambda logical=False: 4,
+            virtual_memory=lambda: types.SimpleNamespace(total=16_000_000_000),
+        )
+
+        with patch.dict("sys.modules", {"psutil": fake_psutil}):
+            failed, row = check_cpu_ram(min_cores=4, min_ram_gb=16)
+
+        self.assertFalse(failed)
+        self.assertEqual(row, ["CPU/RAM", "≥4 cores / ≥16 GB", "4 / 16.0 GB", "✅ PASS"])
 
     def test_colima_resource_check_skips_non_colima_docker(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \

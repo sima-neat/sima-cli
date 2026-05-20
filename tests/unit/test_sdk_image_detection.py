@@ -229,6 +229,40 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertTrue(workspace.is_dir())
             self.assertEqual((home / ".simaai" / ".mount").read_text(), str(workspace.resolve()))
 
+    def test_get_workspace_recovers_when_running_containers_have_no_mount_file(self):
+        with TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            workspace = home / "remote-workspace"
+
+            def fake_expanduser(path):
+                return str(home) if path == "~" else str(home / path[2:]) if path.startswith("~/") else path
+
+            with patch("sima_cli.sdk.utils.get_running_containers", return_value=["sdk-latest"]), \
+                 patch("sima_cli.sdk.utils.os.path.expanduser", side_effect=fake_expanduser), \
+                 patch("builtins.input", side_effect=[str(workspace), "y"]):
+                selected = get_workspace()
+
+            self.assertEqual(selected, str(workspace.resolve()))
+            self.assertTrue(workspace.is_dir())
+            self.assertEqual((home / ".simaai" / ".mount").read_text(), str(workspace.resolve()))
+
+    def test_get_workspace_noninteractive_recovers_when_running_containers_have_no_mount_file(self):
+        with TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            workspace = home / "workspace"
+
+            def fake_expanduser(path):
+                return str(home) if path == "~" else str(home / path[2:]) if path.startswith("~/") else path
+
+            with patch("sima_cli.sdk.utils.get_running_containers", return_value=["sdk-latest"]), \
+                 patch("sima_cli.sdk.utils.os.path.expanduser", side_effect=fake_expanduser), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                selected = get_workspace(noninteractive=True)
+
+            self.assertEqual(selected, str(workspace.resolve()))
+            self.assertTrue(workspace.is_dir())
+            self.assertEqual((home / ".simaai" / ".mount").read_text(), str(workspace.resolve()))
+
     def test_sdk_setup_workspace_option_is_forwarded(self):
         runner = CliRunner()
         with patch("sima_cli.sdk.commands.check_and_start_docker"), \

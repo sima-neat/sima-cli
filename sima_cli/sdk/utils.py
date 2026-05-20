@@ -548,7 +548,8 @@ def get_workspace(yes_to_all=False, noninteractive=False, workspace_override=Non
                 print("➡️  Skipping detected workspace. Proceeding to collect new path...")
 
         else:
-            sys.exit("❌  Running containers detected but no mount file found.")
+            print("⚠️  Running SDK containers detected but no saved workspace mount was found.")
+            print("➡️  Recreating workspace mount state before continuing.")
     
     # Case 2: No container running → ask user
     default_workspace = os.path.join(home, "workspace")

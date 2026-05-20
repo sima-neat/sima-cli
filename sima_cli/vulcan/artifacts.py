@@ -47,24 +47,36 @@ class DownloadResult:
     files: Tuple[Path, ...]
 
 
+@dataclass(frozen=True)
+class InstallMetadataResult:
+    environment: str
+    base_url: str
+    repository: str
+    ref: str
+    ref_key: str
+    requested_spec: str
+    resolved_spec: str
+    metadata_url: str
+
+
 class ArtifactClient:
     def __init__(self, session: Optional[requests.Session] = None) -> None:
         self.session = session or requests.Session()
 
-    def read_bytes(self, url: str) -> bytes:
+    def read_bytes(self, url: str, headers: Optional[Dict[str, str]] = None) -> bytes:
         try:
-            response = self.session.get(url, timeout=60)
+            response = self.session.get(url, timeout=60, headers=headers)
             response.raise_for_status()
             return response.content
         except requests.RequestException as exc:
             raise VulcanArtifactError(f"GET {url} failed: {exc}") from exc
 
-    def read_text(self, url: str) -> str:
-        return self.read_bytes(url).decode("utf-8")
+    def read_text(self, url: str, headers: Optional[Dict[str, str]] = None) -> str:
+        return self.read_bytes(url, headers=headers).decode("utf-8")
 
-    def read_json(self, url: str) -> Any:
+    def read_json(self, url: str, headers: Optional[Dict[str, str]] = None) -> Any:
         try:
-            return json.loads(self.read_text(url))
+            return json.loads(self.read_text(url, headers=headers))
         except json.JSONDecodeError as exc:
             raise VulcanArtifactError(f"GET {url} returned invalid JSON: {exc}") from exc
 
@@ -174,6 +186,100 @@ def read_latest_tag(client: ArtifactClient, base_url: str, repository: str, key:
     if not latest_tag:
         raise VulcanArtifactError(f"{latest_url} is empty.")
     return latest_tag
+
+
+def github_ref_short_sha(client: ArtifactClient, repository: str, ref: str) -> str:
+    repo_part = urllib.parse.quote(repository.strip(), safe="")
+    ref_part = urllib.parse.quote(ref.strip(), safe="")
+    url = f"https://api.github.com/repos/sima-neat/{repo_part}/commits/{ref_part}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    payload = client.read_json(url, headers=headers)
+    if not isinstance(payload, dict):
+        raise VulcanArtifactError(f"{url} did not return a JSON object.")
+
+    sha = str(payload.get("sha", "")).strip()
+    if not sha:
+        raise VulcanArtifactError(f"{url} did not include a commit sha.")
+    return sha[:12]
+
+
+def parse_install_target(target: str) -> Tuple[str, str, str]:
+    value = target.strip()
+    if not value:
+        raise VulcanArtifactError("Install target is empty.")
+
+    repository, separator, ref_spec = value.partition("@")
+    repository = repository.strip()
+    if not repository:
+        raise VulcanArtifactError("Install target repository is empty.")
+
+    if not separator or not ref_spec.strip():
+        return repository, "main", "latest"
+
+    ref_spec = ref_spec.strip().strip("/")
+    if not ref_spec:
+        return repository, "main", "latest"
+
+    if "/" in ref_spec:
+        ref, spec = ref_spec.rsplit("/", 1)
+        ref = ref.strip()
+        spec = spec.strip()
+        if not ref or not spec:
+            raise VulcanArtifactError(
+                "Install target must use repo@branch/spec when specifying both branch and spec."
+            )
+        return repository, ref, spec
+
+    if ref_spec == "latest" or _looks_like_commit_spec(ref_spec):
+        return repository, "main", ref_spec
+
+    return repository, ref_spec, "latest"
+
+
+def _looks_like_commit_spec(value: str) -> bool:
+    if not 7 <= len(value) <= 40:
+        return False
+    return all(char in "0123456789abcdefABCDEF" for char in value)
+
+
+def resolve_install_metadata_url(
+    *,
+    environment: str,
+    target: str,
+    base_url: Optional[str] = None,
+    client: Optional[ArtifactClient] = None,
+) -> InstallMetadataResult:
+    client = client or ArtifactClient()
+    resolved_base_url = normalize_base_url(base_url or ENV_BASE_URLS[environment])
+    repository, ref_name, requested_spec = parse_install_target(target)
+    key = ref_key(ref_name)
+    if requested_spec == "latest":
+        try:
+            resolved_spec = read_latest_tag(client, resolved_base_url, repository, key)
+        except VulcanArtifactError:
+            if ref_name == "main":
+                raise
+            resolved_spec = github_ref_short_sha(client, repository, ref_name)
+    else:
+        resolved_spec = requested_spec
+    metadata_url = join_url(resolved_base_url, repository, key, resolved_spec, "metadata.json")
+    return InstallMetadataResult(
+        environment=environment,
+        base_url=resolved_base_url,
+        repository=repository,
+        ref=ref_name,
+        ref_key=key,
+        requested_spec=requested_spec,
+        resolved_spec=resolved_spec,
+        metadata_url=metadata_url,
+    )
 
 
 def read_manifest(client: ArtifactClient, base_url: str, repository: str, key: str) -> Tuple[str, Dict[str, Any]]:

@@ -15,8 +15,10 @@ from sima_cli.vulcan.artifacts import (
     VulcanArtifactError,
     download_vulcan_artifacts,
     join_url,
+    parse_install_target,
     ref_key,
     repository_choices,
+    resolve_install_metadata_url,
     select_from_menu,
 )
 
@@ -41,7 +43,7 @@ class FakeClient:
         self.payloads = payloads
         self.urls = []
 
-    def read_bytes(self, url):
+    def read_bytes(self, url, headers=None):
         self.urls.append(url)
         try:
             payload = self.payloads[url]
@@ -51,11 +53,11 @@ class FakeClient:
             return payload
         return payload.encode("utf-8")
 
-    def read_text(self, url):
-        return self.read_bytes(url).decode("utf-8")
+    def read_text(self, url, headers=None):
+        return self.read_bytes(url, headers=headers).decode("utf-8")
 
-    def read_json(self, url):
-        return json.loads(self.read_text(url))
+    def read_json(self, url, headers=None):
+        return json.loads(self.read_text(url, headers=headers))
 
 
 class VulcanArtifactTests(unittest.TestCase):
@@ -128,6 +130,83 @@ class VulcanArtifactTests(unittest.TestCase):
             self.assertEqual((result.output_dir / "latest.tag").read_text(), "abcdef0\n")
             self.assertTrue((result.output_dir / "manifest.json").exists())
 
+    def test_parse_install_target_defaults_to_latest_main(self):
+        self.assertEqual(parse_install_target("internals"), ("internals", "main", "latest"))
+
+    def test_parse_install_target_accepts_branch_and_spec(self):
+        self.assertEqual(
+            parse_install_target("internals@release/2.1/50649e9aa0ba"),
+            ("internals", "release/2.1", "50649e9aa0ba"),
+        )
+
+    def test_parse_install_target_accepts_main_commit_shorthand(self):
+        self.assertEqual(
+            parse_install_target("internals@50649e9aa0ba"),
+            ("internals", "main", "50649e9aa0ba"),
+        )
+
+    def test_parse_install_target_treats_tag_as_ref(self):
+        self.assertEqual(parse_install_target("internals@2.0.0"), ("internals", "2.0.0", "latest"))
+
+    def test_resolve_install_metadata_url_resolves_latest_tag(self):
+        base_url = "https://example.invalid"
+        client = FakeClient({f"{base_url}/internals/main/latest.tag": "50649e9aa0ba\n"})
+
+        result = resolve_install_metadata_url(
+            environment="dev",
+            target="internals",
+            base_url=base_url,
+            client=client,
+        )
+
+        self.assertEqual(result.repository, "internals")
+        self.assertEqual(result.ref, "main")
+        self.assertEqual(result.requested_spec, "latest")
+        self.assertEqual(result.resolved_spec, "50649e9aa0ba")
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/internals/main/50649e9aa0ba/metadata.json",
+        )
+
+    def test_resolve_install_metadata_url_uses_explicit_spec_without_latest_lookup(self):
+        base_url = "https://example.invalid"
+        client = FakeClient({})
+
+        result = resolve_install_metadata_url(
+            environment="dev",
+            target="internals@vulcan-prep/50649e9aa0ba",
+            base_url=base_url,
+            client=client,
+        )
+
+        self.assertEqual(client.urls, [])
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/internals/vulcan-prep/50649e9aa0ba/metadata.json",
+        )
+
+    def test_resolve_install_metadata_url_falls_back_to_github_tag_commit(self):
+        base_url = "https://example.invalid"
+        tag_sha = "1234567890abcdef1234567890abcdef12345678"
+        client = FakeClient({
+            "https://api.github.com/repos/sima-neat/internals/commits/2.0.0": json.dumps({"sha": tag_sha}),
+        })
+
+        result = resolve_install_metadata_url(
+            environment="dev",
+            target="internals@2.0.0",
+            base_url=base_url,
+            client=client,
+        )
+
+        self.assertEqual(result.ref, "2.0.0")
+        self.assertEqual(result.requested_spec, "latest")
+        self.assertEqual(result.resolved_spec, "1234567890ab")
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/internals/2.0.0/1234567890ab/metadata.json",
+        )
+
 
 class VulcanCommandTests(unittest.TestCase):
     def test_vulcan_download_help_is_registered(self):
@@ -174,6 +253,75 @@ class VulcanCommandTests(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0, result.output)
         self.assertIn("Vulcan staging environment is not yet available to use", result.output)
         download_mock.assert_not_called()
+
+    def test_vulcan_install_help_is_registered(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["vulcan", "install", "--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Install a Vulcan package from TARGET", result.output)
+
+    def test_vulcan_install_resolves_metadata_and_installs(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.resolve_install_metadata_url") as resolve_mock, patch(
+            "sima_cli.vulcan.commands.install_from_metadata"
+        ) as install_mock:
+            resolve_mock.return_value = type(
+                "Result",
+                (),
+                {
+                    "environment": "dev",
+                    "base_url": ENV_BASE_URLS["dev"],
+                    "repository": "internals",
+                    "ref": "main",
+                    "ref_key": "main",
+                    "requested_spec": "latest",
+                    "resolved_spec": "50649e9aa0ba",
+                    "metadata_url": f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata.json",
+                },
+            )()
+
+            result = runner.invoke(main, ["vulcan", "--env", "dev", "install", "internals"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(resolve_mock.call_args.kwargs["environment"], "dev")
+        self.assertEqual(resolve_mock.call_args.kwargs["target"], "internals")
+        install_mock.assert_called_once_with(
+            metadata_url=f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata.json",
+            internal=False,
+            install_dir=".",
+            force=False,
+        )
+
+    def test_vulcan_install_json_prints_metadata_without_installing(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.resolve_install_metadata_url") as resolve_mock, patch(
+            "sima_cli.vulcan.commands.install_from_metadata"
+        ) as install_mock:
+            resolve_mock.return_value = type(
+                "Result",
+                (),
+                {
+                    "environment": "dev",
+                    "base_url": ENV_BASE_URLS["dev"],
+                    "repository": "internals",
+                    "ref": "main",
+                    "ref_key": "main",
+                    "requested_spec": "latest",
+                    "resolved_spec": "50649e9aa0ba",
+                    "metadata_url": f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata.json",
+                },
+            )()
+
+            result = runner.invoke(main, ["vulcan", "--env", "dev", "install", "internals", "--json"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        payload = json.loads(result.output[result.output.index("{"):])
+        self.assertEqual(
+            payload["metadata_url"],
+            f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata.json",
+        )
+        install_mock.assert_not_called()
 
 
 if __name__ == "__main__":

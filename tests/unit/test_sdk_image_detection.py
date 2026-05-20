@@ -1708,6 +1708,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
             "exec",
             "-u",
             "docker",
+            "-e",
+            "SIMA_CLI_CHECK_FOR_UPDATE=0",
             "container",
             "bash",
             "-lc",

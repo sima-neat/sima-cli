@@ -280,6 +280,24 @@ def _compute_sha256(file_path: Path, chunk_size: int = 1024 * 1024) -> str:
                 hasher.update(chunk)
     return hasher.hexdigest()
 
+def _resolve_resource_url(base_url: str, resource: str) -> str:
+    """
+    Resolve a metadata resource to a downloadable URL.
+
+    Metadata resources are file names or relative paths. Encode each path segment
+    so URL-reserved characters that are valid in artifact names, such as '+', do
+    not get interpreted by object storage/CDNs as a different key.
+    """
+    parsed_resource = urlparse(resource)
+    if parsed_resource.scheme or parsed_resource.netloc:
+        return resource
+
+    encoded_resource = "/".join(
+        quote(segment, safe="")
+        for segment in resource.split("/")
+    )
+    return urljoin(base_url, encoded_resource)
+
 def _download_assets(metadata: dict, base_url: str, dest_folder: str, internal: bool = False, skip_models: bool = False, tag: str = None) -> list:
     """
     Downloads resources defined in metadata to a local destination folder.
@@ -387,7 +405,7 @@ def _download_assets(metadata: dict, base_url: str, dest_folder: str, internal: 
                 continue
 
             # 🌐 Standard file or URL
-            resource_url = urljoin(base_url, resource)
+            resource_url = _resolve_resource_url(base_url, resource)
             parsed = urlparse(resource_url)
             file_name = os.path.basename(parsed.path)
             dest_path = Path(dest_folder) / file_name

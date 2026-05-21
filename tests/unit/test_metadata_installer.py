@@ -1,7 +1,19 @@
 import unittest
+import os
+import stat
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from sima_cli.install.metadata_installer import _is_platform_compatible, _resolve_resource_url
+from sima_cli.install.metadata_installer import (
+    _download_metadata_file_resource,
+    _is_platform_compatible,
+    _mark_install_script_executable,
+    _metadata_resource_path,
+    _normalize_downloaded_metadata_resource,
+    _resolve_resource_url,
+    _resolve_resource_url_candidates,
+)
 
 
 class MetadataInstallerCompatibilityTests(unittest.TestCase):
@@ -40,6 +52,107 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
             _resolve_resource_url("https://artifacts.example.com/pkg/metadata.json", url),
             url,
         )
+
+    def test_resolve_resource_url_candidates_include_percent_preserving_fallback(self):
+        self.assertEqual(
+            _resolve_resource_url_candidates(
+                "https://docs.example.com/pkg/metadata.json",
+                "sima_lmm-2.0.0.dev0%2Bmaster.6-py3-none-any.whl",
+            ),
+            [
+                "https://docs.example.com/pkg/sima_lmm-2.0.0.dev0%252Bmaster.6-py3-none-any.whl",
+                "https://docs.example.com/pkg/sima_lmm-2.0.0.dev0%2Bmaster.6-py3-none-any.whl",
+            ],
+        )
+
+    def test_resolve_resource_url_candidates_omit_duplicate_fallback(self):
+        self.assertEqual(
+            _resolve_resource_url_candidates(
+                "https://artifacts.example.com/pkg/metadata.json",
+                "pkg+debug.deb",
+            ),
+            ["https://artifacts.example.com/pkg/pkg%2Bdebug.deb"],
+        )
+
+    def test_metadata_resource_path_uses_relative_resource_name(self):
+        self.assertEqual(
+            os.path.basename(
+                _metadata_resource_path(
+                    "/tmp/pkg",
+                    "neat-runtime_2.0.0%2Bmain.abc_arm64.deb",
+                    "https://artifacts.example.com/neat-runtime_2.0.0%252Bmain.abc_arm64.deb",
+                )
+            ),
+            "neat-runtime_2.0.0%2Bmain.abc_arm64.deb",
+        )
+
+    def test_normalize_downloaded_metadata_resource_renames_to_expected_path(self):
+        with TemporaryDirectory() as tmpdir:
+            downloaded = os.path.join(tmpdir, "neat-runtime_2.0.0%252Bmain.abc_arm64.deb")
+            expected = os.path.join(tmpdir, "neat-runtime_2.0.0%2Bmain.abc_arm64.deb")
+            with open(downloaded, "w", encoding="utf-8") as f:
+                f.write("deb")
+
+            local_path = _normalize_downloaded_metadata_resource(downloaded, Path(expected))
+
+            self.assertEqual(local_path, expected)
+            self.assertTrue(os.path.exists(expected))
+            self.assertFalse(os.path.exists(downloaded))
+
+    @patch("sima_cli.install.metadata_installer.download_file_from_url")
+    def test_download_metadata_file_resource_retries_percent_preserving_url(self, mock_download):
+        with TemporaryDirectory() as tmpdir:
+            downloaded = os.path.join(tmpdir, "sima_lmm-2.0.0.dev0%2Bmaster.6-py3-none-any.whl")
+            with open(downloaded, "w", encoding="utf-8") as f:
+                f.write("wheel")
+
+            mock_download.side_effect = [RuntimeError("403 forbidden"), downloaded]
+            expected = Path(tmpdir) / "sima_lmm-2.0.0.dev0%2Bmaster.6-py3-none-any.whl"
+
+            local_path = _download_metadata_file_resource(
+                "sima_lmm-2.0.0.dev0%2Bmaster.6-py3-none-any.whl",
+                [
+                    "https://docs.example.com/pkg/sima_lmm-2.0.0.dev0%252Bmaster.6-py3-none-any.whl",
+                    "https://docs.example.com/pkg/sima_lmm-2.0.0.dev0%2Bmaster.6-py3-none-any.whl",
+                ],
+                tmpdir,
+                expected,
+                False,
+            )
+
+            self.assertEqual(local_path, str(expected))
+            self.assertEqual(mock_download.call_count, 2)
+
+    def test_mark_install_script_executable_sets_execute_bits(self):
+        with TemporaryDirectory() as tmpdir:
+            script_path = os.path.join(tmpdir, "install_neat_framework.sh")
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(script_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+
+            _mark_install_script_executable(
+                {"installation": {"script": "./install_neat_framework.sh"}},
+                tmpdir,
+            )
+
+            mode = os.stat(script_path).st_mode
+            self.assertTrue(mode & stat.S_IXUSR)
+            self.assertTrue(mode & stat.S_IXGRP)
+            self.assertTrue(mode & stat.S_IXOTH)
+
+    def test_mark_install_script_executable_ignores_paths_outside_install_dir(self):
+        with TemporaryDirectory() as tmpdir, TemporaryDirectory() as outside:
+            script_path = os.path.join(outside, "install.sh")
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(script_path, stat.S_IRUSR | stat.S_IWUSR)
+
+            _mark_install_script_executable(
+                {"installation": {"script": script_path}},
+                tmpdir,
+            )
+
+            self.assertFalse(os.stat(script_path).st_mode & stat.S_IXUSR)
 
 
 if __name__ == "__main__":

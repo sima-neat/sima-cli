@@ -298,6 +298,69 @@ def _resolve_resource_url(base_url: str, resource: str) -> str:
     )
     return urljoin(base_url, encoded_resource)
 
+def _resolve_resource_url_candidates(base_url: str, resource: str) -> list[str]:
+    primary_url = _resolve_resource_url(base_url, resource)
+
+    parsed_resource = urlparse(resource)
+    if parsed_resource.scheme or parsed_resource.netloc or "%" not in resource:
+        return [primary_url]
+
+    percent_preserving_resource = "/".join(
+        quote(segment, safe="%")
+        for segment in resource.split("/")
+    )
+    fallback_url = urljoin(base_url, percent_preserving_resource)
+    if fallback_url == primary_url:
+        return [primary_url]
+    return [primary_url, fallback_url]
+
+def _metadata_resource_path(dest_folder: str, resource: str, resource_url: str) -> Path:
+    parsed_resource = urlparse(resource)
+    if parsed_resource.scheme or parsed_resource.netloc:
+        file_name = os.path.basename(urlparse(resource_url).path)
+    else:
+        file_name = os.path.basename(resource)
+
+    if not file_name:
+        raise click.ClickException(f"❌ Cannot determine file name for resource '{resource}'.")
+
+    return Path(dest_folder) / file_name
+
+def _normalize_downloaded_metadata_resource(local_path: str, expected_path: Path) -> str:
+    downloaded_path = Path(local_path)
+    if downloaded_path == expected_path:
+        return local_path
+
+    if expected_path.exists():
+        expected_path.unlink()
+    downloaded_path.rename(expected_path)
+    return str(expected_path)
+
+def _download_metadata_file_resource(
+    resource: str,
+    resource_urls: list[str],
+    dest_folder: str,
+    dest_path: Path,
+    internal: bool,
+) -> str:
+    errors: list[str] = []
+    for index, resource_url in enumerate(resource_urls):
+        try:
+            local_path = download_file_from_url(
+                url=resource_url,
+                dest_folder=dest_folder,
+                internal=internal
+            )
+            return _normalize_downloaded_metadata_resource(local_path, dest_path)
+        except Exception as e:
+            errors.append(f"{resource_url}: {e}")
+            if index < len(resource_urls) - 1:
+                click.echo(
+                    f"⚠️  Download failed for encoded resource URL; retrying percent-preserving URL for '{resource}'."
+                )
+
+    raise click.ClickException("; ".join(errors))
+
 def _download_assets(metadata: dict, base_url: str, dest_folder: str, internal: bool = False, skip_models: bool = False, tag: str = None) -> list:
     """
     Downloads resources defined in metadata to a local destination folder.
@@ -405,10 +468,8 @@ def _download_assets(metadata: dict, base_url: str, dest_folder: str, internal: 
                 continue
 
             # 🌐 Standard file or URL
-            resource_url = _resolve_resource_url(base_url, resource)
-            parsed = urlparse(resource_url)
-            file_name = os.path.basename(parsed.path)
-            dest_path = Path(dest_folder) / file_name
+            resource_urls = _resolve_resource_url_candidates(base_url, resource)
+            dest_path = _metadata_resource_path(dest_folder, resource, resource_urls[0])
 
             if expected_sha256 and dest_path.exists() and dest_path.is_file():
                 existing_sha = _compute_sha256(dest_path)
@@ -416,9 +477,11 @@ def _download_assets(metadata: dict, base_url: str, dest_folder: str, internal: 
                     click.echo(f"♻️  Checksum mismatch for existing file '{dest_path.name}', re-downloading.")
                     dest_path.unlink()
 
-            local_path = download_file_from_url(
-                url=resource_url,
+            local_path = _download_metadata_file_resource(
+                resource=resource,
+                resource_urls=resource_urls,
                 dest_folder=dest_folder,
+                dest_path=dest_path,
                 internal=internal
             )
             if expected_sha256:
@@ -434,6 +497,28 @@ def _download_assets(metadata: dict, base_url: str, dest_folder: str, internal: 
             raise click.ClickException(f"❌ Failed to download resource '{resource}': {e}")
 
     return local_paths
+
+def _mark_install_script_executable(metadata: Dict, install_dir: str) -> None:
+    script = metadata.get("installation", {}).get("script", "")
+    if not isinstance(script, str):
+        return
+
+    script = script.strip()
+    if not script or any(char in script for char in "\n\r;&|`$<>"):
+        return
+
+    script_path = Path(script)
+    if not script_path.is_absolute():
+        script_path = Path(install_dir) / script_path
+    try:
+        resolved = script_path.resolve()
+        install_root = Path(install_dir).resolve()
+        if resolved != install_root and install_root not in resolved.parents:
+            return
+        if resolved.is_file():
+            resolved.chmod(resolved.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    except OSError:
+        return
 
 def selectable_resource_handler(metadata):
     """
@@ -1240,8 +1325,10 @@ def install_from_metadata(metadata_url: str, internal: bool, install_dir: str = 
                 if _is_platform_compatible(metadata, force) or force:
                     local_paths = _download_assets(metadata, metadata_url, install_dir, internal, tag=tag)
                     if len(local_paths) > 0:
+                        _mark_install_script_executable(metadata, install_dir)
                         _combine_multipart_files(install_dir, local_paths=local_paths)
                         _extract_archives_in_folder(install_dir, local_paths)
+                        _mark_install_script_executable(metadata, install_dir)
                         _run_installation_script(metadata=metadata, extract_path=install_dir)
 
     except Exception as e:

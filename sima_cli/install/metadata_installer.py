@@ -11,7 +11,7 @@ import stat
 import shlex
 import platform
 import hashlib
-from urllib.parse import urlparse, quote, urljoin
+from urllib.parse import urlparse, quote, urljoin, unquote
 from typing import Dict
 from tqdm import tqdm
 from pathlib import Path
@@ -361,6 +361,88 @@ def _download_metadata_file_resource(
 
     raise click.ClickException("; ".join(errors))
 
+
+def _resource_basename(resource: str) -> str:
+    parsed = urlparse(resource)
+    path = parsed.path if parsed.scheme or parsed.netloc else resource
+    return unquote(os.path.basename(path)).lower()
+
+
+def _is_wheel_resource(resource: str) -> bool:
+    return _resource_basename(resource).endswith(".whl")
+
+
+def _wheel_platform_tag(resource: str) -> str:
+    name = _resource_basename(resource)
+    if not name.endswith(".whl"):
+        return ""
+    parts = name[:-4].split("-")
+    if len(parts) < 5:
+        return ""
+    return parts[-1].lower()
+
+
+def _current_wheel_platform() -> tuple:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    if system == "darwin":
+        os_family = "mac"
+    elif system == "windows":
+        os_family = "windows"
+    elif system == "linux":
+        os_family = "linux"
+    else:
+        os_family = system
+
+    if machine in {"x86_64", "amd64"}:
+        arch_tokens = {"x86_64", "amd64"}
+    elif machine in {"aarch64", "arm64"}:
+        arch_tokens = {"aarch64", "arm64"}
+    elif machine in {"i386", "i686", "x86"}:
+        arch_tokens = {"i386", "i686", "x86", "win32"}
+    else:
+        arch_tokens = {machine} if machine else set()
+
+    return os_family, arch_tokens
+
+
+def _wheel_arch_matches(platform_tag: str, arch_tokens: set) -> bool:
+    known_arch_tokens = {"x86_64", "amd64", "aarch64", "arm64", "i386", "i686", "x86", "win32"}
+    present_tokens = {token for token in known_arch_tokens if token in platform_tag}
+    return not present_tokens or bool(present_tokens & arch_tokens)
+
+
+def _is_compatible_wheel_resource(resource: str) -> bool:
+    platform_tag = _wheel_platform_tag(resource)
+    if not platform_tag:
+        return True
+    if platform_tag in {"any", "none"}:
+        return True
+
+    os_family, arch_tokens = _current_wheel_platform()
+    if os_family == "mac":
+        os_matches = platform_tag.startswith("macosx") or "macos" in platform_tag
+    elif os_family == "windows":
+        os_matches = platform_tag.startswith("win") or platform_tag in {"win32", "win_amd64", "win_arm64"}
+    elif os_family == "linux":
+        os_matches = "linux" in platform_tag
+    else:
+        os_matches = False
+
+    return os_matches and _wheel_arch_matches(platform_tag, arch_tokens)
+
+
+def _filter_download_compatible_resources(resources: list) -> list:
+    filtered = []
+    for resource in resources:
+        if _is_wheel_resource(resource) and not _is_compatible_wheel_resource(resource):
+            click.echo(f"⏭️  Skipping incompatible wheel for this platform: {resource}")
+            continue
+        filtered.append(resource)
+    return filtered
+
+
 def _download_assets(metadata: dict, base_url: str, dest_folder: str, internal: bool = False, skip_models: bool = False, tag: str = None) -> list:
     """
     Downloads resources defined in metadata to a local destination folder.
@@ -402,8 +484,11 @@ def _download_assets(metadata: dict, base_url: str, dest_folder: str, internal: 
             continue
         filtered_resources.append(r)
 
+    if metadata.get("download-compatible-files-only"):
+        filtered_resources = _filter_download_compatible_resources(filtered_resources)
+
     if not filtered_resources:
-        click.echo("ℹ️ No non-model resources to download.")
+        click.echo("ℹ️ No compatible resources to download.")
         return []
 
     click.echo(f"📥 Downloading {len(filtered_resources)} resource(s) to: {dest_folder}\n")

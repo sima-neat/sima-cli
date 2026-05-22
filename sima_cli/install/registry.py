@@ -103,7 +103,23 @@ def show_metadata(name, version):
     "--variant",
     help="Optional metadata variant name. Writes metadata-<variant>.json instead of metadata.json.",
 )
-def build_package_metadata(artifacts_folder, name, version, description, install_script, selectables, exclude, variant):
+@click.option(
+    "--download-compatible-files-only",
+    is_flag=True,
+    default=False,
+    help="Add download-compatible-files-only so installers download only wheel files compatible with the current platform.",
+)
+def build_package_metadata(
+    artifacts_folder,
+    name,
+    version,
+    description,
+    install_script,
+    selectables,
+    exclude,
+    variant,
+    download_compatible_files_only,
+):
     """
     Generate metadata.json, or metadata-<variant>.json, for sima-cli package installation.
     """
@@ -116,6 +132,7 @@ def build_package_metadata(artifacts_folder, name, version, description, install
             install_script=install_script,
             selectables=selectables,
             exclude=exclude,
+            download_compatible_files_only=download_compatible_files_only,
         )
         output_path = write_metadata(artifacts_folder, metadata, variant=variant)
     except ValueError as exc:

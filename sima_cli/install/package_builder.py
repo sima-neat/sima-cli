@@ -242,6 +242,7 @@ def build_metadata(
     install_script: str = "",
     selectables: Optional[str] = None,
     exclude: Optional[Sequence[str]] = None,
+    download_compatible_files_only: bool = False,
 ) -> Dict:
     artifacts_folder = artifacts_folder.expanduser().resolve()
     if not artifacts_folder.is_dir():
@@ -266,7 +267,7 @@ def build_metadata(
         resolved_description = github_repo_description(artifacts_folder)
 
     size_text = _format_size(total_size)
-    return {
+    metadata = {
         "name": name or default_package_name(artifacts_folder),
         "version": version or default_version(artifacts_folder),
         "release": "",
@@ -284,6 +285,9 @@ def build_metadata(
             "post-message": DEFAULT_POST_MESSAGE,
         },
     }
+    if download_compatible_files_only:
+        metadata["download-compatible-files-only"] = True
+    return metadata
 
 
 def metadata_filename(variant: Optional[str] = None) -> str:

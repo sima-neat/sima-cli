@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from sima_cli.install.metadata_installer import (
     _download_metadata_file_resource,
+    _filter_download_compatible_resources,
     _is_platform_compatible,
     _mark_install_script_executable,
     _metadata_resource_path,
@@ -27,6 +28,53 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
         _mock_version,
     ):
         self.assertTrue(_is_platform_compatible({"platforms": []}))
+
+    @patch("sima_cli.install.metadata_installer.platform.system", return_value="Darwin")
+    @patch("sima_cli.install.metadata_installer.platform.machine", return_value="arm64")
+    def test_download_compatible_resources_keeps_macos_arm_wheels_and_non_wheels(
+        self,
+        _mock_machine,
+        _mock_system,
+    ):
+        resources = [
+            "install.sh",
+            "pkg-1.0.0-py3-none-any.whl",
+            "pkg-1.0.0-py3-none-macosx_11_0_arm64.whl",
+            "pkg-1.0.0-py3-none-macosx_10_9_x86_64.whl",
+            "pkg-1.0.0-py3-none-manylinux2014_aarch64.whl",
+            "pkg-1.0.0-py3-none-win_amd64.whl",
+        ]
+
+        self.assertEqual(
+            _filter_download_compatible_resources(resources),
+            [
+                "install.sh",
+                "pkg-1.0.0-py3-none-any.whl",
+                "pkg-1.0.0-py3-none-macosx_11_0_arm64.whl",
+            ],
+        )
+
+    @patch("sima_cli.install.metadata_installer.platform.system", return_value="Linux")
+    @patch("sima_cli.install.metadata_installer.platform.machine", return_value="x86_64")
+    def test_download_compatible_resources_keeps_linux_x86_wheels(
+        self,
+        _mock_machine,
+        _mock_system,
+    ):
+        resources = [
+            "pkg-1.0.0-py3-none-any.whl",
+            "pkg-1.0.0-cp311-cp311-manylinux2014_x86_64.whl",
+            "pkg-1.0.0-cp311-cp311-linux_aarch64.whl",
+            "pkg-1.0.0-py3-none-macosx_11_0_arm64.whl",
+        ]
+
+        self.assertEqual(
+            _filter_download_compatible_resources(resources),
+            [
+                "pkg-1.0.0-py3-none-any.whl",
+                "pkg-1.0.0-cp311-cp311-manylinux2014_x86_64.whl",
+            ],
+        )
 
     def test_resolve_resource_url_encodes_artifact_filename_characters(self):
         self.assertEqual(

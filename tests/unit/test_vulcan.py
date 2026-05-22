@@ -239,6 +239,35 @@ class VulcanArtifactTests(unittest.TestCase):
 
 
 class VulcanCommandTests(unittest.TestCase):
+    def test_neat_command_is_visible_and_vulcan_alias_is_hidden(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("neat", result.output)
+        self.assertNotIn("vulcan", result.output)
+
+    def test_neat_download_help_is_registered(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["neat", "download", "--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Download artifacts for REPO", result.output)
+        self.assertIn("--env [dev|production|staging]", result.output)
+
+    def test_neat_group_accepts_env_before_download(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
+            download_mock.return_value = (
+                _fake_result(environment="dev", base_url=ENV_BASE_URLS["dev"]),
+                None,
+            )
+            result = runner.invoke(main, ["neat", "--env", "dev", "download", "core", "main"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(download_mock.call_args.kwargs["environment"], "dev")
+        self.assertIsNone(download_mock.call_args.kwargs["base_url"])
+
     def test_vulcan_download_help_is_registered(self):
         runner = CliRunner()
         result = runner.invoke(main, ["vulcan", "download", "--help"])
@@ -281,7 +310,7 @@ class VulcanCommandTests(unittest.TestCase):
             result = runner.invoke(main, ["vulcan", "--env", "staging", "download", "core", "main"])
 
         self.assertNotEqual(result.exit_code, 0, result.output)
-        self.assertIn("Vulcan staging environment is not yet available to use", result.output)
+        self.assertIn("Artifact environment 'staging' is not yet available to use", result.output)
         download_mock.assert_not_called()
 
     def test_vulcan_install_help_is_registered(self):
@@ -289,7 +318,7 @@ class VulcanCommandTests(unittest.TestCase):
         result = runner.invoke(main, ["vulcan", "install", "--help"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Install a Vulcan package from TARGET", result.output)
+        self.assertIn("Install a Neat artifact package from TARGET", result.output)
 
     def test_vulcan_install_resolves_metadata_and_installs(self):
         runner = CliRunner()
@@ -385,14 +414,14 @@ class VulcanCommandTests(unittest.TestCase):
         )
         install_mock.assert_not_called()
 
-    def test_top_level_install_forwards_vulcan_options(self):
+    def test_top_level_install_forwards_neat_options(self):
         runner = CliRunner()
         with patch("sima_cli.cli.install_vulcan_package") as install_mock:
             result = runner.invoke(
                 main,
                 [
                     "install",
-                    "--vulcan",
+                    "--neat",
                     "--env",
                     "dev",
                     "--base-url",
@@ -417,20 +446,28 @@ class VulcanCommandTests(unittest.TestCase):
             json_output=False,
         )
 
+    def test_top_level_install_hidden_vulcan_alias_still_works(self):
+        runner = CliRunner()
+        with patch("sima_cli.cli.install_vulcan_package") as install_mock:
+            result = runner.invoke(main, ["install", "--vulcan", "--env", "dev", "internals"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(install_mock.call_args.kwargs["target"], "internals")
+
     def test_top_level_install_vulcan_json_forwards_without_installing_legacy_path(self):
         runner = CliRunner()
         with patch("sima_cli.cli.install_vulcan_package") as install_mock:
-            result = runner.invoke(main, ["install", "--vulcan", "--env", "dev", "--json", "internals"])
+            result = runner.invoke(main, ["install", "--neat", "--env", "dev", "--json", "internals"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(install_mock.call_args.kwargs["json_output"])
 
     def test_top_level_install_vulcan_requires_target(self):
         runner = CliRunner()
-        result = runner.invoke(main, ["install", "--vulcan", "--env", "dev"])
+        result = runner.invoke(main, ["install", "--neat", "--env", "dev"])
 
         self.assertNotEqual(result.exit_code, 0, result.output)
-        self.assertIn("You must specify a Vulcan target", result.output)
+        self.assertIn("You must specify a Neat target", result.output)
 
     def test_sdk_help_is_visible(self):
         runner = CliRunner()
@@ -438,6 +475,7 @@ class VulcanCommandTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("sdk", result.output)
+        self.assertIn("neat", result.output)
         self.assertNotIn("vulcan", result.output)
 
 

@@ -60,8 +60,10 @@ jobs:
           python -m build --wheel
 
           python - <<'PY'
+          import hashlib
           import json
           import os
+          import textwrap
           import zipfile
           from pathlib import Path
 
@@ -87,8 +89,92 @@ jobs:
 
           target_stub = dist / "install.py"
           target_stub.write_text(Path("scripts/install/install.py").read_text(encoding="utf-8"), encoding="utf-8")
+          package_installer = dist / "install_vulcan_package.py"
+          package_installer.write_text(textwrap.dedent(r'''
+              #!/usr/bin/env python3
+              """Install the downloaded sima-cli Vulcan package."""
+
+              from __future__ import annotations
+
+              import platform
+              import subprocess
+              import tempfile
+              import zipfile
+              from pathlib import Path
+
+
+              def find_one(root: Path, pattern: str) -> Path:
+                  matches = sorted(root.glob(pattern))
+                  if not matches:
+                      raise SystemExit(f"Unable to find {pattern} under {root}")
+                  return matches[-1]
+
+
+              def main() -> int:
+                  package = find_one(Path.cwd(), "sima-cli-package-*.zip")
+                  with tempfile.TemporaryDirectory(prefix="sima-cli-vulcan-install-") as tmp:
+                      package_dir = Path(tmp) / "package"
+                      package_dir.mkdir(parents=True, exist_ok=True)
+                      with zipfile.ZipFile(package) as zf:
+                          zf.extractall(package_dir)
+
+                      wheel = find_one(package_dir, "*.whl")
+                      if platform.system().lower() == "windows":
+                          helper = find_one(package_dir, "sima-cli-install.bat")
+                          cmd = ["cmd.exe", "/c", str(helper), str(wheel)]
+                      else:
+                          helper = find_one(package_dir, "sima-cli-installer.sh")
+                          helper.chmod(helper.stat().st_mode | 0o755)
+                          cmd = ["bash", str(helper), str(wheel)]
+                      subprocess.run(cmd, check=True)
+                  return 0
+
+
+              if __name__ == "__main__":
+                  raise SystemExit(main())
+              ''').lstrip(), encoding="utf-8")
+          package_installer.chmod(0o755)
+
+          resources = [
+              package_installer.name,
+              package.name,
+          ]
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          total_size = sum((dist / resource).stat().st_size for resource in resources)
+          metadata_json = {
+              "name": "gh:sima-neat/sima-cli",
+              "version": version,
+              "release": "",
+              "description": "SiMa.ai command-line tooling",
+              "platforms": [],
+              "resources": resources,
+              "resources-checksum": {
+                  resource: sha256(dist / resource)
+                  for resource in resources
+              },
+              "selectable-resources": [],
+              "size": {
+                  "download": f"{max(1, (total_size + 1023) // 1024)}KB",
+                  "install": f"{max(1, (total_size + 1023) // 1024)}KB",
+              },
+              "installation": {
+                  "script": "python3 install_vulcan_package.py || python install_vulcan_package.py",
+                  "post-message": "[bold]sima-cli installed successfully.[/bold]\n",
+              },
+          }
+          metadata_path = dist / "metadata.json"
+          metadata_path.write_text(json.dumps(metadata_json, indent=2) + "\n", encoding="utf-8")
           print(f"Created {package}")
           print(f"Created {target_stub}")
+          print(f"Created {package_installer}")
+          print(f"Created {metadata_path}")
           PY
 
           python -m pip install dist/*.whl
@@ -102,6 +188,9 @@ jobs:
           mapfile -t WHEELS < <(find dist -maxdepth 1 -type f -name '*.whl' | sort)
           mapfile -t PACKAGES < <(find dist -maxdepth 1 -type f -name 'sima-cli-package-*.zip' | sort)
           test -f dist/install.py
+          test -f dist/install_vulcan_package.py
+          test -f dist/metadata.json
+          python3 -m json.tool dist/metadata.json >/dev/null
 
           if [[ "${#WHEELS[@]}" -ne 1 || "${#PACKAGES[@]}" -ne 1 ]]; then
             echo "Expected exactly one sima-cli wheel and one installer package." >&2
@@ -125,6 +214,17 @@ jobs:
               raise SystemExit(f"{package} is missing {missing}")
           if not any(name.endswith(".whl") for name in names):
               raise SystemExit(f"{package} does not contain a wheel")
+
+          import json
+          metadata = json.loads(Path("dist/metadata.json").read_text(encoding="utf-8"))
+          resources = metadata.get("resources", [])
+          required_resources = {"install_vulcan_package.py", package.name}
+          missing_resources = sorted(required_resources - set(resources))
+          if missing_resources:
+              raise SystemExit(f"metadata.json is missing resources: {missing_resources}")
+          for resource in resources:
+              if not (Path("dist") / resource).is_file():
+                  raise SystemExit(f"metadata.json references missing resource: {resource}")
           PY
           ls -lh dist
 
@@ -159,4 +259,4 @@ jobs:
       artifact_folder: "."
       artifact_pattern: sima-cli-dist
       artifact_glob: "*"
-      min_artifact_count: 3
+      min_artifact_count: 5

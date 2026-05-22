@@ -24,112 +24,124 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  build:
+    name: Build sima-cli
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build and test
+        run: |
+          set -euo pipefail
+
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m pip install -r dev-requirements.txt
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="$(python scripts/set_build_version.py --tag "${GITHUB_REF_NAME}")"
+          else
+            ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+            version="$(python scripts/set_build_version.py --ref "${ref_name}" --sha "${GITHUB_SHA}")"
+          fi
+          echo "Building sima-cli ${version}"
+
+          python -m build --wheel
+
+          python - <<'PY'
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+
+          dist = Path("dist")
+          wheel = sorted(dist.glob("*.whl"))[-1]
+          version = wheel.name.split("-")[1]
+          package = dist / f"sima-cli-package-{version}.zip"
+          metadata = {
+              "wheel": wheel.name,
+              "helpers": [
+                  "sima-cli-installer.sh",
+                  "sima-cli-install.bat",
+              ],
+              "commit": os.environ["GITHUB_SHA"],
+              "ref": os.environ.get("GITHUB_HEAD_REF") or os.environ["GITHUB_REF_NAME"],
+          }
+
+          with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+              zf.write(wheel, wheel.name)
+              zf.write("scripts/install/sima-cli-installer.sh", "sima-cli-installer.sh")
+              zf.write("scripts/install/sima-cli-install.bat", "sima-cli-install.bat")
+              zf.writestr("install_metadata.json", json.dumps(metadata, indent=2) + "\n")
+
+          target_stub = dist / "install.py"
+          target_stub.write_text(Path("scripts/install/install.py").read_text(encoding="utf-8"), encoding="utf-8")
+          print(f"Created {package}")
+          print(f"Created {target_stub}")
+          PY
+
+          python -m pip install dist/*.whl
+          scripts/run-tests.sh unit
+          python scripts/check_py_compatibility.py sima_cli --targets "3.8,3.9,3.10,3.11,3.12,3.13,3.14"
+
+      - name: Validate dist artifacts
+        run: |
+          set -euo pipefail
+
+          mapfile -t WHEELS < <(find dist -maxdepth 1 -type f -name '*.whl' | sort)
+          mapfile -t PACKAGES < <(find dist -maxdepth 1 -type f -name 'sima-cli-package-*.zip' | sort)
+          test -f dist/install.py
+
+          if [[ "${#WHEELS[@]}" -ne 1 || "${#PACKAGES[@]}" -ne 1 ]]; then
+            echo "Expected exactly one sima-cli wheel and one installer package." >&2
+            echo "wheels: ${#WHEELS[@]}" >&2
+            printf '  %s\n' "${WHEELS[@]}" >&2 || true
+            echo "packages: ${#PACKAGES[@]}" >&2
+            printf '  %s\n' "${PACKAGES[@]}" >&2 || true
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+
+          package = sorted(Path("dist").glob("sima-cli-package-*.zip"))[-1]
+          with zipfile.ZipFile(package) as zf:
+              names = set(zf.namelist())
+          required = {"sima-cli-installer.sh", "sima-cli-install.bat", "install_metadata.json"}
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"{package} is missing {missing}")
+          if not any(name.endswith(".whl") for name in names):
+              raise SystemExit(f"{package} does not contain a wheel")
+          PY
+          ls -lh dist
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: sima-cli-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 3
+
   resolve-vulcan-config:
     name: Resolve Vulcan Config
+    needs: build
     uses: sima-neat/.github/.github/workflows/vulcan-resolve-config.yml@main
     with:
       vulcan_env: ${{ vars.VULCAN_ENV || 'dev' }}
-
-  build:
-    name: Build sima-cli on Vulcan
-    needs: resolve-vulcan-config
-    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@main
-    with:
-      vulcan_env: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
-      sdk_cache: ${{ needs.resolve-vulcan-config.outputs.sdk_cache }}
-      capacity: ${{ needs.resolve-vulcan-config.outputs.capacity }}
-      fetch_depth: 0
-      checkout_submodules: false
-      ensure_sdk_container: false
-      artifact_name: sima-cli-dist
-      artifact_path: dist/*
-      artifact_retention_days: 3
-      build_command: |
-        set -euo pipefail
-
-        python3 -m venv .venv
-        source .venv/bin/activate
-        python -m pip install --upgrade pip
-        python -m pip install build
-        python -m pip install -r dev-requirements.txt
-
-        if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-          version="$(python scripts/set_build_version.py --tag "${GITHUB_REF_NAME}")"
-        else
-          ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          version="$(python scripts/set_build_version.py --ref "${ref_name}" --sha "${GITHUB_SHA}")"
-        fi
-        echo "Building sima-cli ${version}"
-
-        python -m build --wheel
-
-        python - <<'PY'
-        import json
-        import os
-        import zipfile
-        from pathlib import Path
-
-        dist = Path("dist")
-        wheel = sorted(dist.glob("*.whl"))[-1]
-        version = wheel.name.split("-")[1]
-        package = dist / f"sima-cli-package-{version}.zip"
-        metadata = {
-            "wheel": wheel.name,
-            "helpers": [
-                "sima-cli-installer.sh",
-                "sima-cli-install.bat",
-            ],
-            "commit": os.environ["GITHUB_SHA"],
-            "ref": os.environ.get("GITHUB_HEAD_REF") or os.environ["GITHUB_REF_NAME"],
-        }
-
-        with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.write(wheel, wheel.name)
-            zf.write("scripts/install/sima-cli-installer.sh", "sima-cli-installer.sh")
-            zf.write("scripts/install/sima-cli-install.bat", "sima-cli-install.bat")
-            zf.writestr("install_metadata.json", json.dumps(metadata, indent=2) + "\n")
-
-        target_stub = dist / "install.py"
-        target_stub.write_text(Path("scripts/install/install.py").read_text(encoding="utf-8"), encoding="utf-8")
-        print(f"Created {package}")
-        print(f"Created {target_stub}")
-        PY
-
-        python -m pip install dist/*.whl
-        scripts/run-tests.sh unit
-        python scripts/check_py_compatibility.py sima_cli --targets "3.8,3.9,3.10,3.11,3.12,3.13,3.14"
-
-      post_build_command: |
-        set -euo pipefail
-
-        mapfile -t WHEELS < <(find dist -maxdepth 1 -type f -name '*.whl' | sort)
-        mapfile -t PACKAGES < <(find dist -maxdepth 1 -type f -name 'sima-cli-package-*.zip' | sort)
-        test -f dist/install.py
-
-        if [[ "${#WHEELS[@]}" -ne 1 || "${#PACKAGES[@]}" -ne 1 ]]; then
-          echo "Expected exactly one sima-cli wheel and one installer package." >&2
-          echo "wheels: ${#WHEELS[@]}" >&2
-          printf '  %s\n' "${WHEELS[@]}" >&2 || true
-          echo "packages: ${#PACKAGES[@]}" >&2
-          printf '  %s\n' "${PACKAGES[@]}" >&2 || true
-          exit 1
-        fi
-
-        python3 - <<'PY'
-        import zipfile
-        from pathlib import Path
-
-        package = sorted(Path("dist").glob("sima-cli-package-*.zip"))[-1]
-        with zipfile.ZipFile(package) as zf:
-            names = set(zf.namelist())
-        required = {"sima-cli-installer.sh", "sima-cli-install.bat", "install_metadata.json"}
-        missing = sorted(required - names)
-        if missing:
-            raise SystemExit(f"{package} is missing {missing}")
-        if not any(name.endswith(".whl") for name in names):
-            raise SystemExit(f"{package} does not contain a wheel")
-        PY
-        ls -lh dist
 
   publish-vulcan-artifacts:
     name: Publish to Vulcan

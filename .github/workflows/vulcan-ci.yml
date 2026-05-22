@@ -27,6 +27,11 @@ jobs:
   build:
     name: Build sima-cli
     runs-on: ubuntu-latest
+    outputs:
+      branch_key: ${{ steps.meta.outputs.branch_key }}
+      ref_name: ${{ steps.meta.outputs.ref_name }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      version: ${{ steps.meta.outputs.version }}
 
     steps:
       - name: Checkout
@@ -39,6 +44,33 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="$(python scripts/set_build_version.py --tag "${GITHUB_REF_NAME}")"
+          else
+            ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+            version="$(python scripts/set_build_version.py --ref "${ref_name}" --sha "${GITHUB_SHA}")"
+          fi
+          ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          branch_key="$(python3 - <<'PY'
+          import os
+          from urllib.parse import quote
+          ref_name = os.environ.get("GITHUB_HEAD_REF") or os.environ["GITHUB_REF_NAME"]
+          print(quote(ref_name, safe=""))
+          PY
+          )"
+          short_sha="$(printf '%s' "${GITHUB_SHA}" | cut -c1-12)"
+          {
+            echo "version=${version}"
+            echo "ref_name=${ref_name}"
+            echo "branch_key=${branch_key}"
+            echo "short_sha=${short_sha}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Building sima-cli ${version}"
+
       - name: Build and test
         run: |
           set -euo pipefail
@@ -48,14 +80,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build
           python -m pip install -r dev-requirements.txt
-
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            version="$(python scripts/set_build_version.py --tag "${GITHUB_REF_NAME}")"
-          else
-            ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-            version="$(python scripts/set_build_version.py --ref "${ref_name}" --sha "${GITHUB_SHA}")"
-          fi
-          echo "Building sima-cli ${version}"
 
           python -m build --wheel
 
@@ -236,6 +260,50 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  compatibility-test:
+    name: Compatibility Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.8"
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set package version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="$(python scripts/set_build_version.py --tag "${GITHUB_REF_NAME}")"
+          else
+            ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+            version="$(python scripts/set_build_version.py --ref "${ref_name}" --sha "${GITHUB_SHA}")"
+          fi
+          echo "Testing sima-cli ${version}"
+
+      - name: Run compatibility tests
+        run: |
+          set -euo pipefail
+          python scripts/check_py_compatibility.py sima_cli --targets "${{ matrix.python-version }}"
+          scripts/run-tests.sh compat --versions "${{ matrix.python-version }}" --strict
+
   resolve-vulcan-config:
     name: Resolve Vulcan Config
     needs: build
@@ -248,6 +316,7 @@ jobs:
     needs:
       - resolve-vulcan-config
       - build
+      - compatibility-test
     uses: sima-neat/.github/.github/workflows/vulcan-publish-artifacts.yml@main
     with:
       aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
@@ -260,3 +329,164 @@ jobs:
       artifact_pattern: sima-cli-dist
       artifact_glob: "*"
       min_artifact_count: 5
+
+  e2e-install:
+    name: E2E Install (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    needs:
+      - build
+      - publish-vulcan-artifacts
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Ubuntu x86
+            os: ubuntu-24.04
+          - name: Ubuntu ARM64
+            os: ubuntu-24.04-arm
+          - name: Windows
+            os: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install workflow sima-cli
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/workflow-sima-cli"
+          "${RUNNER_TEMP}/workflow-sima-cli/bin/python" -m pip install --upgrade pip
+          "${RUNNER_TEMP}/workflow-sima-cli/bin/python" -m pip install .
+          echo "${RUNNER_TEMP}/workflow-sima-cli/bin" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/workflow-sima-cli/bin/sima-cli" version
+
+      - name: Install workflow sima-cli on native Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          sima-cli version
+
+      - name: Install candidate on native Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "$env:RUNNER_TEMP\sima-cli-vulcan-install"
+          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" version
+
+      - name: Set up WSL2 Ubuntu on Windows
+        if: runner.os == 'Windows'
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          update: "true"
+          additional-packages: ca-certificates curl python3 python3-venv python3-pip docker.io
+
+      - name: Verify Docker on Ubuntu
+        if: runner.os == 'Linux'
+        run: |
+          docker info
+
+      - name: Start Docker in WSL2
+        if: runner.os == 'Windows'
+        shell: wsl-bash {0}
+        run: |
+          sudo nohup dockerd > /tmp/dockerd.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+              docker info
+              sudo chmod 666 /var/run/docker.sock
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/dockerd.log
+          exit 1
+
+      - name: Install candidate
+        if: runner.os != 'Windows' && runner.os != 'macOS'
+        run: |
+          set -euo pipefail
+          sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "${RUNNER_TEMP}/sima-cli-vulcan-install"
+          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
+          docker rm -f ghcr.io-sima-neat-sdk-latest || true
+          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
+
+      - name: Install candidate on macOS
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "${RUNNER_TEMP}/sima-cli-vulcan-install"
+          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          echo "Skipping Neat SDK container setup on GitHub-hosted macOS: no reliable Docker backend is available."
+
+      - name: Install candidate in WSL2
+        if: runner.os == 'Windows'
+        shell: wsl-bash {0}
+        run: |
+          python3 -m venv /tmp/workflow-sima-cli
+          /tmp/workflow-sima-cli/bin/python -m pip install --upgrade pip
+          /tmp/workflow-sima-cli/bin/python -m pip install .
+          /tmp/workflow-sima-cli/bin/sima-cli version
+          /tmp/workflow-sima-cli/bin/sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir /tmp/sima-cli-vulcan-install
+          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
+          docker rm -f ghcr.io-sima-neat-sdk-latest || true
+          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
+
+  promote-latest:
+    name: Promote Tested Latest
+    runs-on: ubuntu-latest
+    needs:
+      - build
+      - resolve-vulcan-config
+      - e2e-install
+    environment: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+    env:
+      AWS_REGION: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+      ARTIFACT_BUCKET: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
+      ROLE_TO_ASSUME: ${{ needs.resolve-vulcan-config.outputs.artifact_publisher_role_arn }}
+      SSE_KMS_KEY_ID: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ needs.resolve-vulcan-config.outputs.artifact_cloudfront_distribution_id }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+          role-to-assume: ${{ needs.resolve-vulcan-config.outputs.artifact_publisher_role_arn }}
+          role-session-name: vulcan-promote-${{ github.run_id }}
+
+      - name: Promote commit as latest
+        run: |
+          set -euo pipefail
+          mkdir -p _vulcan/promote
+          printf '%s\n' "${{ needs.build.outputs.short_sha }}" > _vulcan/promote/latest.tag
+
+          s3_args=(--content-type text/plain --sse aws:kms)
+          if [[ -n "${SSE_KMS_KEY_ID:-}" ]]; then
+            s3_args+=(--sse-kms-key-id "${SSE_KMS_KEY_ID}")
+          fi
+
+          aws s3 cp \
+            _vulcan/promote/latest.tag \
+            "s3://${ARTIFACT_BUCKET}/sima-cli/${{ needs.build.outputs.branch_key }}/latest.tag" \
+            "${s3_args[@]}"
+
+          if [[ -n "${CLOUDFRONT_DISTRIBUTION_ID:-}" ]]; then
+            aws cloudfront create-invalidation \
+              --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}" \
+              --paths "/sima-cli/${{ needs.build.outputs.branch_key }}/latest.tag"
+          fi

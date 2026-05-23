@@ -129,10 +129,11 @@ sima-cli vulcan download --env production core main
   - `dev`: `https://artifacts.neat.paconsultings.com`
   - `staging`: `https://artifacts.stg.neat.sima.ai`
   - `production`: `https://artifacts.neat.sima.ai`
-- `staging` and `production` are not yet available for Vulcan downloads; use `--env dev` for now.
+- `dev` and `staging` are available for Vulcan downloads. `production` is not yet available.
 - Usage:
-  - `sima-cli vulcan --env {dev|staging|production} download [REPO] [BRANCH_OR_TAG]`
-  - `sima-cli vulcan download --env {dev|staging|production} [REPO] [BRANCH_OR_TAG]`
+  - `sima-cli vulcan --env {dev|stg|staging|prd|prod|production} download [REPO] [BRANCH_OR_TAG]`
+  - `sima-cli vulcan download --env {dev|stg|staging|prd|prod|production} [REPO] [BRANCH_OR_TAG]`
+  - Shortcut flags are also available: `--dev`, `--stg`/`--staging`, and `--prd`/`--prod`.
   - If `REPO` is omitted, the CLI prompts for a repository.
   - If `BRANCH_OR_TAG` is omitted, the CLI downloads `branches.json` and prompts for a branch.
   - For automation, pass both values and add `--json` for structured output.

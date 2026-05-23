@@ -14,6 +14,8 @@ from sima_cli.vulcan.artifacts import (
     ENV_BASE_URLS,
     VulcanArtifactError,
     download_vulcan_artifacts,
+    github_auth_token,
+    github_ref_short_sha,
     join_url,
     parse_install_target,
     ref_key,
@@ -42,9 +44,11 @@ class FakeClient:
     def __init__(self, payloads):
         self.payloads = payloads
         self.urls = []
+        self.headers = []
 
     def read_bytes(self, url, headers=None):
         self.urls.append(url)
+        self.headers.append(headers or {})
         try:
             payload = self.payloads[url]
         except KeyError as exc:
@@ -236,6 +240,31 @@ class VulcanArtifactTests(unittest.TestCase):
             result.metadata_url,
             f"{base_url}/internals/2.0.0/1234567890ab/metadata.json",
         )
+
+    def test_github_ref_short_sha_uses_exported_github_token(self):
+        client = FakeClient({
+            "https://api.github.com/repos/sima-neat/internals/commits/vulcan-prep": json.dumps(
+                {"sha": "1234567890abcdef1234567890abcdef12345678"}
+            ),
+        })
+
+        with patch.dict(os.environ, {"GH_TOKEN": "Bearer ghp_test"}, clear=False):
+            result = github_ref_short_sha(client, "internals", "vulcan-prep")
+
+        self.assertEqual(result, "1234567890ab")
+        self.assertEqual(client.headers[0]["Authorization"], "Bearer ghp_test")
+
+    def test_github_auth_token_falls_back_to_gh_cli(self):
+        completed = type("Completed", (), {"stdout": "gho_from_cli\n"})()
+
+        with patch.dict(os.environ, {"GH_TOKEN": "", "GITHUB_TOKEN": ""}, clear=False), patch(
+            "sima_cli.vulcan.artifacts.subprocess.run",
+            return_value=completed,
+        ) as run_mock:
+            result = github_auth_token()
+
+        self.assertEqual(result, "gho_from_cli")
+        run_mock.assert_called_once()
 
 
 class VulcanCommandTests(unittest.TestCase):

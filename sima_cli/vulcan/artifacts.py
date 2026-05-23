@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import urllib.parse
 from dataclasses import dataclass
@@ -198,7 +199,7 @@ def github_ref_short_sha(client: ArtifactClient, repository: str, ref: str) -> s
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    token = github_auth_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
@@ -210,6 +211,36 @@ def github_ref_short_sha(client: ArtifactClient, repository: str, ref: str) -> s
     if not sha:
         raise VulcanArtifactError(f"{url} did not include a commit sha.")
     return sha[:12]
+
+
+def github_auth_token() -> Optional[str]:
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        return _normalize_github_token(token)
+
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "token"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+    token = completed.stdout.strip()
+    return _normalize_github_token(token) if token else None
+
+
+def _normalize_github_token(token: str) -> str:
+    value = token.strip()
+    lower = value.lower()
+    if lower.startswith("bearer "):
+        return value[7:].strip()
+    if lower.startswith("token "):
+        return value[6:].strip()
+    return value
 
 
 def parse_install_target(target: str) -> Tuple[str, str, str]:

@@ -29,7 +29,7 @@ def install_vulcan_package(
 
     if resolved_environment not in AVAILABLE_ENVIRONMENTS:
         raise click.ClickException(
-            f"Vulcan {resolved_environment} environment is not yet available to use. "
+            f"Artifact environment '{resolved_environment}' is not yet available to use. "
             "Please use --env dev for now."
         )
 
@@ -69,6 +69,31 @@ def install_vulcan_package(
     )
 
 
+def _set_artifact_context(ctx, environment, base_url):
+    ctx.ensure_object(dict)
+    ctx.obj["vulcan_environment"] = environment.lower() if environment else None
+    ctx.obj["vulcan_base_url"] = base_url
+
+
+@click.group(name="neat", help="Discover, download, and install Neat build artifacts.")
+@click.option(
+    "--env",
+    "environment",
+    type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
+    default=None,
+    help="Artifact environment. Defaults to production.",
+)
+@click.option(
+    "--base-url",
+    default=None,
+    envvar="SIMA_NEAT_BASE_URL",
+    help="Override the artifact base URL.",
+)
+@click.pass_context
+def neat_group(ctx, environment, base_url):
+    _set_artifact_context(ctx, environment, base_url)
+
+
 @click.group(name="vulcan", help="Discover and download Vulcan build artifacts.", hidden=True)
 @click.option(
     "--env",
@@ -85,12 +110,10 @@ def install_vulcan_package(
 )
 @click.pass_context
 def vulcan_group(ctx, environment, base_url):
-    ctx.ensure_object(dict)
-    ctx.obj["vulcan_environment"] = environment.lower() if environment else None
-    ctx.obj["vulcan_base_url"] = base_url
+    _set_artifact_context(ctx, environment, base_url)
 
 
-@vulcan_group.command("download")
+@click.command("download")
 @click.argument("repo", required=False)
 @click.argument("ref", required=False)
 @click.option(
@@ -98,18 +121,18 @@ def vulcan_group(ctx, environment, base_url):
     "environment",
     type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
     default=None,
-    help="Artifact environment. Overrides `sima-cli vulcan --env`.",
+    help="Artifact environment. Overrides the parent --env.",
 )
 @click.option(
     "--base-url",
     default=None,
-    envvar="SIMA_VULCAN_BASE_URL",
-    help="Override the artifact base URL. Overrides `sima-cli vulcan --base-url`.",
+    envvar="SIMA_NEAT_BASE_URL",
+    help="Override the artifact base URL. Overrides the parent --base-url.",
 )
 @click.option(
     "-o",
     "--output",
-    default="vulcan-downloads",
+    default="neat-downloads",
     show_default=True,
     type=click.Path(file_okay=False, dir_okay=True, path_type=str),
     help="Output directory.",
@@ -133,7 +156,7 @@ def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, j
 
     if resolved_environment not in AVAILABLE_ENVIRONMENTS:
         raise click.ClickException(
-            f"Vulcan {resolved_environment} environment is not yet available to use. "
+            f"Artifact environment '{resolved_environment}' is not yet available to use. "
             "Please use --env dev for now."
         )
 
@@ -167,20 +190,20 @@ def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, j
         click.echo(f"  {path}")
 
 
-@vulcan_group.command("install")
+@click.command("install")
 @click.argument("target")
 @click.option(
     "--env",
     "environment",
     type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
     default=None,
-    help="Artifact environment. Overrides `sima-cli vulcan --env`.",
+    help="Artifact environment. Overrides the parent --env.",
 )
 @click.option(
     "--base-url",
     default=None,
-    envvar="SIMA_VULCAN_BASE_URL",
-    help="Override the artifact base URL. Overrides `sima-cli vulcan --base-url`.",
+    envvar="SIMA_NEAT_BASE_URL",
+    help="Override the artifact base URL. Overrides the parent --base-url.",
 )
 @click.option(
     "-d",
@@ -206,7 +229,7 @@ def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, j
 @click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
 @click.pass_context
 def install(ctx, target, environment, base_url, install_dir, package_type, force, json_output):
-    """Install a Vulcan package from TARGET.
+    """Install a Neat artifact package from TARGET.
 
     TARGET supports REPO, REPO@branch, REPO@branch:spec, REPO@latest, or
     REPO@githash. If no branch or spec is provided, latest main is used.
@@ -223,4 +246,9 @@ def install(ctx, target, environment, base_url, install_dir, package_type, force
 
 
 def register_vulcan_commands(main):
+    neat_group.add_command(download)
+    neat_group.add_command(install)
+    main.add_command(neat_group)
+    vulcan_group.add_command(download)
+    vulcan_group.add_command(install)
     main.add_command(vulcan_group)

@@ -505,21 +505,22 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
 @click.argument("component", required=False)
 @click.option("-v", "--version", help="SDK version (required for SDK-dependent components unless --metadata is provided)")
 @click.option("-m", "--mirror", help="URL to a metadata.json file for generic installation")
-@click.option("-t", "--tag", help="Tag of the package. With --vulcan, metadata variant type such as minimum.")
-@click.option("--vulcan", "use_vulcan", is_flag=True, help="Install from Vulcan artifacts using the Vulcan package resolver.")
+@click.option("-t", "--tag", help="Tag of the package. With --neat, metadata variant type such as minimum.")
+@click.option("--neat", "use_neat", is_flag=True, help="Install from Neat artifacts using the Neat package resolver.")
+@click.option("--vulcan", "use_vulcan", is_flag=True, hidden=True)
 @click.option(
     "--env",
     "vulcan_environment",
     type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
     default=None,
-    help="Vulcan artifact environment. Used with --vulcan. Defaults to production.",
+    help="Neat artifact environment. Used with --neat. Defaults to production.",
 )
 @click.option(
     "--base-url",
     "vulcan_base_url",
     default=None,
-    envvar="SIMA_VULCAN_BASE_URL",
-    help="Override the Vulcan artifact base URL. Used with --vulcan.",
+    envvar="SIMA_NEAT_BASE_URL",
+    help="Override the Neat artifact base URL. Used with --neat.",
 )
 @click.option(
     "-d",
@@ -527,9 +528,9 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
     default=".",
     show_default=True,
     type=click.Path(file_okay=False, dir_okay=True, path_type=str),
-    help="Directory where Vulcan package resources are downloaded and installed. Used with --vulcan.",
+    help="Directory where Neat package resources are downloaded and installed. Used with --neat.",
 )
-@click.option("--json", "json_output", is_flag=True, help="With --vulcan, print resolved metadata URL and exit.")
+@click.option("--json", "json_output", is_flag=True, help="With --neat, print resolved metadata URL and exit.")
 @click.option(
     "-f",
     "--force",
@@ -538,7 +539,7 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
     help="Force installation even if compatibility checks fail.",
 )
 @click.pass_context
-def install_cmd(ctx, component, version, mirror, tag, use_vulcan, vulcan_environment, vulcan_base_url, install_dir, json_output, force):
+def install_cmd(ctx, component, version, mirror, tag, use_neat, use_vulcan, vulcan_environment, vulcan_base_url, install_dir, json_output, force):
     """
     Install SiMa packages.
 
@@ -573,15 +574,18 @@ def install_cmd(ctx, component, version, mirror, tag, use_vulcan, vulcan_environ
     """
     internal = ctx.obj.get("internal", False)
 
-    if use_vulcan:
+    use_neat_resolver = use_neat or use_vulcan
+    if use_neat_resolver:
+        if use_neat and use_vulcan:
+            raise click.ClickException("Use only one of --neat or --vulcan.")
         if mirror:
-            raise click.ClickException("--mirror cannot be used with --vulcan.")
+            raise click.ClickException("--mirror cannot be used with --neat.")
         if not component:
-            raise click.ClickException("You must specify a Vulcan target when using --vulcan.")
+            raise click.ClickException("You must specify a Neat target when using --neat.")
         install_vulcan_package(
             target=component,
             environment=vulcan_environment or "production",
-            base_url=vulcan_base_url,
+            base_url=vulcan_base_url or os.getenv("SIMA_VULCAN_BASE_URL"),
             package_type=tag,
             install_dir=install_dir,
             force=force,

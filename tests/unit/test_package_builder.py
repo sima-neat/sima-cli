@@ -80,6 +80,23 @@ class PackageBuilderTests(unittest.TestCase):
             self.assertEqual(set(metadata["resources-checksum"]), {"install.sh", "neat-runtime.deb"})
             self.assertEqual(metadata["size"]["download"], metadata["size"]["install"])
 
+    def test_build_metadata_can_request_compatible_file_downloads_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "demo-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                metadata = build_metadata(
+                    artifacts_folder=artifacts,
+                    name="demo",
+                    version="1.0.0",
+                    install_script="install.sh",
+                    download_compatible_files_only=True,
+                )
+
+            self.assertTrue(metadata["download-compatible-files-only"])
+
     def test_build_metadata_rejects_selectable_excluded_by_pattern(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifacts = Path(tmp)
@@ -213,6 +230,34 @@ class PackageBuilderTests(unittest.TestCase):
             self.assertEqual(metadata["installation"]["script"], "./install.sh")
             self.assertEqual(metadata["selectable-resources"][0]["name"], "Optional Payload")
             self.assertEqual(metadata["selectable-resources"][0]["resource"], "optional.bin")
+
+    def test_packages_build_command_writes_compatible_download_flag(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "demo-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                result = runner.invoke(
+                    main,
+                    [
+                        "packages",
+                        "build",
+                        str(artifacts),
+                        "--name",
+                        "demo",
+                        "--version",
+                        "1.0.0",
+                        "--install-script",
+                        "install.sh",
+                        "--download-compatible-files-only",
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            metadata = json.loads((artifacts / "metadata.json").read_text(encoding="utf-8"))
+            self.assertTrue(metadata["download-compatible-files-only"])
 
     def test_packages_build_command_writes_variant_metadata_json(self):
         runner = CliRunner()

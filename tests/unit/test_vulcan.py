@@ -14,8 +14,6 @@ from sima_cli.vulcan.artifacts import (
     ENV_BASE_URLS,
     VulcanArtifactError,
     download_vulcan_artifacts,
-    github_auth_token,
-    github_ref_short_sha,
     join_url,
     parse_install_target,
     ref_key,
@@ -219,52 +217,17 @@ class VulcanArtifactTests(unittest.TestCase):
                 client=client,
             )
 
-    def test_resolve_install_metadata_url_falls_back_to_github_tag_commit(self):
+    def test_resolve_install_metadata_url_requires_latest_tag_for_latest_spec(self):
         base_url = "https://example.invalid"
-        tag_sha = "1234567890abcdef1234567890abcdef12345678"
-        client = FakeClient({
-            "https://api.github.com/repos/sima-neat/internals/commits/2.0.0": json.dumps({"sha": tag_sha}),
-        })
+        client = FakeClient({})
 
-        result = resolve_install_metadata_url(
-            environment="dev",
-            target="internals@2.0.0",
-            base_url=base_url,
-            client=client,
-        )
-
-        self.assertEqual(result.ref, "2.0.0")
-        self.assertEqual(result.requested_spec, "latest")
-        self.assertEqual(result.resolved_spec, "1234567890ab")
-        self.assertEqual(
-            result.metadata_url,
-            f"{base_url}/internals/2.0.0/1234567890ab/metadata.json",
-        )
-
-    def test_github_ref_short_sha_uses_exported_github_token(self):
-        client = FakeClient({
-            "https://api.github.com/repos/sima-neat/internals/commits/vulcan-prep": json.dumps(
-                {"sha": "1234567890abcdef1234567890abcdef12345678"}
-            ),
-        })
-
-        with patch.dict(os.environ, {"GH_TOKEN": "Bearer ghp_test"}, clear=False):
-            result = github_ref_short_sha(client, "internals", "vulcan-prep")
-
-        self.assertEqual(result, "1234567890ab")
-        self.assertEqual(client.headers[0]["Authorization"], "Bearer ghp_test")
-
-    def test_github_auth_token_falls_back_to_gh_cli(self):
-        completed = type("Completed", (), {"stdout": "gho_from_cli\n"})()
-
-        with patch.dict(os.environ, {"GH_TOKEN": "", "GITHUB_TOKEN": ""}, clear=False), patch(
-            "sima_cli.vulcan.artifacts.subprocess.run",
-            return_value=completed,
-        ) as run_mock:
-            result = github_auth_token()
-
-        self.assertEqual(result, "gho_from_cli")
-        run_mock.assert_called_once()
+        with self.assertRaisesRegex(VulcanArtifactError, "latest.tag"):
+            resolve_install_metadata_url(
+                environment="dev",
+                target="internals@2.0.0",
+                base_url=base_url,
+                client=client,
+            )
 
 
 class VulcanCommandTests(unittest.TestCase):

@@ -513,7 +513,12 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
 @click.option("-m", "--mirror", help="URL to a metadata.json file for generic installation")
 @click.option("-t", "--tag", help="Tag of the package. With --neat, metadata variant type such as minimum.")
 @click.option("--neat", "use_neat", is_flag=True, help="Install from Neat artifacts using the Neat package resolver.")
-@click.option("--vulcan", "use_vulcan", is_flag=True, hidden=True)
+@click.option(
+    "--vulcan",
+    "use_vulcan",
+    is_flag=True,
+    help="Install from Neat/Vulcan artifacts. Compatibility alias for --neat.",
+)
 @_environment_shortcut_options
 @click.option(
     "--env",
@@ -521,14 +526,14 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
     metavar=ENV_METAVAR,
     callback=_normalize_environment_option,
     default=None,
-    help="Neat artifact environment. Used with --neat. Defaults to production.",
+    help="Neat artifact environment. Used with --neat or --vulcan. Defaults to production.",
 )
 @click.option(
     "--base-url",
     "vulcan_base_url",
     default=None,
     envvar="SIMA_NEAT_BASE_URL",
-    help="Override the Neat artifact base URL. Used with --neat.",
+    help="Override the Neat artifact base URL. Used with --neat or --vulcan.",
 )
 @click.option(
     "-d",
@@ -536,9 +541,9 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
     default=".",
     show_default=True,
     type=click.Path(file_okay=False, dir_okay=True, path_type=str),
-    help="Directory where Neat package resources are downloaded and installed. Used with --neat.",
+    help="Directory where Neat package resources are downloaded and installed. Used with --neat or --vulcan.",
 )
-@click.option("--json", "json_output", is_flag=True, help="With --neat, print resolved metadata URL and exit.")
+@click.option("--json", "json_output", is_flag=True, help="With --neat or --vulcan, print resolved metadata URL and exit.")
 @click.option(
     "-f",
     "--force",

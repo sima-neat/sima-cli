@@ -30,7 +30,13 @@ from sima_cli.install.registry import register_packages_commands
 from sima_cli.upgrade.selfupdate import register_selfupdate_command
 from sima_cli.playbooks import register_playbook_commands
 from sima_cli.vulcan import register_vulcan_commands
-from sima_cli.vulcan.commands import ENV_BASE_URLS, install_vulcan_package
+from sima_cli.vulcan.commands import (
+    ENV_METAVAR,
+    _environment_shortcut_options,
+    _normalize_environment_option,
+    _resolve_environment,
+    install_vulcan_package,
+)
 
 def _configure_stdio_errors() -> None:
     for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
@@ -508,10 +514,12 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
 @click.option("-t", "--tag", help="Tag of the package. With --neat, metadata variant type such as minimum.")
 @click.option("--neat", "use_neat", is_flag=True, help="Install from Neat artifacts using the Neat package resolver.")
 @click.option("--vulcan", "use_vulcan", is_flag=True, hidden=True)
+@_environment_shortcut_options
 @click.option(
     "--env",
     "vulcan_environment",
-    type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
+    metavar=ENV_METAVAR,
+    callback=_normalize_environment_option,
     default=None,
     help="Neat artifact environment. Used with --neat. Defaults to production.",
 )
@@ -539,7 +547,21 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
     help="Force installation even if compatibility checks fail.",
 )
 @click.pass_context
-def install_cmd(ctx, component, version, mirror, tag, use_neat, use_vulcan, vulcan_environment, vulcan_base_url, install_dir, json_output, force):
+def install_cmd(
+    ctx,
+    component,
+    version,
+    mirror,
+    tag,
+    use_neat,
+    use_vulcan,
+    vulcan_environment,
+    environment_flag,
+    vulcan_base_url,
+    install_dir,
+    json_output,
+    force,
+):
     """
     Install SiMa packages.
 
@@ -584,7 +606,7 @@ def install_cmd(ctx, component, version, mirror, tag, use_neat, use_vulcan, vulc
             raise click.ClickException("You must specify a Neat target when using --neat.")
         install_vulcan_package(
             target=component,
-            environment=vulcan_environment or "production",
+            environment=_resolve_environment(vulcan_environment, environment_flag),
             base_url=vulcan_base_url or os.getenv("SIMA_VULCAN_BASE_URL"),
             package_type=tag,
             install_dir=install_dir,

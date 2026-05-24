@@ -12,7 +12,55 @@ from .artifacts import (
 from sima_cli.install.metadata_installer import install_from_metadata
 
 
-AVAILABLE_ENVIRONMENTS = {"dev"}
+ENV_ALIASES = {
+    "stg": "staging",
+    "stage": "staging",
+    "prd": "production",
+    "prod": "production",
+}
+ENV_METAVAR = "[dev|stg|staging|prd|prod|production]"
+
+AVAILABLE_ENVIRONMENTS = {"dev", "staging"}
+
+
+def normalize_environment(environment):
+    if environment is None:
+        return None
+    value = environment.strip().lower()
+    resolved = ENV_ALIASES.get(value, value)
+    if resolved not in ENV_BASE_URLS:
+        valid = ", ".join(["dev", "stg", "staging", "prd", "prod", "production"])
+        raise click.BadParameter(f"must be one of: {valid}")
+    return resolved
+
+
+def _normalize_environment_option(ctx, param, value):
+    return normalize_environment(value)
+
+
+def _resolve_environment(environment, environment_flag, default="production"):
+    resolved_environment = normalize_environment(environment) if environment else None
+    resolved_flag = normalize_environment(environment_flag) if environment_flag else None
+    if resolved_environment and resolved_flag and resolved_environment != resolved_flag:
+        raise click.ClickException(
+            f"Conflicting artifact environments: --env {resolved_environment} and shortcut {resolved_flag}."
+        )
+    return resolved_environment or resolved_flag or default
+
+
+def _environment_shortcut_options(function):
+    function = click.option("--prd", "--prod", "environment_flag", flag_value="production", help="Use production artifacts.")(function)
+    function = click.option("--stg", "--staging", "environment_flag", flag_value="staging", help="Use staging artifacts.")(function)
+    function = click.option("--dev", "environment_flag", flag_value="dev", default=None, help="Use dev artifacts.")(function)
+    return function
+
+
+def _ensure_available_environment(environment):
+    if environment not in AVAILABLE_ENVIRONMENTS:
+        raise click.ClickException(
+            f"Artifact environment '{environment}' is not yet available to use. "
+            "Please use --env dev or --env staging for now."
+        )
 
 
 def install_vulcan_package(
@@ -25,13 +73,8 @@ def install_vulcan_package(
     force=False,
     json_output=False,
 ):
-    resolved_environment = (environment or "production").lower()
-
-    if resolved_environment not in AVAILABLE_ENVIRONMENTS:
-        raise click.ClickException(
-            f"Artifact environment '{resolved_environment}' is not yet available to use. "
-            "Please use --env dev for now."
-        )
+    resolved_environment = normalize_environment(environment) or "production"
+    _ensure_available_environment(resolved_environment)
 
     try:
         result = resolve_install_metadata_url(
@@ -69,17 +112,19 @@ def install_vulcan_package(
     )
 
 
-def _set_artifact_context(ctx, environment, base_url):
+def _set_artifact_context(ctx, environment, environment_flag, base_url):
     ctx.ensure_object(dict)
-    ctx.obj["vulcan_environment"] = environment.lower() if environment else None
+    ctx.obj["vulcan_environment"] = _resolve_environment(environment, environment_flag, default=None)
     ctx.obj["vulcan_base_url"] = base_url
 
 
 @click.group(name="neat", help="Discover, download, and install Neat build artifacts.")
+@_environment_shortcut_options
 @click.option(
     "--env",
     "environment",
-    type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
+    metavar=ENV_METAVAR,
+    callback=_normalize_environment_option,
     default=None,
     help="Artifact environment. Defaults to production.",
 )
@@ -90,15 +135,17 @@ def _set_artifact_context(ctx, environment, base_url):
     help="Override the artifact base URL.",
 )
 @click.pass_context
-def neat_group(ctx, environment, base_url):
-    _set_artifact_context(ctx, environment, base_url)
+def neat_group(ctx, environment, environment_flag, base_url):
+    _set_artifact_context(ctx, environment, environment_flag, base_url)
 
 
 @click.group(name="vulcan", help="Discover and download Vulcan build artifacts.", hidden=True)
+@_environment_shortcut_options
 @click.option(
     "--env",
     "environment",
-    type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
+    metavar=ENV_METAVAR,
+    callback=_normalize_environment_option,
     default=None,
     help="Artifact environment. Defaults to production.",
 )
@@ -109,17 +156,19 @@ def neat_group(ctx, environment, base_url):
     help="Override the artifact base URL.",
 )
 @click.pass_context
-def vulcan_group(ctx, environment, base_url):
-    _set_artifact_context(ctx, environment, base_url)
+def vulcan_group(ctx, environment, environment_flag, base_url):
+    _set_artifact_context(ctx, environment, environment_flag, base_url)
 
 
 @click.command("download")
 @click.argument("repo", required=False)
 @click.argument("ref", required=False)
+@_environment_shortcut_options
 @click.option(
     "--env",
     "environment",
-    type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
+    metavar=ENV_METAVAR,
+    callback=_normalize_environment_option,
     default=None,
     help="Artifact environment. Overrides the parent --env.",
 )
@@ -145,20 +194,15 @@ def vulcan_group(ctx, environment, base_url):
 )
 @click.option("--json", "json_output", is_flag=True, help="Print a machine-readable JSON summary.")
 @click.pass_context
-def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, json_output):
+def download(ctx, repo, ref, environment, environment_flag, base_url, output, artifact_patterns, json_output):
     """Download artifacts for REPO and branch or tag REF."""
     resolved_environment = (
-        environment
+        _resolve_environment(environment, environment_flag, default=None)
         or ctx.obj.get("vulcan_environment")
         or "production"
-    ).lower()
+    )
     resolved_base_url = base_url or ctx.obj.get("vulcan_base_url")
-
-    if resolved_environment not in AVAILABLE_ENVIRONMENTS:
-        raise click.ClickException(
-            f"Artifact environment '{resolved_environment}' is not yet available to use. "
-            "Please use --env dev for now."
-        )
+    _ensure_available_environment(resolved_environment)
 
     try:
         result, warning = download_vulcan_artifacts(
@@ -192,10 +236,12 @@ def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, j
 
 @click.command("install")
 @click.argument("target")
+@_environment_shortcut_options
 @click.option(
     "--env",
     "environment",
-    type=click.Choice(sorted(ENV_BASE_URLS), case_sensitive=False),
+    metavar=ENV_METAVAR,
+    callback=_normalize_environment_option,
     default=None,
     help="Artifact environment. Overrides the parent --env.",
 )
@@ -228,7 +274,7 @@ def download(ctx, repo, ref, environment, base_url, output, artifact_patterns, j
 )
 @click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
 @click.pass_context
-def install(ctx, target, environment, base_url, install_dir, package_type, force, json_output):
+def install(ctx, target, environment, environment_flag, base_url, install_dir, package_type, force, json_output):
     """Install a Neat artifact package from TARGET.
 
     TARGET supports REPO, REPO@branch, REPO@branch:spec, REPO@latest, or
@@ -236,7 +282,11 @@ def install(ctx, target, environment, base_url, install_dir, package_type, force
     """
     return install_vulcan_package(
         target=target,
-        environment=environment or ctx.obj.get("vulcan_environment") or "production",
+        environment=(
+            _resolve_environment(environment, environment_flag, default=None)
+            or ctx.obj.get("vulcan_environment")
+            or "production"
+        ),
         base_url=base_url or ctx.obj.get("vulcan_base_url"),
         package_type=package_type,
         install_dir=install_dir,

@@ -190,28 +190,6 @@ def read_latest_tag(client: ArtifactClient, base_url: str, repository: str, key:
     return latest_tag
 
 
-def github_ref_short_sha(client: ArtifactClient, repository: str, ref: str) -> str:
-    repo_part = urllib.parse.quote(repository.strip(), safe="")
-    ref_part = urllib.parse.quote(ref.strip(), safe="")
-    url = f"https://api.github.com/repos/sima-neat/{repo_part}/commits/{ref_part}"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    payload = client.read_json(url, headers=headers)
-    if not isinstance(payload, dict):
-        raise VulcanArtifactError(f"{url} did not return a JSON object.")
-
-    sha = str(payload.get("sha", "")).strip()
-    if not sha:
-        raise VulcanArtifactError(f"{url} did not include a commit sha.")
-    return sha[:12]
-
-
 def parse_install_target(target: str) -> Tuple[str, str, str]:
     value = target.strip()
     if not value:
@@ -275,12 +253,7 @@ def resolve_install_metadata_url(
     repository, ref_name, requested_spec = parse_install_target(target)
     key = ref_key(ref_name)
     if requested_spec == "latest":
-        try:
-            resolved_spec = read_latest_tag(client, resolved_base_url, repository, key)
-        except VulcanArtifactError:
-            if ref_name == "main":
-                raise
-            resolved_spec = github_ref_short_sha(client, repository, ref_name)
+        resolved_spec = read_latest_tag(client, resolved_base_url, repository, key)
     else:
         resolved_spec = requested_spec
     metadata_url = join_url(resolved_base_url, repository, key, resolved_spec, metadata_filename(package_type))

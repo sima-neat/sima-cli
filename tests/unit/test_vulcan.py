@@ -42,9 +42,11 @@ class FakeClient:
     def __init__(self, payloads):
         self.payloads = payloads
         self.urls = []
+        self.headers = []
 
     def read_bytes(self, url, headers=None):
         self.urls.append(url)
+        self.headers.append(headers or {})
         try:
             payload = self.payloads[url]
         except KeyError as exc:
@@ -215,27 +217,17 @@ class VulcanArtifactTests(unittest.TestCase):
                 client=client,
             )
 
-    def test_resolve_install_metadata_url_falls_back_to_github_tag_commit(self):
+    def test_resolve_install_metadata_url_requires_latest_tag_for_latest_spec(self):
         base_url = "https://example.invalid"
-        tag_sha = "1234567890abcdef1234567890abcdef12345678"
-        client = FakeClient({
-            "https://api.github.com/repos/sima-neat/internals/commits/2.0.0": json.dumps({"sha": tag_sha}),
-        })
+        client = FakeClient({})
 
-        result = resolve_install_metadata_url(
-            environment="dev",
-            target="internals@2.0.0",
-            base_url=base_url,
-            client=client,
-        )
-
-        self.assertEqual(result.ref, "2.0.0")
-        self.assertEqual(result.requested_spec, "latest")
-        self.assertEqual(result.resolved_spec, "1234567890ab")
-        self.assertEqual(
-            result.metadata_url,
-            f"{base_url}/internals/2.0.0/1234567890ab/metadata.json",
-        )
+        with self.assertRaisesRegex(VulcanArtifactError, "latest.tag"):
+            resolve_install_metadata_url(
+                environment="dev",
+                target="internals@2.0.0",
+                base_url=base_url,
+                client=client,
+            )
 
 
 class VulcanCommandTests(unittest.TestCase):
@@ -253,7 +245,9 @@ class VulcanCommandTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Download artifacts for REPO", result.output)
-        self.assertIn("--env [dev|production|staging]", result.output)
+        self.assertIn("--env [dev|stg|staging|prd|prod|production]", result.output)
+        self.assertIn("--stg, --staging", result.output)
+        self.assertIn("--prd, --prod", result.output)
 
     def test_neat_group_accepts_env_before_download(self):
         runner = CliRunner()
@@ -274,7 +268,7 @@ class VulcanCommandTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Download artifacts for REPO", result.output)
-        self.assertIn("--env [dev|production|staging]", result.output)
+        self.assertIn("--env [dev|stg|staging|prd|prod|production]", result.output)
 
     def test_vulcan_group_accepts_env_before_download(self):
         runner = CliRunner()
@@ -288,6 +282,30 @@ class VulcanCommandTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(download_mock.call_args.kwargs["environment"], "dev")
         self.assertIsNone(download_mock.call_args.kwargs["base_url"])
+
+    def test_vulcan_group_normalizes_staging_alias_before_download(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
+            download_mock.return_value = (
+                _fake_result(environment="staging", base_url=ENV_BASE_URLS["staging"]),
+                None,
+            )
+            result = runner.invoke(main, ["vulcan", "--env", "stg", "download", "core", "main"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(download_mock.call_args.kwargs["environment"], "staging")
+
+    def test_vulcan_group_accepts_staging_shortcut_before_download(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
+            download_mock.return_value = (
+                _fake_result(environment="staging", base_url=ENV_BASE_URLS["staging"]),
+                None,
+            )
+            result = runner.invoke(main, ["vulcan", "--stg", "download", "core", "main"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(download_mock.call_args.kwargs["environment"], "staging")
 
     def test_vulcan_download_env_overrides_group_env(self):
         runner = CliRunner()
@@ -304,13 +322,13 @@ class VulcanCommandTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(download_mock.call_args.kwargs["environment"], "dev")
 
-    def test_vulcan_download_rejects_unavailable_environments(self):
+    def test_vulcan_download_rejects_unavailable_production_alias(self):
         runner = CliRunner()
         with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
-            result = runner.invoke(main, ["vulcan", "--env", "staging", "download", "core", "main"])
+            result = runner.invoke(main, ["vulcan", "--env", "prod", "download", "core", "main"])
 
         self.assertNotEqual(result.exit_code, 0, result.output)
-        self.assertIn("Artifact environment 'staging' is not yet available to use", result.output)
+        self.assertIn("Artifact environment 'production' is not yet available to use", result.output)
         download_mock.assert_not_called()
 
     def test_vulcan_install_help_is_registered(self):
@@ -445,6 +463,22 @@ class VulcanCommandTests(unittest.TestCase):
             force=True,
             json_output=False,
         )
+
+    def test_top_level_install_normalizes_staging_alias(self):
+        runner = CliRunner()
+        with patch("sima_cli.cli.install_vulcan_package") as install_mock:
+            result = runner.invoke(main, ["install", "--neat", "--env", "stg", "internals"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(install_mock.call_args.kwargs["environment"], "staging")
+
+    def test_top_level_install_accepts_staging_shortcut(self):
+        runner = CliRunner()
+        with patch("sima_cli.cli.install_vulcan_package") as install_mock:
+            result = runner.invoke(main, ["install", "--neat", "--staging", "internals"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(install_mock.call_args.kwargs["environment"], "staging")
 
     def test_top_level_install_hidden_vulcan_alias_still_works(self):
         runner = CliRunner()

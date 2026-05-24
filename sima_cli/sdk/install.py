@@ -43,6 +43,8 @@ from sima_cli.sdk.utils import (
     select_containers,
 )
 
+LINUX_NEAT_EXPORTS_PATH = Path("/etc/exports.d/neat-sdk.exports")
+
 # ─────────────────────────────────────────────
 # Entrypoint for setup/start
 # ─────────────────────────────────────────────
@@ -323,6 +325,7 @@ class ExistingNfsExport:
     local_export_path: str
     client: str
     client_allowed: bool
+    managed_by_sima: bool = False
 
 
 @dataclass(frozen=True)
@@ -330,6 +333,7 @@ class ParsedNfsExport:
     path: Path
     client: str
     options: Tuple[str, ...]
+    source: Optional[Path] = None
 
 
 def _parse_export_line(line: str) -> List[ParsedNfsExport]:
@@ -373,10 +377,16 @@ def _read_linux_exports() -> List[ParsedNfsExport]:
                     logical_line += line[:-1] + " "
                     continue
                 logical_line += line
-                exports.extend(_parse_export_line(logical_line))
+                exports.extend(
+                    ParsedNfsExport(export.path, export.client, export.options, source=path)
+                    for export in _parse_export_line(logical_line)
+                )
                 logical_line = ""
             if logical_line:
-                exports.extend(_parse_export_line(logical_line))
+                exports.extend(
+                    ParsedNfsExport(export.path, export.client, export.options, source=path)
+                    for export in _parse_export_line(logical_line)
+                )
         except OSError:
             continue
     return exports
@@ -416,6 +426,12 @@ def _join_nfs_path(base: str, relative: Path) -> str:
     return f"{base.rstrip('/')}/{relative_text}"
 
 
+def _is_sima_managed_linux_export(export: ParsedNfsExport) -> bool:
+    if export.source is None:
+        return False
+    return export.source == LINUX_NEAT_EXPORTS_PATH
+
+
 def _resolve_client_visible_export_path(workspace: Path, matching_export: ParsedNfsExport, exports: List[ParsedNfsExport]) -> str:
     workspace_path = workspace.resolve()
 
@@ -452,12 +468,14 @@ def _detect_existing_linux_nfs_export(workspace: Path, devkit_ip: str, host_ip: 
 
     allowed_exports = [export for export in exports if _export_allows_client(export.client, devkit_ip)]
     matching_export = max(allowed_exports or exports, key=lambda export: len(str(export.path.resolve())))
+    managed_by_sima = not allowed_exports and all(_is_sima_managed_linux_export(export) for export in exports)
     return ExistingNfsExport(
         server=host_ip,
         export_path=_resolve_client_visible_export_path(workspace_path, matching_export, exports),
         local_export_path=str(matching_export.path.resolve()),
         client=matching_export.client,
         client_allowed=bool(allowed_exports),
+        managed_by_sima=managed_by_sima,
     )
 
 
@@ -551,10 +569,29 @@ def _setup_devkit_share(devkit_ip: str, workspace: str, selected_images: List[st
             )
         )
         if not existing_export.client_allowed:
+            if existing_export.managed_by_sima:
+                print(
+                    "ℹ️  Existing sima-cli-managed NFS export allows {}, updating it for DevKit {}.".format(
+                        existing_export.client,
+                        devkit_ip,
+                    )
+                )
+                _print_devkit_nfs_banner(workspace, devkit_ip, host_os)
+                _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)
+                configure_linux_shared_devkit_network(devkit_ip)
+                print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
+                return {
+                    "devkit_ip": devkit_ip,
+                    "host_ip": host_ip,
+                    "workspace": workspace,
+                    "host_platform": host_os,
+                    "bootstrap_interactive": not noninteractive,
+                    "noninteractive": noninteractive,
+                }
             raise RuntimeError(
-                "Workspace is under an existing admin-managed NFS export, but DevKit {} is not allowed "
+                "Workspace is under an existing unmanaged NFS export, but DevKit {} is not allowed "
                 "by the export client '{}'. Ask an admin to add an export entry that covers {} for the "
-                "DevKit IP/subnet, then rerun setup. sima-cli will not try to modify this admin-managed "
+                "DevKit IP/subnet, then rerun setup. sima-cli will not try to modify this unmanaged "
                 "export without permission.".format(
                     devkit_ip,
                     existing_export.client,
@@ -562,7 +599,7 @@ def _setup_devkit_share(devkit_ip: str, workspace: str, selected_images: List[st
                 )
             )
         print(
-            "ℹ️  Reusing admin-managed NFS export for DevKit sync: {}:{}.".format(
+            "ℹ️  Reusing existing NFS export for DevKit sync: {}:{}.".format(
                 existing_export.server,
                 existing_export.export_path,
             )

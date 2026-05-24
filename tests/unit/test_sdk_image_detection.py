@@ -21,6 +21,7 @@ from sima_cli.sdk.install import (
     _parse_export_line,
     _setup_devkit_share,
     _setup_sdk_extensions,
+    LINUX_NEAT_EXPORTS_PATH,
     ParsedNfsExport,
     setup_and_start,
 )
@@ -381,6 +382,73 @@ class TestSdkImageDetection(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "not allowed by the export client"):
                     _setup_devkit_share(
                         "192.168.135.40",
+                        str(workspace),
+                        ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                    )
+
+        configure_export.assert_not_called()
+        configure_network.assert_not_called()
+
+    def test_setup_devkit_share_updates_stale_managed_export_for_new_devkit_ip(self):
+        with TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "share" / "workspace"
+            workspace.mkdir(parents=True)
+            exports = [
+                ParsedNfsExport(
+                    Path(tmpdir) / "share",
+                    "192.168.2.101",
+                    ("rw", "sync", "no_subtree_check", "no_root_squash", "insecure"),
+                    source=LINUX_NEAT_EXPORTS_PATH,
+                ),
+            ]
+
+            with patch("sima_cli.sdk.install._detect_host_ip", return_value=("192.168.2.10", "eno1", [("eno1", "192.168.2.10")])), \
+                 patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
+                 patch("sima_cli.sdk.install._print_devkit_nfs_banner") as banner, \
+                 patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
+                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                env = _setup_devkit_share(
+                    "192.168.2.100",
+                    str(workspace),
+                    ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                    noninteractive=True,
+                )
+
+        banner.assert_called_once_with(str(workspace), "192.168.2.100", "linux")
+        configure_export.assert_called_once_with(workspace, "192.168.2.100", "linux", "192.168.2.10")
+        configure_network.assert_called_once_with("192.168.2.100")
+        self.assertEqual(env["host_ip"], "192.168.2.10")
+        self.assertEqual(env["workspace"], str(workspace))
+        self.assertFalse(env["bootstrap_interactive"])
+
+    def test_setup_devkit_share_fails_when_mixed_managed_and_unmanaged_exports_block_devkit_ip(self):
+        with TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "share" / "workspace"
+            workspace.mkdir(parents=True)
+            exports = [
+                ParsedNfsExport(
+                    Path(tmpdir),
+                    "192.168.2.101",
+                    ("rw", "sync", "crossmnt", "fsid=0"),
+                    source=Path("/etc/exports"),
+                ),
+                ParsedNfsExport(
+                    Path(tmpdir) / "share",
+                    "192.168.2.101",
+                    ("rw", "sync", "no_subtree_check", "no_root_squash", "insecure"),
+                    source=LINUX_NEAT_EXPORTS_PATH,
+                ),
+            ]
+
+            with patch("sima_cli.sdk.install._detect_host_ip", return_value=("192.168.2.10", "eno1", [("eno1", "192.168.2.10")])), \
+                 patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
+                 patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
+                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                with self.assertRaisesRegex(RuntimeError, "existing unmanaged NFS export"):
+                    _setup_devkit_share(
+                        "192.168.2.100",
                         str(workspace),
                         ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
                     )

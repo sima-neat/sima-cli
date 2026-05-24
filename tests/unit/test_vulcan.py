@@ -480,13 +480,20 @@ class VulcanCommandTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(install_mock.call_args.kwargs["environment"], "staging")
 
-    def test_top_level_install_hidden_vulcan_alias_still_works(self):
+    def test_top_level_install_vulcan_alias_still_works(self):
         runner = CliRunner()
         with patch("sima_cli.cli.install_vulcan_package") as install_mock:
             result = runner.invoke(main, ["install", "--vulcan", "--env", "dev", "internals"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(install_mock.call_args.kwargs["target"], "internals")
+
+    def test_top_level_install_help_shows_vulcan_alias(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["install", "--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("--vulcan", result.output)
 
     def test_top_level_install_vulcan_json_forwards_without_installing_legacy_path(self):
         runner = CliRunner()

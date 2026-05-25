@@ -554,7 +554,19 @@ sima-cli selfupdate
 sima-cli selfupdate --dev
 ```
 
-- Update from the latest tested artifact installer. On Windows, this prints the PowerShell commands to run in a new shell.
+- Update from Vulcan dev artifacts. If `--branch` is omitted, sima-cli loads `branches.json` and prompts for a branch.
+
+```bash
+sima-cli selfupdate --stg --branch main
+```
+
+- Update from Vulcan staging artifacts.
+
+```bash
+sima-cli selfupdate --neat --branch main
+```
+
+- Update from Vulcan production artifacts. Production aliases are `--prd`, `--prod`, `--neat`, and `--vulcan`.
 
 ```bash
 sima-cli selfupdate -v 0.0.46

@@ -16,14 +16,35 @@ import sys
 import tempfile
 import subprocess
 import glob
-import urllib.request
+import zipfile
+import hashlib
+import re
 import click
 from rich.console import Console
 
 from sima_cli.download.downloader import download_file_from_url
+from sima_cli.install.metadata_installer import _resolve_resource_url_candidates
+from sima_cli.vulcan.artifacts import (
+    ArtifactClient,
+    load_branch_choices,
+    read_latest_tag,
+    ref_key,
+    select_from_menu,
+)
 
 console = Console()
-DEV_INSTALLER_URL = "https://artifacts.sima-neat.com/tools/sima-cli-install.py"
+SELFUPDATE_REPOSITORY = "sima-cli"
+SELFUPDATE_ENV_BASE_URLS = {
+    "dev": "https://artifacts.neat.paconsultings.com",
+    "staging": "https://artifacts.stg.neat.sima.ai",
+    "production": "https://artifacts.neat.sima.ai",
+}
+SELFUPDATE_ENV_LABELS = {
+    "dev": "dev",
+    "staging": "staging",
+    "production": "production",
+}
+PUBLIC_PYPI_JSON_URL = "https://pypi.org/pypi/sima-cli/json"
 
 
 def _is_windows() -> bool:
@@ -43,31 +64,156 @@ def _print_windows_manual_update_cmd(python_exec: str, wheel_path: str) -> None:
     console.print(f"[green]{cmd}[/green]")
 
 
-def _print_windows_dev_update_cmd() -> None:
-    console.print(
-        "[yellow]⚠️  Automatic dev self-update is not supported on Windows while sima-cli is running.[/yellow]"
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _version_sort_key(version: str):
+    numeric = []
+    for part in re.split(r"[._+-]", version):
+        if part.isdigit():
+            numeric.append(int(part))
+        else:
+            break
+    return tuple(numeric), version
+
+
+def _is_pypi_release_ref(ref: str) -> bool:
+    return re.fullmatch(r"v\d+\.\d+\.\d+(?:[a-zA-Z0-9_.-]+)?", ref or "") is not None
+
+
+def _version_from_release_ref(ref: str) -> str:
+    if not _is_pypi_release_ref(ref):
+        raise RuntimeError(f"PyPI release refs must look like v2.1.8, got: {ref}")
+    return ref[1:]
+
+
+def _fetch_recent_pypi_releases(client: ArtifactClient, limit: int = 5):
+    payload = client.read_json(PUBLIC_PYPI_JSON_URL)
+    releases = payload.get("releases", {})
+    if not isinstance(releases, dict):
+        return []
+    versions = [version for version, files in releases.items() if files]
+    return [
+        f"v{version}"
+        for version in sorted(versions, key=_version_sort_key)[-limit:]
+    ]
+
+
+def _resolve_vulcan_ref(client: ArtifactClient, base_url: str, branch: str = None):
+    if branch:
+        value = branch.strip()
+        if not value:
+            raise RuntimeError("Branch or release name is empty.")
+        if _is_pypi_release_ref(value):
+            return "release", value, ""
+        return "branch", value, ref_key(value)
+
+    branches = load_branch_choices(client, base_url, SELFUPDATE_REPOSITORY)
+    try:
+        releases = _fetch_recent_pypi_releases(client, limit=5)
+    except Exception as exc:
+        releases = []
+        console.print(f"[yellow]⚠️  Could not fetch recent PyPI releases: {exc}[/yellow]")
+
+    choices = [item["name"] for item in branches] + releases
+    selected = select_from_menu("sima-cli branches or releases", choices)
+    if _is_pypi_release_ref(selected):
+        return "release", selected, ""
+    for item in branches:
+        if item["name"] == selected:
+            return "branch", item["name"], item["key"]
+    raise RuntimeError(f"Selected branch or release was not found: {selected}")
+
+
+def _find_vulcan_package_resource(metadata: dict) -> str:
+    resources = metadata.get("resources")
+    if not isinstance(resources, list):
+        raise RuntimeError("Vulcan metadata does not contain a resources list.")
+    packages = sorted(
+        str(resource).strip()
+        for resource in resources
+        if str(resource).strip().startswith("sima-cli-package-") and str(resource).strip().endswith(".zip")
     )
-    console.print("[cyan]Run these commands in a new PowerShell window:[/cyan]")
-    console.print("[green]Invoke-WebRequest https://artifacts.sima-neat.com/tools/sima-cli-install.py -OutFile sima-cli-install.py[/green]")
-    console.print("[green]python .\\sima-cli-install.py --current-env --pypi-release-limit 5[/green]")
+    if not packages:
+        raise RuntimeError("Vulcan metadata does not list a sima-cli package zip.")
+    return packages[-1]
 
 
-def _update_from_dev_installer(python_exec: str) -> None:
-    if _is_windows():
-        _print_windows_dev_update_cmd()
+def _download_vulcan_resource(client: ArtifactClient, urls, destination: str, expected_sha: str = "") -> None:
+    errors = []
+    for url in urls:
+        try:
+            with open(destination, "wb") as stream:
+                stream.write(client.read_bytes(url))
+            if expected_sha:
+                actual_sha = _sha256_file(destination)
+                if actual_sha != expected_sha:
+                    os.unlink(destination)
+                    raise RuntimeError(
+                        f"SHA256 mismatch for {os.path.basename(destination)}: expected {expected_sha}, got {actual_sha}"
+                    )
+            return
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+            if os.path.exists(destination):
+                os.unlink(destination)
+    raise RuntimeError("Failed to download Vulcan resource:\n" + "\n".join(errors))
+
+
+def _extract_wheel_from_package(package_path: str, output_dir: str) -> str:
+    with zipfile.ZipFile(package_path) as archive:
+        archive.extractall(output_dir)
+    wheels = sorted(glob.glob(os.path.join(output_dir, "*.whl")))
+    if not wheels:
+        raise RuntimeError("Vulcan sima-cli package did not contain a wheel.")
+    return wheels[-1]
+
+
+def _update_from_vulcan(python_exec: str, environment: str, branch: str = None, client: ArtifactClient = None) -> None:
+    client = client or ArtifactClient()
+    base_url = SELFUPDATE_ENV_BASE_URLS[environment]
+    console.print(f"[cyan]🌋 Resolving sima-cli from Vulcan {SELFUPDATE_ENV_LABELS[environment]}:[/cyan] {base_url}")
+
+    ref_type, ref_name, key = _resolve_vulcan_ref(client, base_url, branch)
+    if ref_type == "release":
+        version = _version_from_release_ref(ref_name)
+        console.print(f"[cyan]Release:[/cyan] {ref_name}")
+        _update_from_pypi(python_exec, version)
         return
 
-    tmpdir = tempfile.mkdtemp(prefix="sima_dev_selfupdate_")
-    installer_path = os.path.join(tmpdir, "sima-cli-install.py")
-    console.print(f"[cyan]⬇️  Fetching dev installer from:[/cyan] {DEV_INSTALLER_URL}")
-    req = urllib.request.Request(
-        DEV_INSTALLER_URL,
-        headers={"User-Agent": "sima-cli-selfupdate/1"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp, open(installer_path, "wb") as f:
-        f.write(resp.read())
-    console.print("[cyan]📦 Running dev installer...[/cyan]")
-    subprocess.run([python_exec, installer_path, "--current-env", "--pypi-release-limit", "5"], check=True)
+    latest_tag = read_latest_tag(client, base_url, SELFUPDATE_REPOSITORY, key)
+    metadata_url = f"{base_url}/{SELFUPDATE_REPOSITORY}/{key}/{latest_tag}/metadata.json"
+    metadata = client.read_json(metadata_url)
+    package_name = _find_vulcan_package_resource(metadata)
+    package_urls = _resolve_resource_url_candidates(metadata_url, package_name)
+    checksum = str((metadata.get("resources-checksum") or {}).get(package_name, "")).strip()
+
+    console.print(f"[cyan]Branch:[/cyan] {ref_name}")
+    console.print(f"[cyan]Version:[/cyan] {latest_tag}")
+    console.print(f"[cyan]Metadata:[/cyan] {metadata_url}")
+
+    tmpdir = tempfile.mkdtemp(prefix="sima_vulcan_selfupdate_")
+    package_path = os.path.join(tmpdir, package_name)
+    package_dir = os.path.join(tmpdir, "package")
+    os.makedirs(package_dir, exist_ok=True)
+
+    console.print(f"[cyan]⬇️  Fetching Vulcan package from:[/cyan] {package_urls[0]}")
+    _download_vulcan_resource(client, package_urls, package_path, checksum)
+    wheel_path = _extract_wheel_from_package(package_path, package_dir)
+    console.print(f"[green]✅ Download complete:[/green] {wheel_path}")
+
+    if _is_windows():
+        _print_windows_manual_update_cmd(python_exec, wheel_path)
+        return
+
+    console.print("[cyan]📦 Installing Vulcan wheel...[/cyan]")
+    subprocess.run([python_exec, "-m", "pip", "install", "--force-reinstall", wheel_path], check=True)
+    console.print(f"[green]✅ sima-cli successfully updated from Vulcan {environment} in {python_exec}.[/green]")
 
 
 def _download_wheel_from_pypi(python_exec: str, version: str = None) -> str:
@@ -99,11 +245,29 @@ def _download_wheel_from_pypi(python_exec: str, version: str = None) -> str:
 )
 @click.option(
     "--dev",
-    is_flag=True,
-    help="Self-update from the tested artifact installer instead of public PyPI.",
+    "vulcan_environment",
+    flag_value="dev",
+    default=None,
+    help="Self-update from the Vulcan dev environment.",
+)
+@click.option(
+    "--stg", "--staging",
+    "vulcan_environment",
+    flag_value="staging",
+    help="Self-update from the Vulcan staging environment.",
+)
+@click.option(
+    "--prd", "--prod", "--neat", "--vulcan",
+    "vulcan_environment",
+    flag_value="production",
+    help="Self-update from the Vulcan production environment.",
+)
+@click.option(
+    "--branch",
+    help="Vulcan sima-cli branch to install. If omitted, prompts with branches.json choices.",
 )
 @click.pass_context
-def selfupdate(ctx, version, manual_url, dev):
+def selfupdate(ctx, version, manual_url, vulcan_environment, branch):
     """
     Update sima-cli manually from PyPI or a direct wheel URL.
 
@@ -116,7 +280,9 @@ def selfupdate(ctx, version, manual_url, dev):
       - No options: update to the latest PyPI release
       - --version: update to the specified PyPI version
       - --manual-url: install from a direct wheel link
-      - --dev: run the tested artifact installer
+      - --dev: install from Vulcan dev artifacts
+      - --stg/--staging: install from Vulcan staging artifacts
+      - --prd/--prod/--neat/--vulcan: install from Vulcan production artifacts
     
     \b
     Rules:
@@ -131,13 +297,19 @@ def selfupdate(ctx, version, manual_url, dev):
 
       sima-cli selfupdate --dev
 
+      sima-cli selfupdate --stg --branch main
+
       sima-cli selfupdate -v 0.0.45
 
       sima-cli selfupdate -m https://.../sima_cli-0.0.46.whl
 
     """
-    if dev and (version or manual_url):
-        console.print("[red]❌ Error:[/red] Cannot use --dev with -v or -m.")
+    if branch and not vulcan_environment:
+        console.print("[red]❌ Error:[/red] --branch can only be used with --dev, --stg, or --prd/--neat/--vulcan.")
+        sys.exit(1)
+
+    if vulcan_environment and (version or manual_url):
+        console.print("[red]❌ Error:[/red] Cannot use Vulcan self-update modes with -v or -m.")
         sys.exit(1)
 
     if version and manual_url:
@@ -149,9 +321,9 @@ def selfupdate(ctx, version, manual_url, dev):
     python_exec = sys.executable
 
     try:
-        # Case 0: Dev artifact installer
-        if dev:
-            _update_from_dev_installer(python_exec)
+        # Case 0: Vulcan artifact installer
+        if vulcan_environment:
+            _update_from_vulcan(python_exec, vulcan_environment, branch=branch)
 
         # Case 1: Manual URL (direct .whl)
         elif manual_url:

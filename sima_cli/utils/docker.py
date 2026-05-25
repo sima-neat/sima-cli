@@ -4,21 +4,107 @@ import sys
 import subprocess
 import time
 import shutil
+import getpass
 
 from sima_cli.utils.env import get_environment_type
 
-def is_docker_running():
-    """Return True if Docker daemon is active and responsive."""
+
+def _docker_info_probe():
+    """Run `docker info` and return (returncode, combined_stdout_stderr).
+
+    returncode is None when the command itself could not be executed.
+    """
     try:
         result = subprocess.run(
             ["docker", "info"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
             timeout=5,
         )
-        return result.returncode == 0
+        return result.returncode, (result.stdout or "") + (result.stderr or "")
+    except FileNotFoundError:
+        return None, "docker: command not found"
+    except subprocess.SubprocessError as e:
+        return None, str(e)
+
+
+def _is_socket_permission_denied(output: str) -> bool:
+    """True if `docker info` failed because the socket is inaccessible to this user."""
+    lowered = (output or "").lower()
+    if "permission denied" not in lowered:
+        return False
+    return "docker.sock" in lowered or "docker daemon socket" in lowered
+
+
+def is_docker_running():
+    """Return True if Docker daemon is active and responsive to this user."""
+    returncode, _ = _docker_info_probe()
+    return returncode == 0
+
+
+def _current_user() -> str:
+    return os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser()
+
+
+def _user_in_docker_group(user: str) -> bool:
+    """Check persisted membership of the 'docker' group via getent."""
+    try:
+        result = subprocess.run(
+            ["getent", "group", "docker"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        )
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
+    if result.returncode != 0:
+        return False
+    parts = result.stdout.strip().split(":")
+    if len(parts) < 4:
+        return False
+    members = [m.strip() for m in parts[3].split(",") if m.strip()]
+    return user in members
+
+
+def _handle_docker_socket_permission_denied() -> bool:
+    """Linux: daemon is up but the current user can't access the socket.
+
+    Offers to add the user to the 'docker' group via sudo. Exits with
+    instructions on success because new group membership only applies to
+    new shell sessions. Returns False if the user declines or it fails.
+    """
+    user = _current_user()
+    print("⚠️  Docker daemon is running, but this user lacks permission to access it.")
+    print(f"   (Cannot access /var/run/docker.sock as '{user}'.)")
+
+    if _user_in_docker_group(user):
+        print(f"ℹ️  User '{user}' is already a member of the 'docker' group, but the current")
+        print("   shell session has not picked up that membership yet.")
+        print("   👉 Run 'newgrp docker' in this shell (or log out and back in), then re-run this command.")
+        sys.exit(1)
+
+    print(f"ℹ️  User '{user}' is not a member of the 'docker' group.")
+    if not confirm(f"Add '{user}' to the 'docker' group now? (requires sudo)", default_yes=True):
+        print("❌ Cannot proceed without docker socket access.")
+        print(f"   Add the user manually:  sudo usermod -aG docker {user}")
+        print("   Then run 'newgrp docker' (or log out and back in) and retry.")
+        sys.exit(1)
+
+    cmd = ["sudo", "usermod", "-aG", "docker", user]
+    print(f"🔧 Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print("❌ Failed to add user to the 'docker' group.")
+        print(f"   Try manually:  sudo usermod -aG docker {user}")
+        sys.exit(1)
+
+    print(f"✅ Added '{user}' to the 'docker' group.")
+    print("ℹ️  Group membership only takes effect in NEW shell sessions.")
+    print("   👉 Run 'newgrp docker' in this shell (or log out and back in), then re-run this command.")
+    sys.exit(0)
 
 
 def print_manual_start_instructions(os_name):
@@ -159,8 +245,16 @@ def check_and_start_docker():
     print(f"🖥️  Detected platform: {platform_os.capitalize()}")
 
     # Step 1: Check current status
-    if is_docker_running():
+    returncode, probe_output = _docker_info_probe()
+    if returncode == 0:
         print("✅ Docker daemon is running.")
+        return True
+
+    # Distinguish "daemon up but socket not accessible to this user" (Linux)
+    # from "daemon down". The former is fixed by docker-group membership,
+    # not by `systemctl start docker`.
+    if platform_os == "linux" and _is_socket_permission_denied(probe_output):
+        _handle_docker_socket_permission_denied()
         return True
 
     print("⚠️  Docker daemon is not running.")

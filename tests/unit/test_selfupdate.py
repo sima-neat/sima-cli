@@ -93,6 +93,35 @@ def test_update_from_vulcan_downloads_package_and_installs_wheel(tmp_path):
     ]
 
 
+def test_update_from_vulcan_double_encodes_branch_key_for_http_urls(tmp_path):
+    package_bytes = _zip_bytes({"sima_cli-2.1.8-py3-none-any.whl": b"wheel"})
+    base_url = selfupdate_module.SELFUPDATE_ENV_BASE_URLS["staging"]
+    fake_client = _FakeClient({
+        f"{base_url}/sima-cli/codex%252Ffix-elxr-apt-source-toggle/latest.tag": "6782eeec93fb\n",
+        f"{base_url}/sima-cli/codex%252Ffix-elxr-apt-source-toggle/6782eeec93fb/metadata.json": {
+            "resources": ["sima-cli-package-2.1.8+codex.fix.zip"],
+            "resources-checksum": {},
+        },
+        f"{base_url}/sima-cli/codex%252Ffix-elxr-apt-source-toggle/6782eeec93fb/sima-cli-package-2.1.8%2Bcodex.fix.zip": package_bytes,
+    })
+
+    with patch.object(selfupdate_module, "_is_windows", return_value=False), \
+         patch.object(selfupdate_module.tempfile, "mkdtemp", return_value=str(tmp_path)), \
+         patch.object(selfupdate_module.subprocess, "run"):
+        selfupdate_module._update_from_vulcan(
+            "/usr/bin/python3",
+            "staging",
+            branch="codex/fix-elxr-apt-source-toggle",
+            client=fake_client,
+        )
+
+    assert fake_client.urls == [
+        f"{base_url}/sima-cli/codex%252Ffix-elxr-apt-source-toggle/latest.tag",
+        f"{base_url}/sima-cli/codex%252Ffix-elxr-apt-source-toggle/6782eeec93fb/metadata.json",
+        f"{base_url}/sima-cli/codex%252Ffix-elxr-apt-source-toggle/6782eeec93fb/sima-cli-package-2.1.8%2Bcodex.fix.zip",
+    ]
+
+
 def test_update_from_vulcan_menu_includes_recent_pypi_releases():
     base_url = selfupdate_module.SELFUPDATE_ENV_BASE_URLS["dev"]
     fake_client = _FakeClient({

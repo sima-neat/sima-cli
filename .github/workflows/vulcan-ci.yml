@@ -383,7 +383,11 @@ jobs:
         shell: pwsh
         run: |
           sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "$env:RUNNER_TEMP\sima-cli-vulcan-install"
-          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" version
+          $versionOutput = & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" version
+          $versionOutput
+          if (($versionOutput -join "`n") -notlike "*${{ needs.build.outputs.short_sha }}*") {
+            throw "Installed sima-cli version does not contain expected build SHA ${{ needs.build.outputs.short_sha }}"
+          }
 
       - name: Set up WSL2 Ubuntu on Windows
         if: runner.os == 'Windows'
@@ -419,7 +423,9 @@ jobs:
         run: |
           set -euo pipefail
           sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "${RUNNER_TEMP}/sima-cli-vulcan-install"
-          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          candidate_version="$("$HOME/.sima-cli/.venv/bin/sima-cli" version)"
+          printf '%s\n' "$candidate_version"
+          grep -F "${{ needs.build.outputs.short_sha }}" <<<"$candidate_version"
           "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
@@ -429,7 +435,9 @@ jobs:
         run: |
           set -euo pipefail
           sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "${RUNNER_TEMP}/sima-cli-vulcan-install"
-          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          candidate_version="$("$HOME/.sima-cli/.venv/bin/sima-cli" version)"
+          printf '%s\n' "$candidate_version"
+          grep -F "${{ needs.build.outputs.short_sha }}" <<<"$candidate_version"
           echo "Skipping Neat SDK container setup on GitHub-hosted macOS: no reliable Docker backend is available."
 
       - name: Install candidate in WSL2
@@ -441,7 +449,9 @@ jobs:
           /tmp/workflow-sima-cli/bin/python -m pip install .
           /tmp/workflow-sima-cli/bin/sima-cli version
           /tmp/workflow-sima-cli/bin/sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir /tmp/sima-cli-vulcan-install
-          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          candidate_version="$("$HOME/.sima-cli/.venv/bin/sima-cli" version)"
+          printf '%s\n' "$candidate_version"
+          grep -F "${{ needs.build.outputs.short_sha }}" <<<"$candidate_version"
           "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk

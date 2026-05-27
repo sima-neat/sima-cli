@@ -26,6 +26,7 @@ from sima_cli.download.downloader import download_file_from_url
 from sima_cli.install.metadata_installer import _resolve_resource_url_candidates
 from sima_cli.vulcan.artifacts import (
     ArtifactClient,
+    join_url,
     load_branch_choices,
     read_latest_tag,
     ref_key,
@@ -187,7 +188,7 @@ def _update_from_vulcan(python_exec: str, environment: str, branch: str = None, 
         return
 
     latest_tag = read_latest_tag(client, base_url, SELFUPDATE_REPOSITORY, key)
-    metadata_url = f"{base_url}/{SELFUPDATE_REPOSITORY}/{key}/{latest_tag}/metadata.json"
+    metadata_url = join_url(base_url, SELFUPDATE_REPOSITORY, key, latest_tag, "metadata.json")
     metadata = client.read_json(metadata_url)
     package_name = _find_vulcan_package_resource(metadata)
     package_urls = _resolve_resource_url_candidates(metadata_url, package_name)

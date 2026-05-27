@@ -3,20 +3,25 @@ from types import SimpleNamespace
 from unittest.mock import call, mock_open, patch
 
 from sima_cli.update.elxr import (
+    APT_SOURCE_FILE,
     ELXR_UPDATE_DOC_URL,
     EXTERNAL_REPO_URL,
+    INTERNAL_REPO_PREFIX,
     INTERNAL_REPO_URL,
     SIMAAI_OTA_FALLBACK,
     _resolve_simaai_ota,
     _get_installed_elxr_distro_version,
     _is_current_elxr_version,
     _select_elxr_repo_channel,
+    _select_elxr_repo_channel_files,
     _show_unsupported_specific_elxr_update,
     update_elxr,
 )
 
 EXTERNAL_BOOKWORM_REPO_LINE = f"deb {EXTERNAL_REPO_URL} bookworm non-free"
 INTERNAL_BOOKWORM_REPO_LINE = f"deb {INTERNAL_REPO_URL} bookworm non-free"
+CUSTOM_BOOKWORM_REPO_LINE = f"deb {INTERNAL_REPO_PREFIX}deb/custom bookworm non-free"
+EXPERIMENT_BOOKWORM_REPO_LINE = f"deb {INTERNAL_REPO_PREFIX}deb/experiment bookworm non-free"
 EXTERNAL_TRIXIE_REPO_LINE = f"deb {EXTERNAL_REPO_URL} trixie non-free"
 INTERNAL_TRIXIE_REPO_LINE = f"deb {INTERNAL_REPO_URL} trixie non-free"
 
@@ -26,6 +31,7 @@ class TestElxrRepoChannel(unittest.TestCase):
         content = "\n".join([
             "deb http://deb.debian.org/debian bookworm main non-free-firmware",
             EXTERNAL_BOOKWORM_REPO_LINE,
+            CUSTOM_BOOKWORM_REPO_LINE,
             f"# {INTERNAL_BOOKWORM_REPO_LINE}",
             "",
         ])
@@ -35,6 +41,7 @@ class TestElxrRepoChannel(unittest.TestCase):
         self.assertTrue(changed)
         self.assertTrue(switching)
         self.assertIn(f"# {EXTERNAL_BOOKWORM_REPO_LINE}", updated)
+        self.assertIn(f"# {CUSTOM_BOOKWORM_REPO_LINE}", updated)
         self.assertIn(INTERNAL_BOOKWORM_REPO_LINE, updated)
 
     def test_selects_external_channel_and_comments_internal(self):
@@ -42,6 +49,7 @@ class TestElxrRepoChannel(unittest.TestCase):
             "deb http://deb.debian.org/debian bookworm main non-free-firmware",
             f"# {EXTERNAL_BOOKWORM_REPO_LINE}",
             INTERNAL_BOOKWORM_REPO_LINE,
+            CUSTOM_BOOKWORM_REPO_LINE,
             "",
         ])
 
@@ -51,6 +59,73 @@ class TestElxrRepoChannel(unittest.TestCase):
         self.assertTrue(switching)
         self.assertIn(EXTERNAL_BOOKWORM_REPO_LINE, updated)
         self.assertIn(f"# {INTERNAL_BOOKWORM_REPO_LINE}", updated)
+        self.assertIn(f"# {CUSTOM_BOOKWORM_REPO_LINE}", updated)
+
+    def test_comments_internal_mirror_repo_as_switching(self):
+        content = "\n".join([
+            "deb http://deb.debian.org/debian bookworm main non-free-firmware",
+            EXTERNAL_BOOKWORM_REPO_LINE,
+            EXPERIMENT_BOOKWORM_REPO_LINE,
+            f"# {INTERNAL_BOOKWORM_REPO_LINE}",
+            "",
+        ])
+
+        updated, changed, switching = _select_elxr_repo_channel(content, internal=False)
+
+        self.assertTrue(changed)
+        self.assertTrue(switching)
+        self.assertIn(EXTERNAL_BOOKWORM_REPO_LINE, updated)
+        self.assertIn(f"# {EXPERIMENT_BOOKWORM_REPO_LINE}", updated)
+
+    def test_comments_internal_mirror_repo_with_apt_options(self):
+        content = "\n".join([
+            EXTERNAL_BOOKWORM_REPO_LINE,
+            f"deb [arch=arm64 signed-by=/usr/share/keyrings/sima.gpg] {INTERNAL_REPO_PREFIX}deb/custom bookworm non-free",
+            "",
+        ])
+
+        updated, changed, switching = _select_elxr_repo_channel(content, internal=False)
+
+        self.assertTrue(changed)
+        self.assertTrue(switching)
+        self.assertIn(EXTERNAL_BOOKWORM_REPO_LINE, updated)
+        self.assertIn(f"# {CUSTOM_BOOKWORM_REPO_LINE}", updated)
+        self.assertNotIn(f"\ndeb [arch=arm64 signed-by=/usr/share/keyrings/sima.gpg] {INTERNAL_REPO_PREFIX}deb/custom", updated)
+
+    def test_comments_internal_mirror_repo_in_secondary_source_file(self):
+        custom_source_path = "/etc/apt/sources.list.d/custom.list"
+        contents = {
+            APT_SOURCE_FILE: "\n".join([
+                f"# {EXTERNAL_BOOKWORM_REPO_LINE}",
+                f"# {INTERNAL_BOOKWORM_REPO_LINE}",
+                "",
+            ]),
+            custom_source_path: (
+                f"deb [arch=arm64] {INTERNAL_REPO_PREFIX}deb/custom bookworm non-free\n"
+            ),
+        }
+
+        updated, changed, switching = _select_elxr_repo_channel_files(contents, internal=False)
+
+        self.assertTrue(changed)
+        self.assertTrue(switching)
+        self.assertIn(EXTERNAL_BOOKWORM_REPO_LINE, updated[APT_SOURCE_FILE])
+        self.assertIn(f"# {CUSTOM_BOOKWORM_REPO_LINE}", updated[custom_source_path])
+        self.assertNotIn(f"\ndeb [arch=arm64] {INTERNAL_REPO_PREFIX}deb/custom", updated[custom_source_path])
+
+    def test_does_not_duplicate_target_repo_from_secondary_source_file(self):
+        external_source_path = "/etc/apt/sources.list.d/external.list"
+        contents = {
+            APT_SOURCE_FILE: f"# {INTERNAL_BOOKWORM_REPO_LINE}\n",
+            external_source_path: f"# {EXTERNAL_BOOKWORM_REPO_LINE}\n",
+        }
+
+        updated, changed, switching = _select_elxr_repo_channel_files(contents, internal=False)
+
+        self.assertTrue(changed)
+        self.assertFalse(switching)
+        self.assertNotIn(EXTERNAL_BOOKWORM_REPO_LINE, updated[APT_SOURCE_FILE])
+        self.assertIn(EXTERNAL_BOOKWORM_REPO_LINE, updated[external_source_path])
 
     def test_appends_missing_target_without_switch_warning(self):
         updated, changed, switching = _select_elxr_repo_channel(
@@ -286,6 +361,45 @@ class TestUnsupportedElxrSpecificVersionUpdate(unittest.TestCase):
     @patch("sima_cli.update.elxr._show_unsupported_specific_elxr_update")
     @patch("sima_cli.update.elxr._resolve_simaai_ota", return_value="simaai-ota")
     @patch("sima_cli.update.elxr._get_installed_elxr_distro_version", return_value="2.1.0")
+    @patch("sima_cli.update.elxr._get_installed_palette_version", return_value="2.1.0")
+    @patch(
+        "sima_cli.update.elxr._get_available_palette_versions",
+        return_value=["2.2.0~git202605270710.6516bb9-3221", "2.1.1", "2.1.0"],
+    )
+    @patch("sima_cli.update.elxr.subprocess.check_call")
+    @patch("sima_cli.update.elxr.subprocess.call", return_value=0)
+    @patch("sima_cli.update.elxr._ensure_elxr_repo_channel", return_value=True)
+    @patch("sima_cli.update.elxr.print_current_versions")
+    @patch("sima_cli.update.elxr.is_devkit_running_elxr", return_value=True)
+    def test_explicit_latest_stable_version_runs_when_prerelease_is_newer(
+        self,
+        _mock_is_elxr,
+        _mock_print_versions,
+        _mock_ensure_channel,
+        _mock_call,
+        mock_check_call,
+        _mock_available_versions,
+        _mock_installed_version,
+        _mock_distro_version,
+        _mock_resolve_ota,
+        mock_warning,
+        _mock_confirm,
+    ):
+        update_elxr("2.1.1", internal=False)
+
+        self.assertEqual(
+            mock_check_call.call_args_list,
+            [
+                call(["sudo", "apt", "update"]),
+                call(["sudo", "simaai-ota", "-f", "-o", "-v", "2.1.1"]),
+            ],
+        )
+        mock_warning.assert_not_called()
+
+    @patch("sima_cli.update.elxr.click.confirm", return_value=True)
+    @patch("sima_cli.update.elxr._show_unsupported_specific_elxr_update")
+    @patch("sima_cli.update.elxr._resolve_simaai_ota", return_value="simaai-ota")
+    @patch("sima_cli.update.elxr._get_installed_elxr_distro_version", return_value="2.1.0")
     @patch("sima_cli.update.elxr._get_installed_palette_version", return_value="2.1.0~git20251202-827")
     @patch("sima_cli.update.elxr._get_available_palette_versions", return_value=["2.1.1", "2.1.0", "2.0.0"])
     @patch("sima_cli.update.elxr.subprocess.check_call")
@@ -294,6 +408,51 @@ class TestUnsupportedElxrSpecificVersionUpdate(unittest.TestCase):
     @patch("sima_cli.update.elxr.print_current_versions")
     @patch("sima_cli.update.elxr.is_devkit_running_elxr", return_value=True)
     def test_interactive_latest_version_selection_runs_update(
+        self,
+        _mock_is_elxr,
+        _mock_print_versions,
+        _mock_ensure_channel,
+        _mock_call,
+        mock_check_call,
+        _mock_available_versions,
+        _mock_installed_version,
+        _mock_distro_version,
+        _mock_resolve_ota,
+        mock_warning,
+        _mock_confirm,
+    ):
+        fake_inquirer = SimpleNamespace(
+            select=lambda **_kwargs: SimpleNamespace(execute=lambda: "version"),
+            fuzzy=lambda **_kwargs: SimpleNamespace(execute=lambda: "2.1.1"),
+        )
+
+        with patch.dict("sys.modules", {"InquirerPy": SimpleNamespace(inquirer=fake_inquirer)}):
+            update_elxr(None, internal=False)
+
+        self.assertEqual(
+            mock_check_call.call_args_list,
+            [
+                call(["sudo", "apt", "update"]),
+                call(["sudo", "simaai-ota", "-f", "-o", "-v", "2.1.1"]),
+            ],
+        )
+        mock_warning.assert_not_called()
+
+    @patch("sima_cli.update.elxr.click.confirm", return_value=True)
+    @patch("sima_cli.update.elxr._show_unsupported_specific_elxr_update")
+    @patch("sima_cli.update.elxr._resolve_simaai_ota", return_value="simaai-ota")
+    @patch("sima_cli.update.elxr._get_installed_elxr_distro_version", return_value="2.1.0")
+    @patch("sima_cli.update.elxr._get_installed_palette_version", return_value="2.1.0")
+    @patch(
+        "sima_cli.update.elxr._get_available_palette_versions",
+        return_value=["2.2.0~git202605270710.6516bb9-3221", "2.1.1", "2.1.0"],
+    )
+    @patch("sima_cli.update.elxr.subprocess.check_call")
+    @patch("sima_cli.update.elxr.subprocess.call", return_value=0)
+    @patch("sima_cli.update.elxr._ensure_elxr_repo_channel", return_value=True)
+    @patch("sima_cli.update.elxr.print_current_versions")
+    @patch("sima_cli.update.elxr.is_devkit_running_elxr", return_value=True)
+    def test_interactive_latest_stable_version_runs_when_prerelease_is_newer(
         self,
         _mock_is_elxr,
         _mock_print_versions,

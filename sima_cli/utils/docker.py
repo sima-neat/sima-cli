@@ -145,10 +145,11 @@ def _handle_docker_socket_permission_denied() -> bool:
     print(f"✅ Added '{user}' to the 'docker' group.")
     _reexec_with_docker_group()
     # If we get here, re-exec was not possible (no `sg`, already retried, or
-    # OSError). Fall back to the original manual instructions.
+    # OSError) and the original install/setup operation did NOT complete.
+    # Exit non-zero so parent scripts / CI do not treat this as success.
     print("ℹ️  Group membership only takes effect in NEW shell sessions.")
     print("   👉 Run 'newgrp docker' in this shell (or log out and back in), then re-run this command.")
-    sys.exit(0)
+    sys.exit(1)
 
 
 def print_manual_start_instructions(os_name):

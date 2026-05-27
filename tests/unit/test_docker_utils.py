@@ -9,6 +9,7 @@ Covers:
     flow, and `time.sleep` is not hit in tests.
 """
 
+import subprocess
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -138,7 +139,12 @@ class TestHandleDockerSocketPermissionDenied(unittest.TestCase):
         reexec.assert_not_called()
         self.assertEqual(cm.exception.code, 1)
 
-    def test_not_in_group_usermod_succeeds_reexecs_then_exits(self):
+    def test_not_in_group_usermod_succeeds_reexecs_then_exits_rerun_required(self):
+        # usermod succeeded but we land back here, meaning the re-exec
+        # fallback fired (no `sg`, OSError, or sentinel already set). In
+        # that case the original install/setup operation has NOT completed,
+        # so the exit code must be non-zero — exiting 0 would let parent
+        # scripts / CI treat an incomplete setup as success.
         usermod_result = MagicMock(returncode=0)
         with patch("sima_cli.utils.docker._current_user", return_value="alice"), \
              patch("sima_cli.utils.docker._user_in_docker_group", return_value=False), \
@@ -149,9 +155,7 @@ class TestHandleDockerSocketPermissionDenied(unittest.TestCase):
                 docker._handle_docker_socket_permission_denied()
 
         reexec.assert_called_once()
-        # After a successful add the original code path exits 0 if re-exec
-        # didn't actually take over the process.
-        self.assertEqual(cm.exception.code, 0)
+        self.assertNotEqual(cm.exception.code, 0)
 
 
 class TestCheckAndStartDockerLinux(unittest.TestCase):
@@ -251,6 +255,53 @@ class TestCheckAndStartDockerLinux(unittest.TestCase):
             self.assertTrue(docker.check_and_start_docker())
 
         handler.assert_called_once()
+
+
+class TestDockerInfoProbe(unittest.TestCase):
+    """Verify the probe always returns a 2-tuple and never raises."""
+
+    def test_success_returns_zero_and_combined_output(self):
+        completed = MagicMock(returncode=0, stdout="server info\n", stderr="")
+        with patch("sima_cli.utils.docker.subprocess.run", return_value=completed) as run:
+            rc, output = docker._docker_info_probe()
+
+        self.assertEqual(rc, 0)
+        self.assertIn("server info", output)
+        # Probe must time out — otherwise a hung daemon would block the CLI.
+        self.assertEqual(run.call_args.kwargs.get("timeout"), 5)
+        self.assertEqual(run.call_args.args[0], ["docker", "info"])
+
+    def test_failure_returncode_is_propagated_with_stderr(self):
+        completed = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="permission denied while trying to connect to the Docker daemon socket",
+        )
+        with patch("sima_cli.utils.docker.subprocess.run", return_value=completed):
+            rc, output = docker._docker_info_probe()
+
+        self.assertEqual(rc, 1)
+        # Caller relies on this combined string to detect socket-permission
+        # errors, so stderr must be included.
+        self.assertIn("permission denied", output)
+
+    def test_docker_binary_missing_returns_none(self):
+        with patch("sima_cli.utils.docker.subprocess.run", side_effect=FileNotFoundError()):
+            rc, output = docker._docker_info_probe()
+
+        self.assertIsNone(rc)
+        self.assertIn("docker: command not found", output)
+
+    def test_subprocess_error_returns_none(self):
+        # TimeoutExpired is a SubprocessError subclass — the probe must
+        # swallow it (a frozen daemon must not crash the CLI) and report
+        # the failure as returncode=None.
+        err = subprocess.TimeoutExpired(cmd=["docker", "info"], timeout=5)
+        with patch("sima_cli.utils.docker.subprocess.run", side_effect=err):
+            rc, output = docker._docker_info_probe()
+
+        self.assertIsNone(rc)
+        self.assertTrue(output)
 
 
 class TestIsSocketPermissionDenied(unittest.TestCase):

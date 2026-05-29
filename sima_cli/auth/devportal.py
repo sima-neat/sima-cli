@@ -17,6 +17,7 @@ from sima_cli.utils.env import is_sima_board
 from sima_cli.auth.auth0 import (
     decode_jwt_payload,
     extract_email,
+    access_token_has_doc_access,
     get_or_refresh_tokens,
     get_cached_access_token,
     load_tokens,
@@ -357,6 +358,8 @@ def login_external(force=False, loginDocker=True):
         
     tokens = get_or_refresh_tokens(force=force)
     if not tokens:
+        return None
+    if not access_token_has_doc_access(tokens):
         return None
 
     session, valid = validate_session()

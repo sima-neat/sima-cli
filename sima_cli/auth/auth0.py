@@ -28,8 +28,9 @@ COOKIE_FILE = os.path.join(HOME_DIR, ".sima-cli-cookies.txt")
 CSRF_FILE = os.path.join(HOME_DIR, ".sima-cli-csrf.json")
 USERINFO_AUDIENCE = "https://sima-ai.us.auth0.com/userinfo"
 LATEST_EULA_GRANT = "LatestEULA"
-PROD_DISCOURSE_URL = "https://developer.sima.ai"
-STAGING_DISCOURSE_URL = "https://discourse-dev.sima.ai/"
+DOC_ACCESS_GRANT = "DocAccess"
+PROD_DISCOURSE_URL = "https://developer.sima.ai/login"
+STAGING_DISCOURSE_URL = "https://discourse-dev.sima.ai/login"
 
 # ─────────────────────────────────────────────
 # Configuration loader
@@ -170,25 +171,36 @@ def _access_token_has_userinfo_audience(claims: dict) -> bool:
     return USERINFO_AUDIENCE in _as_iterable(claims.get("aud"))
 
 
-def _access_token_has_latest_eula(claims: dict) -> bool:
+def _access_token_has_grant(claims: dict, grant: str) -> bool:
     for claim_name in ("permissions", "grants", "roles"):
-        if LATEST_EULA_GRANT in _as_iterable(claims.get(claim_name)):
+        if grant in _as_iterable(claims.get(claim_name)):
             return True
 
     scope = claims.get("scope")
-    if isinstance(scope, str) and LATEST_EULA_GRANT in scope.split():
+    if isinstance(scope, str) and grant in scope.split():
         return True
 
     return False
 
 
+def access_token_has_doc_access(tokens: dict) -> bool:
+    return _access_token_has_grant(_access_token_claims(tokens), DOC_ACCESS_GRANT)
+
+
+def _show_limited_access_message():
+    click.echo("")
+    click.secho("You are signed in with limited Developer Portal access.", fg="yellow")
+    click.echo("SiMa will enable full access after your account is approved.")
+
+
 def _validate_access_token_requirements(tokens: dict) -> Tuple[bool, Dict[str, bool]]:
     claims = _access_token_claims(tokens)
     checks = {
-        "latest_eula": _access_token_has_latest_eula(claims),
+        "doc_access": _access_token_has_grant(claims, DOC_ACCESS_GRANT),
+        "latest_eula": _access_token_has_grant(claims, LATEST_EULA_GRANT),
         "userinfo_audience": _access_token_has_userinfo_audience(claims),
     }
-    return all(checks.values()), checks
+    return checks["doc_access"] and checks["latest_eula"] and checks["userinfo_audience"], checks
 
 
 def _prompt_for_discourse_sign_in(checks: Dict[str, bool]) -> bool:
@@ -224,14 +236,29 @@ def _ensure_access_token_requirements(tokens: dict, auth_cfg: dict) -> Optional[
         valid, checks = _validate_access_token_requirements(tokens)
         if valid:
             return tokens
+        if not checks.get("doc_access"):
+            _show_limited_access_message()
+            return tokens
 
         if not _prompt_for_discourse_sign_in(checks):
             clear_external_login_state()
             click.echo("Logged out. Run `sima-cli login` again after signing in to Developer Portal.")
             return None
 
-        clear_external_login_state()
-        tokens = login_auth0(auth_cfg)
+        refresh_token = tokens.get("refresh_token")
+        if not refresh_token:
+            click.echo("Unable to refresh your access token after Developer Portal sign-in.")
+            clear_external_login_state()
+            click.echo("Logged out. Run `sima-cli login` again.")
+            return None
+
+        refreshed = refresh_access_token(auth_cfg, refresh_token)
+        if not refreshed:
+            clear_external_login_state()
+            click.echo("Logged out. Run `sima-cli login` again.")
+            return None
+
+        tokens = refreshed
 
 def request_device_code(auth_cfg):
     """Step 1: Request device code from Auth0."""

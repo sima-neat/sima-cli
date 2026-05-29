@@ -101,9 +101,10 @@ Extra arguments are passed through to pytest:
 ./scripts/run-tests.sh unit -q
 ```
 
-The compatibility suite smoke-tests `sima-cli` on any installed Python
-interpreters from 3.8 through 3.14. Missing interpreters are skipped locally;
-CI can require the full matrix with:
+The compatibility suite builds and installs a `sima-cli` wheel on any installed
+Python interpreters from 3.8 through 3.14, then validates the installed package
+and CLI version. Missing interpreters are skipped locally; CI can require the
+full matrix with:
 
 ```bash
 ./scripts/run-tests.sh compat --strict
@@ -116,7 +117,11 @@ brew install pyenv
 ./scripts/run-tests.sh compat --install-missing --strict
 ```
 
-> Note: The test runner assumes the editable install from the virtual environment is active.
+CI passes the wheel built by the build job into the compatibility suite:
+
+```bash
+./scripts/run-tests.sh compat --strict --wheel dist/sima_cli-*.whl
+```
 
 ---
 

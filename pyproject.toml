@@ -23,7 +23,7 @@ classifiers = [
 
 dependencies = [
     "click>=8.0",
-    "requests>=2.33.0",
+    "requests>=2.32.4,<3.0",
     "tqdm>=4.64",
     "pyyaml>=6.0",
     "paramiko>=3.5.1",

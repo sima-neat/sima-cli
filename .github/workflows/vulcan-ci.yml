@@ -253,7 +253,7 @@ jobs:
           ls -lh dist
 
       - name: Upload dist artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: sima-cli-dist
           path: dist/*
@@ -287,6 +287,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Download built dist
+        uses: actions/download-artifact@v8
+        with:
+          name: sima-cli-dist
+          path: dist
+
       - name: Set package version
         run: |
           set -euo pipefail
@@ -301,8 +307,13 @@ jobs:
       - name: Run compatibility tests
         run: |
           set -euo pipefail
+          wheel="$(find dist -maxdepth 1 -type f -name 'sima_cli-*.whl' -print -quit)"
+          if [[ -z "$wheel" ]]; then
+            echo "No sima-cli wheel found in dist" >&2
+            exit 1
+          fi
           python scripts/check_py_compatibility.py sima_cli --targets "${{ matrix.python-version }}"
-          scripts/run-tests.sh compat --versions "${{ matrix.python-version }}" --strict
+          scripts/run-tests.sh compat --versions "${{ matrix.python-version }}" --strict --wheel "$wheel"
 
   resolve-vulcan-config:
     name: Resolve Vulcan Config

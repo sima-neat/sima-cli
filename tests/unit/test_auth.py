@@ -153,6 +153,30 @@ class TestDevportalLogin(unittest.TestCase):
         show_pending.assert_called_once_with()
         validate.assert_called_once_with()
 
+    def test_eula_flow_opens_developer_portal_login_page(self):
+        with patch.object(devportal.webbrowser, "open", return_value=True) as browser_open, \
+             patch.object(devportal.click, "confirm", return_value=False), \
+             patch.object(devportal.click, "echo") as echo:
+            result = devportal._handle_eula_flow(session=Mock(), username="", domain="")
+
+        self.assertFalse(result)
+        browser_open.assert_called_once_with(devportal.DEV_PORTAL_LOGIN_URL)
+        output = "\n".join(str(call.args[0]) for call in echo.call_args_list if call.args)
+        self.assertIn(devportal.DEV_PORTAL_LOGIN_URL, output)
+        self.assertNotIn(devportal.DUMMY_CHECK_URL, output)
+
+    def test_eula_flow_prints_developer_portal_login_when_browser_does_not_open(self):
+        with patch.object(devportal.webbrowser, "open", return_value=False) as browser_open, \
+             patch.object(devportal.click, "confirm", return_value=False), \
+             patch.object(devportal.click, "echo") as echo:
+            result = devportal._handle_eula_flow(session=Mock(), username="", domain="")
+
+        self.assertFalse(result)
+        browser_open.assert_called_once_with(devportal.DEV_PORTAL_LOGIN_URL)
+        output = "\n".join(str(call.args[0]) for call in echo.call_args_list if call.args)
+        self.assertIn(f"Open this sign-in page manually: {devportal.DEV_PORTAL_LOGIN_URL}", output)
+        self.assertNotIn(devportal.DUMMY_CHECK_URL, output)
+
 
 if __name__ == "__main__":
     unittest.main()

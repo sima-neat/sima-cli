@@ -31,14 +31,39 @@ def _tokens(payload):
 class TestAuth0AccessTokenRequirements(unittest.TestCase):
     def test_validates_latest_eula_and_userinfo_audience(self):
         tokens = _tokens({
-            "aud": ["https://docs.sima.ai", auth0.USERINFO_AUDIENCE],
+            "aud": ["https://docs.sima.ai", auth0.PROD_USERINFO_AUDIENCE],
             "permissions": [auth0.DOC_ACCESS_GRANT, auth0.LATEST_EULA_GRANT],
         })
 
-        valid, checks = auth0._validate_access_token_requirements(tokens)
+        with patch.dict("os.environ", {}, clear=True):
+            valid, checks = auth0._validate_access_token_requirements(tokens)
 
         self.assertTrue(valid)
         self.assertEqual(checks, {"doc_access": True, "latest_eula": True, "userinfo_audience": True})
+
+    def test_validates_staging_userinfo_audience_and_namespaced_roles(self):
+        tokens = _tokens({
+            "https://auth.sima.ai/roles": [auth0.DOC_ACCESS_GRANT, auth0.LATEST_EULA_GRANT],
+            "aud": ["https://docs-dev.sima.ai", auth0.STAGING_USERINFO_AUDIENCE],
+        })
+
+        with patch.dict("os.environ", {"USE_STAGING_DEV_PORTAL": "true"}):
+            valid, checks = auth0._validate_access_token_requirements(tokens)
+
+        self.assertTrue(valid)
+        self.assertEqual(checks, {"doc_access": True, "latest_eula": True, "userinfo_audience": True})
+
+    def test_rejects_staging_userinfo_audience_in_production(self):
+        tokens = _tokens({
+            "roles": [auth0.DOC_ACCESS_GRANT, auth0.LATEST_EULA_GRANT],
+            "aud": ["https://docs.sima.ai", auth0.STAGING_USERINFO_AUDIENCE],
+        })
+
+        with patch.dict("os.environ", {}, clear=True):
+            valid, checks = auth0._validate_access_token_requirements(tokens)
+
+        self.assertFalse(valid)
+        self.assertEqual(checks, {"doc_access": True, "latest_eula": True, "userinfo_audience": False})
 
     def test_detects_missing_latest_eula_and_userinfo_audience(self):
         tokens = _tokens({"aud": "https://docs.sima.ai", "permissions": [auth0.DOC_ACCESS_GRANT]})
@@ -50,11 +75,12 @@ class TestAuth0AccessTokenRequirements(unittest.TestCase):
 
     def test_scope_claim_can_supply_latest_eula_grant(self):
         tokens = _tokens({
-            "aud": auth0.USERINFO_AUDIENCE,
+            "aud": auth0.PROD_USERINFO_AUDIENCE,
             "scope": f"openid profile {auth0.DOC_ACCESS_GRANT} {auth0.LATEST_EULA_GRANT}",
         })
 
-        valid, checks = auth0._validate_access_token_requirements(tokens)
+        with patch.dict("os.environ", {}, clear=True):
+            valid, checks = auth0._validate_access_token_requirements(tokens)
 
         self.assertTrue(valid)
         self.assertEqual(checks, {"doc_access": True, "latest_eula": True, "userinfo_audience": True})
@@ -81,7 +107,7 @@ class TestAuth0AccessTokenRequirements(unittest.TestCase):
     def test_cached_invalid_token_refreshes_after_discourse_sign_in(self):
         invalid_tokens = _tokens({"aud": "https://docs.sima.ai", "permissions": [auth0.DOC_ACCESS_GRANT]})
         valid_tokens = _tokens({
-            "aud": ["https://docs.sima.ai", auth0.USERINFO_AUDIENCE],
+            "aud": ["https://docs.sima.ai", auth0.PROD_USERINFO_AUDIENCE],
             "permissions": [auth0.DOC_ACCESS_GRANT, auth0.LATEST_EULA_GRANT],
         })
         auth_cfg = {"CLIENT_ID": "client", "TOKEN_URL": "https://auth.example/oauth/token"}

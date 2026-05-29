@@ -26,9 +26,12 @@ HOME_DIR = os.path.expanduser("~/.sima-cli")
 TOKEN_FILE = os.path.join(HOME_DIR, ".tokens.json")
 COOKIE_FILE = os.path.join(HOME_DIR, ".sima-cli-cookies.txt")
 CSRF_FILE = os.path.join(HOME_DIR, ".sima-cli-csrf.json")
-USERINFO_AUDIENCE = "https://sima-ai.us.auth0.com/userinfo"
+PROD_USERINFO_AUDIENCE = "https://sima-ai.us.auth0.com/userinfo"
+STAGING_USERINFO_AUDIENCE = "https://dev-d3sxf54xfkcifph2.us.auth0.com/userinfo"
+USERINFO_AUDIENCE = PROD_USERINFO_AUDIENCE
 LATEST_EULA_GRANT = "LatestEULA"
-DOC_ACCESS_GRANT = "DocAccess"
+DOC_ACCESS_GRANT = "DocsAccess"
+DOC_ACCESS_GRANT_ALIASES = (DOC_ACCESS_GRANT, "DocAccess")
 PROD_DISCOURSE_URL = "https://developer.sima.ai/login"
 STAGING_DISCOURSE_URL = "https://discourse-dev.sima.ai/login"
 
@@ -155,6 +158,12 @@ def _discourse_sign_in_url() -> str:
     return PROD_DISCOURSE_URL
 
 
+def _expected_userinfo_audience() -> str:
+    if os.getenv("USE_STAGING_DEV_PORTAL", "false").lower() in ("1", "true", "yes"):
+        return STAGING_USERINFO_AUDIENCE
+    return PROD_USERINFO_AUDIENCE
+
+
 def _as_iterable(value) -> Iterable:
     if value is None:
         return []
@@ -168,16 +177,18 @@ def _access_token_claims(tokens: dict) -> dict:
 
 
 def _access_token_has_userinfo_audience(claims: dict) -> bool:
-    return USERINFO_AUDIENCE in _as_iterable(claims.get("aud"))
+    return _expected_userinfo_audience() in _as_iterable(claims.get("aud"))
 
 
 def _access_token_has_grant(claims: dict, grant: str) -> bool:
-    for claim_name in ("permissions", "grants", "roles"):
-        if grant in _as_iterable(claims.get(claim_name)):
-            return True
+    grant_names = DOC_ACCESS_GRANT_ALIASES if grant in DOC_ACCESS_GRANT_ALIASES else (grant,)
+    for claim_name, claim_value in claims.items():
+        if claim_name in ("permissions", "grants", "roles") or claim_name.endswith(("/permissions", "/grants", "/roles")):
+            if any(grant_name in _as_iterable(claim_value) for grant_name in grant_names):
+                return True
 
     scope = claims.get("scope")
-    if isinstance(scope, str) and grant in scope.split():
+    if isinstance(scope, str) and any(grant_name in scope.split() for grant_name in grant_names):
         return True
 
     return False
@@ -203,7 +214,7 @@ def _prompt_for_discourse_sign_in(checks: Dict[str, bool]) -> bool:
     if not checks.get("latest_eula"):
         missing.append("LatestEULA grant")
     if not checks.get("userinfo_audience"):
-        missing.append(f"{USERINFO_AUDIENCE} audience")
+        missing.append(f"{_expected_userinfo_audience()} audience")
 
     click.echo("")
     click.secho("Developer Portal sign-in is required before sima-cli can continue.", fg="yellow")

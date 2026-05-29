@@ -7,6 +7,7 @@ import subprocess
 import shutil
 import base64
 import hashlib
+import webbrowser
 
 from typing import Optional
 from http.cookiejar import MozillaCookieJar
@@ -44,6 +45,7 @@ else:
 
 # Derived endpoints
 LOGIN_URL = f"{DEV_PORTAL}/session"
+DEV_PORTAL_LOGIN_URL = f"{DEV_PORTAL}/login"
 DUMMY_CHECK_URL = f"{DOCS_PORTAL}/pkg_downloads/validation"
 ACCESS_REQUEST_FORM_URL = "https://www2.sima.ai/l/1041271/2025-05-05/37bndg"
 USER_INFO_CLAIM = "https://auth.sima.ai/user_info"
@@ -65,11 +67,19 @@ HEADERS = {
 def _handle_eula_flow(session: requests.Session, username: str, domain: str) -> bool:
     try:
         click.echo("\n📄 To continue, you must accept the End-User License Agreement (EULA).")
-        click.echo("👉 Please sign in to Developer Portal on your browser, then open the following URL to accept the EULA:")
-        click.echo("👉 If you were not prompted with the EULA acceptance popup, please open the URL in the incogniton browser.")
-        click.echo(f"\n  {DUMMY_CHECK_URL}\n")
+        click.echo("👉 Please sign in to Developer Portal in your browser and accept the EULA if prompted.")
+        click.echo("👉 If you were not prompted with the EULA acceptance popup, try opening the page in an incognito browser.")
+        try:
+            opened = webbrowser.open(DEV_PORTAL_LOGIN_URL)
+        except Exception:
+            opened = False
 
-        if not click.confirm("✅ Have you completed the EULA form in your browser?", default=True):
+        if opened:
+            click.echo(f"\nOpening Developer Portal sign-in page: {DEV_PORTAL_LOGIN_URL}\n")
+        else:
+            click.echo(f"\nOpen this sign-in page manually: {DEV_PORTAL_LOGIN_URL}\n")
+
+        if not click.confirm("✅ Have you signed in to Developer Portal and accepted the EULA?", default=True):
             click.echo("❌ EULA acceptance is required to continue.")
             return False
 

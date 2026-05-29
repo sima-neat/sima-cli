@@ -132,6 +132,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Download built wheel
+        uses: actions/download-artifact@v6
+        with:
+          name: wheel-sima-cli
+          path: dist
+
       - name: Set package version
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
@@ -144,8 +150,13 @@ jobs:
 
       - name: Run compatibility tests
         run: |
+          wheel="$(find dist -maxdepth 1 -type f -name 'sima_cli-*.whl' -print -quit)"
+          if [[ -z "$wheel" ]]; then
+            echo "No sima-cli wheel found in dist" >&2
+            exit 1
+          fi
           python scripts/check_py_compatibility.py sima_cli --targets "${{ matrix.python-version }}"
-          scripts/run-tests.sh compat --versions "${{ matrix.python-version }}" --strict
+          scripts/run-tests.sh compat --versions "${{ matrix.python-version }}" --strict --wheel "$wheel"
 
   publish-r2-candidate:
     name: Publish Candidate Artifacts

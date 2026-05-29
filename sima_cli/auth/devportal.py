@@ -355,7 +355,10 @@ def login_external(force=False, loginDocker=True):
         if _ACCESS_REQUEST_HANDLED:
             return None
         
-    get_or_refresh_tokens(force=force)
+    tokens = get_or_refresh_tokens(force=force)
+    if not tokens:
+        return None
+
     session, valid = validate_session()
     if valid:
         if loginDocker:

@@ -15,7 +15,7 @@ import base64
 import requests
 import webbrowser
 import click
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 from sima_cli.utils.config_loader import load_resource_config
 
@@ -24,6 +24,12 @@ from sima_cli.utils.config_loader import load_resource_config
 # ─────────────────────────────────────────────
 HOME_DIR = os.path.expanduser("~/.sima-cli")
 TOKEN_FILE = os.path.join(HOME_DIR, ".tokens.json")
+COOKIE_FILE = os.path.join(HOME_DIR, ".sima-cli-cookies.txt")
+CSRF_FILE = os.path.join(HOME_DIR, ".sima-cli-csrf.json")
+USERINFO_AUDIENCE = "https://sima-ai.us.auth0.com/userinfo"
+LATEST_EULA_GRANT = "LatestEULA"
+PROD_DISCOURSE_URL = "https://developer.sima.ai"
+STAGING_DISCOURSE_URL = "https://discourse-dev.sima.ai/"
 
 # ─────────────────────────────────────────────
 # Configuration loader
@@ -81,6 +87,16 @@ def load_tokens() -> Optional[Dict]:
         return None
 
 
+def clear_external_login_state():
+    """Remove cached external-auth state so the next login starts cleanly."""
+    for path in (TOKEN_FILE, COOKIE_FILE, CSRF_FILE):
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception as e:
+                print(f"⚠️ Failed to delete {path}: {e}")
+
+
 def is_token_valid(tokens: dict) -> bool:
     """Check if access token still valid based on expires_in field."""
     if not tokens:
@@ -130,6 +146,92 @@ def is_browser_available():
         return True
     except webbrowser.Error:
         return False
+
+
+def _discourse_sign_in_url() -> str:
+    if os.getenv("USE_STAGING_DEV_PORTAL", "false").lower() in ("1", "true", "yes"):
+        return STAGING_DISCOURSE_URL
+    return PROD_DISCOURSE_URL
+
+
+def _as_iterable(value) -> Iterable:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return value
+    return [value]
+
+
+def _access_token_claims(tokens: dict) -> dict:
+    return decode_jwt_payload(tokens.get("access_token", ""))
+
+
+def _access_token_has_userinfo_audience(claims: dict) -> bool:
+    return USERINFO_AUDIENCE in _as_iterable(claims.get("aud"))
+
+
+def _access_token_has_latest_eula(claims: dict) -> bool:
+    for claim_name in ("permissions", "grants", "roles"):
+        if LATEST_EULA_GRANT in _as_iterable(claims.get(claim_name)):
+            return True
+
+    scope = claims.get("scope")
+    if isinstance(scope, str) and LATEST_EULA_GRANT in scope.split():
+        return True
+
+    return False
+
+
+def _validate_access_token_requirements(tokens: dict) -> Tuple[bool, Dict[str, bool]]:
+    claims = _access_token_claims(tokens)
+    checks = {
+        "latest_eula": _access_token_has_latest_eula(claims),
+        "userinfo_audience": _access_token_has_userinfo_audience(claims),
+    }
+    return all(checks.values()), checks
+
+
+def _prompt_for_discourse_sign_in(checks: Dict[str, bool]) -> bool:
+    discourse_url = _discourse_sign_in_url()
+    missing = []
+    if not checks.get("latest_eula"):
+        missing.append("LatestEULA grant")
+    if not checks.get("userinfo_audience"):
+        missing.append(f"{USERINFO_AUDIENCE} audience")
+
+    click.echo("")
+    click.secho("Developer Portal sign-in is required before sima-cli can continue.", fg="yellow")
+    if missing:
+        click.echo(f"Missing from the access token: {', '.join(missing)}.")
+    click.echo("Please sign in to Discourse / Developer Portal and accept the EULA if prompted.")
+
+    if is_browser_available():
+        click.echo(f"Opening sign-in page: {click.style(discourse_url, fg='cyan', bold=True)}")
+        try:
+            webbrowser.open(discourse_url)
+        except Exception:
+            click.echo("Browser could not be opened automatically. Open this link manually:")
+            click.secho(discourse_url, fg="cyan", bold=True)
+    else:
+        click.echo("Browser not available. Open this link manually:")
+        click.secho(discourse_url, fg="cyan", bold=True)
+
+    return click.confirm("Have you signed in to Discourse / Developer Portal?", default=True)
+
+
+def _ensure_access_token_requirements(tokens: dict, auth_cfg: dict) -> Optional[dict]:
+    while True:
+        valid, checks = _validate_access_token_requirements(tokens)
+        if valid:
+            return tokens
+
+        if not _prompt_for_discourse_sign_in(checks):
+            clear_external_login_state()
+            click.echo("Logged out. Run `sima-cli login` again after signing in to Developer Portal.")
+            return None
+
+        clear_external_login_state()
+        tokens = login_auth0(auth_cfg)
 
 def request_device_code(auth_cfg):
     """Step 1: Request device code from Auth0."""
@@ -269,16 +371,25 @@ def get_or_refresh_tokens(force=False):
     tokens = load_tokens()
 
     if tokens and is_token_valid(tokens) and not force:
-        return tokens
+        tokens = _ensure_access_token_requirements(tokens, auth_cfg)
+        if tokens:
+            return tokens
+        return None
 
     if tokens and tokens.get("refresh_token"):
         refreshed = refresh_access_token(auth_cfg, tokens["refresh_token"])
         if refreshed:
-            print_welcome_message(refreshed)
-            return refreshed
+            refreshed = _ensure_access_token_requirements(refreshed, auth_cfg)
+            if refreshed:
+                print_welcome_message(refreshed)
+                return refreshed
+            return None
         print("⚠️ Refresh failed, falling back to new login.")
 
     new_tokens = login_auth0(auth_cfg)
+    new_tokens = _ensure_access_token_requirements(new_tokens, auth_cfg)
+    if not new_tokens:
+        return None
     print_welcome_message(new_tokens)
     return new_tokens
 

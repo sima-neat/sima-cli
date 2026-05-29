@@ -5,6 +5,8 @@ Basic Python 3.8-3.14 compatibility checks.
 Checks:
 - Syntax parse under selected feature versions (3.8 through 3.14)
 - PEP604 union types in annotations (e.g., str | None) which require Python 3.10+
+- PEP585 built-in generic annotations (e.g., list[str]) which require Python 3.9+
+  and can still fail at import time on Python 3.8
 - match/case statements (Python 3.10+)
 - Optional bytecode compilation via compileall (run under target Python in CI)
 """
@@ -27,35 +29,50 @@ def _iter_py_files(root: pathlib.Path) -> Iterable[pathlib.Path]:
             yield path
 
 
-def _find_pep604_and_match(nodes: ast.AST) -> List[Tuple[int, str]]:
-    violations: List[Tuple[int, str]] = []
+PEP585_BUILTINS = {"dict", "frozenset", "list", "set", "tuple", "type"}
+
+
+def _iter_annotations(node: ast.AST) -> Iterable[ast.AST]:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if node.returns is not None:
+            yield node.returns
+        for arg in node.args.args + node.args.kwonlyargs:
+            if arg.annotation is not None:
+                yield arg.annotation
+        if node.args.vararg and node.args.vararg.annotation is not None:
+            yield node.args.vararg.annotation
+        if node.args.kwarg and node.args.kwarg.annotation is not None:
+            yield node.args.kwarg.annotation
+    elif isinstance(node, ast.AnnAssign) and node.annotation is not None:
+        yield node.annotation
+
+
+def _is_pep585_builtin_generic(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in PEP585_BUILTINS
+    )
+
+
+def _find_versioned_syntax_issues(nodes: ast.AST) -> List[Tuple[int, str, str]]:
+    violations: List[Tuple[int, str, str]] = []
     match_node_type = getattr(ast, "Match", None)
     for node in ast.walk(nodes):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            annots = []
-            if node.returns is not None:
-                annots.append(node.returns)
-            for arg in node.args.args + node.args.kwonlyargs:
-                if arg.annotation is not None:
-                    annots.append(arg.annotation)
-            if node.args.vararg and node.args.vararg.annotation is not None:
-                annots.append(node.args.vararg.annotation)
-            if node.args.kwarg and node.args.kwarg.annotation is not None:
-                annots.append(node.args.kwarg.annotation)
-            for a in annots:
+        for annotation in _iter_annotations(node):
+            for a in ast.walk(annotation):
                 if isinstance(a, ast.BinOp) and isinstance(a.op, ast.BitOr):
-                    violations.append((a.lineno, "PEP604 union (use Optional/Union)"))
-        if isinstance(node, ast.AnnAssign) and node.annotation is not None:
-            a = node.annotation
-            if isinstance(a, ast.BinOp) and isinstance(a.op, ast.BitOr):
-                violations.append((a.lineno, "PEP604 union (use Optional/Union)"))
+                    violations.append((a.lineno, "3.10", "PEP604 union (use Optional/Union)"))
+                if _is_pep585_builtin_generic(a):
+                    violations.append((a.lineno, "3.9", "PEP585 built-in generic (use typing.List/Dict/etc.)"))
         if match_node_type is not None and isinstance(node, match_node_type):
-            violations.append((node.lineno, "match/case requires Python 3.10+"))
+            violations.append((node.lineno, "3.10", "match/case requires Python 3.10+"))
     return violations
 
 
-def check_pep604_and_match(root: pathlib.Path) -> int:
+def check_versioned_syntax(root: pathlib.Path, targets: Dict[str, int]) -> int:
     violations = 0
+    target_versions = {tuple(int(part) for part in label.split(".")) for label in targets}
     for path in _iter_py_files(root):
         try:
             tree = ast.parse(path.read_text())
@@ -64,10 +81,12 @@ def check_pep604_and_match(root: pathlib.Path) -> int:
             violations += 1
             continue
 
-        file_violations = _find_pep604_and_match(tree)
-        for lineno, msg in file_violations:
-            print(f"{path}:{lineno}: {msg}")
-        violations += len(file_violations)
+        file_violations = _find_versioned_syntax_issues(tree)
+        for lineno, min_version, msg in file_violations:
+            min_version_tuple = tuple(int(part) for part in min_version.split("."))
+            if any(target < min_version_tuple for target in target_versions):
+                print(f"{path}:{lineno}: {msg}")
+                violations += 1
     return violations
 
 
@@ -92,7 +111,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check Python 3.8-3.14 compatibility.")
     parser.add_argument("path", nargs="?", default="sima_cli", help="Root path to scan.")
     parser.add_argument("--skip-compile", action="store_true", help="Skip compileall check.")
-    parser.add_argument("--skip-syntax", action="store_true", help="Skip PEP604/match checks.")
+    parser.add_argument("--skip-syntax", action="store_true", help="Skip Python 3.10+ syntax checks.")
     parser.add_argument(
         "--targets",
         default="3.8,3.9,3.10,3.11,3.12,3.13,3.14",
@@ -119,9 +138,9 @@ def main() -> int:
         return 1
 
     if not args.skip_syntax:
-        violations = check_pep604_and_match(root)
-        if violations and any(t in ("3.8", "3.9") for t in targets):
-            print(f"Found {violations} Python 3.10+ syntax issue(s).")
+        violations = check_versioned_syntax(root, targets)
+        if violations:
+            print(f"Found {violations} Python version compatibility issue(s).")
             return 1
 
     if not args.skip_compile:

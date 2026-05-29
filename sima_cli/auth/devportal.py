@@ -209,6 +209,24 @@ def _show_access_request_pending_message(already_submitted: bool = False):
     )
 
 
+def _show_limited_access_pending_message():
+    click.secho("✅ You are signed in with limited Developer Portal access.", fg="green")
+    console.print(
+        Panel(
+            "\n".join(
+                [
+                    "SiMa is reviewing your account and will grant full access shortly.",
+                    "Please look out for an email from marketing@marketing.sima.ai.",
+                    "Once access is granted, run `sima-cli login` again.",
+                ]
+            ),
+            border_style="yellow",
+            style="yellow",
+            expand=False,
+        )
+    )
+
+
 def _show_access_request_info_panel():
     console.print(
         Panel(
@@ -360,6 +378,7 @@ def login_external(force=False, loginDocker=True):
     if not tokens:
         return None
     if not access_token_has_doc_access(tokens):
+        _show_limited_access_pending_message()
         return None
 
     session, valid = validate_session()

@@ -187,12 +187,6 @@ def access_token_has_doc_access(tokens: dict) -> bool:
     return _access_token_has_grant(_access_token_claims(tokens), DOC_ACCESS_GRANT)
 
 
-def _show_limited_access_message():
-    click.echo("")
-    click.secho("You are signed in with limited Developer Portal access.", fg="yellow")
-    click.echo("SiMa will enable full access after your account is approved.")
-
-
 def _validate_access_token_requirements(tokens: dict) -> Tuple[bool, Dict[str, bool]]:
     claims = _access_token_claims(tokens)
     checks = {
@@ -237,7 +231,6 @@ def _ensure_access_token_requirements(tokens: dict, auth_cfg: dict) -> Optional[
         if valid:
             return tokens
         if not checks.get("doc_access"):
-            _show_limited_access_message()
             return tokens
 
         if not _prompt_for_discourse_sign_in(checks):

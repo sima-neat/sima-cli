@@ -138,6 +138,21 @@ class TestDevportalLogin(unittest.TestCase):
         validate.assert_called_once_with()
         get_or_refresh_tokens.assert_not_called()
 
+    def test_login_external_shows_pending_banner_for_limited_access_user(self):
+        limited_tokens = {"access_token": "limited-token"}
+
+        with patch.object(devportal, "validate_session", return_value=(None, False)) as validate, \
+             patch.object(devportal, "get_or_refresh_tokens", return_value=limited_tokens) as get_tokens, \
+             patch.object(devportal, "access_token_has_doc_access", return_value=False) as has_doc_access, \
+             patch.object(devportal, "_show_limited_access_pending_message") as show_pending:
+            result = devportal.login_external()
+
+        self.assertIsNone(result)
+        get_tokens.assert_called_once_with(force=False)
+        has_doc_access.assert_called_once_with(limited_tokens)
+        show_pending.assert_called_once_with()
+        validate.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

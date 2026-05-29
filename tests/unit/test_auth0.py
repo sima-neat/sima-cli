@@ -127,14 +127,12 @@ class TestAuth0AccessTokenRequirements(unittest.TestCase):
         with patch.object(auth0, "get_auth_config", return_value={}), \
              patch.object(auth0, "load_tokens", return_value=limited_tokens), \
              patch.object(auth0, "is_token_valid", return_value=True), \
-             patch.object(auth0, "_show_limited_access_message") as show_limited_access, \
              patch.object(auth0, "_prompt_for_discourse_sign_in") as prompt_for_discourse, \
              patch.object(auth0, "refresh_access_token") as refresh_access_token, \
              patch.object(auth0, "login_auth0") as login_auth0:
             result = auth0.get_or_refresh_tokens()
 
         self.assertIs(result, limited_tokens)
-        show_limited_access.assert_called_once_with()
         prompt_for_discourse.assert_not_called()
         refresh_access_token.assert_not_called()
         login_auth0.assert_not_called()

@@ -156,8 +156,14 @@ run_smoke() {
     fi
   fi
 
-  PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 "$py" -m pip install --quiet "$wheel"
-  "$py" -m pip check
+  if ! PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 "$py" -m pip install "$wheel"; then
+    printf 'FAIL Python %s could not install %s\n' "$python_version" "$wheel" >&2
+    return 1
+  fi
+  if ! "$py" -m pip check; then
+    printf 'FAIL Python %s dependency check failed after installing %s\n' "$python_version" "$wheel" >&2
+    return 1
+  fi
 
   (cd "$tmpdir" && SIMA_CLI_CHECK_FOR_UPDATE=0 HOME="$home_dir" "$py" -m sima_cli -h >/dev/null)
   cli_version="$(cd "$tmpdir" && SIMA_CLI_CHECK_FOR_UPDATE=0 HOME="$home_dir" "$py" -m sima_cli version)"

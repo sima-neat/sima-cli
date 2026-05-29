@@ -1,5 +1,5 @@
 click>=8.0
-requests>=2.33.0
+requests>=2.32.4,<3.0
 tqdm>=4.64
 unittest2; python_version<"3.5"
 pytest

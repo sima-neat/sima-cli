@@ -1621,22 +1621,54 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run_command.call_args_list, [
             unittest.mock.call([
                 "docker", "exec", "-u", "root", "container", "mkdir", "-p", "/home/devuser/.sima-cli",
-            ]),
+            ], fatal=False),
             unittest.mock.call([
                 "docker", "cp", tokens_file, "container:/home/devuser/.sima-cli/.tokens.json",
-            ]),
+            ], fatal=False),
             unittest.mock.call([
                 "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli/.tokens.json",
-            ]),
+            ], fatal=False),
             unittest.mock.call([
                 "docker", "cp", cookies_file, "container:/home/devuser/.sima-cli/.sima-cli-cookies.txt",
-            ]),
+            ], fatal=False),
             unittest.mock.call([
                 "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli/.sima-cli-cookies.txt",
-            ]),
+            ], fatal=False),
             unittest.mock.call([
                 "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli",
-            ]),
+            ], fatal=False),
+        ])
+
+    def test_copy_sima_cli_auth_cache_continues_when_one_file_fails(self):
+        with TemporaryDirectory() as tmpdir:
+            auth_dir = Path(tmpdir) / ".sima-cli"
+            auth_dir.mkdir()
+            (auth_dir / ".tokens.json").write_text("{}", encoding="utf-8")
+            (auth_dir / ".sima-cli-cookies.txt").write_text("# cookies", encoding="utf-8")
+
+            with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
+                 patch("sima_cli.sdk.utils.os.path.expanduser", return_value=str(auth_dir)), \
+                 patch("sima_cli.sdk.utils.run_command", side_effect=[True, False, True, True, True]) as run_command:
+                _copy_sima_cli_auth_cache_to_container("container", "devuser", 1000, 1000)
+
+        tokens_file = str((auth_dir / ".tokens.json").resolve())
+        cookies_file = str((auth_dir / ".sima-cli-cookies.txt").resolve())
+        self.assertEqual(run_command.call_args_list, [
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "mkdir", "-p", "/home/devuser/.sima-cli",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "cp", tokens_file, "container:/home/devuser/.sima-cli/.tokens.json",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "cp", cookies_file, "container:/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli",
+            ], fatal=False),
         ])
 
     def test_model_sdk_extension_skips_non_neat_elxr_image(self):

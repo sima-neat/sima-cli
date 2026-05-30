@@ -198,6 +198,10 @@ def access_token_has_doc_access(tokens: dict) -> bool:
     return _access_token_has_grant(_access_token_claims(tokens), DOC_ACCESS_GRANT)
 
 
+def access_token_has_latest_eula(tokens: dict) -> bool:
+    return _access_token_has_grant(_access_token_claims(tokens), LATEST_EULA_GRANT)
+
+
 def _validate_access_token_requirements(tokens: dict) -> Tuple[bool, Dict[str, bool]]:
     claims = _access_token_claims(tokens)
     checks = {

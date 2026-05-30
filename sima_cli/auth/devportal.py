@@ -19,9 +19,13 @@ from sima_cli.auth.auth0 import (
     decode_jwt_payload,
     extract_email,
     access_token_has_doc_access,
+    access_token_has_latest_eula,
+    get_auth_config,
     get_or_refresh_tokens,
     get_cached_access_token,
+    is_browser_available,
     load_tokens,
+    refresh_access_token,
 )
 
 HOME_DIR = os.path.expanduser("~/.sima-cli")
@@ -64,20 +68,37 @@ HEADERS = {
     "sec-ch-ua-platform": '"macOS"',
 }
 
+
+def _prompt_manual_developer_portal_login(confirm_completion: bool = False) -> bool:
+    click.secho(
+        f"\nOpen this page to accept EULA to proceed, press Y when you are done:\n{DEV_PORTAL_LOGIN_URL}\n",
+        fg="green",
+    )
+    if confirm_completion:
+        return click.confirm("Have you accepted the EULA?", default=True)
+    return False
+
+
+def _open_developer_portal_login_page(confirm_manual_completion: bool = False) -> bool:
+    if not is_browser_available():
+        return _prompt_manual_developer_portal_login(confirm_manual_completion)
+
+    try:
+        opened = webbrowser.open(DEV_PORTAL_LOGIN_URL)
+    except Exception:
+        opened = False
+
+    if not opened:
+        return _prompt_manual_developer_portal_login(confirm_manual_completion)
+    return True
+
+
 def _handle_eula_flow(session: requests.Session, username: str, domain: str) -> bool:
     try:
         click.echo("\n📄 To continue, you must accept the End-User License Agreement (EULA).")
         click.echo("👉 Please sign in to Developer Portal in your browser and accept the EULA if prompted.")
         click.echo("👉 If you were not prompted with the EULA acceptance popup, try opening the page in an incognito browser.")
-        try:
-            opened = webbrowser.open(DEV_PORTAL_LOGIN_URL)
-        except Exception:
-            opened = False
-
-        if opened:
-            click.echo(f"\nOpening Developer Portal sign-in page: {DEV_PORTAL_LOGIN_URL}\n")
-        else:
-            click.echo(f"\nOpen this sign-in page manually: {DEV_PORTAL_LOGIN_URL}\n")
+        _open_developer_portal_login_page()
 
         if not click.confirm("✅ Have you signed in to Developer Portal and accepted the EULA?", default=True):
             click.echo("❌ EULA acceptance is required to continue.")
@@ -203,20 +224,6 @@ def _show_access_request_pending_message(already_submitted: bool = False):
         click.secho("✅ Your access request has already been submitted.", fg="green")
     else:
         click.secho("✅ Your access request has been submitted.", fg="green")
-    console.print(
-        Panel(
-            "\n".join(
-                [
-                    "SiMa is reviewing your request and will grant access shortly.",
-                    "Please look out for an email from marketing@marketing.sima.ai.",
-                    "Once access is granted, run `sima-cli login` again.",
-                ]
-            ),
-            border_style="yellow",
-            style="yellow",
-            expand=False,
-        )
-    )
 
 
 def _show_limited_access_pending_message():
@@ -227,9 +234,10 @@ def _show_limited_access_pending_message():
                 [
                     "SiMa is reviewing your account and will grant full access shortly.",
                     "Please look out for an email from marketing@marketing.sima.ai.",
-                    "Once access is granted, run `sima-cli login` again.",
                 ]
             ),
+            title="Notice",
+            title_align="center",
             border_style="yellow",
             style="yellow",
             expand=False,
@@ -237,27 +245,26 @@ def _show_limited_access_pending_message():
     )
 
 
-def _show_access_request_info_panel():
-    console.print(
-        Panel(
-            "\n".join(
-                [
-                    "Welcome to the SiMa.ai Developer Portal.",
-                    "",
-                    "To download digital assets from the Developer Portal, "
-                    "SiMa's business team needs to grant access after you "
-                    "provide a few additional details, including your project goal.",
-                    "",
-                    "Once approved, you will receive an email from "
-                    "marketing@marketing.sima.ai. Please check your email "
-                    "client's spam filter.",
-                ]
-            ),
-            title="Developer Portal Access Request",
-            border_style="yellow",
-            expand=False,
-        )
-    )
+def _prompt_eula_acceptance_after_access_request() -> bool:
+    click.echo("\n📄 To continue, accept the End-User License Agreement (EULA).")
+    click.echo("👉 Please sign in to Developer Portal in your browser and accept the EULA if prompted.")
+    _open_developer_portal_login_page()
+    if not click.confirm("✅ Have you signed in to Developer Portal and accepted the EULA?", default=True):
+        return False
+
+    tokens = load_tokens() or {}
+    refresh_token = tokens.get("refresh_token")
+    if not refresh_token:
+        click.secho("⚠️  Unable to refresh your access token: missing refresh token.", fg="yellow")
+        return False
+
+    click.echo("Refreshing access token after EULA acceptance...")
+    refreshed = refresh_access_token(get_auth_config(), refresh_token)
+    if not refreshed:
+        click.secho("⚠️  Unable to refresh your access token after EULA acceptance.", fg="yellow")
+        return False
+
+    return True
 
 
 def _submit_access_request() -> bool:
@@ -272,19 +279,10 @@ def _submit_access_request() -> bool:
         )
         return False
 
-    if _has_submitted_access_request(claims):
-        _show_access_request_pending_message(already_submitted=True)
-        _logout_external_credentials()
-        return False
-
-    _show_access_request_info_panel()
-    message = click.prompt(
-        click.style("Please briefly describe your project", fg="yellow"),
-        type=str,
-    ).strip()
-    payload = _build_access_request_payload(claims, message)
+    payload = _build_access_request_payload(claims, "sima-cli sign up request")
 
     try:
+        click.echo("Submitting Developer Portal access request...")
         response = requests.post(ACCESS_REQUEST_FORM_URL, data=payload, timeout=15)
         response.raise_for_status()
     except requests.RequestException as e:
@@ -293,7 +291,8 @@ def _submit_access_request() -> bool:
 
     _mark_access_request_submitted(claims)
     _show_access_request_pending_message()
-    _logout_external_credentials()
+    if not access_token_has_latest_eula(load_tokens() or {}):
+        _prompt_eula_acceptance_after_access_request()
     return False
 
 
@@ -388,8 +387,7 @@ def login_external(force=False, loginDocker=True):
     if not tokens:
         return None
     if not access_token_has_doc_access(tokens):
-        _show_limited_access_pending_message()
-        return None
+        return _submit_access_request()
 
     session, valid = validate_session()
     if valid:

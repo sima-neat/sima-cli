@@ -85,6 +85,11 @@ class TestAuth0AccessTokenRequirements(unittest.TestCase):
         self.assertTrue(valid)
         self.assertEqual(checks, {"doc_access": True, "latest_eula": True, "userinfo_audience": True})
 
+    def test_access_token_has_latest_eula(self):
+        tokens = _tokens({"permissions": [auth0.LATEST_EULA_GRANT]})
+
+        self.assertTrue(auth0.access_token_has_latest_eula(tokens))
+
     def test_discourse_url_uses_staging_when_enabled(self):
         with patch.dict("os.environ", {"USE_STAGING_DEV_PORTAL": "true"}):
             self.assertEqual(auth0._discourse_sign_in_url(), auth0.STAGING_DISCOURSE_URL)

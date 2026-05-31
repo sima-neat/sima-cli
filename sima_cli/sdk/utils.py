@@ -679,6 +679,17 @@ def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: 
     ], fatal=False):
         print("⚠️  Could not create sima-cli auth cache directory in Neat SDK container; continuing setup.")
         return
+    if not run_command([
+        "docker",
+        "exec",
+        "-u",
+        "root",
+        sdk_container_name,
+        "chown",
+        f"{uid}:{gid}",
+        container_auth_dir,
+    ], fatal=False):
+        print("⚠️  Could not update ownership for sima-cli auth cache directory; continuing setup.")
 
     copied = []
     for filename in existing_files:
@@ -705,16 +716,6 @@ def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: 
         print("ℹ️  No sima-cli auth cache files were copied into Neat SDK container; continuing setup.")
         return
 
-    run_command([
-        "docker",
-        "exec",
-        "-u",
-        "root",
-        sdk_container_name,
-        "chown",
-        f"{uid}:{gid}",
-        container_auth_dir,
-    ], fatal=False)
     print(f"🔐 Copied sima-cli auth cache file(s) into Neat SDK container: {', '.join(copied)}")
 
 

@@ -347,19 +347,22 @@ def prompt_multi_select(baseline_present: bool = False) -> List[str]:
 
         return deduped
 
-def run_command(cmd, capture_output=False):
+def run_command(cmd, capture_output=False, fatal=True):
     """Run a shell command and return output if requested."""
     try:
         if capture_output:
             return subprocess.check_output(cmd, text=True).strip()
         else:
             subprocess.run(cmd, check=True)
-            return None
+            return True if not fatal else None
     except subprocess.CalledProcessError as e:
-        print(f"❌ Command failed: {' '.join(cmd)}")
+        prefix = "❌ Command failed" if fatal else "⚠️  Optional command failed"
+        print(f"{prefix}: {' '.join(cmd)}")
         if e.stderr:
             print(f"Error: {e.stderr.strip()}")
-        sys.exit(1)
+        if fatal:
+            sys.exit(1)
+        return False
 
 
 ### Dynamic port allocation
@@ -664,7 +667,7 @@ def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: 
         return
 
     container_auth_dir = f"/home/{login_name}/.sima-cli"
-    run_command([
+    if not run_command([
         "docker",
         "exec",
         "-u",
@@ -673,26 +676,10 @@ def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: 
         "mkdir",
         "-p",
         container_auth_dir,
-    ])
-
-    copied = []
-    for filename in existing_files:
-        host_path = os.path.join(host_sima_cli_dir, filename)
-        container_path = f"{container_auth_dir}/{filename}"
-        run_command(["docker", "cp", host_path, f"{sdk_container_name}:{container_path}"])
-        run_command([
-            "docker",
-            "exec",
-            "-u",
-            "root",
-            sdk_container_name,
-            "chown",
-            f"{uid}:{gid}",
-            container_path,
-        ])
-        copied.append(filename)
-
-    run_command([
+    ], fatal=False):
+        print("⚠️  Could not create sima-cli auth cache directory in Neat SDK container; continuing setup.")
+        return
+    if not run_command([
         "docker",
         "exec",
         "-u",
@@ -701,7 +688,34 @@ def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: 
         "chown",
         f"{uid}:{gid}",
         container_auth_dir,
-    ])
+    ], fatal=False):
+        print("⚠️  Could not update ownership for sima-cli auth cache directory; continuing setup.")
+
+    copied = []
+    for filename in existing_files:
+        host_path = os.path.join(host_sima_cli_dir, filename)
+        container_path = f"{container_auth_dir}/{filename}"
+        if not run_command(["docker", "cp", host_path, f"{sdk_container_name}:{container_path}"], fatal=False):
+            print(f"⚠️  Could not copy host sima-cli auth cache file '{filename}' into Neat SDK container; continuing setup.")
+            continue
+        if not run_command([
+            "docker",
+            "exec",
+            "-u",
+            "root",
+            sdk_container_name,
+            "chown",
+            f"{uid}:{gid}",
+            container_path,
+        ], fatal=False):
+            print(f"⚠️  Could not update ownership for copied sima-cli auth cache file '{filename}'; continuing setup.")
+            continue
+        copied.append(filename)
+
+    if not copied:
+        print("ℹ️  No sima-cli auth cache files were copied into Neat SDK container; continuing setup.")
+        return
+
     print(f"🔐 Copied sima-cli auth cache file(s) into Neat SDK container: {', '.join(copied)}")
 
 
@@ -918,6 +932,8 @@ def install_neat_playbooks(sdk_container_name: str, login_name: str) -> None:
             login_name,
             "-e",
             "SIMA_CLI_CHECK_FOR_UPDATE=0",
+            "-e",
+            "GITHUB_TOKEN",
             sdk_container_name,
             "bash",
             "-lc",

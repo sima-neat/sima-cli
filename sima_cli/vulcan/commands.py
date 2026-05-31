@@ -20,7 +20,7 @@ ENV_ALIASES = {
 }
 ENV_METAVAR = "[dev|stg|staging|prd|prod|production]"
 
-AVAILABLE_ENVIRONMENTS = {"dev", "staging"}
+AVAILABLE_ENVIRONMENTS = {"dev", "staging", "production"}
 
 
 def normalize_environment(environment):

@@ -1,6 +1,6 @@
 import subprocess
 import click
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 import re
 import os
 import shutil
@@ -11,9 +11,12 @@ from rich.text import Text
 from sima_cli.utils.env import is_devkit_running_elxr
 
 APT_SOURCE_FILE = "/etc/apt/sources.list.d/0000mirror.list"
+APT_MAIN_SOURCE_FILE = "/etc/apt/sources.list"
+APT_SOURCE_DIR = "/etc/apt/sources.list.d"
 BUILDINFO_FILES = ["/etc/build", "/etc/buildinfo"]
 EXTERNAL_REPO_URL = "https://repo.sima.ai/elxr/deb/release"
 INTERNAL_REPO_URL = "http://sw-web.eng.sima.ai/deb/pre-release"
+INTERNAL_REPO_PREFIX = "http://sw-web.eng.sima.ai/"
 DEFAULT_REPO_SUITE = "bookworm"
 REPO_COMPONENT = "non-free"
 SIMAAI_OTA_FALLBACK = "/usr/bin/simaai-ota"
@@ -42,50 +45,102 @@ def _normalize_apt_source_line(line: str) -> str:
     return value
 
 
-def _parse_elxr_repo_line(line: str) -> Optional[Tuple[str, str, bool]]:
-    stripped = line.strip()
-    active = not stripped.startswith("#")
-    normalized = _normalize_apt_source_line(line)
-    parts = normalized.split()
+def _parse_deb_source_parts(line: str) -> Optional[Tuple[str, str, str]]:
+    parts = line.split()
 
     if len(parts) < 4 or parts[0] != "deb":
         return None
 
-    repo_url = parts[1]
-    suite = parts[2]
-    component = parts[3]
+    idx = 1
+    if parts[idx].startswith("["):
+        while idx < len(parts) and not parts[idx].endswith("]"):
+            idx += 1
+        idx += 1
+
+    if len(parts) <= idx + 2:
+        return None
+
+    return parts[idx], parts[idx + 1], parts[idx + 2]
+
+
+def _parse_elxr_repo_line(line: str) -> Optional[Tuple[str, str, bool]]:
+    stripped = line.strip()
+    active = not stripped.startswith("#")
+    normalized = _normalize_apt_source_line(line)
+    parsed = _parse_deb_source_parts(normalized)
+    if not parsed:
+        return None
+
+    repo_url, suite, component = parsed
     if component != REPO_COMPONENT:
         return None
 
-    if repo_url not in (EXTERNAL_REPO_URL, INTERNAL_REPO_URL):
+    if repo_url != EXTERNAL_REPO_URL and not repo_url.startswith(INTERNAL_REPO_PREFIX):
         return None
 
     return repo_url, suite, active
 
 
 def _detect_repo_suite(lines: List[str]) -> str:
-    for line in lines:
-        parsed = _parse_elxr_repo_line(line)
-        if parsed:
-            _repo_url, suite, _active = parsed
+    parsed_lines = [
+        parsed
+        for parsed in (_parse_elxr_repo_line(line) for line in lines)
+        if parsed
+    ]
+    for _repo_url, suite, active in parsed_lines:
+        if active:
             return suite
+    for _repo_url, suite, _active in parsed_lines:
+        return suite
     return DEFAULT_REPO_SUITE
 
 
-def _select_elxr_repo_channel(content: str, internal: bool) -> Tuple[str, bool, bool]:
+def _is_managed_elxr_repo(repo_url: str) -> bool:
+    return repo_url == EXTERNAL_REPO_URL or repo_url.startswith(INTERNAL_REPO_PREFIX)
+
+
+def _is_target_elxr_repo(repo_url: str, internal: bool) -> bool:
+    target_url = INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL
+    return repo_url == target_url
+
+
+def _list_apt_source_files() -> List[str]:
+    files: List[str] = []
+    if os.path.isfile(APT_MAIN_SOURCE_FILE):
+        files.append(APT_MAIN_SOURCE_FILE)
+    try:
+        for name in sorted(os.listdir(APT_SOURCE_DIR)):
+            path = os.path.join(APT_SOURCE_DIR, name)
+            if name.endswith(".list") and os.path.isfile(path):
+                files.append(path)
+    except OSError:
+        pass
+    if APT_SOURCE_FILE not in files:
+        files.append(APT_SOURCE_FILE)
+    return files
+
+
+def _select_elxr_repo_channel(
+    content: str,
+    internal: bool,
+    append_missing: bool = True,
+    suite: Optional[str] = None,
+) -> Tuple[str, bool, bool]:
     """
     Return updated apt source content, whether it changed, and whether active
     channel switching was detected.
     """
     lines = content.splitlines()
-    suite = _detect_repo_suite(lines)
+    suite = suite or _detect_repo_suite(lines)
     target_url = INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL
     other_url = EXTERNAL_REPO_URL if internal else INTERNAL_REPO_URL
     target = _repo_line(target_url, suite)
     other = _repo_line(other_url, suite)
 
     other_active = any(
-        parsed[0] == other_url and parsed[2]
+        _is_managed_elxr_repo(parsed[0])
+        and not _is_target_elxr_repo(parsed[0], internal)
+        and parsed[2]
         for parsed in (_parse_elxr_repo_line(line) for line in lines)
         if parsed
     )
@@ -101,9 +156,10 @@ def _select_elxr_repo_channel(content: str, internal: bool) -> Tuple[str, bool, 
         if parsed and parsed[0] == target_url:
             target_seen = True
             updated_line = target
-        elif parsed and parsed[0] == other_url:
-            other_seen = True
-            updated_line = f"# {other}"
+        elif parsed and _is_managed_elxr_repo(parsed[0]):
+            if parsed[0] == other_url:
+                other_seen = True
+            updated_line = line if parsed[0] == target_url else f"# {_repo_line(parsed[0], parsed[1])}"
         else:
             updated_line = line
 
@@ -111,11 +167,11 @@ def _select_elxr_repo_channel(content: str, internal: bool) -> Tuple[str, bool, 
             changed = True
         updated_lines.append(updated_line)
 
-    if not target_seen:
+    if append_missing and not target_seen:
         updated_lines.append(target)
         changed = True
 
-    if not other_seen:
+    if append_missing and not other_seen:
         updated_lines.append(f"# {other}")
         changed = True
 
@@ -123,17 +179,66 @@ def _select_elxr_repo_channel(content: str, internal: bool) -> Tuple[str, bool, 
     return "\n".join(updated_lines) + newline, changed, switching
 
 
+def _read_apt_source_files(paths: List[str]) -> Optional[Dict[str, str]]:
+    contents: Dict[str, str] = {}
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                contents[path] = f.read()
+        except FileNotFoundError:
+            if path == APT_SOURCE_FILE:
+                contents[path] = ""
+                continue
+            click.echo(f"❌ Failed to read {path}: file does not exist")
+            return None
+        except OSError as e:
+            click.echo(f"❌ Failed to read {path}: {e}")
+            return None
+    return contents
+
+
+def _select_elxr_repo_channel_files(
+    contents: Dict[str, str],
+    internal: bool,
+) -> Tuple[Dict[str, str], bool, bool]:
+    all_lines: List[str] = []
+    for content in contents.values():
+        all_lines.extend(content.splitlines())
+    suite = _detect_repo_suite(all_lines)
+    target_url = INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL
+    target_seen = any(
+        parsed[0] == target_url
+        for parsed in (_parse_elxr_repo_line(line) for line in all_lines)
+        if parsed
+    )
+
+    updated_contents: Dict[str, str] = {}
+    changed = False
+    switching = False
+
+    for path, content in contents.items():
+        updated, file_changed, file_switching = _select_elxr_repo_channel(
+            content,
+            internal,
+            append_missing=(path == APT_SOURCE_FILE and not target_seen),
+            suite=suite,
+        )
+        updated_contents[path] = updated
+        changed = changed or file_changed
+        switching = switching or file_switching
+
+    return updated_contents, changed, switching
+
+
 def _ensure_elxr_repo_channel(internal: bool) -> bool:
     channel_name = "internal pre-release" if internal else "external release"
 
-    try:
-        with open(APT_SOURCE_FILE, "r", encoding="utf-8") as f:
-            current_content = f.read()
-    except OSError as e:
-        click.echo(f"❌ Failed to read {APT_SOURCE_FILE}: {e}")
+    source_files = _list_apt_source_files()
+    current_contents = _read_apt_source_files(source_files)
+    if current_contents is None:
         return False
 
-    new_content, changed, switching = _select_elxr_repo_channel(current_content, internal)
+    new_contents, changed, switching = _select_elxr_repo_channel_files(current_contents, internal)
     if not changed:
         click.echo(f"✅ ELXR APT channel already set to {channel_name}.")
         return True
@@ -154,16 +259,19 @@ def _ensure_elxr_repo_channel(internal: bool) -> bool:
         click.echo("ℹ️  sudo may prompt you for a password...")
 
     try:
-        subprocess.run(
-            ["sudo", "tee", APT_SOURCE_FILE],
-            input=new_content,
-            text=True,
-            stdout=subprocess.DEVNULL,
-            check=True,
-        )
+        for path, new_content in new_contents.items():
+            if new_content == current_contents[path]:
+                continue
+            subprocess.run(
+                ["sudo", "tee", path],
+                input=new_content,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                check=True,
+            )
         subprocess.check_call(["sync"])
     except subprocess.CalledProcessError:
-        click.echo(f"❌ Failed to update {APT_SOURCE_FILE}")
+        click.echo("❌ Failed to update ELXR APT source files")
         return False
 
     click.echo(f"✅ ELXR APT channel set to {channel_name}.")
@@ -213,6 +321,57 @@ def _is_current_elxr_version(
         for version in (installed_palette_version, installed_distro_version)
         if version
     }
+
+
+def _parse_elxr_release_version(version: Optional[str]) -> Optional[Tuple[int, int, int]]:
+    if not version:
+        return None
+
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:$|[~+-])", version)
+    if not match:
+        return None
+
+    return tuple(int(part) for part in match.groups())
+
+
+def _is_stable_elxr_release(version: str) -> bool:
+    return re.fullmatch(r"\d+\.\d+\.\d+", version) is not None
+
+
+def _latest_stable_elxr_release(versions: List[str]) -> Optional[str]:
+    stable_versions = [
+        (parsed, version)
+        for version in versions
+        if _is_stable_elxr_release(version)
+        for parsed in [_parse_elxr_release_version(version)]
+        if parsed
+    ]
+    if not stable_versions:
+        return None
+
+    return max(stable_versions, key=lambda item: item[0])[1]
+
+
+def _is_supported_stable_elxr_upgrade(
+    requested_version: str,
+    installed_palette_version: Optional[str],
+    installed_distro_version: Optional[str],
+    available_versions: List[str],
+) -> bool:
+    if requested_version not in available_versions:
+        return False
+    if not _is_stable_elxr_release(requested_version):
+        return False
+    if requested_version != _latest_stable_elxr_release(available_versions):
+        return False
+
+    current_release = (
+        _parse_elxr_release_version(installed_distro_version)
+        or _parse_elxr_release_version(installed_palette_version)
+    )
+    requested_release = _parse_elxr_release_version(requested_version)
+
+    return bool(current_release and requested_release and requested_release > current_release)
 
 
 def _get_available_palette_versions() -> List[str]:
@@ -439,6 +598,16 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
                     desc = f"Update to latest version {selected}"
                     break
 
+                if _is_supported_stable_elxr_upgrade(
+                    selected,
+                    installed_version,
+                    installed_distro_version,
+                    versions,
+                ):
+                    cmd = [simaai_ota, "-f", "-o", "-v", selected]
+                    desc = f"Update to stable version {selected}"
+                    break
+
                 _show_unsupported_specific_elxr_update(
                     requested_version=selected,
                     current_version=installed_distro_version or installed_version,
@@ -473,6 +642,16 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
             if latest_version and version_or_url == latest_version:
                 cmd = [simaai_ota, "-f", "-o", "-v", version_or_url]
                 desc = f"Update to latest version {version_or_url}"
+                break
+
+            if _is_supported_stable_elxr_upgrade(
+                version_or_url,
+                installed_version,
+                installed_distro_version,
+                versions,
+            ):
+                cmd = [simaai_ota, "-f", "-o", "-v", version_or_url]
+                desc = f"Update to stable version {version_or_url}"
                 break
 
             _show_unsupported_specific_elxr_update(

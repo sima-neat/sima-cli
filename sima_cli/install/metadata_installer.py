@@ -12,7 +12,7 @@ import shlex
 import platform
 import hashlib
 from urllib.parse import urlparse, quote, urljoin, unquote
-from typing import Dict
+from typing import Dict, List
 from tqdm import tqdm
 from pathlib import Path
 import subprocess
@@ -298,7 +298,7 @@ def _resolve_resource_url(base_url: str, resource: str) -> str:
     )
     return urljoin(base_url, encoded_resource)
 
-def _resolve_resource_url_candidates(base_url: str, resource: str) -> list[str]:
+def _resolve_resource_url_candidates(base_url: str, resource: str) -> List[str]:
     primary_url = _resolve_resource_url(base_url, resource)
 
     parsed_resource = urlparse(resource)
@@ -338,12 +338,12 @@ def _normalize_downloaded_metadata_resource(local_path: str, expected_path: Path
 
 def _download_metadata_file_resource(
     resource: str,
-    resource_urls: list[str],
+    resource_urls: List[str],
     dest_folder: str,
     dest_path: Path,
     internal: bool,
 ) -> str:
-    errors: list[str] = []
+    errors: List[str] = []
     for index, resource_url in enumerate(resource_urls):
         try:
             local_path = download_file_from_url(

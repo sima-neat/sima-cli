@@ -322,14 +322,17 @@ class VulcanCommandTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(download_mock.call_args.kwargs["environment"], "dev")
 
-    def test_vulcan_download_rejects_unavailable_production_alias(self):
+    def test_vulcan_download_accepts_production_alias(self):
         runner = CliRunner()
         with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
+            download_mock.return_value = (
+                _fake_result(environment="production", base_url=ENV_BASE_URLS["production"]),
+                None,
+            )
             result = runner.invoke(main, ["vulcan", "--env", "prod", "download", "core", "main"])
 
-        self.assertNotEqual(result.exit_code, 0, result.output)
-        self.assertIn("Artifact environment 'production' is not yet available to use", result.output)
-        download_mock.assert_not_called()
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(download_mock.call_args.kwargs["environment"], "production")
 
     def test_vulcan_install_help_is_registered(self):
         runner = CliRunner()

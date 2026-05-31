@@ -285,6 +285,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: [publish-candidate-index]
     if: github.event_name != 'pull_request'
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
     strategy:
       fail-fast: false
       matrix:
@@ -293,6 +295,9 @@ jobs:
             os: macos-latest
           - name: Ubuntu x86
             os: ubuntu-24.04
+          - name: Ubuntu x86 Snap Docker
+            os: ubuntu-24.04
+            docker_install: snap
           - name: Ubuntu ARM64
             os: ubuntu-24.04-arm
           - name: Windows
@@ -326,9 +331,33 @@ jobs:
           additional-packages: ca-certificates curl python3 python3-venv python3-pip docker.io
 
       - name: Verify Docker on Ubuntu
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.docker_install != 'snap'
         run: |
           docker info
+
+      - name: Install Docker from Snap on Ubuntu
+        if: runner.os == 'Linux' && matrix.docker_install == 'snap'
+        run: |
+          set -euo pipefail
+          sudo systemctl stop docker.service docker.socket containerd.service || true
+          sudo apt-get update
+          sudo apt-get remove -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin moby-engine moby-cli containerd runc || true
+          sudo apt-get install -y snapd
+          sudo systemctl enable --now snapd.socket
+          sudo ln -s /var/lib/snapd/snap /snap 2>/dev/null || true
+          sudo snap install docker
+          sudo snap start docker
+          for _ in $(seq 1 60); do
+            if sudo docker info >/dev/null 2>&1; then
+              sudo chmod 666 /var/run/docker.sock || true
+              docker info
+              exit 0
+            fi
+            sudo snap services docker || true
+            sleep 2
+          done
+          sudo journalctl -u snap.docker.dockerd -n 200 --no-pager || true
+          exit 1
 
       - name: Start Docker in WSL2
         if: runner.os == 'Windows'
@@ -363,6 +392,11 @@ jobs:
           python3 sima-cli-install.py "${{ needs.publish-candidate-index.outputs.ref_name }}" "${{ needs.publish-candidate-index.outputs.short_sha }}" --noninteractive
           "$HOME/.sima-cli/.venv/bin/sima-cli" version
           "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
+          if [[ "${{ matrix.docker_install }}" == "snap" ]]; then
+            mkdir -p "$HOME/.sima-cli"
+            printf '{}\n' > "$HOME/.sima-cli/.tokens.json"
+            chmod 600 "$HOME/.sima-cli/.tokens.json"
+          fi
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
 

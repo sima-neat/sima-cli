@@ -285,6 +285,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: [publish-candidate-index]
     if: github.event_name != 'pull_request'
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
     strategy:
       fail-fast: false
       matrix:

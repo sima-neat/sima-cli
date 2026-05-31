@@ -1839,6 +1839,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
             "docker",
             "-e",
             "SIMA_CLI_CHECK_FOR_UPDATE=0",
+            "-e",
+            "GITHUB_TOKEN",
             "container",
             "bash",
             "-lc",

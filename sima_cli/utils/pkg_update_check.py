@@ -12,6 +12,7 @@ import re
 
 PUBLIC_PYPI_SIMPLE_URL = "https://pypi.org/simple"
 AUTO_ACCEPT_UPDATE_ENV = "SIMA_CLI_AUTO_ACCEPT_UPDATE"
+FORCE_UPDATE_CHECK_RESULT_ENV = "FORCE_UPDATE_CHECK_RESULT"
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -34,6 +35,10 @@ def _confirm_and_update(package_name: str) -> bool:
     if click.confirm(f"🔔 Do you want to update {package_name} now?", default=True):
         return update_package(package_name)
     return False
+
+
+def _force_update_check_result() -> bool:
+    return _env_flag_enabled(FORCE_UPDATE_CHECK_RESULT_ENV)
 
 def cleanup_pip_leftovers():
     """Remove ~-prefixed leftover dirs in site-packages."""
@@ -149,6 +154,12 @@ def check_for_update(package_name: str, timeout: float = 2.0):
                 fg="green",
                 bold=True,
             )
+        if _force_update_check_result():
+            click.secho(
+                f"🔔 {FORCE_UPDATE_CHECK_RESULT_ENV}=1 set; prompting for update even though the version check did not require it.",
+                fg="yellow",
+            )
+            return _confirm_and_update(package_name)
         return False
 
     if version_comparison < 0:
@@ -171,4 +182,10 @@ def check_for_update(package_name: str, timeout: float = 2.0):
         return False
     else:
         print('✅ sima-cli is up-to-date')
+        if _force_update_check_result():
+            click.secho(
+                f"🔔 {FORCE_UPDATE_CHECK_RESULT_ENV}=1 set; prompting for update even though sima-cli is already up-to-date.",
+                fg="yellow",
+            )
+            return _confirm_and_update(package_name)
         return False

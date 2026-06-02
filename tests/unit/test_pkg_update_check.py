@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from sima_cli.utils.pkg_update_check import (
     AUTO_ACCEPT_UPDATE_ENV,
+    FORCE_UPDATE_CHECK_RESULT_ENV,
     PUBLIC_PYPI_SIMPLE_URL,
     _compare_versions,
     check_for_update,
@@ -105,6 +106,35 @@ class TestPkgUpdateCheck(unittest.TestCase):
         confirm.assert_not_called()
         update.assert_not_called()
         self.assertFalse(result)
+
+    def test_check_for_update_can_force_prompt_when_current_is_latest(self):
+        with patch.dict(os.environ, {FORCE_UPDATE_CHECK_RESULT_ENV: "1"}), \
+             patch("sima_cli.utils.pkg_update_check.importlib.metadata.version", return_value="2.1.5"), \
+             patch("sima_cli.utils.pkg_update_check.has_internet", return_value=True), \
+             patch("sima_cli.utils.pkg_update_check.urllib.request.urlopen", return_value=_PyPIResponse("2.1.5")), \
+             patch("sima_cli.utils.pkg_update_check.click.confirm", return_value=True) as confirm, \
+             patch("sima_cli.utils.pkg_update_check.update_package", return_value=True) as update:
+            result = check_for_update("sima-cli")
+
+        confirm.assert_called_once()
+        update.assert_called_once_with("sima-cli")
+        self.assertTrue(result)
+
+    def test_check_for_update_can_force_auto_accepted_update_when_current_is_latest(self):
+        with patch.dict(os.environ, {
+            AUTO_ACCEPT_UPDATE_ENV: "1",
+            FORCE_UPDATE_CHECK_RESULT_ENV: "1",
+        }), \
+             patch("sima_cli.utils.pkg_update_check.importlib.metadata.version", return_value="2.1.5"), \
+             patch("sima_cli.utils.pkg_update_check.has_internet", return_value=True), \
+             patch("sima_cli.utils.pkg_update_check.urllib.request.urlopen", return_value=_PyPIResponse("2.1.5")), \
+             patch("sima_cli.utils.pkg_update_check.click.confirm") as confirm, \
+             patch("sima_cli.utils.pkg_update_check.update_package", return_value=True) as update:
+            result = check_for_update("sima-cli")
+
+        confirm.assert_not_called()
+        update.assert_called_once_with("sima-cli")
+        self.assertTrue(result)
 
     def test_check_for_update_auto_accepts_update_when_env_is_enabled(self):
         with patch.dict(os.environ, {AUTO_ACCEPT_UPDATE_ENV: "1"}), \

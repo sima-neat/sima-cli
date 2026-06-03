@@ -50,6 +50,35 @@ def _configure_stdio_errors() -> None:
             continue
 
 
+def _command_name_from_argv(argv):
+    for arg in argv[1:]:
+        if arg in ("-i", "--internal"):
+            continue
+        if arg.startswith("-"):
+            continue
+        return arg
+    return None
+
+
+def _should_rerun_after_update(argv):
+    args = argv[1:]
+    if not args:
+        return False
+    if any(arg in ("-h", "--help", "-?") for arg in args):
+        return False
+
+    command_name = _command_name_from_argv(argv)
+    return command_name not in (None, "selfupdate", "version")
+
+
+def _rerun_current_command() -> None:
+    env = os.environ.copy()
+    env["SIMA_CLI_CHECK_FOR_UPDATE"] = "0"
+    cmd = [sys.executable, "-m", "sima_cli", *sys.argv[1:]]
+    click.secho("✅ Update complete. Re-running the original command with the current sima-cli.", fg="green")
+    os.execvpe(sys.executable, cmd, env)
+
+
 # Entry point for the CLI tool using Click's command group decorator
 @click.group(context_settings=dict(help_option_names=["-h", "--help", "-?"], max_content_width=120))
 @click.option('-i', '--internal', is_flag=True, help="Use internal Artifactory resources, Authorized Sima employees only")
@@ -62,7 +91,8 @@ def main(ctx, internal):
       --internal  Use internal Artifactory resources (can also be set via env variable SIMA_CLI_INTERNAL=1)
     """
     _configure_stdio_errors()
-    check_for_update('sima-cli')
+    if check_for_update('sima-cli') and _should_rerun_after_update(sys.argv):
+        _rerun_current_command()
     ctx.ensure_object(dict)
 
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)

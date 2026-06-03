@@ -922,11 +922,18 @@ def _prepare_log_host_dir(path: str) -> None:
 def _docker_cp_staging_dir():
     """
     Docker installed through Snap may not see host /tmp paths. Stage files under
-    the user's home directory so docker cp can access them across Docker variants.
+    a non-hidden user home directory so docker cp can access them across Docker
+    variants, including Snap confinement.
     """
     home = os.path.expanduser("~")
     if home and os.path.isdir(home) and os.access(home, os.W_OK):
-        return tempfile.TemporaryDirectory(prefix=".sima-cli-sdk-", dir=home)
+        staging = tempfile.TemporaryDirectory(prefix="sima-cli-sdk-", dir=home)
+        try:
+            os.chmod(staging.name, 0o755)
+        except OSError:
+            staging.cleanup()
+            raise
+        return staging
     return tempfile.TemporaryDirectory(prefix="sima-cli-sdk-")
 
 

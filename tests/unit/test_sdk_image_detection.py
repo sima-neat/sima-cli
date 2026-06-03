@@ -1823,6 +1823,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_configure_container_uses_absolute_temp_files_for_user_mapping(self):
         copied_files = {}
+        copied_file_parents = {}
 
         def fake_run_command(cmd, *args, **kwargs):
             if cmd[:2] == ["docker", "cp"]:
@@ -1830,12 +1831,15 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 if src == "container:/etc/passwd":
                     Path(dest).write_text("root:x:0:0:root:/root:/bin/bash\n", encoding="utf-8")
                     copied_files["passwd"] = dest
+                    copied_file_parents["passwd"] = Path(dest).parent.stat().st_mode & 0o777
                 elif src == "container:/etc/shadow":
                     Path(dest).write_text("root:*:::::::\n", encoding="utf-8")
                     copied_files["shadow"] = dest
+                    copied_file_parents["shadow"] = Path(dest).parent.stat().st_mode & 0o777
                 elif src == "container:/etc/group":
                     Path(dest).write_text("root:x:0:\ndocker:x:900:\n", encoding="utf-8")
                     copied_files["group"] = dest
+                    copied_file_parents["group"] = Path(dest).parent.stat().st_mode & 0o777
                 else:
                     self.assertTrue(Path(src).is_absolute())
             return True
@@ -1855,9 +1859,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
             configure_container("container", no_model_sdk=True)
 
         self.assertEqual(set(copied_files), {"passwd", "shadow", "group"})
+        self.assertEqual(set(copied_file_parents), {"passwd", "shadow", "group"})
         for path in copied_files.values():
             self.assertTrue(Path(path).is_absolute())
             self.assertEqual(os.path.commonpath([home, path]), home)
+            self.assertTrue(Path(path).parent.name.startswith("sima-cli-sdk-"))
+            self.assertFalse(Path(path).parent.name.startswith("."))
+        for mode in copied_file_parents.values():
+            self.assertEqual(mode, 0o755)
 
     def test_install_neat_playbooks_skips_non_neat_image(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="artifacts.eng.sima.ai/elxr:2.1.0"), \

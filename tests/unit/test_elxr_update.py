@@ -247,6 +247,39 @@ class TestUnsupportedElxrSpecificVersionUpdate(unittest.TestCase):
             latest_version="2.1.1",
         )
 
+    @patch("sima_cli.update.elxr.click.confirm")
+    @patch("sima_cli.update.elxr._show_unsupported_specific_elxr_update")
+    @patch("sima_cli.update.elxr._get_installed_elxr_distro_version", return_value=None)
+    @patch("sima_cli.update.elxr._get_installed_palette_version", return_value="2.1.0")
+    @patch("sima_cli.update.elxr._get_available_palette_versions", return_value=["2.1.2", "2.1.1", "2.1.0"])
+    @patch("sima_cli.update.elxr.subprocess.check_call")
+    @patch("sima_cli.update.elxr.subprocess.call", return_value=0)
+    @patch("sima_cli.update.elxr._ensure_elxr_repo_channel", return_value=True)
+    @patch("sima_cli.update.elxr.print_current_versions")
+    @patch("sima_cli.update.elxr.is_devkit_running_elxr", return_value=True)
+    def test_dryrun_explicit_non_latest_version_tests_unsupported_logic_without_ota(
+        self,
+        _mock_is_elxr,
+        _mock_print_versions,
+        _mock_ensure_channel,
+        _mock_call,
+        mock_check_call,
+        _mock_available_versions,
+        _mock_installed_version,
+        _mock_distro_version,
+        mock_warning,
+        mock_confirm,
+    ):
+        update_elxr("2.1.1", internal=False, dryrun=True)
+
+        mock_check_call.assert_called_once_with(["sudo", "apt", "update"])
+        mock_warning.assert_called_once_with(
+            requested_version="2.1.1",
+            current_version="2.1.0",
+            latest_version="2.1.2",
+        )
+        mock_confirm.assert_not_called()
+
     @patch("sima_cli.update.elxr._show_unsupported_specific_elxr_update")
     @patch("sima_cli.update.elxr._get_installed_elxr_distro_version", return_value=None)
     @patch("sima_cli.update.elxr._get_installed_palette_version", return_value="2.1.0")

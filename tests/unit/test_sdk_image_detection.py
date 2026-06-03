@@ -1,3 +1,4 @@
+import os
 import socket
 import subprocess
 import unittest
@@ -1839,7 +1840,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     self.assertTrue(Path(src).is_absolute())
             return True
 
-        with patch("sima_cli.sdk.utils.check_os", return_value="macos"), \
+        with TemporaryDirectory() as home, \
+             patch.dict(os.environ, {"HOME": home}), \
+             patch("sima_cli.sdk.utils.check_os", return_value="macos"), \
              patch("sima_cli.sdk.utils.detect_current_user", return_value=("jimfan", 501, 20)), \
              patch("sima_cli.sdk.utils.run_command", side_effect=fake_run_command), \
              patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
@@ -1854,6 +1857,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(set(copied_files), {"passwd", "shadow", "group"})
         for path in copied_files.values():
             self.assertTrue(Path(path).is_absolute())
+            self.assertEqual(os.path.commonpath([home, path]), home)
 
     def test_install_neat_playbooks_skips_non_neat_image(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="artifacts.eng.sima.ai/elxr:2.1.0"), \

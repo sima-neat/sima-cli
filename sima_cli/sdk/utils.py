@@ -919,6 +919,17 @@ def _prepare_log_host_dir(path: str) -> None:
         print(f"⚠️ Could not make log folder writable for container services: {path} ({e})")
 
 
+def _docker_cp_staging_dir():
+    """
+    Docker installed through Snap may not see host /tmp paths. Stage files under
+    the user's home directory so docker cp can access them across Docker variants.
+    """
+    home = os.path.expanduser("~")
+    if home and os.path.isdir(home) and os.access(home, os.W_OK):
+        return tempfile.TemporaryDirectory(prefix=".sima-cli-sdk-", dir=home)
+    return tempfile.TemporaryDirectory(prefix="sima-cli-sdk-")
+
+
 def install_neat_playbooks(sdk_container_name: str, login_name: str) -> None:
     image_ref = _get_container_image_ref(sdk_container_name)
     if not image_ref or not is_neat_sdk_image(image_ref):
@@ -975,7 +986,7 @@ def configure_container(
 
     # ---- Linux / MacOS User Setup ----
     if platform_os in ["linux", "macos"]:
-        with tempfile.TemporaryDirectory(prefix="sima-cli-sdk-") as tmpdir:
+        with _docker_cp_staging_dir() as tmpdir:
             passwd_path = os.path.join(tmpdir, "passwd.txt")
             shadow_path = os.path.join(tmpdir, "shadow.txt")
             group_path = os.path.join(tmpdir, "group.txt")

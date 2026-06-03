@@ -1820,6 +1820,41 @@ table ip6 nm-shared-enx6c1ff720d573 {
         model_sdk.assert_not_called()
         playbooks.assert_not_called()
 
+    def test_configure_container_uses_absolute_temp_files_for_user_mapping(self):
+        copied_files = {}
+
+        def fake_run_command(cmd, *args, **kwargs):
+            if cmd[:2] == ["docker", "cp"]:
+                src, dest = cmd[2], cmd[3]
+                if src == "container:/etc/passwd":
+                    Path(dest).write_text("root:x:0:0:root:/root:/bin/bash\n", encoding="utf-8")
+                    copied_files["passwd"] = dest
+                elif src == "container:/etc/shadow":
+                    Path(dest).write_text("root:*:::::::\n", encoding="utf-8")
+                    copied_files["shadow"] = dest
+                elif src == "container:/etc/group":
+                    Path(dest).write_text("root:x:0:\ndocker:x:900:\n", encoding="utf-8")
+                    copied_files["group"] = dest
+                else:
+                    self.assertTrue(Path(src).is_absolute())
+            return True
+
+        with patch("sima_cli.sdk.utils.check_os", return_value="macos"), \
+             patch("sima_cli.sdk.utils.detect_current_user", return_value=("jimfan", 501, 20)), \
+             patch("sima_cli.sdk.utils.run_command", side_effect=fake_run_command), \
+             patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
+             patch("sima_cli.sdk.utils.ensure_sima_cli_installed"), \
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed"), \
+             patch("sima_cli.sdk.utils._sync_codex_skills"), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks"):
+            from sima_cli.sdk.utils import configure_container
+
+            configure_container("container", no_model_sdk=True)
+
+        self.assertEqual(set(copied_files), {"passwd", "shadow", "group"})
+        for path in copied_files.values():
+            self.assertTrue(Path(path).is_absolute())
+
     def test_install_neat_playbooks_skips_non_neat_image(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="artifacts.eng.sima.ai/elxr:2.1.0"), \
              patch("sima_cli.sdk.utils.run_command") as run_command:

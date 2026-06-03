@@ -353,7 +353,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS
+          - name: macOS CLI only
             os: macos-latest
           - name: Ubuntu x86
             os: ubuntu-24.04
@@ -475,7 +475,7 @@ jobs:
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
 
-      - name: Install candidate on macOS
+      - name: Install candidate on macOS without SDK container setup
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
@@ -483,7 +483,7 @@ jobs:
           candidate_version="$("$HOME/.sima-cli/.venv/bin/sima-cli" version)"
           printf '%s\n' "$candidate_version"
           grep -F "${{ needs.build.outputs.short_sha }}" <<<"$candidate_version"
-          echo "Skipping Neat SDK container setup on GitHub-hosted macOS: no reliable Docker backend is available."
+          echo "Skipping Neat SDK container setup on GitHub-hosted macOS: no supported Docker backend is available."
 
       - name: Install candidate in WSL2
         if: runner.os == 'Windows'

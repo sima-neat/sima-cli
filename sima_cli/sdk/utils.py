@@ -12,6 +12,7 @@ import json
 import re
 import shlex
 import platform
+import tempfile
 from collections import defaultdict
 from rich.console import Console
 from rich.panel import Panel
@@ -974,20 +975,22 @@ def configure_container(
 
     # ---- Linux / MacOS User Setup ----
     if platform_os in ["linux", "macos"]:
-        run_command(["docker", "cp", f"{sdk_container_name}:/etc/passwd", "./passwd.txt"])
-        _append_unique_line("./passwd.txt", f"{login_name}:x:{uid}:{gid}::/home/{login_name}:/bin/bash")
-        run_command(["docker", "cp", "./passwd.txt", f"{sdk_container_name}:/etc/passwd"])
-        os.remove("./passwd.txt")
+        with tempfile.TemporaryDirectory(prefix="sima-cli-sdk-") as tmpdir:
+            passwd_path = os.path.join(tmpdir, "passwd.txt")
+            shadow_path = os.path.join(tmpdir, "shadow.txt")
+            group_path = os.path.join(tmpdir, "group.txt")
 
-        run_command(["docker", "cp", f"{sdk_container_name}:/etc/shadow", "./shadow.txt"])
-        _append_unique_line("./shadow.txt", f"{login_name}:$6$hash$placeholder:::::::")
-        run_command(["docker", "cp", "./shadow.txt", f"{sdk_container_name}:/etc/shadow"])
-        os.remove("./shadow.txt")
+            run_command(["docker", "cp", f"{sdk_container_name}:/etc/passwd", passwd_path])
+            _append_unique_line(passwd_path, f"{login_name}:x:{uid}:{gid}::/home/{login_name}:/bin/bash")
+            run_command(["docker", "cp", passwd_path, f"{sdk_container_name}:/etc/passwd"])
 
-        run_command(["docker", "cp", f"{sdk_container_name}:/etc/group", "./group.txt"])
-        _configure_group_file("./group.txt", login_name, gid)
-        run_command(["docker", "cp", "./group.txt", f"{sdk_container_name}:/etc/group"])
-        os.remove("./group.txt")
+            run_command(["docker", "cp", f"{sdk_container_name}:/etc/shadow", shadow_path])
+            _append_unique_line(shadow_path, f"{login_name}:$6$hash$placeholder:::::::")
+            run_command(["docker", "cp", shadow_path, f"{sdk_container_name}:/etc/shadow"])
+
+            run_command(["docker", "cp", f"{sdk_container_name}:/etc/group", group_path])
+            _configure_group_file(group_path, login_name, gid)
+            run_command(["docker", "cp", group_path, f"{sdk_container_name}:/etc/group"])
 
         run_command([
             "docker",

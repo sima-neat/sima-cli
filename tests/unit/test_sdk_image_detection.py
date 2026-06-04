@@ -18,6 +18,7 @@ from sima_cli.sdk.install import (
     _detect_existing_linux_nfs_export,
     _detect_host_ip,
     _detect_local_ip_candidates,
+    _detect_routed_host_ip,
     _parse_export_line,
     _setup_devkit_share,
     _setup_sdk_extensions,
@@ -289,7 +290,7 @@ class TestSdkImageDetection(unittest.TestCase):
 
     def test_setup_devkit_share_marks_noninteractive_bootstrap(self):
         with TemporaryDirectory() as tmpdir:
-            with patch("sima_cli.sdk.install._detect_host_ip", return_value=("10.0.0.76", "en0", [("en0", "10.0.0.76")])), \
+            with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("10.0.0.76", "en0", [("en0", "10.0.0.76")])), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner"), \
                  patch("sima_cli.sdk.install._configure_nfs_export"), \
                  patch("sima_cli.sdk.install._detect_existing_linux_nfs_export", return_value=None), \
@@ -345,7 +346,7 @@ class TestSdkImageDetection(unittest.TestCase):
                 ParsedNfsExport(Path(tmpdir) / "share", "192.168.0.0/20", ("rw", "sync", "crossmnt")),
             ]
 
-            with patch("sima_cli.sdk.install._detect_host_ip", return_value=("192.168.1.10", "eno1", [("eno1", "192.168.1.10")])), \
+            with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("192.168.1.10", "eno1", [("eno1", "192.168.1.10")])), \
                  patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner") as banner, \
@@ -374,7 +375,7 @@ class TestSdkImageDetection(unittest.TestCase):
                 ParsedNfsExport(Path(tmpdir) / "share", "192.168.0.0/20", ("rw", "sync", "crossmnt")),
             ]
 
-            with patch("sima_cli.sdk.install._detect_host_ip", return_value=("192.168.1.10", "eno1", [("eno1", "192.168.1.10")])), \
+            with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("192.168.1.10", "eno1", [("eno1", "192.168.1.10")])), \
                  patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
@@ -402,7 +403,7 @@ class TestSdkImageDetection(unittest.TestCase):
                 ),
             ]
 
-            with patch("sima_cli.sdk.install._detect_host_ip", return_value=("192.168.2.10", "eno1", [("eno1", "192.168.2.10")])), \
+            with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("192.168.2.10", "eno1", [("eno1", "192.168.2.10")])), \
                  patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner") as banner, \
@@ -441,7 +442,7 @@ class TestSdkImageDetection(unittest.TestCase):
                 ),
             ]
 
-            with patch("sima_cli.sdk.install._detect_host_ip", return_value=("192.168.2.10", "eno1", [("eno1", "192.168.2.10")])), \
+            with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("192.168.2.10", "eno1", [("eno1", "192.168.2.10")])), \
                  patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
@@ -493,6 +494,51 @@ class TestSdkImageDetection(unittest.TestCase):
              patch("sima_cli.sdk.install._routed_ipv4_for_target", return_value="100.64.1.2"):
             with self.assertRaisesRegex(RuntimeError, "no supported non-VPN host interface"):
                 _detect_host_ip("10.10.1.20")
+
+    def test_detect_routed_host_ip_matches_candidate_interface(self):
+        candidates = [("en0", "192.168.1.10"), ("eth1", "10.10.1.2")]
+        with patch("sima_cli.sdk.install._detect_local_ip_candidates", return_value=candidates), \
+             patch("sima_cli.sdk.install._routed_ipv4_for_target", return_value="10.10.1.2"):
+            host_ip, iface, all_candidates = _detect_routed_host_ip("10.10.1.20")
+
+        self.assertEqual(host_ip, "10.10.1.2")
+        self.assertEqual(iface, "eth1")
+        self.assertEqual(all_candidates, candidates)
+
+    def test_detect_routed_host_ip_trusts_routed_ip_not_in_candidates(self):
+        # Unlike _detect_host_ip, the routed IP is kept even when it is not a
+        # known candidate; the interface is reported as "routed".
+        candidates = [("en0", "192.168.1.10")]
+        with patch("sima_cli.sdk.install._detect_local_ip_candidates", return_value=candidates), \
+             patch("sima_cli.sdk.install._routed_ipv4_for_target", return_value="100.64.1.2"):
+            host_ip, iface, all_candidates = _detect_routed_host_ip("10.10.1.20")
+
+        self.assertEqual(host_ip, "100.64.1.2")
+        self.assertEqual(iface, "routed")
+        self.assertEqual(all_candidates, candidates)
+
+    def test_detect_routed_host_ip_falls_back_to_first_candidate_without_route(self):
+        candidates = [("en0", "192.168.1.10"), ("eth1", "10.10.1.2")]
+        with patch("sima_cli.sdk.install._detect_local_ip_candidates", return_value=candidates), \
+             patch("sima_cli.sdk.install._routed_ipv4_for_target", return_value=""):
+            host_ip, iface, all_candidates = _detect_routed_host_ip("10.10.1.20")
+
+        self.assertEqual(host_ip, "192.168.1.10")
+        self.assertEqual(iface, "en0")
+        self.assertEqual(all_candidates, candidates)
+
+    def test_detect_routed_host_ip_uses_socket_fallback_when_nothing_found(self):
+        fake_sock = Mock()
+        fake_sock.getsockname.return_value = ("172.16.0.5", 12345)
+        with patch("sima_cli.sdk.install._detect_local_ip_candidates", return_value=[]), \
+             patch("sima_cli.sdk.install.socket.socket", return_value=fake_sock):
+            host_ip, iface, all_candidates = _detect_routed_host_ip(None)
+
+        self.assertEqual(host_ip, "172.16.0.5")
+        self.assertEqual(iface, "auto")
+        self.assertEqual(all_candidates, [])
+        fake_sock.connect.assert_called_once_with(("8.8.8.8", 80))
+        fake_sock.close.assert_called_once()
 
     def test_detect_local_ip_candidates_keeps_physical_link_local(self):
         with patch("sima_cli.sdk.install.sys.platform", "darwin"), \

@@ -189,14 +189,19 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
             self.assertTrue(Path(extensions_dir).is_dir())
 
-    def test_setup_sdk_extensions_skips_arm64(self):
+    def test_setup_sdk_extensions_allows_arm64(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.install.platform.machine", return_value="aarch64"), \
-                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)):
-                extensions_dir = _setup_sdk_extensions(["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"])
+                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", return_value=Mock(free=30 * 1024 ** 3)), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                extensions_dir = _setup_sdk_extensions(
+                    ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                    noninteractive=True,
+                )
 
-            self.assertEqual(extensions_dir, "")
-            self.assertFalse((Path(tmpdir) / "sima-sdk-extensions").exists())
+            self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
+            self.assertTrue(Path(extensions_dir).is_dir())
 
     def test_get_workspace_noninteractive_uses_default_and_creates_it(self):
         with TemporaryDirectory() as tmpdir:
@@ -1709,15 +1714,20 @@ table ip6 nm-shared-enx6c1ff720d573 {
         prompt.assert_not_called()
         run.assert_not_called()
 
-    def test_model_sdk_extension_skips_arm64(self):
+    def test_model_sdk_extension_skips_arm64_before_2_1_1(self):
+        sdk_release = "SDK Version = 2.0.0_Palette_SDK_neat_main_780365a\n"
+        read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
+
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
              patch("sima_cli.sdk.utils.platform.machine", return_value="arm64"), \
              patch("sima_cli.sdk.utils.yes_no_prompt") as prompt, \
-             patch("sima_cli.sdk.utils.subprocess.run") as run:
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result) as run, \
+             patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
 
         prompt.assert_not_called()
-        run.assert_not_called()
+        run.assert_called_once()
+        run_command.assert_not_called()
 
     def test_model_sdk_extension_skips_when_user_declines(self):
         sdk_release = "SDK Version = 2.0.0_Palette_SDK_neat_main_780365a\n"
@@ -1752,6 +1762,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
             capture_output=True,
             check=False,
         )
+        install_script = run_command.call_args_list[1].args[0][-1]
+        self.assertIn("export HOME=/home/docker", install_script)
+        self.assertIn("sima-cli install -v 2.0.0 sdk-extensions/model", install_script)
+        self.assertNotIn("libllvm", install_script)
         self.assertEqual(run_command.call_args_list, [
             unittest.mock.call([
                 "docker",
@@ -1768,13 +1782,42 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "docker",
                 "exec",
                 "-u",
-                "docker",
+                "root",
                 "container",
                 "bash",
                 "-lc",
-                "mkdir -p ~/extension-installation && cd ~/extension-installation && sima-cli install -v 2.0.0 sdk-extensions/model",
+                unittest.mock.ANY,
             ]),
         ])
+
+    def test_model_sdk_extension_installs_aarch64_for_2_1_1(self):
+        sdk_release = "SDK Version = 2.1.1_Palette_SDK_neat_main_780365a\n"
+        read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
+
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
+             patch("sima_cli.sdk.utils.platform.machine", return_value="arm64"), \
+             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result), \
+             patch("sima_cli.sdk.utils.run_command") as run_command:
+            ensure_model_sdk_extension_installed("container", "docker")
+
+        self.assertEqual(
+            run_command.call_args_list[-1],
+            unittest.mock.call([
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                "container",
+                "bash",
+                "-lc",
+                unittest.mock.ANY,
+            ]),
+        )
+        self.assertIn(
+            "sima-cli install -v 2.1.1 sdk-extensions/model-aarch64",
+            run_command.call_args_list[-1].args[0][-1],
+        )
 
     def test_model_sdk_extension_auto_installs_without_prompt(self):
         sdk_release = "SDK Version = 2.0.0_Palette_SDK_neat_main_780365a\n"

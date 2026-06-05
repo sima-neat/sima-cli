@@ -657,10 +657,6 @@ def _setup_sdk_extensions(
     if not any(is_neat_sdk_image(image) for image in selected_images):
         return ""
 
-    if not _is_x86_platform():
-        click.secho("⚠️  SDK extensions are not available on ARM64 platforms yet; skipping /sdk-extensions mount.", fg="yellow")
-        return ""
-
     default_extensions_dir = Path.home() / "sima-sdk-extensions"
     home_usage = shutil.disk_usage(Path.home())
     click.echo(

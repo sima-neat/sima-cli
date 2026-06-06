@@ -37,6 +37,7 @@ from sima_cli.sdk.utils import (
     print_section,
     extract_short_name,
     is_neat_sdk_image,
+    is_snap_docker_cli,
     check_os,
     container_user_mapping_unavailable,
     detect_current_user,
@@ -910,6 +911,31 @@ def _reject_if_windows_native_neat_sdk(
     sys.exit(1)
 
 
+def _warn_if_snap_docker_neat_sdk(
+    selected_images: List[str],
+    console: Console,
+) -> None:
+    if not any(is_neat_sdk_image(img) for img in selected_images):
+        return
+    if not is_snap_docker_cli():
+        return
+
+    console.print(
+        Panel(
+            "[bold red]Snap Docker detected.[/bold red]\n\n"
+            "Neat SDK setup can run with Snap Docker, but Snap confinement may make "
+            "container file copies slower and can restrict access to host paths such as "
+            "[cyan]/tmp[/cyan] and hidden directories under [cyan]$HOME[/cyan]. This can "
+            "limit SDK setup functionality and make container operations noticeably slower.\n\n"
+            "[bold]Recommended:[/bold] switch to the official Docker Engine packages from "
+            "Docker's apt repository before using Neat SDK setup.",
+            title="Snap Docker May Be Slow or Limited",
+            border_style="red",
+            expand=False,
+        )
+    )
+
+
 def setup_and_start(
     noninteractive: bool = False,
     start_only: bool = False,
@@ -935,6 +961,7 @@ def setup_and_start(
     if not start_only:
         _reject_if_windows_native_neat_sdk(selected_images, console)
         if any(is_neat_sdk_image(img) for img in selected_images):
+            _warn_if_snap_docker_neat_sdk(selected_images, console)
             ensure_colima_resources_for_neat_sdk(
                 yes_to_all=yes_to_all,
                 noninteractive=noninteractive,

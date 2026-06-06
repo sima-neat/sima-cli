@@ -56,6 +56,7 @@ from sima_cli.sdk.utils import (
     install_neat_playbooks,
     is_neat_elxr_image,
     is_neat_sdk_image,
+    is_snap_docker_cli,
     sanitize_container_hostname,
     sanitize_container_name,
     start_docker_container,
@@ -1518,6 +1519,38 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
         self.assertTrue(start_container.call_args.kwargs["minimal"])
         self.assertTrue(start_container.call_args.kwargs["no_insight"])
+
+    def test_setup_warns_for_snap_docker_with_neat_sdk(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.is_snap_docker_cli", return_value=True), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions") as setup_extensions, \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container, \
+             patch("sima_cli.sdk.install.Console.print") as console_print:
+            setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
+
+        setup_extensions.assert_not_called()
+        start_container.assert_called_once()
+        snap_panels = [
+            call.args[0]
+            for call in console_print.call_args_list
+            if "Snap Docker" in str(getattr(call.args[0], "title", ""))
+        ]
+        self.assertEqual(1, len(snap_panels))
+        self.assertIn("Snap Docker detected", str(snap_panels[0].renderable))
+
+    def test_snap_docker_detection_checks_resolved_snap_shim(self):
+        with patch("sima_cli.sdk.utils.shutil.which", return_value="/usr/bin/docker"), \
+             patch("sima_cli.sdk.utils.os.path.realpath", return_value="/snap/bin/docker"):
+            self.assertTrue(is_snap_docker_cli())
 
     def test_setup_no_insight_refuses_existing_neat_container(self):
         image = "ghcr.io/sima-neat/sdk:latest"

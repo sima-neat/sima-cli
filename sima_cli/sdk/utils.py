@@ -653,6 +653,16 @@ def _get_container_image_ref(container_name: str) -> str:
         return ""
 
 
+def is_snap_docker_cli() -> bool:
+    docker_bin = shutil.which("docker") or ""
+    resolved = os.path.realpath(docker_bin) if docker_bin else ""
+    return (
+        "/snap/" in docker_bin
+        or "/snap/" in resolved
+        or resolved.endswith("/usr/bin/snap")
+    )
+
+
 def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: str, uid: int, gid: int) -> None:
     image_ref = _get_container_image_ref(sdk_container_name)
     if not image_ref or not is_neat_sdk_image(image_ref):

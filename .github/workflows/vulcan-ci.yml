@@ -474,7 +474,7 @@ jobs:
             chmod 600 "$HOME/.sima-cli/.tokens.json"
           fi
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
-          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
+          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --minimal
 
       - name: Install candidate on macOS without SDK container setup
         if: runner.os == 'macOS'
@@ -500,7 +500,7 @@ jobs:
           grep -F "${{ needs.build.outputs.short_sha }}" <<<"$candidate_version"
           "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
-          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --no-model-sdk
+          "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --minimal
 
   promote-latest:
     name: Promote Tested Latest

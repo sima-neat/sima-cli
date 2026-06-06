@@ -88,8 +88,11 @@ if [[ "$is_debian" == true || "$is_elxr" == true ]]; then
     if [[ "$is_model_sdk" == true ]]; then
         echo "Model SDK detected, skipping apt dependency install."
     else
-        sudo apt update
-        sudo apt install -y python3-venv python3-pip
+        if ! sudo apt-get update -o Acquire::Retries=3; then
+            echo "WARNING: apt package index refresh failed. Continuing because sima-cli only requires python3-venv and python3-pip." >&2
+            echo "If those packages are not available from existing indexes, the package install step will fail with the real missing dependency." >&2
+        fi
+        sudo apt-get install -y python3-venv python3-pip
     fi
 fi
 

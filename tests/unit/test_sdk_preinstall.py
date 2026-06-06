@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 from sima_cli.sdk.preinstall import (
     ensure_colima_resources_for_neat_sdk,
+    check_colima_resources,
+    check_firewall,
     check_rosetta_and_firewall,
     check_cpu_ram,
     _parse_colima_status,
@@ -15,12 +17,22 @@ class TestSdkPreinstall(unittest.TestCase):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall.platform.machine", return_value="x86_64"), \
              patch("sima_cli.sdk.preinstall.run_command") as run_command:
+            fw_failed, results = check_firewall(use_sudo=True)
+
+        self.assertFalse(fw_failed)
+        self.assertEqual(results, [])
+        run_command.assert_not_called()
+
+    def test_rosetta_wrapper_does_not_check_rosetta(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall.platform.machine", return_value="arm64"), \
+             patch("sima_cli.sdk.preinstall.subprocess.check_output") as check_output:
             rosetta_failed, fw_failed, results = check_rosetta_and_firewall(use_sudo=True)
 
         self.assertFalse(rosetta_failed)
         self.assertFalse(fw_failed)
         self.assertEqual(results, [])
-        run_command.assert_not_called()
+        check_output.assert_not_called()
 
     def test_parse_colima_status_accepts_bytes_mib_and_gib(self):
         self.assertEqual(_parse_colima_status({"cpu": 4, "memory": 8589934592}), (4, 8.0))
@@ -47,6 +59,24 @@ class TestSdkPreinstall(unittest.TestCase):
 
         self.assertFalse(restarted)
         status.assert_not_called()
+
+    def test_colima_report_warns_on_low_resources(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_status", return_value={"cpu": 2, "memory": 4294967296}):
+            rows = check_colima_resources()
+
+        self.assertEqual(rows, [["Colima", "≥4 CPUs / ≥8 GB RAM", "2 CPUs / 4.0 GB RAM (default)", "⚠️ WARNING"]])
+
+    def test_colima_report_passes_on_sufficient_resources(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_status", return_value={"cpu": 4, "memory": 8589934592}):
+            rows = check_colima_resources()
+
+        self.assertEqual(rows, [["Colima", "≥4 CPUs / ≥8 GB RAM", "4 CPUs / 8.0 GB RAM (default)", "✅ PASS"]])
 
     def test_colima_resource_check_warns_and_allows_decline(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \

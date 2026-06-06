@@ -25,7 +25,7 @@ from sima_cli.sdk.config import (
 )
 
 
-FILTER_KEYWORDS = ["elxr", "yocto", "mpk", "modelsdk", "sima-neat/sdk", "sima-neat/elxr"]
+FILTER_KEYWORDS = ["elxr", "yocto", "mpk", "modelsdk", "neat-sdk", "sima-neat/sdk", "sima-neat/elxr"]
 SDK_KEYWORD_ALIASES = {
     "model": "modelsdk",
     "mpk": "mpk_cli_toolset",
@@ -1917,15 +1917,24 @@ def _is_sima_neat_repo(repo: str) -> bool:
 
 
 def _is_local_neat_sdk_repo(repo: str) -> bool:
-    return "/" not in repo and (repo == "sdk" or repo.startswith("sdk-"))
+    return "/" not in repo and (
+        repo == "sdk"
+        or repo.startswith("sdk-")
+        or _is_neat_sdk_alias_repo_name(repo)
+    )
 
 
-def _is_neat_repo_name(repo_name: str) -> bool:
+def _is_neat_sdk_alias_repo_name(repo_name: str) -> bool:
+    return repo_name == "neat-sdk" or repo_name.startswith("neat-sdk-")
+
+
+def _is_neat_repo_name(repo_name: str, include_neat_sdk_alias: bool = False) -> bool:
     return (
         repo_name == "sdk"
         or repo_name.startswith("sdk-")
         or repo_name == "elxr"
         or repo_name.startswith("elxr-")
+        or (include_neat_sdk_alias and _is_neat_sdk_alias_repo_name(repo_name))
     )
 
 
@@ -1935,7 +1944,8 @@ def is_neat_sdk_image(image: str) -> bool:
 
     Current Neat SDK images are published as ghcr.io/sima-neat/sdk*. Legacy
     ghcr.io/sima-neat/elxr* images are kept compatible and classified as Neat.
-    Local development builds may also be tagged as bare sdk* repositories.
+    Local development builds may also be tagged as bare sdk* or neat-sdk*
+    repositories.
     """
     repo = _image_repository(image)
     if _is_local_neat_sdk_repo(repo):
@@ -1945,7 +1955,7 @@ def is_neat_sdk_image(image: str) -> bool:
         return False
 
     repo_name = repo.rsplit("/", 1)[-1]
-    return _is_neat_repo_name(repo_name)
+    return _is_neat_repo_name(repo_name, include_neat_sdk_alias=True)
 
 
 def _canonical_sdk_image_name(image: str) -> str:
@@ -1967,6 +1977,8 @@ def _is_sanitized_neat_sdk_container_name(container_name: str) -> bool:
         or normalized.startswith("ghcr-io-sima-neat-sdk-")
         or normalized == "ghcr-io-sima-neat-elxr"
         or normalized.startswith("ghcr-io-sima-neat-elxr-")
+        or normalized == "neat-sdk"
+        or normalized.startswith("neat-sdk-")
     )
 
 

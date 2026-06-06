@@ -97,6 +97,7 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(extract_short_name("ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), "neat")
         self.assertEqual(extract_short_name("ghcr:sima-neat/sdk-feature-devkit-sync:latest"), "neat")
         self.assertEqual(extract_short_name("sdk:latest"), "neat")
+        self.assertEqual(extract_short_name("neat-sdk:noble-toolchain-probe"), "neat")
         self.assertEqual(extract_short_name("elxr:latest"), "elxr")
 
     def test_container_hostname_is_shortened_for_sha_tagged_images(self):
@@ -112,6 +113,7 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertTrue(is_neat_sdk_image("ghcr.io/sima-neat/sdk:latest"))
         self.assertTrue(is_neat_sdk_image("ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"))
         self.assertTrue(is_neat_sdk_image("sdk:latest"))
+        self.assertTrue(is_neat_sdk_image("neat-sdk:noble-toolchain-probe"))
         self.assertTrue(is_neat_sdk_image("ghcr.io/sima-neat/elxr:latest"))
         self.assertTrue(is_neat_sdk_image("ghcr.io/sima-neat/elxr-sdk:latest"))
         self.assertTrue(is_neat_elxr_image("ghcr.io/sima-neat/sdk:latest"))
@@ -143,13 +145,19 @@ class TestSdkImageDetection(unittest.TestCase):
             "Names": "sdk-latest",
             "Image": "sdk:latest",
         }
+        local_probe = {
+            "Names": "neat-sdk-noble-toolchain-probe",
+            "Image": "neat-sdk:noble-toolchain-probe",
+        }
 
         self.assertTrue(container_matches_sdk_keyword(current, "neat"))
         self.assertTrue(container_matches_sdk_keyword(legacy, "neat"))
         self.assertTrue(container_matches_sdk_keyword(local, "neat"))
+        self.assertTrue(container_matches_sdk_keyword(local_probe, "neat"))
         self.assertFalse(container_matches_sdk_keyword(current, "elxr"))
         self.assertFalse(container_matches_sdk_keyword(legacy, "elxr"))
         self.assertFalse(container_matches_sdk_keyword(local, "elxr"))
+        self.assertFalse(container_matches_sdk_keyword(local_probe, "elxr"))
         self.assertTrue(container_matches_sdk_keyword(elxr, "elxr"))
         self.assertFalse(container_matches_sdk_keyword(elxr, "neat"))
 

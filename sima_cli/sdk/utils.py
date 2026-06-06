@@ -981,6 +981,26 @@ def _sudoers_drop_in_script(login_name: str) -> str:
     )
 
 
+def _bash_profile_sources_bashrc_script(login_name: str, uid: int, gid: int) -> str:
+    home = f"/home/{login_name}"
+    profile = f"{home}/.bash_profile"
+    return (
+        "set -eu; "
+        f"home={shlex.quote(home)}; "
+        f"profile={shlex.quote(profile)}; "
+        "mkdir -p \"$home\"; "
+        "touch \"$profile\"; "
+        "if ! grep -Eq '(^|[[:space:]])(\\.|source)[[:space:]]+(\"?\\$HOME\"?/|~/)?\\.bashrc' \"$profile\" 2>/dev/null; then "
+        "cat >> \"$profile\" <<'SIMA_CLI_BASHRC_SOURCE'\n\n"
+        "if [ -f \"$HOME/.bashrc\" ]; then\n"
+        "    . \"$HOME/.bashrc\"\n"
+        "fi\n"
+        "SIMA_CLI_BASHRC_SOURCE\n"
+        "fi; "
+        f"chown {uid}:{gid} \"$home\" \"$profile\""
+    )
+
+
 def _append_unique_line(path: str, line: str) -> None:
     with open(path, "r+", encoding="utf-8") as f:
         content = f.read()
@@ -1141,6 +1161,16 @@ def configure_container_user(
 
         run_command(["docker", "exec", "-u", "root", sdk_container_name, "mkdir", "-p", home_directory])
         run_command(["docker", "exec", "-u", "root", sdk_container_name, "chown", f"{uid}:{gid}", home_directory])
+        run_command([
+            "docker",
+            "exec",
+            "-u",
+            "root",
+            sdk_container_name,
+            "bash",
+            "-lc",
+            _bash_profile_sources_bashrc_script(login_name, uid, gid),
+        ])
     else:
         command = f"echo '{login_name} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers"
         run_command(["docker", "exec", "-u", "root", sdk_container_name, "sh", "-c", command])

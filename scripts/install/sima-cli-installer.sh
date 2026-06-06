@@ -182,6 +182,24 @@ add_venv_path() {
     fi
 }
 
+ensure_bashrc_sourced_from_profile() {
+    local rc_file="$1"
+    [[ "$(basename "$rc_file")" == ".bash_profile" ]] || return 0
+    [[ -f "$rc_file" ]] || touch "$rc_file" || return 1
+
+    if grep -Eq '(^|[[:space:]])(\.|source)[[:space:]]+("?\$HOME"?/|~/)?\.bashrc' "$rc_file" 2>/dev/null; then
+        return 0
+    fi
+
+    cat >> "$rc_file" <<'EOF'
+
+if [ -f "$HOME/.bashrc" ]; then
+    . "$HOME/.bashrc"
+fi
+EOF
+    echo "Added .bashrc source line in $rc_file"
+}
+
 add_elxr_sdk_env_source() {
     local rc_file="$1"
     local line="source /opt/bin/simaai-init-build-env modalix"
@@ -209,6 +227,7 @@ else
     fi
 fi
 
+ensure_bashrc_sourced_from_profile "$RC_FILE"
 add_venv_path "$RC_FILE"
 if $is_elxr_sdk && [[ -f /opt/bin/simaai-init-build-env ]]; then
     add_elxr_sdk_env_source "$RC_FILE"

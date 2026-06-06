@@ -41,6 +41,7 @@ from sima_cli.sdk.neat import (
 )
 from sima_cli.sdk.utils import (
     _append_unique_line,
+    _bash_profile_sources_bashrc_script,
     _configure_group_file,
     container_user_mapping_unavailable,
     _copy_sima_cli_auth_cache_to_container,
@@ -2197,6 +2198,27 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "ubuntu:x:1000:\n"
                 "docker:x:999:existing,jim\n",
             )
+
+    def test_bash_profile_repair_sources_bashrc_for_login_shells(self):
+        script = _bash_profile_sources_bashrc_script("jim", 1000, 1000)
+
+        self.assertIn("profile=/home/jim/.bash_profile", script)
+        self.assertIn('if [ -f "$HOME/.bashrc" ]; then', script)
+        self.assertIn('. "$HOME/.bashrc"', script)
+        self.assertIn('chown 1000:1000 "$home" "$profile"', script)
+
+    def test_installer_profile_bootstrap_runs_before_alias_setup(self):
+        installer = Path("scripts/install/sima-cli-installer.sh").read_text(encoding="utf-8")
+
+        self.assertIn("ensure_bashrc_sourced_from_profile()", installer)
+        self.assertLess(
+            installer.index('ensure_bashrc_sourced_from_profile "$RC_FILE"'),
+            installer.index('add_venv_path "$RC_FILE"'),
+        )
+        self.assertLess(
+            installer.index('ensure_bashrc_sourced_from_profile "$RC_FILE"'),
+            installer.index('add_aliases "$RC_FILE"'),
+        )
 
     def test_prepare_log_host_dir_makes_directory_container_writable(self):
         with TemporaryDirectory() as tmpdir:

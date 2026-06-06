@@ -12,6 +12,7 @@ import json
 import re
 import shlex
 import platform
+import shutil
 import tempfile
 from collections import defaultdict
 from rich.console import Console
@@ -693,25 +694,48 @@ def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: 
         print("⚠️  Could not update ownership for sima-cli auth cache directory; continuing setup.")
 
     copied = []
-    for filename in existing_files:
-        host_path = os.path.join(host_sima_cli_dir, filename)
-        container_path = f"{container_auth_dir}/{filename}"
-        if not run_command(["docker", "cp", host_path, f"{sdk_container_name}:{container_path}"], fatal=False):
-            print(f"⚠️  Could not copy host sima-cli auth cache file '{filename}' into Neat SDK container; continuing setup.")
-            continue
-        if not run_command([
-            "docker",
-            "exec",
-            "-u",
-            "root",
-            sdk_container_name,
-            "chown",
-            f"{uid}:{gid}",
-            container_path,
-        ], fatal=False):
-            print(f"⚠️  Could not update ownership for copied sima-cli auth cache file '{filename}'; continuing setup.")
-            continue
-        copied.append(filename)
+    with _docker_cp_staging_dir() as tmpdir:
+        for filename in existing_files:
+            host_path = os.path.join(host_sima_cli_dir, filename)
+            staged_path = os.path.join(tmpdir, filename)
+            container_path = f"{container_auth_dir}/{filename}"
+            cleanup_target = [
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                sdk_container_name,
+                "rm",
+                "-f",
+                container_path,
+            ]
+
+            try:
+                shutil.copy2(host_path, staged_path)
+                os.chmod(staged_path, 0o600)
+            except OSError as e:
+                print(f"⚠️  Could not stage host sima-cli auth cache file '{filename}': {e}; continuing setup.")
+                continue
+
+            run_command(cleanup_target, fatal=False)
+            if not run_command(["docker", "cp", staged_path, f"{sdk_container_name}:{container_path}"], fatal=False):
+                run_command(cleanup_target, fatal=False)
+                print(f"⚠️  Could not copy host sima-cli auth cache file '{filename}' into Neat SDK container; continuing setup.")
+                continue
+            if not run_command([
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                sdk_container_name,
+                "chown",
+                f"{uid}:{gid}",
+                container_path,
+            ], fatal=False):
+                run_command(cleanup_target, fatal=False)
+                print(f"⚠️  Could not update ownership for copied sima-cli auth cache file '{filename}'; continuing setup.")
+                continue
+            copied.append(filename)
 
     if not copied:
         print("ℹ️  No sima-cli auth cache files were copied into Neat SDK container; continuing setup.")

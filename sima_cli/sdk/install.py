@@ -642,6 +642,51 @@ def _is_x86_platform() -> bool:
     return machine in {"x86_64", "amd64", "i386", "i686", "x86"}
 
 
+def _is_arm64_platform() -> bool:
+    machine = platform.machine().lower()
+    return machine in {"aarch64", "arm64"}
+
+
+def _version_at_least(version: str, minimum: str) -> bool:
+    def parts(value: str) -> List[int]:
+        match = re.match(r"^\s*(\d+(?:\.\d+)*)", value or "")
+        if not match:
+            return []
+        return [int(part) for part in match.group(1).split(".")]
+
+    current_parts = parts(version)
+    minimum_parts = parts(minimum)
+    if not current_parts or not minimum_parts:
+        return False
+
+    length = max(len(current_parts), len(minimum_parts))
+    current_parts.extend([0] * (length - len(current_parts)))
+    minimum_parts.extend([0] * (length - len(minimum_parts)))
+    return current_parts >= minimum_parts
+
+
+def _extract_version_from_image_ref(image: str) -> str:
+    tag = (image or "").rsplit(":", 1)[-1]
+    match = re.search(r"\d+(?:\.\d+){1,2}", tag)
+    return match.group(0) if match else ""
+
+
+def _supports_model_sdk_extension_mount(selected_images: List[str]) -> bool:
+    neat_images = [image for image in selected_images if is_neat_sdk_image(image)]
+    if not neat_images:
+        return False
+    if _is_x86_platform():
+        return True
+    if not _is_arm64_platform():
+        return False
+
+    versions = [_extract_version_from_image_ref(image) for image in neat_images]
+    known_versions = [version for version in versions if version]
+    if not known_versions:
+        return True
+    return any(_version_at_least(version, "2.1.1") for version in known_versions)
+
+
 MODEL_SDK_EXTENSION_REQUIRED_GB = 20
 
 
@@ -654,7 +699,9 @@ def _setup_sdk_extensions(
     noninteractive: bool = False,
     yes_to_all: bool = False,
 ) -> str:
-    if not any(is_neat_sdk_image(image) for image in selected_images):
+    if not _supports_model_sdk_extension_mount(selected_images):
+        if any(is_neat_sdk_image(image) for image in selected_images):
+            click.secho("⚠️  Model SDK extension mount is not available on ARM64 platforms before Neat SDK 2.1.1; skipping /sdk-extensions mount.", fg="yellow")
         return ""
 
     default_extensions_dir = Path.home() / "sima-sdk-extensions"

@@ -20,6 +20,7 @@ from sima_cli.sdk.install import (
     _detect_host_ip,
     _detect_local_ip_candidates,
     _parse_export_line,
+    _refresh_mpk_config_json,
     _setup_devkit_share,
     _setup_sdk_extensions,
     LINUX_NEAT_EXPORTS_PATH,
@@ -45,6 +46,8 @@ from sima_cli.sdk.utils import (
     _copy_sima_cli_auth_cache_to_container,
     _devcontainer_metadata_label,
     _extract_sdk_base_version,
+    _ensure_passwd_user,
+    _ensure_shadow_user,
     is_docker_user_mapping_error,
     _sudoers_drop_in_script,
     _prepare_log_host_dir,
@@ -1552,6 +1555,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.utils.os.path.realpath", return_value="/snap/bin/docker"):
             self.assertTrue(is_snap_docker_cli())
 
+    def test_refresh_mpk_config_skips_neat_sdk_selection(self):
+        with patch("sima_cli.sdk.install.get_all_containers", side_effect=AssertionError("should not inspect containers")):
+            _refresh_mpk_config_json(["ghcr.io/sima-neat/sdk:latest"])
+
     def test_setup_no_insight_refuses_existing_neat_container(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
@@ -1566,6 +1573,32 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="ghcr.io-sima-neat-sdk-latest"):
             with self.assertRaisesRegex(RuntimeError, "Cannot apply --no-insight"):
                 setup_and_start(no_insight=True, yes_to_all=False, noninteractive=False)
+
+    def test_setup_repairs_existing_container_user_mapping_before_attach(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        container = "ghcr.io-sima-neat-sdk-latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={container: "running"}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=container), \
+             patch("sima_cli.sdk.install.is_container_running", return_value=True), \
+             patch("sima_cli.sdk.install.check_os", return_value="linux"), \
+             patch("sima_cli.sdk.install.detect_current_user", return_value=("devuser", 1000, 1000)), \
+             patch("sima_cli.sdk.install.configure_container_user") as configure_user, \
+             patch("sima_cli.sdk.install._refresh_mpk_config_json"), \
+             patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)) as run:
+            setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
+
+        configure_user.assert_called_once_with(container, "devuser", 1000, 1000)
+        self.assertEqual(
+            run.call_args.args[0],
+            ["docker", "exec", "-it", "-u", "devuser", container, "bash", "-l"],
+        )
 
     def test_start_neat_container_uses_valid_short_hostname_for_long_image_tag(self):
         with TemporaryDirectory() as tmpdir:
@@ -1888,10 +1921,18 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
         install_script = run_command.call_args_list[1].args[0][-1]
         self.assertIn("export HOME=/home/docker", install_script)
+        self.assertIn("export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"", install_script)
+        self.assertIn("SIMA_CLI_BIN=\"$HOME/.sima-cli/.venv/bin/sima-cli\"", install_script)
+        self.assertIn("/etc/sudoers.d/sima-cli-user", install_script)
+        self.assertIn("'docker ALL=(ALL:ALL) NOPASSWD:ALL'", install_script)
+        self.assertIn("su -s /bin/bash docker -c 'sudo -n true'", install_script)
         self.assertIn("trap cleanup_model_sdk_install EXIT", install_script)
-        self.assertLess(install_script.index("trap cleanup_model_sdk_install EXIT"), install_script.index("sima-cli install -v 2.0.0 sdk-extensions/model"))
+        self.assertLess(install_script.index("/etc/sudoers.d/sima-cli-user"), install_script.index("su -s /bin/bash docker -c"))
+        self.assertLess(install_script.index("sudo -n true"), install_script.index("\"$SIMA_CLI_BIN\" install -v 2.0.0 sdk-extensions/model"))
+        self.assertLess(install_script.index("trap cleanup_model_sdk_install EXIT"), install_script.index("su -s /bin/bash docker -c"))
         self.assertIn("chown -R docker:docker \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true", install_script)
-        self.assertIn("sima-cli install -v 2.0.0 sdk-extensions/model", install_script)
+        self.assertIn("su -s /bin/bash docker -c", install_script)
+        self.assertIn("\"$SIMA_CLI_BIN\" install -v 2.0.0 sdk-extensions/model", install_script)
         self.assertNotIn("libllvm", install_script)
         self.assertEqual(run_command.call_args_list, [
             unittest.mock.call([
@@ -1942,7 +1983,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ]),
         )
         self.assertIn(
-            "sima-cli install -v 2.1.1 sdk-extensions/model-aarch64",
+            "\"$SIMA_CLI_BIN\" install -v 2.1.1 sdk-extensions/model-aarch64",
+            run_command.call_args_list[-1].args[0][-1],
+        )
+        self.assertIn(
+            "su -s /bin/bash docker -c",
             run_command.call_args_list[-1].args[0][-1],
         )
 
@@ -1993,8 +2038,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
     def test_configure_container_uses_absolute_temp_files_for_user_mapping(self):
         copied_files = {}
         copied_file_parents = {}
+        updated_group = ""
 
         def fake_run_command(cmd, *args, **kwargs):
+            nonlocal updated_group
             if cmd[:2] == ["docker", "cp"]:
                 src, dest = cmd[2], cmd[3]
                 if src == "container:/etc/passwd":
@@ -2006,9 +2053,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     copied_files["shadow"] = dest
                     copied_file_parents["shadow"] = Path(dest).parent.stat().st_mode & 0o777
                 elif src == "container:/etc/group":
-                    Path(dest).write_text("root:x:0:\ndocker:x:900:\n", encoding="utf-8")
+                    Path(dest).write_text("root:x:0:\nsudo:x:27:\ndocker:x:900:\n", encoding="utf-8")
                     copied_files["group"] = dest
                     copied_file_parents["group"] = Path(dest).parent.stat().st_mode & 0o777
+                elif dest == "container:/etc/group":
+                    updated_group = Path(src).read_text(encoding="utf-8")
                 else:
                     self.assertTrue(Path(src).is_absolute())
             return True
@@ -2036,6 +2085,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertFalse(Path(path).parent.name.startswith("."))
         for mode in copied_file_parents.values():
             self.assertEqual(mode, 0o755)
+        self.assertIn("sudo:x:27:jimfan\n", updated_group)
+        self.assertIn("docker:x:900:jimfan\n", updated_group)
 
     def test_install_neat_playbooks_skips_non_neat_image(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="artifacts.eng.sima.ai/elxr:2.1.0"), \
@@ -2069,7 +2120,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         self.assertIn("/etc/sudoers.d/sima-cli-user", script)
         self.assertIn("'ji.fan ALL=(ALL:ALL) NOPASSWD:ALL'", script)
-        self.assertNotIn("/etc/sudoers;", script)
+        self.assertIn("#includedir /etc/sudoers.d", script)
+        self.assertIn(">> /etc/sudoers", script)
+        self.assertNotIn("echo 'ji.fan ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers", script)
         self.assertNotIn("chown", script)
 
     def test_append_unique_line_preserves_existing_last_line_without_newline(self):
@@ -2086,18 +2139,63 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "ji.fan:x:841037974:841037974::/home/ji.fan:/bin/bash\n",
             )
 
-    def test_configure_group_file_adds_primary_group_and_docker_membership(self):
+    def test_ensure_passwd_user_prioritizes_host_user_when_uid_collides_with_ubuntu(self):
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "passwd"
+            path.write_text(
+                "root:x:0:0:root:/root:/bin/bash\n"
+                "ubuntu:x:1000:1000:Ubuntu:/home/ubuntu:/bin/bash\n",
+                encoding="utf-8",
+            )
+
+            _ensure_passwd_user(str(path), "jim", 1000, 1000)
+
+            self.assertEqual(
+                path.read_text(encoding="utf-8"),
+                "root:x:0:0:root:/root:/bin/bash\n"
+                "jim:x:1000:1000::/home/jim:/bin/bash\n"
+                "ubuntu:x:1000:1000:Ubuntu:/home/ubuntu:/bin/bash\n",
+            )
+
+    def test_ensure_shadow_user_replaces_existing_host_user_entry(self):
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "shadow"
+            path.write_text(
+                "root:*:::::::\n"
+                "jim:old:::::::\n"
+                "ubuntu:*:::::::\n",
+                encoding="utf-8",
+            )
+
+            _ensure_shadow_user(str(path), "jim")
+
+            self.assertEqual(
+                path.read_text(encoding="utf-8"),
+                "root:*:::::::\n"
+                "ubuntu:*:::::::\n"
+                "jim:$6$hash$placeholder:::::::\n",
+            )
+
+    def test_configure_group_file_adds_primary_group_docker_and_sudo_membership(self):
         with TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "group"
-            path.write_text("root:x:0:\ndocker:x:999:existing", encoding="utf-8")
+            path.write_text(
+                "root:x:0:\n"
+                "sudo:x:27:\n"
+                "ubuntu:x:1000:\n"
+                "docker:x:999:existing",
+                encoding="utf-8",
+            )
 
-            _configure_group_file(str(path), "ji.fan", 841037974)
+            _configure_group_file(str(path), "jim", 1000)
 
             self.assertEqual(
                 path.read_text(encoding="utf-8"),
                 "root:x:0:\n"
-                "docker:x:999:existing,ji.fan\n"
-                "ji.fan:x:841037974:\n",
+                "sudo:x:27:jim\n"
+                "jim:x:1000:\n"
+                "ubuntu:x:1000:\n"
+                "docker:x:999:existing,jim\n",
             )
 
     def test_prepare_log_host_dir_makes_directory_container_writable(self):

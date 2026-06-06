@@ -873,12 +873,28 @@ def ensure_model_sdk_extension_installed(
 
     home_directory = f"/home/{login_name}"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
-    install_script = (
+    user_install_script = (
         "set -e; "
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
-        "export PATH=\"$HOME/.local/bin:$PATH\"; "
+        "export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"; "
+        "mkdir -p \"$HOME/extension-installation\"; "
+        "cd \"$HOME/extension-installation\"; "
+        "if command -v sima-cli >/dev/null 2>&1; then "
+        "SIMA_CLI_BIN=\"$(command -v sima-cli)\"; "
+        "elif [ -x \"$HOME/.sima-cli/.venv/bin/sima-cli\" ]; then "
+        "SIMA_CLI_BIN=\"$HOME/.sima-cli/.venv/bin/sima-cli\"; "
+        "else "
+        "echo \"sima-cli was not found for user $USER. Expected $HOME/.sima-cli/.venv/bin/sima-cli.\" >&2; "
+        "exit 127; "
+        "fi; "
+        f"\"$SIMA_CLI_BIN\" install -v {shlex.quote(base_version)} {shlex.quote(extension_component)}"
+    )
+    install_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"{_sudoers_drop_in_script(login_name)}; "
         "cleanup_model_sdk_install() { "
         f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
         f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions || true; fi; "
@@ -886,8 +902,9 @@ def ensure_model_sdk_extension_installed(
         "}; "
         "trap cleanup_model_sdk_install EXIT; "
         "mkdir -p \"$HOME/extension-installation\"; "
-        "cd \"$HOME/extension-installation\"; "
-        f"sima-cli install -v {shlex.quote(base_version)} {shlex.quote(extension_component)}"
+        "cleanup_model_sdk_install; "
+        f"su -s /bin/bash {shlex.quote(login_name)} -c 'sudo -n true'; "
+        f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
     )
     print(f"ℹ️  Installing Model SDK extension for SDK base version {base_version}...")
     run_command(
@@ -956,6 +973,9 @@ def _sudoers_drop_in_script(login_name: str) -> str:
     return (
         "set -eu; "
         "mkdir -p /etc/sudoers.d; "
+        "if ! grep -Eq '^[[:space:]]*([#@]includedir)[[:space:]]+/etc/sudoers\\.d([[:space:]]+.*)?$' /etc/sudoers; then "
+        "printf '\\n#includedir /etc/sudoers.d\\n' >> /etc/sudoers; "
+        "fi; "
         f"printf '%s\\n' {shlex.quote(sudoers_line)} > /etc/sudoers.d/sima-cli-user; "
         "chmod 0440 /etc/sudoers.d/sima-cli-user"
     )
@@ -972,13 +992,52 @@ def _append_unique_line(path: str, line: str) -> None:
         f.write(line + "\n")
 
 
+def _ensure_passwd_user(path: str, login_name: str, uid: int, gid: int) -> None:
+    user_line = f"{login_name}:x:{uid}:{gid}::/home/{login_name}:/bin/bash"
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    filtered = []
+    insert_index = None
+    for line in lines:
+        parts = line.split(":")
+        if len(parts) >= 3 and parts[0] == login_name:
+            continue
+        if insert_index is None and len(parts) >= 3 and parts[2] == str(uid):
+            insert_index = len(filtered)
+        filtered.append(line)
+
+    if insert_index is None:
+        insert_index = len(filtered)
+    filtered.insert(insert_index, user_line)
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(filtered) + "\n")
+
+
+def _ensure_shadow_user(path: str, login_name: str) -> None:
+    shadow_line = f"{login_name}:$6$hash$placeholder:::::::"
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    filtered = [
+        line
+        for line in lines
+        if not (line.split(":", 1)[0] == login_name)
+    ]
+    filtered.append(shadow_line)
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(filtered) + "\n")
+
+
 def _configure_group_file(path: str, login_name: str, gid: int) -> None:
     primary_group_line = f"{login_name}:x:{gid}:"
     with open(path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
 
-    has_primary_group = False
     updated_lines = []
+    insert_index = None
     for line in lines:
         parts = line.split(":")
         if len(parts) < 4:
@@ -986,16 +1045,19 @@ def _configure_group_file(path: str, login_name: str, gid: int) -> None:
             continue
         name, password, group_id, members = parts[:4]
         if name == login_name:
-            has_primary_group = True
-        if name == "docker":
+            continue
+        if insert_index is None and group_id == str(gid):
+            insert_index = len(updated_lines)
+        if name in {"docker", "sudo"}:
             member_list = [member for member in members.split(",") if member]
             if login_name not in member_list:
                 member_list.append(login_name)
             line = ":".join([name, password, group_id, ",".join(member_list), *parts[4:]])
         updated_lines.append(line)
 
-    if not has_primary_group:
-        updated_lines.append(primary_group_line)
+    if insert_index is None:
+        insert_index = len(updated_lines)
+    updated_lines.insert(insert_index, primary_group_line)
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(updated_lines) + "\n")
@@ -1025,6 +1087,63 @@ def _docker_cp_staging_dir():
             raise
         return staging
     return tempfile.TemporaryDirectory(prefix="sima-cli-sdk-")
+
+
+def configure_container_user(
+    sdk_container_name: str,
+    login_name: str,
+    uid: int,
+    gid: int,
+    platform_os: str = None,
+) -> None:
+    platform_os = platform_os or check_os()
+    home_directory = f"/home/{login_name}"
+
+    if platform_os in ["linux", "macos"]:
+        with _docker_cp_staging_dir() as tmpdir:
+            passwd_path = os.path.join(tmpdir, "passwd.txt")
+            shadow_path = os.path.join(tmpdir, "shadow.txt")
+            group_path = os.path.join(tmpdir, "group.txt")
+
+            run_command(["docker", "cp", f"{sdk_container_name}:/etc/passwd", passwd_path])
+            _ensure_passwd_user(passwd_path, login_name, uid, gid)
+            run_command(["docker", "cp", passwd_path, f"{sdk_container_name}:/etc/passwd"])
+
+            run_command(["docker", "cp", f"{sdk_container_name}:/etc/shadow", shadow_path])
+            _ensure_shadow_user(shadow_path, login_name)
+            run_command(["docker", "cp", shadow_path, f"{sdk_container_name}:/etc/shadow"])
+
+            run_command(["docker", "cp", f"{sdk_container_name}:/etc/group", group_path])
+            _configure_group_file(group_path, login_name, gid)
+            run_command(["docker", "cp", group_path, f"{sdk_container_name}:/etc/group"])
+
+        run_command([
+            "docker",
+            "exec",
+            "-u",
+            "0",
+            sdk_container_name,
+            "bash",
+            "-lc",
+            _sudoers_drop_in_script(login_name),
+        ])
+
+        run_command([
+            "docker",
+            "exec",
+            "-u",
+            login_name,
+            sdk_container_name,
+            "bash",
+            "-lc",
+            "sudo -n true",
+        ])
+
+        run_command(["docker", "exec", "-u", "root", sdk_container_name, "mkdir", "-p", home_directory])
+        run_command(["docker", "exec", "-u", "root", sdk_container_name, "chown", f"{uid}:{gid}", home_directory])
+    else:
+        command = f"echo '{login_name} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers"
+        run_command(["docker", "exec", "-u", "root", sdk_container_name, "sh", "-c", command])
 
 
 def install_neat_playbooks(sdk_container_name: str, login_name: str) -> None:
@@ -1081,41 +1200,7 @@ def configure_container(
     print(f"⚙️  Configuring container '{sdk_container_name}' for user '{login_name}' (UID={uid}, GID={gid})")
     home_directory = f"/home/{login_name}"
 
-    # ---- Linux / MacOS User Setup ----
-    if platform_os in ["linux", "macos"]:
-        with _docker_cp_staging_dir() as tmpdir:
-            passwd_path = os.path.join(tmpdir, "passwd.txt")
-            shadow_path = os.path.join(tmpdir, "shadow.txt")
-            group_path = os.path.join(tmpdir, "group.txt")
-
-            run_command(["docker", "cp", f"{sdk_container_name}:/etc/passwd", passwd_path])
-            _append_unique_line(passwd_path, f"{login_name}:x:{uid}:{gid}::/home/{login_name}:/bin/bash")
-            run_command(["docker", "cp", passwd_path, f"{sdk_container_name}:/etc/passwd"])
-
-            run_command(["docker", "cp", f"{sdk_container_name}:/etc/shadow", shadow_path])
-            _append_unique_line(shadow_path, f"{login_name}:$6$hash$placeholder:::::::")
-            run_command(["docker", "cp", shadow_path, f"{sdk_container_name}:/etc/shadow"])
-
-            run_command(["docker", "cp", f"{sdk_container_name}:/etc/group", group_path])
-            _configure_group_file(group_path, login_name, gid)
-            run_command(["docker", "cp", group_path, f"{sdk_container_name}:/etc/group"])
-
-        run_command([
-            "docker",
-            "exec",
-            "-u",
-            "0",
-            sdk_container_name,
-            "bash",
-            "-lc",
-            _sudoers_drop_in_script(login_name),
-        ])
-
-        run_command(["docker", "exec", "-u", "root", sdk_container_name, "mkdir", "-p", home_directory])
-        run_command(["docker", "exec", "-u", "root", sdk_container_name, "chown", f"{uid}:{gid}", home_directory])
-    else:
-        command = f"echo '{login_name} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers"
-        run_command(["docker", "exec", "-u", "root", sdk_container_name, "sh", "-c", command])
+    configure_container_user(sdk_container_name, login_name, uid, gid, platform_os=platform_os)
 
     run_command(
         [

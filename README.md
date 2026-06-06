@@ -1,4 +1,4 @@
-# 🛠️ sima-cli – SiMa Developer Portal CLI Tool
+# sima-cli - SiMa Developer Portal CLI Tool
 
 [![Python 3.8](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=Compatibility%20Python%203.8&label=python%203.8)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![Python 3.9](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=Compatibility%20Python%203.9&label=python%203.9)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
@@ -12,57 +12,45 @@
 [![E2E Ubuntu x86](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=E2E%20Install%20(Ubuntu%20x86)&label=e2e%20Ubuntu%20x86&logo=ubuntu&logoColor=white)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![E2E Ubuntu ARM64](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=E2E%20Install%20(Ubuntu%20ARM64)&label=e2e%20Ubuntu%20ARM64&logo=ubuntu&logoColor=white)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 
-`sima-cli` is a command-line interface (CLI) utility designed to interact with the SiMa Developer Portal. It supports downloading models and apps from the Model/App Zoo, performing firmware updates, and authenticating against internal or external environments.
+`sima-cli` is the command-line interface for SiMa developer workflows. It handles authentication, SDK container setup, DevKit updates, package installation, artifact downloads, Model Zoo/App Zoo access, and related development utilities.
 
----
+## Documentation
 
-## 📦 Installation
+The full command reference is generated as Markdown under [docs/sima-cli](docs/sima-cli/index.md).
 
-Install from the stable installer script. By default these commands install the latest `main` build.
+Use the generated docs for detailed options, arguments, subcommands, and full help text:
 
-### Linux, macOS, and DevKit
+- [Complete command reference](docs/sima-cli/index.md)
+- [Top-level command help](docs/sima-cli/commands/sima-cli.md)
+
+## Installation
+
+Install the latest `main` build:
 
 ```bash
 curl -fsSL https://artifacts.sima-neat.com/tools/sima-cli-install.py -o sima-cli-install.py
 python3 sima-cli-install.py main latest
 ```
 
-To choose from available branches and releases interactively:
+Install interactively:
 
 ```bash
 python3 sima-cli-install.py
 ```
 
-To install a specific branch or release:
+Install a specific branch or release:
 
 ```bash
 python3 sima-cli-install.py feature/my-branch latest
 python3 sima-cli-install.py v2.1.6 latest
 ```
 
-Release tags such as `v2.1.6` are installed from public PyPI. Branch names install tested artifacts from `artifacts.sima-neat.com`.
-
-### Windows PowerShell
+On Windows PowerShell:
 
 ```powershell
 Invoke-WebRequest https://artifacts.sima-neat.com/tools/sima-cli-install.py -OutFile sima-cli-install.py
 python .\sima-cli-install.py main latest
 ```
-
-To choose from available branches and releases interactively:
-
-```powershell
-python .\sima-cli-install.py
-```
-
-To install a specific branch or release:
-
-```powershell
-python .\sima-cli-install.py feature/my-branch latest
-python .\sima-cli-install.py v2.1.6 latest
-```
-
-Release tags such as `v2.1.6` are installed from public PyPI. Branch names install tested artifacts from `artifacts.sima-neat.com`.
 
 Public PyPI releases can also be installed directly:
 
@@ -70,567 +58,106 @@ Public PyPI releases can also be installed directly:
 pip install sima-cli
 ```
 
----
-
-## 🚀 Getting Started
+## Quick Start
 
 ```bash
 sima-cli --help
-```
-
-### Global Option
-
-- `--internal`: Use internal Artifactory resources (can also be set via `SIMA_CLI_INTERNAL=1`).
-
-Environment detection output will appear like:
-
-```
-🔧 Environment: dev (sandbox) | Internal: True
-```
-
-If external mode is detected and not supported:
-
-```
-external environment is not supported yet..
-```
-
----
-
-## 🔐 Authentication
-
-```bash
 sima-cli login
-```
-
-Authenticates with the SiMa Developer Portal. Internal or external login is selected based on context.
-
----
-
-## 📥 Download Resources
-
-```bash
-sima-cli download <URL> [-d DEST]
-```
-
-- Downloads a single file or an entire folder from the provided URL.
-- Options:
-  - `-d`, `--dest`: Destination folder (default is current directory).
-
----
-
-## 🔥 Vulcan Artifacts
-
-```bash
-sima-cli vulcan download --env production core main
-```
-
-- Downloads tested artifacts from Vulcan artifact hosting.
-- Environment URLs:
-  - `dev`: `https://artifacts.neat.paconsultings.com`
-  - `staging`: `https://artifacts.stg.neat.sima.ai`
-  - `production`: `https://artifacts.neat.sima.ai`
-- `dev`, `staging`, and `production` are available for Vulcan downloads.
-- Usage:
-  - `sima-cli vulcan --env {dev|stg|staging|prd|prod|production} download [REPO] [BRANCH_OR_TAG]`
-  - `sima-cli vulcan download --env {dev|stg|staging|prd|prod|production} [REPO] [BRANCH_OR_TAG]`
-  - Shortcut flags are also available: `--dev`, `--stg`/`--staging`, and `--prd`/`--prod`.
-  - If `REPO` is omitted, the CLI prompts for a repository.
-  - If `BRANCH_OR_TAG` is omitted, the CLI downloads `branches.json` and prompts for a branch.
-  - For automation, pass both values and add `--json` for structured output.
-- Each download reads `latest.tag`, fetches `manifest.json`, downloads manifest-listed artifacts, and verifies size and SHA256 values when present.
-
-Example:
-
-```bash
-sima-cli vulcan --env dev download internals develop --output ./artifacts --json
-```
-
----
-
-## 🔧 Firmware Update
-
-```bash
-sima-cli update <version_or_url> [--ip IP] [--passwd PASSWORD] [--flavor {headless|full|auto}] [-y]
-sima-cli update --version <VERSION> [--ip IP] [--passwd PASSWORD] [--flavor {headless|full|auto}] [-y]
-```
-
-- Updates firmware either locally (when running on the board) or over the network.
-- Positional:
-  - `<version_or_url>`: Version tag (e.g. `1.6.0_master_B1611`) or direct URL.
-- Options:
-  - `-v`, `--version`: Provide the version via flag instead of positional argument.
-  - `--ip`: IP/FQDN of the remote device (required when running from a host).
-  - `-p`, `--passwd`: SSH password for the remote board (default `edgeai`).
-  - `-f`, `--flavor`: Override firmware flavor (`headless`, `full`, or `auto`).
-  - `-y`, `--yes`: Skip the confirmation prompt before flashing.
-
----
-
-## 🧠 Model Zoo
-
-### List Models
-
-```bash
-sima-cli modelzoo list [--ver VERSION]
-```
-
-- Lists available models for a given SDK version.
-
-### Get Model
-
-```bash
-sima-cli modelzoo get <MODEL_NAME> [--ver VERSION]
-```
-
-- Downloads the specified model.
-
----
-
-## 📱 App Zoo
-
-### List Apps
-
-```bash
-sima-cli appzoo list [--ver VERSION]
-```
-
-- Lists available apps for a given SDK version.
-
-### Get App
-
-```bash
-sima-cli appzoo get <APP_NAME> [--ver VERSION]
-```
-
-- Downloads the specified app.
-
----
-
-## 🖥️ Device Management
-
-### Discover Devices
-
-```bash
-sima-cli device discover
-```
-
-- Discover nearby SiMa.ai DevKits via ARP or multicast on the local network.
-
-### Connect to Device
-
-```bash
-sima-cli device connect --target <IP> [--user sima] [--password edgeai]
-sima-cli device connect --slot <SLOT_NUMBER>
-```
-
-- Connect to a device over Ethernet (using `--target`) or PCIe (using `--slot`).
-
-### List Connected Devices
-
-```bash
-sima-cli device list
-```
-
-- Show all currently connected devices with their status.
-
-### Disconnect from Device
-
-```bash
-sima-cli device disconnect --target <IP>
-sima-cli device disconnect --slot <SLOT_NUMBER>
-```
-
-- Disconnect from a device using either IP/FQDN or PCIe slot number.
-
-### Reboot Device
-
-```bash
-sima-cli device reboot --target <IP>
-sima-cli device reboot --slot <SLOT_NUMBER>
-```
-
-- Reboot a connected device.
-
-### Firmware Upgrade
-
-```bash
-sima-cli device firmware-upgrade --file <PATH_TO_SWU> --target <IP> [--reboot-on-upgrade]
-sima-cli device firmware-upgrade --file <PATH_TO_SWU> --slot-number <SLOT_NUMBER>
-```
-
-- Upgrade firmware on a device using a software update file (.swu).
-
----
-
-## 📦 MPK Package Management
-
-### Deploy MPK
-
-```bash
-sima-cli mpk deploy --file <PATH_TO_MPK> --target <IP> [--set-default]
-sima-cli mpk deploy --file <PATH_TO_MPK> --slot <SLOT_NUMBER>
-```
-
-- Deploy a prebuilt MPK package to a connected device.
-
-### Launch Pipeline
-
-```bash
-sima-cli mpk launch --application <APP_NAME> --target <IP>
-sima-cli mpk launch --application <APP_NAME> --slot <SLOT_NUMBER>
-```
-
-- Launch a deployed pipeline on the device.
-
-### Kill Pipeline
-
-```bash
-sima-cli mpk kill --id <PIPELINE_ID> --target <IP>
-sima-cli mpk kill --pid <PID> --slot <SLOT_NUMBER>
-```
-
-- Kill a running pipeline using either pipeline ID or process ID.
-
-### Remove Pipeline
-
-```bash
-sima-cli mpk remove --application <APP_NAME> --target <IP>
-```
-
-- Remove a deployed pipeline from the device.
-
-### List Pipelines
-
-```bash
-sima-cli mpk list
-```
-
-- Show all deployed pipelines on connected devices.
-
----
-
-## 🔧 Install Components
-
-```bash
-sima-cli install hostdriver -v 1.7.0
-```
-
-- Install the PCIe host driver for a specific SDK version.
-
-```bash
-sima-cli install optiview
-```
-
-- Install OptiView tool (SDK-independent).
-
-```bash
-sima-cli install -m <METADATA_URL>
-```
-
-- Install a package from a metadata.json URL.
-
-```bash
-sima-cli install gh:<USER>/<REPO>/<PATH_TO_METADATA>
-```
-
-- Install from a GitHub metadata file.
-
-```bash
-sima-cli install cr:<REGISTRY>/<IMAGE>:<TAG>
-```
-
-- Install from a container registry.
-
-```bash
-sima-cli install ghcr:<OWNER>/<IMAGE>:<TAG>
-```
-
-- Install from public GitHub Container Registry (GHCR).
-
----
-
-## 📋 Package Registry
-
-### List Installed Packages
-
-```bash
-sima-cli packages list
-```
-
-- Show all packages registered in the local sima-cli registry.
-
-### Show Package Details
-
-```bash
-sima-cli packages show <PACKAGE_NAME> [--version VERSION]
-```
-
-- Display metadata and post-installation instructions for a package.
-
----
-
-## 🛠️ SDK Container Management
-
-### Setup SDK
-
-```bash
-sima-cli sdk setup [--noninteractive] [-y] [--workspace PATH] [--no-model-sdk] [--no-insight] [--minimal]
-```
-
-- Initialize SDK environment and select components to start.
-- Use `--workspace PATH` to mount a host directory other than `~/workspace` into SDK containers.
-- Use `--no-model-sdk` to skip Model SDK extension setup.
-- Use `--no-insight` to start Neat SDK without Insight UI/video/WebRTC port mappings.
-- Use `--minimal` for CI compilation jobs. It skips optional Neat SDK setup extras, including Insight setup, installing `sima-cli`, Model SDK extensions, and coding agent playbooks inside the container.
-
-### Start SDK Containers
-
-```bash
-sima-cli sdk start [-y]
-```
-
-- Start one or more SDK containers.
-
-### Stop SDK Containers
-
-```bash
-sima-cli sdk stop [SDK_NAME] [-y]
-```
-
-- Stop running SDK containers (e.g., `yocto`, `mpk`, `model`, `neat`, `elxr`).
-
-### Remove SDK Containers
-
-```bash
-sima-cli sdk remove [SDK_NAME] [-y]
-```
-
-- Remove SDK containers and images to free up storage.
-
-### Access SDK Container
-
-```bash
-sima-cli sdk mpk
-sima-cli sdk model
-sima-cli sdk yocto
-sima-cli sdk neat
-sima-cli sdk elxr
-```
-
-- Launch an interactive shell in the respective SDK container.
-
-### List SDK Containers
-
-```bash
-sima-cli sdk ls
-```
-
-- Show installed SDK containers with their version and running status.
-
----
-
-## 💾 Storage Management
-
-### Format NVMe Drive
-
-```bash
-sima-cli nvme format
-```
-
-- Format the NVMe drive on Modalix DevKit and mount it at `/media/nvme`.
-
-### Remount NVMe Drive
-
-```bash
-sima-cli nvme remount
-```
-
-- Remount an existing NVMe partition to `/media/nvme`.
-
-### Format SD Card
-
-```bash
-sima-cli sdcard format
-```
-
-- Prepare the SD Card as data storage for MLSoc or Modalix DevKit.
-
----
-
-## 🌐 Network Configuration
-
-```bash
-sima-cli network
-```
-
-- Interactive menu to configure network settings on the DevKit (DHCP/Static IP, default route).
-- Only works on SiMa boards.
-
----
-
-## 🖥️ Serial Console
-
-```bash
-sima-cli serial [--baud 115200]
-```
-
-- Connect to the UART serial console of the DevKit.
-- Auto-detects the serial port and launches `picocom` (Linux/macOS) or shows instructions for PuTTY/Tera Term (Windows).
-
----
-
-## 📸 Boot Image Creation
-
-```bash
-sima-cli bootimg -v 1.7.0 [--boardtype modalix] [--netboot] [--autoflash]
-```
-
-- Download firmware and write to removable media or setup TFTP netboot.
-- Options:
-  - `--netboot`: Prepare image for network boot and launch TFTP server.
-  - `--autoflash`: Automatically flash internal storage after netboot.
-
----
-
-## 🔄 Convert Yocto to eLxr
-
-Convert a Yocto-based DevKit to the eLxr runtime environment (SDK 2.0.0+, Modalix DevKit only).
-
-### Prerequisites
-
-1. Connect DevKit Ethernet to host PC (set host to static IP `192.168.1.10`)
-2. Update to latest Yocto headless (required for tRoot compatibility):
-
-```bash
-sima-cli update --ip <IP_DEVKIT> 2.0.0 -f headless
-```
-
-### Conversion Steps
-
-**Prepare netboot environment:**
-
-```bash
-# macOS
-sima-cli bootimg --boardtype modalix --fwtype elxr -v 2.0.0 --netboot
-
-# Linux (requires sudo for port 69)
-sudo ~/.sima-cli/.venv/bin/sima-cli bootimg --boardtype modalix --fwtype elxr -v 2.0.0 --netboot
-```
-
-**Configure u-boot (from serial console):**
-
-```bash
-setenv cpio_name simaai-image-palette-modalix.cpio.gz
-setenv boot_targets net
-saveenv
-boot
-```
-
-**Flash eMMC (from host terminal after netboot completes):**
-
-```bash
-f
-```
-
-### Revert to Yocto
-
-Use the same process with `--fwtype yocto`:
-
-```bash
-sima-cli bootimg --boardtype modalix --fwtype yocto -v 2.0.0 --netboot
-```
-
----
-
-## 🔄 Self Update
-
-```bash
-sima-cli selfupdate
-```
-
-- Update sima-cli to the latest version from PyPI.
-
-```bash
-sima-cli selfupdate --dev
-```
-
-- Update from Vulcan dev artifacts. If `--branch` is omitted, sima-cli loads `branches.json` and prompts for a branch.
-
-```bash
-sima-cli selfupdate --stg --branch main
-```
-
-- Update from Vulcan staging artifacts.
-
-```bash
-sima-cli selfupdate --neat --branch main
-```
-
-- Update from Vulcan production artifacts. Production aliases are `--prd`, `--prod`, `--neat`, and `--vulcan`.
-
-```bash
-sima-cli selfupdate -v 0.0.46
-```
-
-- Update to a specific version.
-
-```bash
-sima-cli --internal selfupdate -v 0.0.46
-```
-
-- Update from internal Artifactory (requires `--internal` flag).
-
----
-
-## 📊 MLA Memory Info
-
-```bash
-sima-cli mla meminfo
-```
-
-- Display real-time MLA memory usage chart on supported boards.
-
----
-
-## 🔓 Logout
-
-```bash
-sima-cli logout
-```
-
-- Delete cached credentials and config files.
-
----
-
-## 🌍 Environment Variable Support
-
-Instead of using `--internal` flag every time, you can set:
-
-```bash
-export SIMA_CLI_INTERNAL=1
-```
-
----
-
-## 📌 Version
-
-```bash
 sima-cli version
 ```
 
-- Display the currently installed sima-cli version.
+Use `--internal` or `SIMA_CLI_INTERNAL=1` when internal Artifactory resources are required:
 
----
+```bash
+sima-cli --internal login
+SIMA_CLI_INTERNAL=1 sima-cli install -v 2.1.1 sdk-extensions/model
+```
 
-## 🧩 Requirements
+## Common Workflows
 
-- Python 3.8+
-- Internal network access if using `--internal` features
+Set up SDK containers:
 
----
+```bash
+sima-cli sdk setup
+sima-cli sdk neat
+```
 
-## 📞 Support
+Install a package from metadata:
 
-Please reach out to **SiMa Support** (support@sima.ai) if you encounter issues with downloads or updates.
+```bash
+sima-cli install -v 2.1.1 sdk-extensions/model
+```
 
----
+Download or install Neat artifacts:
+
+```bash
+sima-cli neat download core main
+sima-cli install --neat core main
+```
+
+Update a DevKit:
+
+```bash
+sima-cli update -v 2.1.1 -y
+```
+
+Explore Model Zoo and App Zoo content:
+
+```bash
+sima-cli modelzoo list
+sima-cli appzoo list
+```
+
+## Top-Level Commands
+
+| Command | Description | Docs |
+| --- | --- | --- |
+| `sima-cli appzoo` | Access sample apps from the App Zoo. | [docs](docs/sima-cli/commands/sima-cli-appzoo.md) |
+| `sima-cli bootimg` | Prepare a bootable image for the SiMa DevKit. | [docs](docs/sima-cli/commands/sima-cli-bootimg.md) |
+| `sima-cli device` | Discover nearby SiMa.ai devices on the local network. | [docs](docs/sima-cli/commands/sima-cli-device.md) |
+| `sima-cli download` | Download a file or folder from a URL. | [docs](docs/sima-cli/commands/sima-cli-download.md) |
+| `sima-cli install` | Install SiMa packages from metadata. | [docs](docs/sima-cli/commands/sima-cli-install.md) |
+| `sima-cli login` | Authenticate with the SiMa Developer Portal. | [docs](docs/sima-cli/commands/sima-cli-login.md) |
+| `sima-cli logout` | Remove cached credentials and config files. | [docs](docs/sima-cli/commands/sima-cli-logout.md) |
+| `sima-cli mla` | Machine Learning Accelerator utilities. | [docs](docs/sima-cli/commands/sima-cli-mla.md) |
+| `sima-cli modelzoo` | Access models from the Model Zoo. | [docs](docs/sima-cli/commands/sima-cli-modelzoo.md) |
+| `sima-cli neat` | Discover, download, and install Neat build artifacts. | [docs](docs/sima-cli/commands/sima-cli-neat.md) |
+| `sima-cli network` | Configure DevKit network settings. | [docs](docs/sima-cli/commands/sima-cli-network.md) |
+| `sima-cli nvme` | Perform NVMe operations on the Modalix DevKit. | [docs](docs/sima-cli/commands/sima-cli-nvme.md) |
+| `sima-cli packages` | Manage the local sima-cli package registry. | [docs](docs/sima-cli/commands/sima-cli-packages.md) |
+| `sima-cli playbooks` | Install and manage coding-agent playbooks. | [docs](docs/sima-cli/commands/sima-cli-playbooks.md) |
+| `sima-cli sdcard` | Prepare SD card storage. | [docs](docs/sima-cli/commands/sima-cli-sdcard.md) |
+| `sima-cli sdk` | Manage and launch SDK container environments. | [docs](docs/sima-cli/commands/sima-cli-sdk.md) |
+| `sima-cli selfupdate` | Update sima-cli manually. | [docs](docs/sima-cli/commands/sima-cli-selfupdate.md) |
+| `sima-cli serial` | Connect to the UART serial console of a DevKit. | [docs](docs/sima-cli/commands/sima-cli-serial.md) |
+| `sima-cli update` | Update a SiMa DevKit or remote device. | [docs](docs/sima-cli/commands/sima-cli-update.md) |
+| `sima-cli version` | Show the installed CLI version. | [docs](docs/sima-cli/commands/sima-cli-version.md) |
+
+## Development
+
+Install development dependencies and run tests:
+
+```bash
+pip install -e ".[dev]"
+python -m pytest tests/unit
+```
+
+Regenerate CLI documentation:
+
+```bash
+python scripts/generate_cli_markdown_docs.py
+```
+
+`build.sh` also regenerates the command docs before building the package.
+
+## Requirements
+
+- Python 3.8 or newer
+- Docker for SDK container workflows
+- DevKit connectivity for device update, serial, network, and boot-image workflows
+
+For command-specific prerequisites, see the generated [command reference](docs/sima-cli/index.md).
+
+## Support
+
+For issues and feature requests, use the sima-cli GitHub repository or contact the SiMa.ai development team.

@@ -34,6 +34,7 @@ from sima_cli.sdk.utils import (
     ensure_simasdkbridge_network,
     start_docker_container,
     bootstrap_devkit_container,
+    configure_container_user,
     print_section,
     extract_short_name,
     is_neat_sdk_image,
@@ -779,6 +780,9 @@ def _refresh_mpk_config_json(
     Recreate config.json based on the current SDK selection and copy it into
     the MPK container so MPK always sees fresh Yocto/eLxr mappings.
     """
+    if any(is_neat_sdk_image(image) for image in selected_images):
+        return
+
     all_sdk_containers = get_all_containers(running_containers_only=False)
 
     # Discover MPK containers globally, not only from the current selection.
@@ -1053,6 +1057,10 @@ def setup_and_start(
 
             if not is_container_running(existing_container):
                 subprocess.run(["docker", "start", existing_container], check=True)
+
+            if check_os() in ["linux", "macos"]:
+                login_name, user_uid, user_gid = detect_current_user()
+                configure_container_user(existing_container, login_name, user_uid, user_gid)
 
             if devkit_env and is_neat_sdk_image(img):
                 bootstrap_devkit_container(existing_container, devkit_env)

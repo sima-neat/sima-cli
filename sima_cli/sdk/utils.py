@@ -736,16 +736,49 @@ def _is_x86_platform() -> bool:
     return machine in {"x86_64", "amd64", "i386", "i686", "x86"}
 
 
-def ensure_model_sdk_extension_installed(sdk_container_name: str, login_name: str, auto_install: bool = False):
+def _is_arm64_platform() -> bool:
+    machine = platform.machine().lower()
+    return machine in {"aarch64", "arm64"}
+
+
+def _version_at_least(version: str, minimum: str) -> bool:
+    def parts(value: str) -> List[int]:
+        match = re.match(r"^\s*(\d+(?:\.\d+)*)", value or "")
+        if not match:
+            return []
+        return [int(part) for part in match.group(1).split(".")]
+
+    current_parts = parts(version)
+    minimum_parts = parts(minimum)
+    if not current_parts or not minimum_parts:
+        return False
+
+    length = max(len(current_parts), len(minimum_parts))
+    current_parts.extend([0] * (length - len(current_parts)))
+    minimum_parts.extend([0] * (length - len(minimum_parts)))
+    return current_parts >= minimum_parts
+
+
+def _model_sdk_extension_component(base_version: str) -> str:
+    if _is_x86_platform():
+        return "sdk-extensions/model"
+    if _is_arm64_platform() and _version_at_least(base_version, "2.1.1"):
+        return "sdk-extensions/model-aarch64"
+    return ""
+
+
+def ensure_model_sdk_extension_installed(
+    sdk_container_name: str,
+    login_name: str,
+    auto_install: bool = False,
+    uid: int = None,
+    gid: int = None,
+):
     """
     Install the Model SDK extension for Neat SDK containers.
     """
     image_ref = _get_container_image_ref(sdk_container_name)
     if not image_ref or not is_neat_sdk_image(image_ref):
-        return
-
-    if not _is_x86_platform():
-        print("ℹ️  Model SDK extension install is not available on ARM64 platforms; skipping.")
         return
 
     sdk_release = subprocess.run(
@@ -763,6 +796,11 @@ def ensure_model_sdk_extension_installed(sdk_container_name: str, login_name: st
         print(f"⚠️  Could not determine SDK base version in '{sdk_container_name}'. Skipping Model SDK extension install.")
         return
 
+    extension_component = _model_sdk_extension_component(base_version)
+    if not extension_component:
+        print("ℹ️  Model SDK extension install is not available on this host platform for SDK versions older than 2.1.1; skipping.")
+        return
+
     console.print(
         Panel(
             "[yellow]This SDK supports Model SDK as an extension.[/yellow]\n\n"
@@ -773,7 +811,7 @@ def ensure_model_sdk_extension_installed(sdk_container_name: str, login_name: st
             "Depending on network conditions, installation may take up to 15 minutes.\n"
             "\n\n"
             "If you decide to install it later, run this from within the SDK container shell:\n"
-            f"sima-cli install -v {base_version} sdk-extensions/model",
+            f"sima-cli install -v {base_version} {extension_component}",
             title="Model SDK Extension",
             border_style="green",
             style="green",
@@ -799,17 +837,32 @@ def ensure_model_sdk_extension_installed(sdk_container_name: str, login_name: st
         ]
     )
 
+    home_directory = f"/home/{login_name}"
+    owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
+    install_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"export USER={shlex.quote(login_name)}; "
+        f"export LOGNAME={shlex.quote(login_name)}; "
+        "export PATH=\"$HOME/.local/bin:$PATH\"; "
+        "mkdir -p \"$HOME/extension-installation\"; "
+        "cd \"$HOME/extension-installation\"; "
+        f"sima-cli install -v {shlex.quote(base_version)} {shlex.quote(extension_component)}; "
+        f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
+        f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions; fi; "
+        f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\"; fi"
+    )
     print(f"ℹ️  Installing Model SDK extension for SDK base version {base_version}...")
     run_command(
         [
             "docker",
             "exec",
             "-u",
-            login_name,
+            "root",
             sdk_container_name,
             "bash",
             "-lc",
-            f"mkdir -p ~/extension-installation && cd ~/extension-installation && sima-cli install -v {base_version} sdk-extensions/model",
+            install_script,
         ]
     )
     print(f"✅ Model SDK extension installed for SDK base version {base_version}.")
@@ -1083,6 +1136,8 @@ def configure_container(
             sdk_container_name,
             login_name,
             auto_install=(noninteractive or yes_to_all),
+            uid=uid,
+            gid=gid,
         )
     _sync_codex_skills(sdk_container_name, login_name, uid, gid)
     if minimal:

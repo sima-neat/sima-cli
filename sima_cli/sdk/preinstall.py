@@ -6,7 +6,7 @@ Performs essential environment checks before SDK installation:
 1. Python version
 2. Docker version
 3. CPU and RAM
-4. Rosetta (macOS)
+4. Colima resources (macOS, when Docker uses Colima)
 5. Firewall (Linux/Windows only)
 """
 
@@ -107,29 +107,14 @@ def check_cpu_ram(min_cores, min_ram_gb):
     return not passed, ["CPU/RAM", f"≥{min_cores} cores / ≥{min_ram_gb} GB", f"{cores} / {ram_display}", "✅ PASS" if passed else "❌ FAIL"]
 
 
-def check_rosetta_and_firewall(use_sudo=False):
-    """Check Rosetta on macOS and firewall state on Linux/Windows."""
+def check_firewall(use_sudo=False):
+    """Check firewall state on Linux/Windows. macOS is skipped."""
     results = []
-    rosetta_failed, fw_failed = False, False
+    fw_failed = False
     sysname = platform.system()
 
-    # ───────────────────────────────────────────────
-    # 🧩 Rosetta 2 (macOS)
-    # ───────────────────────────────────────────────
     if sysname == "Darwin":
-        arch = platform.machine()
-        if arch == "arm64":
-            try:
-                subprocess.check_output(["/usr/bin/pgrep", "oahd"], stderr=subprocess.DEVNULL)
-                console.print("✅ Rosetta 2 Installed", style="green")
-                results.append(["Rosetta 2", "Installed", "Installed", "✅ PASS"])
-            except subprocess.CalledProcessError:
-                console.print("⚠️ Rosetta 2 missing (Apple Silicon)", style="yellow")
-                results.append(["Rosetta 2", "Installed", "Missing", "⚠️ WARNING"])
-                rosetta_failed = True
-
-    if sysname == "Darwin":
-        return rosetta_failed, fw_failed, results
+        return fw_failed, results
 
     # ───────────────────────────────────────────────
     # 🔥 Firewall (Linux/Windows)
@@ -165,7 +150,13 @@ def check_rosetta_and_firewall(use_sudo=False):
     else:
         console.print("✅ Firewall Disabled or Inactive", style="green")
 
-    return rosetta_failed, fw_failed, results
+    return fw_failed, results
+
+
+def check_rosetta_and_firewall(use_sudo=False):
+    """Backward-compatible wrapper. Rosetta is no longer a prerequisite."""
+    fw_failed, results = check_firewall(use_sudo=use_sudo)
+    return False, fw_failed, results
 
 
 def _is_docker_using_colima() -> bool:
@@ -232,6 +223,31 @@ def _colima_status(profile: str) -> dict:
         return json.loads(output)
     except Exception:
         return {}
+
+
+def check_colima_resources() -> list:
+    if platform.system() != "Darwin" or not _is_docker_using_colima():
+        return []
+
+    profile = _detect_colima_profile()
+    status = _colima_status(profile)
+    if not status:
+        console.print("[yellow]⚠️  Could not inspect Colima resources for Neat SDK setup.[/yellow]")
+        return [["Colima", f"≥{NEAT_COLIMA_MIN_CPUS} CPUs / ≥{NEAT_COLIMA_MIN_MEMORY_GB} GB RAM", "Unknown", "⚠️ WARNING"]]
+
+    cpus, memory_gb = _parse_colima_status(status)
+    found = f"{cpus} CPUs / {memory_gb:.1f} GB RAM ({profile})"
+    required = f"≥{NEAT_COLIMA_MIN_CPUS} CPUs / ≥{NEAT_COLIMA_MIN_MEMORY_GB} GB RAM"
+    if cpus >= NEAT_COLIMA_MIN_CPUS and memory_gb >= NEAT_COLIMA_MIN_MEMORY_GB:
+        console.print(f"✅ Colima {found} (Required {required})", style="green")
+        return [["Colima", required, found, "✅ PASS"]]
+
+    console.print(
+        f"⚠️  Colima {found} may be too small for Neat SDK native builds "
+        f"(Required {required})",
+        style="yellow",
+    )
+    return [["Colima", required, found, "⚠️ WARNING"]]
 
 
 def _restart_colima_with_resources(profile: str) -> None:
@@ -339,11 +355,12 @@ def syscheck(force_install: bool, noninteractive: bool = False):
     py_failed, py_info = check_python(req["python"])
     dock_failed, dock_info = check_docker(req["docker"])
     cpu_failed, cpu_info = check_cpu_ram(req["min_cores"], req["min_ram_gb"])
-    rosetta_failed, fw_failed, rf_info = check_rosetta_and_firewall(use_sudo=True)
-    all_data = [py_info, dock_info, cpu_info] + rf_info
+    fw_failed, fw_info = check_firewall(use_sudo=True)
+    colima_info = check_colima_resources()
+    all_data = [py_info, dock_info, cpu_info] + colima_info + fw_info
     print_system_report(all_data)
 
-    if any([py_failed, dock_failed, cpu_failed, fw_failed, rosetta_failed]):
+    if any([py_failed, dock_failed, cpu_failed, fw_failed]):
         if force_install:
             console.print("[yellow]⚠️  Force install enabled — continuing despite warnings.[/yellow]")
             return 1

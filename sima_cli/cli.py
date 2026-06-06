@@ -761,7 +761,7 @@ def network_cmd(ctx):
 # ----------------------
 # NVME Subcommands
 # ----------------------
-NVME_OPERATIONS = {"format", "remount"}
+NVME_OPERATIONS = ("format", "remount")
 @main.command(name="nvme")
 @click.argument("operation", type=click.Choice(NVME_OPERATIONS, case_sensitive=False))
 @click.pass_context
@@ -803,9 +803,9 @@ def nvme_cmd(ctx, operation):
 # ----------------------
 # NVME Subcommands
 # ----------------------
-NVME_OPERATIONS = {"format"}
+SDCARD_OPERATIONS = ("format",)
 @main.command(name="sdcard")
-@click.argument("operation", type=click.Choice(NVME_OPERATIONS, case_sensitive=False))
+@click.argument("operation", type=click.Choice(SDCARD_OPERATIONS, case_sensitive=False))
 @click.pass_context
 def sdcard_cmd(ctx, operation):
     """

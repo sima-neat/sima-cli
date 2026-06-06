@@ -189,7 +189,7 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
             self.assertTrue(Path(extensions_dir).is_dir())
 
-    def test_setup_sdk_extensions_allows_arm64(self):
+    def test_setup_sdk_extensions_allows_arm64_when_version_unknown(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.install.platform.machine", return_value="aarch64"), \
                  patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
@@ -197,6 +197,34 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("builtins.input", side_effect=AssertionError("should not prompt")):
                 extensions_dir = _setup_sdk_extensions(
                     ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                    noninteractive=True,
+                )
+
+            self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
+            self.assertTrue(Path(extensions_dir).is_dir())
+
+    def test_setup_sdk_extensions_skips_arm64_before_2_1_1(self):
+        with TemporaryDirectory() as tmpdir:
+            with patch("sima_cli.sdk.install.platform.machine", return_value="aarch64"), \
+                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", side_effect=AssertionError("should not check disk")), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                extensions_dir = _setup_sdk_extensions(
+                    ["ghcr.io/sima-neat/sdk:2.0.0"],
+                    noninteractive=True,
+                )
+
+            self.assertEqual(extensions_dir, "")
+            self.assertFalse((Path(tmpdir) / "sima-sdk-extensions").exists())
+
+    def test_setup_sdk_extensions_allows_arm64_for_2_1_1(self):
+        with TemporaryDirectory() as tmpdir:
+            with patch("sima_cli.sdk.install.platform.machine", return_value="arm64"), \
+                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", return_value=Mock(free=30 * 1024 ** 3)), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                extensions_dir = _setup_sdk_extensions(
+                    ["ghcr.io/sima-neat/sdk:2.1.1"],
                     noninteractive=True,
                 )
 
@@ -1764,6 +1792,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
         install_script = run_command.call_args_list[1].args[0][-1]
         self.assertIn("export HOME=/home/docker", install_script)
+        self.assertIn("trap cleanup_model_sdk_install EXIT", install_script)
+        self.assertLess(install_script.index("trap cleanup_model_sdk_install EXIT"), install_script.index("sima-cli install -v 2.0.0 sdk-extensions/model"))
+        self.assertIn("chown -R docker:docker \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true", install_script)
         self.assertIn("sima-cli install -v 2.0.0 sdk-extensions/model", install_script)
         self.assertNotIn("libllvm", install_script)
         self.assertEqual(run_command.call_args_list, [

@@ -844,12 +844,15 @@ def ensure_model_sdk_extension_installed(
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
         "export PATH=\"$HOME/.local/bin:$PATH\"; "
+        "cleanup_model_sdk_install() { "
+        f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
+        f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions || true; fi; "
+        f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\" || true; fi; "
+        "}; "
+        "trap cleanup_model_sdk_install EXIT; "
         "mkdir -p \"$HOME/extension-installation\"; "
         "cd \"$HOME/extension-installation\"; "
-        f"sima-cli install -v {shlex.quote(base_version)} {shlex.quote(extension_component)}; "
-        f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
-        f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions; fi; "
-        f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\"; fi"
+        f"sima-cli install -v {shlex.quote(base_version)} {shlex.quote(extension_component)}"
     )
     print(f"ℹ️  Installing Model SDK extension for SDK base version {base_version}...")
     run_command(

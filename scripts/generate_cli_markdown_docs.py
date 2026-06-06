@@ -105,6 +105,16 @@ def collect_commands() -> List[CommandDoc]:
     return docs
 
 
+def argument_description(param: click.Argument) -> str:
+    if param.type is click.UNPROCESSED and param.nargs == -1:
+        return (
+            "Optional passthrough command and arguments. All remaining tokens are joined "
+            "and executed inside the selected SDK container with `bash -lc`; if omitted, "
+            "sima-cli opens an interactive login shell."
+        )
+    return ""
+
+
 def render_param_table(params: Iterable[click.Parameter], param_type: type) -> str:
     rows = []
     for param in params:
@@ -112,12 +122,17 @@ def render_param_table(params: Iterable[click.Parameter], param_type: type) -> s
             continue
         if isinstance(param, click.Option):
             name = ", ".join(param.opts + param.secondary_opts)
+            description = getattr(param, "help", "") or ""
         else:
             name = param.human_readable_name
-        description = getattr(param, "help", "") or ""
+            description = argument_description(param)
         details = []
         if getattr(param, "required", False):
             details.append("required")
+        if isinstance(param, click.Argument) and param.nargs == -1:
+            details.append("accepts zero or more values")
+        elif isinstance(param, click.Argument) and param.nargs != 1:
+            details.append(f"accepts {param.nargs} values")
         if isinstance(param, click.Option) and param.show_default and param.default not in (None, False):
             details.append(f"default: {param.default}")
         if details:

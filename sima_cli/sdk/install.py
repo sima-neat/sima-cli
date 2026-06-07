@@ -16,7 +16,11 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 
-from sima_cli.sdk.preinstall import ensure_colima_resources_for_neat_sdk, syscheck
+from sima_cli.sdk.preinstall import (
+    ensure_colima_resources_for_neat_sdk,
+    syscheck,
+    warn_if_colima_devkit_network_may_need_bridged,
+)
 from sima_cli.sdk.config import IMAGE_CONFIG
 from sima_cli.sdk.linux_shared_network import configure_linux_shared_devkit_network
 from sima_cli.utils.net import get_local_ip_candidates
@@ -970,6 +974,11 @@ def setup_and_start(
                 yes_to_all=yes_to_all,
                 noninteractive=noninteractive,
             )
+            if devkit_ip:
+                warn_if_colima_devkit_network_may_need_bridged(
+                    devkit_ip,
+                    noninteractive=noninteractive,
+                )
 
 
     # Step 2: Check running containers

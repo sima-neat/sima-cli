@@ -38,6 +38,7 @@ from sima_cli.sdk.neat import (
     allocate_neat_ports,
     is_docker_port_collision_error,
     prepare_neat_container_run,
+    reserved_ports_from_neat_port_map,
 )
 from sima_cli.sdk.utils import (
     _append_unique_line,
@@ -1082,6 +1083,19 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["webRTC"]["hostStart"], 40000)
         self.assertIn("40000-40199:40000-40199/udp", port_args)
 
+    def test_neat_port_allocator_respects_reserved_ports_from_failed_docker_run(self):
+        reserved_ports = {
+            ("udp", port) for port in range(9000, 9080)
+        }
+
+        with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
+             patch("sima_cli.sdk.neat.random.shuffle", side_effect=lambda values: None):
+            port_map, port_args = allocate_neat_ports(reserved_ports=reserved_ports)
+
+        self.assertEqual(port_map["videoUDP"]["hostStart"], 18000)
+        self.assertEqual(port_map["videoUDP"]["hostEnd"], 18079)
+        self.assertIn("18000-18079:9000-9079/udp", port_args)
+
     def test_neat_port_allocator_moves_webrtc_range_past_busy_udp_port(self):
         def is_available(port, protocol):
             return not (protocol == "udp" and port == 40042)
@@ -1306,6 +1320,29 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertTrue(is_docker_port_collision_error("Bind for 0.0.0.0:9900 failed: port is already allocated"))
         self.assertTrue(is_docker_port_collision_error("listen udp 0.0.0.0:9000: bind: address already in use"))
         self.assertFalse(is_docker_port_collision_error("image not found"))
+
+    def test_reserved_ports_from_neat_port_map_extracts_tcp_and_udp_mappings(self):
+        port_map = {
+            "schema": "sima.neat.port-map.v1",
+            "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
+            "videoUDP": {
+                "protocol": "udp",
+                "containerStart": 9000,
+                "containerEnd": 9079,
+                "hostStart": 18000,
+                "hostEnd": 18079,
+            },
+            "rtsp": {"tcp": {"host": 8554, "container": 8554}},
+        }
+
+        reserved = reserved_ports_from_neat_port_map(port_map)
+
+        self.assertIn(("tcp", 9900), reserved)
+        self.assertIn(("tcp", 8554), reserved)
+        self.assertIn(("udp", 18000), reserved)
+        self.assertIn(("udp", 18079), reserved)
+        self.assertNotIn(("udp", 17999), reserved)
+        self.assertNotIn(("udp", 18080), reserved)
 
     def test_start_neat_container_mounts_workspace_directly(self):
         with TemporaryDirectory() as tmpdir:
@@ -1706,6 +1743,78 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_args_list[1][0][0][:3], ["docker", "inspect", "-f"])
         self.assertEqual(run.call_args_list[2][0][0], ["docker", "rm", "-f", "ghcr.io-sima-neat-sdk-feature-devkit-sync-latest"])
         self.assertIn("19900:9900/tcp", run.call_args[0][0])
+
+    def test_start_neat_container_excludes_failed_port_map_on_retry(self):
+        with TemporaryDirectory() as tmpdir:
+            first_config = NeatRunConfig(
+                {
+                    "schema": "sima.neat.port-map.v1",
+                    "videoUDP": {
+                        "protocol": "udp",
+                        "containerStart": 9000,
+                        "containerEnd": 9079,
+                        "hostStart": 9000,
+                        "hostEnd": 9079,
+                    },
+                },
+                ["9000-9079:9000-9079/udp"],
+                f"{tmpdir}/config1",
+                f"{tmpdir}/cert1",
+                "",
+                "",
+                "",
+            )
+            second_config = NeatRunConfig(
+                {
+                    "schema": "sima.neat.port-map.v1",
+                    "videoUDP": {
+                        "protocol": "udp",
+                        "containerStart": 9000,
+                        "containerEnd": 9079,
+                        "hostStart": 18000,
+                        "hostEnd": 18079,
+                    },
+                },
+                ["18000-18079:9000-9079/udp"],
+                f"{tmpdir}/config2",
+                f"{tmpdir}/cert2",
+                "",
+                "",
+                "",
+            )
+            prepare_reserved_args = []
+
+            def prepare_side_effect(**kwargs):
+                prepare_reserved_args.append(set(kwargs["reserved_ports"]))
+                return first_config if len(prepare_reserved_args) == 1 else second_config
+
+            failed = Mock(
+                returncode=125,
+                stdout="",
+                stderr="Bind for 0.0.0.0:9000 failed: port is already allocated",
+            )
+            inspect_created = Mock(returncode=0, stdout="created\n", stderr="")
+            removed = Mock(returncode=0, stdout="", stderr="")
+            succeeded = Mock(returncode=0, stdout="container-id\n", stderr="")
+            with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.utils.os.makedirs"), \
+                 patch("sima_cli.sdk.utils.configure_container"), \
+                 patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=prepare_side_effect), \
+                 patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
+                start_docker_container(
+                    uid=1000,
+                    gid=1000,
+                    port=0,
+                    workspace=tmpdir,
+                    image="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest",
+                )
+
+        self.assertEqual(prepare_reserved_args[0], set())
+        self.assertIn(("udp", 9000), prepare_reserved_args[1])
+        self.assertIn(("udp", 9079), prepare_reserved_args[1])
+        self.assertIn("18000-18079:9000-9079/udp", run.call_args[0][0])
 
     def test_non_neat_container_does_not_prepare_neat_config(self):
         with TemporaryDirectory() as tmpdir:

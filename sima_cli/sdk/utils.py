@@ -1520,10 +1520,12 @@ def start_docker_container(
             is_docker_port_collision_error,
             prepare_neat_container_run,
             print_neat_setup_summary,
+            reserved_ports_from_neat_port_map,
         )
 
         base_docker_cmd = list(docker_cmd)
         last_result = None
+        reserved_ports = set()
         for attempt in range(1, NEAT_DOCKER_RETRY_LIMIT + 1):
             neat_run_config = prepare_neat_container_run(
                 workspace=workspace,
@@ -1533,6 +1535,7 @@ def start_docker_container(
                 noninteractive=noninteractive,
                 no_insight=no_insight,
                 minimal=minimal,
+                reserved_ports=reserved_ports,
             )
             launch_cmd = list(base_docker_cmd)
             append_neat_docker_args(launch_cmd, neat_run_config)
@@ -1548,6 +1551,7 @@ def start_docker_container(
             error_text = "\n".join(part for part in [result.stdout, result.stderr] if part)
             if attempt < NEAT_DOCKER_RETRY_LIMIT and is_docker_port_collision_error(error_text):
                 _remove_failed_neat_container(container_name)
+                reserved_ports.update(reserved_ports_from_neat_port_map(neat_run_config.port_map))
                 print(
                     f"⚠️  Docker reported a Neat SDK port collision. Regenerating port map and retrying "
                     f"({attempt}/{NEAT_DOCKER_RETRY_LIMIT})..."

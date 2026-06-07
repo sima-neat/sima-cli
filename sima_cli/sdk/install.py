@@ -978,6 +978,7 @@ def setup_and_start(
                 warn_if_colima_devkit_network_may_need_bridged(
                     devkit_ip,
                     noninteractive=noninteractive,
+                    yes_to_all=yes_to_all,
                 )
 
 

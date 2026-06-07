@@ -308,6 +308,7 @@ def _colima_supports_bridged_network_flags() -> bool:
 def warn_if_colima_devkit_network_may_need_bridged(
     devkit_ip: str,
     noninteractive: bool = False,
+    yes_to_all: bool = False,
 ) -> bool:
     if platform.system() != "Darwin" or not devkit_ip or not _is_docker_using_colima():
         return False
@@ -352,7 +353,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
         )
     )
 
-    if noninteractive:
+    if noninteractive or yes_to_all:
         return False
 
     if not supports_bridged_flags:

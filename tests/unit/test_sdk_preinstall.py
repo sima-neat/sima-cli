@@ -127,6 +127,23 @@ class TestSdkPreinstall(unittest.TestCase):
         self.assertFalse(restarted)
         run.assert_not_called()
 
+    def test_colima_devkit_network_warning_yes_to_all_does_not_prompt_or_restart(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_network_config", return_value={"address": False}), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="en0"), \
+             patch("sima_cli.sdk.preinstall._colima_supports_bridged_network_flags", return_value=True), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
+             patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            restarted = warn_if_colima_devkit_network_may_need_bridged(
+                "10.0.0.244",
+                yes_to_all=True,
+            )
+
+        self.assertFalse(restarted)
+        run.assert_not_called()
+
     def test_colima_devkit_network_warning_restarts_with_detected_interface(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \

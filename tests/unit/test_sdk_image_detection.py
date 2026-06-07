@@ -1503,6 +1503,34 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(start_container.call_args.kwargs["sdk_extensions_dir"], "")
         self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
 
+    def test_setup_passes_yes_to_all_to_colima_devkit_network_warning(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.warn_if_colima_devkit_network_may_need_bridged") as warn_colima, \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions") as setup_extensions, \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container"):
+            setup_and_start(
+                no_model_sdk=True,
+                yes_to_all=True,
+                noninteractive=False,
+                devkit_ip="10.0.0.244",
+            )
+
+        setup_extensions.assert_not_called()
+        warn_colima.assert_called_once_with(
+            "10.0.0.244",
+            noninteractive=False,
+            yes_to_all=True,
+        )
+
     def test_setup_minimal_skips_extension_directory_and_passes_flags(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \

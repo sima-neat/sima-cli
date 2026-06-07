@@ -1,3 +1,4 @@
+import os
 import socket
 import subprocess
 import unittest
@@ -19,6 +20,7 @@ from sima_cli.sdk.install import (
     _detect_host_ip,
     _detect_local_ip_candidates,
     _parse_export_line,
+    _refresh_mpk_config_json,
     _setup_devkit_share,
     _setup_sdk_extensions,
     LINUX_NEAT_EXPORTS_PATH,
@@ -36,14 +38,18 @@ from sima_cli.sdk.neat import (
     allocate_neat_ports,
     is_docker_port_collision_error,
     prepare_neat_container_run,
+    reserved_ports_from_neat_port_map,
 )
 from sima_cli.sdk.utils import (
     _append_unique_line,
+    _bash_profile_sources_bashrc_script,
     _configure_group_file,
     container_user_mapping_unavailable,
     _copy_sima_cli_auth_cache_to_container,
     _devcontainer_metadata_label,
     _extract_sdk_base_version,
+    _ensure_passwd_user,
+    _ensure_shadow_user,
     is_docker_user_mapping_error,
     _sudoers_drop_in_script,
     _prepare_log_host_dir,
@@ -55,6 +61,7 @@ from sima_cli.sdk.utils import (
     install_neat_playbooks,
     is_neat_elxr_image,
     is_neat_sdk_image,
+    is_snap_docker_cli,
     sanitize_container_hostname,
     sanitize_container_name,
     start_docker_container,
@@ -96,6 +103,7 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(extract_short_name("ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), "neat")
         self.assertEqual(extract_short_name("ghcr:sima-neat/sdk-feature-devkit-sync:latest"), "neat")
         self.assertEqual(extract_short_name("sdk:latest"), "neat")
+        self.assertEqual(extract_short_name("neat-sdk:noble-toolchain-probe"), "neat")
         self.assertEqual(extract_short_name("elxr:latest"), "elxr")
 
     def test_container_hostname_is_shortened_for_sha_tagged_images(self):
@@ -111,6 +119,7 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertTrue(is_neat_sdk_image("ghcr.io/sima-neat/sdk:latest"))
         self.assertTrue(is_neat_sdk_image("ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"))
         self.assertTrue(is_neat_sdk_image("sdk:latest"))
+        self.assertTrue(is_neat_sdk_image("neat-sdk:noble-toolchain-probe"))
         self.assertTrue(is_neat_sdk_image("ghcr.io/sima-neat/elxr:latest"))
         self.assertTrue(is_neat_sdk_image("ghcr.io/sima-neat/elxr-sdk:latest"))
         self.assertTrue(is_neat_elxr_image("ghcr.io/sima-neat/sdk:latest"))
@@ -142,13 +151,19 @@ class TestSdkImageDetection(unittest.TestCase):
             "Names": "sdk-latest",
             "Image": "sdk:latest",
         }
+        local_probe = {
+            "Names": "neat-sdk-noble-toolchain-probe",
+            "Image": "neat-sdk:noble-toolchain-probe",
+        }
 
         self.assertTrue(container_matches_sdk_keyword(current, "neat"))
         self.assertTrue(container_matches_sdk_keyword(legacy, "neat"))
         self.assertTrue(container_matches_sdk_keyword(local, "neat"))
+        self.assertTrue(container_matches_sdk_keyword(local_probe, "neat"))
         self.assertFalse(container_matches_sdk_keyword(current, "elxr"))
         self.assertFalse(container_matches_sdk_keyword(legacy, "elxr"))
         self.assertFalse(container_matches_sdk_keyword(local, "elxr"))
+        self.assertFalse(container_matches_sdk_keyword(local_probe, "elxr"))
         self.assertTrue(container_matches_sdk_keyword(elxr, "elxr"))
         self.assertFalse(container_matches_sdk_keyword(elxr, "neat"))
 
@@ -1068,6 +1083,19 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["webRTC"]["hostStart"], 40000)
         self.assertIn("40000-40199:40000-40199/udp", port_args)
 
+    def test_neat_port_allocator_respects_reserved_ports_from_failed_docker_run(self):
+        reserved_ports = {
+            ("udp", port) for port in range(9000, 9080)
+        }
+
+        with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
+             patch("sima_cli.sdk.neat.random.shuffle", side_effect=lambda values: None):
+            port_map, port_args = allocate_neat_ports(reserved_ports=reserved_ports)
+
+        self.assertEqual(port_map["videoUDP"]["hostStart"], 18000)
+        self.assertEqual(port_map["videoUDP"]["hostEnd"], 18079)
+        self.assertIn("18000-18079:9000-9079/udp", port_args)
+
     def test_neat_port_allocator_moves_webrtc_range_past_busy_udp_port(self):
         def is_available(port, protocol):
             return not (protocol == "udp" and port == 40042)
@@ -1293,6 +1321,29 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertTrue(is_docker_port_collision_error("listen udp 0.0.0.0:9000: bind: address already in use"))
         self.assertFalse(is_docker_port_collision_error("image not found"))
 
+    def test_reserved_ports_from_neat_port_map_extracts_tcp_and_udp_mappings(self):
+        port_map = {
+            "schema": "sima.neat.port-map.v1",
+            "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
+            "videoUDP": {
+                "protocol": "udp",
+                "containerStart": 9000,
+                "containerEnd": 9079,
+                "hostStart": 18000,
+                "hostEnd": 18079,
+            },
+            "rtsp": {"tcp": {"host": 8554, "container": 8554}},
+        }
+
+        reserved = reserved_ports_from_neat_port_map(port_map)
+
+        self.assertIn(("tcp", 9900), reserved)
+        self.assertIn(("tcp", 8554), reserved)
+        self.assertIn(("udp", 18000), reserved)
+        self.assertIn(("udp", 18079), reserved)
+        self.assertNotIn(("udp", 17999), reserved)
+        self.assertNotIn(("udp", 18080), reserved)
+
     def test_start_neat_container_mounts_workspace_directly(self):
         with TemporaryDirectory() as tmpdir:
             neat_config = NeatRunConfig(
@@ -1489,6 +1540,34 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(start_container.call_args.kwargs["sdk_extensions_dir"], "")
         self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
 
+    def test_setup_passes_yes_to_all_to_colima_devkit_network_warning(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.warn_if_colima_devkit_network_may_need_bridged") as warn_colima, \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions") as setup_extensions, \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container"):
+            setup_and_start(
+                no_model_sdk=True,
+                yes_to_all=True,
+                noninteractive=False,
+                devkit_ip="10.0.0.244",
+            )
+
+        setup_extensions.assert_not_called()
+        warn_colima.assert_called_once_with(
+            "10.0.0.244",
+            noninteractive=False,
+            yes_to_all=True,
+        )
+
     def test_setup_minimal_skips_extension_directory_and_passes_flags(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
@@ -1510,6 +1589,42 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertTrue(start_container.call_args.kwargs["minimal"])
         self.assertTrue(start_container.call_args.kwargs["no_insight"])
 
+    def test_setup_warns_for_snap_docker_with_neat_sdk(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.is_snap_docker_cli", return_value=True), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions") as setup_extensions, \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container, \
+             patch("sima_cli.sdk.install.Console.print") as console_print:
+            setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
+
+        setup_extensions.assert_not_called()
+        start_container.assert_called_once()
+        snap_panels = [
+            call.args[0]
+            for call in console_print.call_args_list
+            if "Snap Docker" in str(getattr(call.args[0], "title", ""))
+        ]
+        self.assertEqual(1, len(snap_panels))
+        self.assertIn("Snap Docker detected", str(snap_panels[0].renderable))
+
+    def test_snap_docker_detection_checks_resolved_snap_shim(self):
+        with patch("sima_cli.sdk.utils.shutil.which", return_value="/usr/bin/docker"), \
+             patch("sima_cli.sdk.utils.os.path.realpath", return_value="/snap/bin/docker"):
+            self.assertTrue(is_snap_docker_cli())
+
+    def test_refresh_mpk_config_skips_neat_sdk_selection(self):
+        with patch("sima_cli.sdk.install.get_all_containers", side_effect=AssertionError("should not inspect containers")):
+            _refresh_mpk_config_json(["ghcr.io/sima-neat/sdk:latest"])
+
     def test_setup_no_insight_refuses_existing_neat_container(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
@@ -1524,6 +1639,32 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="ghcr.io-sima-neat-sdk-latest"):
             with self.assertRaisesRegex(RuntimeError, "Cannot apply --no-insight"):
                 setup_and_start(no_insight=True, yes_to_all=False, noninteractive=False)
+
+    def test_setup_repairs_existing_container_user_mapping_before_attach(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        container = "ghcr.io-sima-neat-sdk-latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={container: "running"}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=container), \
+             patch("sima_cli.sdk.install.is_container_running", return_value=True), \
+             patch("sima_cli.sdk.install.check_os", return_value="linux"), \
+             patch("sima_cli.sdk.install.detect_current_user", return_value=("devuser", 1000, 1000)), \
+             patch("sima_cli.sdk.install.configure_container_user") as configure_user, \
+             patch("sima_cli.sdk.install._refresh_mpk_config_json"), \
+             patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)) as run:
+            setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
+
+        configure_user.assert_called_once_with(container, "devuser", 1000, 1000)
+        self.assertEqual(
+            run.call_args.args[0],
+            ["docker", "exec", "-it", "-u", "devuser", container, "bash", "-l"],
+        )
 
     def test_start_neat_container_uses_valid_short_hostname_for_long_image_tag(self):
         with TemporaryDirectory() as tmpdir:
@@ -1603,6 +1744,78 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_args_list[2][0][0], ["docker", "rm", "-f", "ghcr.io-sima-neat-sdk-feature-devkit-sync-latest"])
         self.assertIn("19900:9900/tcp", run.call_args[0][0])
 
+    def test_start_neat_container_excludes_failed_port_map_on_retry(self):
+        with TemporaryDirectory() as tmpdir:
+            first_config = NeatRunConfig(
+                {
+                    "schema": "sima.neat.port-map.v1",
+                    "videoUDP": {
+                        "protocol": "udp",
+                        "containerStart": 9000,
+                        "containerEnd": 9079,
+                        "hostStart": 9000,
+                        "hostEnd": 9079,
+                    },
+                },
+                ["9000-9079:9000-9079/udp"],
+                f"{tmpdir}/config1",
+                f"{tmpdir}/cert1",
+                "",
+                "",
+                "",
+            )
+            second_config = NeatRunConfig(
+                {
+                    "schema": "sima.neat.port-map.v1",
+                    "videoUDP": {
+                        "protocol": "udp",
+                        "containerStart": 9000,
+                        "containerEnd": 9079,
+                        "hostStart": 18000,
+                        "hostEnd": 18079,
+                    },
+                },
+                ["18000-18079:9000-9079/udp"],
+                f"{tmpdir}/config2",
+                f"{tmpdir}/cert2",
+                "",
+                "",
+                "",
+            )
+            prepare_reserved_args = []
+
+            def prepare_side_effect(**kwargs):
+                prepare_reserved_args.append(set(kwargs["reserved_ports"]))
+                return first_config if len(prepare_reserved_args) == 1 else second_config
+
+            failed = Mock(
+                returncode=125,
+                stdout="",
+                stderr="Bind for 0.0.0.0:9000 failed: port is already allocated",
+            )
+            inspect_created = Mock(returncode=0, stdout="created\n", stderr="")
+            removed = Mock(returncode=0, stdout="", stderr="")
+            succeeded = Mock(returncode=0, stdout="container-id\n", stderr="")
+            with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.utils.os.makedirs"), \
+                 patch("sima_cli.sdk.utils.configure_container"), \
+                 patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=prepare_side_effect), \
+                 patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
+                start_docker_container(
+                    uid=1000,
+                    gid=1000,
+                    port=0,
+                    workspace=tmpdir,
+                    image="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest",
+                )
+
+        self.assertEqual(prepare_reserved_args[0], set())
+        self.assertIn(("udp", 9000), prepare_reserved_args[1])
+        self.assertIn(("udp", 9079), prepare_reserved_args[1])
+        self.assertIn("18000-18079:9000-9079/udp", run.call_args[0][0])
+
     def test_non_neat_container_does_not_prepare_neat_config(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.neat.prepare_neat_container_run") as prepare, \
@@ -1649,8 +1862,48 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.run_command") as run_command:
                 _copy_sima_cli_auth_cache_to_container("container", "devuser", 1000, 1000)
 
-        tokens_file = str((auth_dir / ".tokens.json").resolve())
-        cookies_file = str((auth_dir / ".sima-cli-cookies.txt").resolve())
+        calls = run_command.call_args_list
+        self.assertEqual(calls[:2], [
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "mkdir", "-p", "/home/devuser/.sima-cli",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli",
+            ], fatal=False),
+        ])
+        self.assertEqual(len(calls), 8)
+        self.assertEqual(calls[2], unittest.mock.call([
+            "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.tokens.json",
+        ], fatal=False))
+        self.assertEqual(calls[3].args[0][0:2], ["docker", "cp"])
+        self.assertTrue(Path(calls[3].args[0][2]).is_absolute())
+        self.assertTrue(Path(calls[3].args[0][2]).name == ".tokens.json")
+        self.assertEqual(calls[3].args[0][3], "container:/home/devuser/.sima-cli/.tokens.json")
+        self.assertEqual(calls[4], unittest.mock.call([
+            "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli/.tokens.json",
+        ], fatal=False))
+        self.assertEqual(calls[5], unittest.mock.call([
+            "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+        ], fatal=False))
+        self.assertEqual(calls[6].args[0][0:2], ["docker", "cp"])
+        self.assertTrue(Path(calls[6].args[0][2]).is_absolute())
+        self.assertTrue(Path(calls[6].args[0][2]).name == ".sima-cli-cookies.txt")
+        self.assertEqual(calls[6].args[0][3], "container:/home/devuser/.sima-cli/.sima-cli-cookies.txt")
+        self.assertEqual(calls[7], unittest.mock.call([
+            "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+        ], fatal=False))
+
+    def test_copy_sima_cli_auth_cache_cleans_partial_target_when_copy_fails(self):
+        with TemporaryDirectory() as tmpdir:
+            auth_dir = Path(tmpdir) / ".sima-cli"
+            auth_dir.mkdir()
+            (auth_dir / ".tokens.json").write_text("{}", encoding="utf-8")
+
+            with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
+                 patch("sima_cli.sdk.utils.os.path.expanduser", return_value=str(auth_dir)), \
+                 patch("sima_cli.sdk.utils.run_command", side_effect=[True, True, True, False, True]) as run_command:
+                _copy_sima_cli_auth_cache_to_container("container", "devuser", 1000, 1000)
+
         self.assertEqual(run_command.call_args_list, [
             unittest.mock.call([
                 "docker", "exec", "-u", "root", "container", "mkdir", "-p", "/home/devuser/.sima-cli",
@@ -1659,16 +1912,13 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli",
             ], fatal=False),
             unittest.mock.call([
-                "docker", "cp", tokens_file, "container:/home/devuser/.sima-cli/.tokens.json",
+                "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.tokens.json",
             ], fatal=False),
             unittest.mock.call([
-                "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli/.tokens.json",
+                "docker", "cp", unittest.mock.ANY, "container:/home/devuser/.sima-cli/.tokens.json",
             ], fatal=False),
             unittest.mock.call([
-                "docker", "cp", cookies_file, "container:/home/devuser/.sima-cli/.sima-cli-cookies.txt",
-            ], fatal=False),
-            unittest.mock.call([
-                "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+                "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.tokens.json",
             ], fatal=False),
         ])
 
@@ -1681,11 +1931,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
             with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
                  patch("sima_cli.sdk.utils.os.path.expanduser", return_value=str(auth_dir)), \
-                 patch("sima_cli.sdk.utils.run_command", side_effect=[True, True, False, True, True]) as run_command:
+                 patch("sima_cli.sdk.utils.run_command", side_effect=[True, True, True, False, True, True, True, True]) as run_command:
                 _copy_sima_cli_auth_cache_to_container("container", "devuser", 1000, 1000)
 
-        tokens_file = str((auth_dir / ".tokens.json").resolve())
-        cookies_file = str((auth_dir / ".sima-cli-cookies.txt").resolve())
         self.assertEqual(run_command.call_args_list, [
             unittest.mock.call([
                 "docker", "exec", "-u", "root", "container", "mkdir", "-p", "/home/devuser/.sima-cli",
@@ -1694,10 +1942,19 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli",
             ], fatal=False),
             unittest.mock.call([
-                "docker", "cp", tokens_file, "container:/home/devuser/.sima-cli/.tokens.json",
+                "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.tokens.json",
             ], fatal=False),
             unittest.mock.call([
-                "docker", "cp", cookies_file, "container:/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+                "docker", "cp", unittest.mock.ANY, "container:/home/devuser/.sima-cli/.tokens.json",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.tokens.json",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "cp", unittest.mock.ANY, "container:/home/devuser/.sima-cli/.sima-cli-cookies.txt",
             ], fatal=False),
             unittest.mock.call([
                 "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli/.sima-cli-cookies.txt",
@@ -1713,11 +1970,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
             with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
                  patch("sima_cli.sdk.utils.os.path.expanduser", return_value=str(auth_dir)), \
-                 patch("sima_cli.sdk.utils.run_command", side_effect=[True, True, False, False]) as run_command:
+                 patch("sima_cli.sdk.utils.run_command", side_effect=[True, True, True, False, True, True, False, True]) as run_command:
                 _copy_sima_cli_auth_cache_to_container("container", "devuser", 1000, 1000)
 
-        tokens_file = str((auth_dir / ".tokens.json").resolve())
-        cookies_file = str((auth_dir / ".sima-cli-cookies.txt").resolve())
         self.assertEqual(run_command.call_args_list, [
             unittest.mock.call([
                 "docker", "exec", "-u", "root", "container", "mkdir", "-p", "/home/devuser/.sima-cli",
@@ -1726,10 +1981,22 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "docker", "exec", "-u", "root", "container", "chown", "1000:1000", "/home/devuser/.sima-cli",
             ], fatal=False),
             unittest.mock.call([
-                "docker", "cp", tokens_file, "container:/home/devuser/.sima-cli/.tokens.json",
+                "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.tokens.json",
             ], fatal=False),
             unittest.mock.call([
-                "docker", "cp", cookies_file, "container:/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+                "docker", "cp", unittest.mock.ANY, "container:/home/devuser/.sima-cli/.tokens.json",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.tokens.json",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "cp", unittest.mock.ANY, "container:/home/devuser/.sima-cli/.sima-cli-cookies.txt",
+            ], fatal=False),
+            unittest.mock.call([
+                "docker", "exec", "-u", "root", "container", "rm", "-f", "/home/devuser/.sima-cli/.sima-cli-cookies.txt",
             ], fatal=False),
         ])
 
@@ -1792,10 +2059,18 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
         install_script = run_command.call_args_list[1].args[0][-1]
         self.assertIn("export HOME=/home/docker", install_script)
+        self.assertIn("export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"", install_script)
+        self.assertIn("SIMA_CLI_BIN=\"$HOME/.sima-cli/.venv/bin/sima-cli\"", install_script)
+        self.assertIn("/etc/sudoers.d/sima-cli-user", install_script)
+        self.assertIn("'docker ALL=(ALL:ALL) NOPASSWD:ALL'", install_script)
+        self.assertIn("su -s /bin/bash docker -c 'sudo -n true'", install_script)
         self.assertIn("trap cleanup_model_sdk_install EXIT", install_script)
-        self.assertLess(install_script.index("trap cleanup_model_sdk_install EXIT"), install_script.index("sima-cli install -v 2.0.0 sdk-extensions/model"))
+        self.assertLess(install_script.index("/etc/sudoers.d/sima-cli-user"), install_script.index("su -s /bin/bash docker -c"))
+        self.assertLess(install_script.index("sudo -n true"), install_script.index("\"$SIMA_CLI_BIN\" install -v 2.0.0 sdk-extensions/model"))
+        self.assertLess(install_script.index("trap cleanup_model_sdk_install EXIT"), install_script.index("su -s /bin/bash docker -c"))
         self.assertIn("chown -R docker:docker \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true", install_script)
-        self.assertIn("sima-cli install -v 2.0.0 sdk-extensions/model", install_script)
+        self.assertIn("su -s /bin/bash docker -c", install_script)
+        self.assertIn("\"$SIMA_CLI_BIN\" install -v 2.0.0 sdk-extensions/model", install_script)
         self.assertNotIn("libllvm", install_script)
         self.assertEqual(run_command.call_args_list, [
             unittest.mock.call([
@@ -1846,7 +2121,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ]),
         )
         self.assertIn(
-            "sima-cli install -v 2.1.1 sdk-extensions/model-aarch64",
+            "\"$SIMA_CLI_BIN\" install -v 2.1.1 sdk-extensions/model-aarch64",
+            run_command.call_args_list[-1].args[0][-1],
+        )
+        self.assertIn(
+            "su -s /bin/bash docker -c",
             run_command.call_args_list[-1].args[0][-1],
         )
 
@@ -1894,6 +2173,59 @@ table ip6 nm-shared-enx6c1ff720d573 {
         model_sdk.assert_not_called()
         playbooks.assert_not_called()
 
+    def test_configure_container_uses_absolute_temp_files_for_user_mapping(self):
+        copied_files = {}
+        copied_file_parents = {}
+        updated_group = ""
+
+        def fake_run_command(cmd, *args, **kwargs):
+            nonlocal updated_group
+            if cmd[:2] == ["docker", "cp"]:
+                src, dest = cmd[2], cmd[3]
+                if src == "container:/etc/passwd":
+                    Path(dest).write_text("root:x:0:0:root:/root:/bin/bash\n", encoding="utf-8")
+                    copied_files["passwd"] = dest
+                    copied_file_parents["passwd"] = Path(dest).parent.stat().st_mode & 0o777
+                elif src == "container:/etc/shadow":
+                    Path(dest).write_text("root:*:::::::\n", encoding="utf-8")
+                    copied_files["shadow"] = dest
+                    copied_file_parents["shadow"] = Path(dest).parent.stat().st_mode & 0o777
+                elif src == "container:/etc/group":
+                    Path(dest).write_text("root:x:0:\nsudo:x:27:\ndocker:x:900:\n", encoding="utf-8")
+                    copied_files["group"] = dest
+                    copied_file_parents["group"] = Path(dest).parent.stat().st_mode & 0o777
+                elif dest == "container:/etc/group":
+                    updated_group = Path(src).read_text(encoding="utf-8")
+                else:
+                    self.assertTrue(Path(src).is_absolute())
+            return True
+
+        with TemporaryDirectory() as home, \
+             patch.dict(os.environ, {"HOME": home}), \
+             patch("sima_cli.sdk.utils.check_os", return_value="macos"), \
+             patch("sima_cli.sdk.utils.detect_current_user", return_value=("jimfan", 501, 20)), \
+             patch("sima_cli.sdk.utils.run_command", side_effect=fake_run_command), \
+             patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
+             patch("sima_cli.sdk.utils.ensure_sima_cli_installed"), \
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed"), \
+             patch("sima_cli.sdk.utils._sync_codex_skills"), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks"):
+            from sima_cli.sdk.utils import configure_container
+
+            configure_container("container", no_model_sdk=True)
+
+        self.assertEqual(set(copied_files), {"passwd", "shadow", "group"})
+        self.assertEqual(set(copied_file_parents), {"passwd", "shadow", "group"})
+        for path in copied_files.values():
+            self.assertTrue(Path(path).is_absolute())
+            self.assertEqual(os.path.commonpath([home, path]), home)
+            self.assertTrue(Path(path).parent.name.startswith("sima-cli-sdk-"))
+            self.assertFalse(Path(path).parent.name.startswith("."))
+        for mode in copied_file_parents.values():
+            self.assertEqual(mode, 0o755)
+        self.assertIn("sudo:x:27:jimfan\n", updated_group)
+        self.assertIn("docker:x:900:jimfan\n", updated_group)
+
     def test_install_neat_playbooks_skips_non_neat_image(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="artifacts.eng.sima.ai/elxr:2.1.0"), \
              patch("sima_cli.sdk.utils.run_command") as run_command:
@@ -1926,7 +2258,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         self.assertIn("/etc/sudoers.d/sima-cli-user", script)
         self.assertIn("'ji.fan ALL=(ALL:ALL) NOPASSWD:ALL'", script)
-        self.assertNotIn("/etc/sudoers;", script)
+        self.assertIn("#includedir /etc/sudoers.d", script)
+        self.assertIn(">> /etc/sudoers", script)
+        self.assertNotIn("echo 'ji.fan ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers", script)
         self.assertNotIn("chown", script)
 
     def test_append_unique_line_preserves_existing_last_line_without_newline(self):
@@ -1943,19 +2277,85 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "ji.fan:x:841037974:841037974::/home/ji.fan:/bin/bash\n",
             )
 
-    def test_configure_group_file_adds_primary_group_and_docker_membership(self):
+    def test_ensure_passwd_user_prioritizes_host_user_when_uid_collides_with_ubuntu(self):
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "passwd"
+            path.write_text(
+                "root:x:0:0:root:/root:/bin/bash\n"
+                "ubuntu:x:1000:1000:Ubuntu:/home/ubuntu:/bin/bash\n",
+                encoding="utf-8",
+            )
+
+            _ensure_passwd_user(str(path), "jim", 1000, 1000)
+
+            self.assertEqual(
+                path.read_text(encoding="utf-8"),
+                "root:x:0:0:root:/root:/bin/bash\n"
+                "jim:x:1000:1000::/home/jim:/bin/bash\n"
+                "ubuntu:x:1000:1000:Ubuntu:/home/ubuntu:/bin/bash\n",
+            )
+
+    def test_ensure_shadow_user_replaces_existing_host_user_entry(self):
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "shadow"
+            path.write_text(
+                "root:*:::::::\n"
+                "jim:old:::::::\n"
+                "ubuntu:*:::::::\n",
+                encoding="utf-8",
+            )
+
+            _ensure_shadow_user(str(path), "jim")
+
+            self.assertEqual(
+                path.read_text(encoding="utf-8"),
+                "root:*:::::::\n"
+                "ubuntu:*:::::::\n"
+                "jim:$6$hash$placeholder:::::::\n",
+            )
+
+    def test_configure_group_file_adds_primary_group_docker_and_sudo_membership(self):
         with TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "group"
-            path.write_text("root:x:0:\ndocker:x:999:existing", encoding="utf-8")
+            path.write_text(
+                "root:x:0:\n"
+                "sudo:x:27:\n"
+                "ubuntu:x:1000:\n"
+                "docker:x:999:existing",
+                encoding="utf-8",
+            )
 
-            _configure_group_file(str(path), "ji.fan", 841037974)
+            _configure_group_file(str(path), "jim", 1000)
 
             self.assertEqual(
                 path.read_text(encoding="utf-8"),
                 "root:x:0:\n"
-                "docker:x:999:existing,ji.fan\n"
-                "ji.fan:x:841037974:\n",
+                "sudo:x:27:jim\n"
+                "jim:x:1000:\n"
+                "ubuntu:x:1000:\n"
+                "docker:x:999:existing,jim\n",
             )
+
+    def test_bash_profile_repair_sources_bashrc_for_login_shells(self):
+        script = _bash_profile_sources_bashrc_script("jim", 1000, 1000)
+
+        self.assertIn("profile=/home/jim/.bash_profile", script)
+        self.assertIn('if [ -f "$HOME/.bashrc" ]; then', script)
+        self.assertIn('. "$HOME/.bashrc"', script)
+        self.assertIn('chown 1000:1000 "$home" "$profile"', script)
+
+    def test_installer_profile_bootstrap_runs_before_alias_setup(self):
+        installer = Path("scripts/install/sima-cli-installer.sh").read_text(encoding="utf-8")
+
+        self.assertIn("ensure_bashrc_sourced_from_profile()", installer)
+        self.assertLess(
+            installer.index('ensure_bashrc_sourced_from_profile "$RC_FILE"'),
+            installer.index('add_venv_path "$RC_FILE"'),
+        )
+        self.assertLess(
+            installer.index('ensure_bashrc_sourced_from_profile "$RC_FILE"'),
+            installer.index('add_aliases "$RC_FILE"'),
+        )
 
     def test_prepare_log_host_dir_makes_directory_container_writable(self):
         with TemporaryDirectory() as tmpdir:

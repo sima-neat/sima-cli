@@ -16,7 +16,11 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 
-from sima_cli.sdk.preinstall import ensure_colima_resources_for_neat_sdk, syscheck
+from sima_cli.sdk.preinstall import (
+    ensure_colima_resources_for_neat_sdk,
+    syscheck,
+    warn_if_colima_devkit_network_may_need_bridged,
+)
 from sima_cli.sdk.config import IMAGE_CONFIG
 from sima_cli.sdk.linux_shared_network import configure_linux_shared_devkit_network
 from sima_cli.utils.net import get_local_ip_candidates
@@ -34,9 +38,11 @@ from sima_cli.sdk.utils import (
     ensure_simasdkbridge_network,
     start_docker_container,
     bootstrap_devkit_container,
+    configure_container_user,
     print_section,
     extract_short_name,
     is_neat_sdk_image,
+    is_snap_docker_cli,
     check_os,
     container_user_mapping_unavailable,
     detect_current_user,
@@ -778,6 +784,9 @@ def _refresh_mpk_config_json(
     Recreate config.json based on the current SDK selection and copy it into
     the MPK container so MPK always sees fresh Yocto/eLxr mappings.
     """
+    if any(is_neat_sdk_image(image) for image in selected_images):
+        return
+
     all_sdk_containers = get_all_containers(running_containers_only=False)
 
     # Discover MPK containers globally, not only from the current selection.
@@ -910,6 +919,31 @@ def _reject_if_windows_native_neat_sdk(
     sys.exit(1)
 
 
+def _warn_if_snap_docker_neat_sdk(
+    selected_images: List[str],
+    console: Console,
+) -> None:
+    if not any(is_neat_sdk_image(img) for img in selected_images):
+        return
+    if not is_snap_docker_cli():
+        return
+
+    console.print(
+        Panel(
+            "[bold red]Snap Docker detected.[/bold red]\n\n"
+            "Neat SDK setup can run with Snap Docker, but Snap confinement may make "
+            "container file copies slower and can restrict access to host paths such as "
+            "[cyan]/tmp[/cyan] and hidden directories under [cyan]$HOME[/cyan]. This can "
+            "limit SDK setup functionality and make container operations noticeably slower.\n\n"
+            "[bold]Recommended:[/bold] switch to the official Docker Engine packages from "
+            "Docker's apt repository before using Neat SDK setup.",
+            title="Snap Docker May Be Slow or Limited",
+            border_style="red",
+            expand=False,
+        )
+    )
+
+
 def setup_and_start(
     noninteractive: bool = False,
     start_only: bool = False,
@@ -935,10 +969,17 @@ def setup_and_start(
     if not start_only:
         _reject_if_windows_native_neat_sdk(selected_images, console)
         if any(is_neat_sdk_image(img) for img in selected_images):
+            _warn_if_snap_docker_neat_sdk(selected_images, console)
             ensure_colima_resources_for_neat_sdk(
                 yes_to_all=yes_to_all,
                 noninteractive=noninteractive,
             )
+            if devkit_ip:
+                warn_if_colima_devkit_network_may_need_bridged(
+                    devkit_ip,
+                    noninteractive=noninteractive,
+                    yes_to_all=yes_to_all,
+                )
 
 
     # Step 2: Check running containers
@@ -1026,6 +1067,10 @@ def setup_and_start(
 
             if not is_container_running(existing_container):
                 subprocess.run(["docker", "start", existing_container], check=True)
+
+            if check_os() in ["linux", "macos"]:
+                login_name, user_uid, user_gid = detect_current_user()
+                configure_container_user(existing_container, login_name, user_uid, user_gid)
 
             if devkit_env and is_neat_sdk_image(img):
                 bootstrap_devkit_container(existing_container, devkit_env)

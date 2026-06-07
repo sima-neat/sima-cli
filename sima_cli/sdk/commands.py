@@ -296,8 +296,19 @@ def remove(ctx, sdk, yes):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def mpk(ctx, cmd):
-    """Access MPK CLI toolset container for managing and building pipelines along with the device manager.
+    """
+    Access MPK CLI toolset container for managing and building pipelines along with the device manager.
     It also includes the plugins zoo and the Performance Estimator tool.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk mpk
+        sima-cli sdk mpk mpk --help
+        sima-cli sdk mpk "mpk compile --help"
     """
     launch_sdk_tool("mpk", cmd, ctx)
 
@@ -309,7 +320,19 @@ def mpk(ctx, cmd):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def model(ctx, cmd):
-    """Launch the Model SDK tool environment."""
+    """
+    Launch the Model SDK tool environment.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk model
+        sima-cli sdk model python --version
+        sima-cli sdk model "python script.py --flag"
+    """
     launch_sdk_tool("model", cmd, ctx)
 
 
@@ -320,7 +343,19 @@ def model(ctx, cmd):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def yocto(ctx, cmd):
-    """Launch the Yocto SDK tool environment."""
+    """
+    Launch the Yocto SDK tool environment.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk yocto
+        sima-cli sdk yocto bitbake --version
+        sima-cli sdk yocto "bitbake core-image-minimal"
+    """
     launch_sdk_tool("yocto", cmd, ctx)
 
 
@@ -331,7 +366,19 @@ def yocto(ctx, cmd):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def neat(ctx, cmd):
-    """Launch the Neat SDK tool environment."""
+    """
+    Launch the Neat SDK tool environment.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk neat
+        sima-cli sdk neat python --version
+        sima-cli sdk neat "python app.py --config config.json"
+    """
     launch_sdk_tool("neat", cmd, ctx)
 
 
@@ -342,7 +389,19 @@ def neat(ctx, cmd):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def elxr(ctx, cmd):
-    """Launch the eLxr SDK tool environment."""
+    """
+    Launch the eLxr SDK tool environment.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk elxr
+        sima-cli sdk elxr uname -a
+        sima-cli sdk elxr "source /opt/bin/simaai-init-build-env modalix && bitbake --version"
+    """
     launch_sdk_tool("elxr", cmd, ctx)
 
 

@@ -539,7 +539,16 @@ def download_image(version_or_url: str, board: str, swtype: str, internal: bool 
     return extracted_paths
 
 
-def perform_update(version_or_url: str, ip: str = None, internal: bool = False, passwd: str = "edgeai", auto_confirm: bool = False, flavor: str = 'auto', troot_only: bool = False):
+def perform_update(
+    version_or_url: str,
+    ip: str = None,
+    internal: bool = False,
+    passwd: str = "edgeai",
+    auto_confirm: bool = False,
+    flavor: str = 'auto',
+    troot_only: bool = False,
+    dryrun: bool = False,
+):
     r"""
     Update the system based on environment and input.
 
@@ -556,6 +565,7 @@ def perform_update(version_or_url: str, ip: str = None, internal: bool = False, 
         auto_confirm (bool): If True, auto-confirm firmware update without prompting.
         flavor (str): headless or full, or auto (detect the running image flavor and use it)
         troot_only (bool): whether to only update tRoot or not. Default is false and we always update both tRoot and root file system
+        dryrun (bool): ELXR only; validate and print the simaai-ota command without executing it.
     """
     try:
         board = ''
@@ -590,7 +600,7 @@ def perform_update(version_or_url: str, ip: str = None, internal: bool = False, 
                 return
 
             if is_devkit_running_elxr():
-                return update_elxr(version_or_url, internal=internal)
+                return update_elxr(version_or_url, internal=internal, dryrun=dryrun)
             
             elif fwtype.lower() == 'elxr':
                 click.echo(

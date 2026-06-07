@@ -258,8 +258,14 @@ def download(ctx, url, dest):
     default=False,
     help="Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion."
 )
+@click.option(
+    "--dryrun",
+    is_flag=True,
+    default=False,
+    help="For ELXR updates only, validate the update path and print the simaai-ota command without running it."
+)
 @click.pass_context
-def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_only):
+def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_only, dryrun):
     """
     Update the software on a SiMa DevKit or remote SiMa device.
 
@@ -317,6 +323,10 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
 
         sima-cli update -v 1.7.0 -y
 
+        # Validate ELXR update path without running simaai-ota
+
+        sima-cli update --dryrun
+
         # Provide root password for remote updates
 
         sima-cli update --ip 192.168.6.5 --passwd root
@@ -324,14 +334,18 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
     """
     # Prioritize explicit --version option over positional argument
     version_or_url = version_option or version_or_url
+    is_elxr = is_devkit_running_elxr()
+
+    if dryrun and not is_elxr:
+        raise click.ClickException("--dryrun is only supported when running update on an ELXR devkit.")
 
     # Resolve the version or tag (GA/Beta/Alpha/QA) if not on eLxr
     # On eLxr always use latest (no version) or explicit version string
 
-    if not is_devkit_running_elxr():
+    if not is_elxr:
         version_or_url = resolve_version(version_or_url)
     
-    if is_devkit_running_elxr() and troot_only:
+    if is_elxr and troot_only:
         click.secho("⚠️  Running update on eLxr with troot_only flag is not supported, this setting is ignored..", fg='yellow')
 
     click.echo(f"➡️  Updating with {version_or_url}")
@@ -345,7 +359,8 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
         passwd=passwd,
         auto_confirm=yes,
         flavor=flavor,
-        troot_only=troot_only
+        troot_only=troot_only,
+        dryrun=dryrun,
     )
 
 # ----------------------
@@ -746,7 +761,7 @@ def network_cmd(ctx):
 # ----------------------
 # NVME Subcommands
 # ----------------------
-NVME_OPERATIONS = {"format", "remount"}
+NVME_OPERATIONS = ("format", "remount")
 @main.command(name="nvme")
 @click.argument("operation", type=click.Choice(NVME_OPERATIONS, case_sensitive=False))
 @click.pass_context
@@ -788,9 +803,9 @@ def nvme_cmd(ctx, operation):
 # ----------------------
 # NVME Subcommands
 # ----------------------
-NVME_OPERATIONS = {"format"}
+SDCARD_OPERATIONS = ("format",)
 @main.command(name="sdcard")
-@click.argument("operation", type=click.Choice(NVME_OPERATIONS, case_sensitive=False))
+@click.argument("operation", type=click.Choice(SDCARD_OPERATIONS, case_sensitive=False))
 @click.pass_context
 def sdcard_cmd(ctx, operation):
     """

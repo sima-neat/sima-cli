@@ -6,16 +6,18 @@ Performs essential environment checks before SDK installation:
 1. Python version
 2. Docker version
 3. CPU and RAM
-4. Rosetta (macOS)
+4. Colima resources (macOS, when Docker uses Colima)
 5. Firewall (Linux/Windows only)
 """
 
 import sys
 import json
+import os
 import subprocess
 import platform
 import re
 import shutil
+from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -23,6 +25,7 @@ from rich import box
 from sima_cli.sdk.utils import run_command
 import importlib.resources as pkg_resources
 from typing import Any
+import yaml
 
 console = Console()
 NEAT_COLIMA_MIN_CPUS = 4
@@ -107,29 +110,14 @@ def check_cpu_ram(min_cores, min_ram_gb):
     return not passed, ["CPU/RAM", f"≥{min_cores} cores / ≥{min_ram_gb} GB", f"{cores} / {ram_display}", "✅ PASS" if passed else "❌ FAIL"]
 
 
-def check_rosetta_and_firewall(use_sudo=False):
-    """Check Rosetta on macOS and firewall state on Linux/Windows."""
+def check_firewall(use_sudo=False):
+    """Check firewall state on Linux/Windows. macOS is skipped."""
     results = []
-    rosetta_failed, fw_failed = False, False
+    fw_failed = False
     sysname = platform.system()
 
-    # ───────────────────────────────────────────────
-    # 🧩 Rosetta 2 (macOS)
-    # ───────────────────────────────────────────────
     if sysname == "Darwin":
-        arch = platform.machine()
-        if arch == "arm64":
-            try:
-                subprocess.check_output(["/usr/bin/pgrep", "oahd"], stderr=subprocess.DEVNULL)
-                console.print("✅ Rosetta 2 Installed", style="green")
-                results.append(["Rosetta 2", "Installed", "Installed", "✅ PASS"])
-            except subprocess.CalledProcessError:
-                console.print("⚠️ Rosetta 2 missing (Apple Silicon)", style="yellow")
-                results.append(["Rosetta 2", "Installed", "Missing", "⚠️ WARNING"])
-                rosetta_failed = True
-
-    if sysname == "Darwin":
-        return rosetta_failed, fw_failed, results
+        return fw_failed, results
 
     # ───────────────────────────────────────────────
     # 🔥 Firewall (Linux/Windows)
@@ -165,7 +153,13 @@ def check_rosetta_and_firewall(use_sudo=False):
     else:
         console.print("✅ Firewall Disabled or Inactive", style="green")
 
-    return rosetta_failed, fw_failed, results
+    return fw_failed, results
+
+
+def check_rosetta_and_firewall(use_sudo=False):
+    """Backward-compatible wrapper. Rosetta is no longer a prerequisite."""
+    fw_failed, results = check_firewall(use_sudo=use_sudo)
+    return False, fw_failed, results
 
 
 def _is_docker_using_colima() -> bool:
@@ -232,6 +226,202 @@ def _colima_status(profile: str) -> dict:
         return json.loads(output)
     except Exception:
         return {}
+
+
+def _colima_config_path(profile: str) -> Path:
+    colima_home = Path(os.environ.get("COLIMA_HOME", Path.home() / ".colima"))
+    return colima_home / profile / "colima.yaml"
+
+
+def _colima_config(profile: str) -> dict:
+    config_path = _colima_config_path(profile)
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _colima_network_config(profile: str) -> dict:
+    status = _colima_status(profile)
+    config = _colima_config(profile)
+
+    network = config.get("network") if isinstance(config.get("network"), dict) else {}
+    status_network = status.get("network") if isinstance(status.get("network"), dict) else {}
+
+    return {
+        "address": status_network.get("address", network.get("address")),
+        "mode": status_network.get("mode", network.get("mode")),
+        "interface": status_network.get("interface", network.get("interface")),
+    }
+
+
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on", "enabled")
+    return bool(value)
+
+
+def _is_colima_network_suitable_for_devkit(profile: str) -> bool:
+    network = _colima_network_config(profile)
+    if not _boolish(network.get("address")):
+        return False
+
+    # Older Colima configs may only expose network.address. If mode is absent,
+    # accept address=true to avoid warning users who are already on a reachable VM network.
+    mode = network.get("mode")
+    if mode and str(mode).strip().lower() != "bridged":
+        return False
+
+    return True
+
+
+def _route_interface_for_target(target_ip: str) -> str:
+    if platform.system() != "Darwin" or not target_ip:
+        return ""
+
+    try:
+        output = subprocess.check_output(["route", "get", target_ip], text=True, stderr=subprocess.DEVNULL)
+    except Exception:
+        return ""
+
+    match = re.search(r"^\s*interface:\s*(\S+)\s*$", output, flags=re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _colima_supports_bridged_network_flags() -> bool:
+    colima_cmd = shutil.which("colima")
+    if not colima_cmd:
+        return False
+
+    try:
+        output = subprocess.check_output([colima_cmd, "start", "--help"], text=True, stderr=subprocess.DEVNULL)
+    except Exception:
+        return False
+
+    return "--network-mode" in output and "--network-interface" in output
+
+
+def warn_if_colima_devkit_network_may_need_bridged(
+    devkit_ip: str,
+    noninteractive: bool = False,
+    yes_to_all: bool = False,
+) -> bool:
+    if platform.system() != "Darwin" or not devkit_ip or not _is_docker_using_colima():
+        return False
+
+    profile = _detect_colima_profile()
+    if _is_colima_network_suitable_for_devkit(profile):
+        return False
+
+    interface = _route_interface_for_target(devkit_ip) or "en0"
+    profile_args = [] if profile == "default" else ["--profile", profile]
+    profile_display = "" if profile == "default" else f" --profile {profile}"
+    supports_bridged_flags = _colima_supports_bridged_network_flags()
+    command_lines = [
+        f"colima stop{profile_display}",
+        (
+            f"colima start{profile_display} --network-address --network-mode bridged "
+            f"--network-interface {interface} --save-config"
+        ),
+    ]
+    command_text = "\n".join(command_lines)
+
+    console.print(
+        Panel(
+            "\n".join([
+                "[bold red]Colima is not configured with a bridged/reachable network for DevKit-Sync.[/bold red]",
+                "",
+                "The macOS host may be able to SSH to the DevKit while the SDK container cannot, because the",
+                "container reaches the LAN through the Colima VM network path.",
+                "",
+                "Recommended Colima setup:",
+                f"[cyan]{command_lines[0]}[/cyan]",
+                f"[cyan]{command_lines[1]}[/cyan]",
+                "" if supports_bridged_flags else "",
+                "" if supports_bridged_flags else (
+                    "[yellow]Your Colima version does not expose the bridged network flags. "
+                    "Upgrade Colima before running this command.[/yellow]"
+                ),
+            ]),
+            title="Colima DevKit-Sync Network Warning",
+            border_style="red",
+            expand=False,
+        )
+    )
+
+    if noninteractive or yes_to_all:
+        return False
+
+    if not supports_bridged_flags:
+        console.print(
+            "[yellow]⚠️  Not restarting Colima automatically because this Colima version "
+            "does not support the required bridged network flags.[/yellow]"
+        )
+        return False
+
+    choice = input("Restart Colima in bridged network mode now? [y/N]: ").strip().lower()
+    if choice not in ("y", "yes"):
+        console.print("[yellow]⚠️  Continuing with current Colima network. DevKit-Sync may fail from the SDK container.[/yellow]")
+        return False
+
+    colima_cmd = shutil.which("colima")
+    if not colima_cmd:
+        console.print("[yellow]⚠️  Colima executable was not found on PATH. Run the commands above manually.[/yellow]")
+        return False
+
+    try:
+        subprocess.run([colima_cmd, "stop", *profile_args], check=True)
+        subprocess.run(
+            [
+                colima_cmd,
+                "start",
+                *profile_args,
+                "--network-address",
+                "--network-mode",
+                "bridged",
+                "--network-interface",
+                interface,
+                "--save-config",
+            ],
+            check=True,
+        )
+        console.print("[green]✅ Colima restarted in bridged network mode for DevKit-Sync.[/green]")
+        return True
+    except subprocess.CalledProcessError:
+        console.print(
+            "[yellow]⚠️  Could not restart Colima with bridged networking automatically. "
+            f"Run manually:\n{command_text}[/yellow]"
+        )
+        return False
+
+
+def check_colima_resources() -> list:
+    if platform.system() != "Darwin" or not _is_docker_using_colima():
+        return []
+
+    profile = _detect_colima_profile()
+    status = _colima_status(profile)
+    if not status:
+        console.print("[yellow]⚠️  Could not inspect Colima resources for Neat SDK setup.[/yellow]")
+        return [["Colima", f"≥{NEAT_COLIMA_MIN_CPUS} CPUs / ≥{NEAT_COLIMA_MIN_MEMORY_GB} GB RAM", "Unknown", "⚠️ WARNING"]]
+
+    cpus, memory_gb = _parse_colima_status(status)
+    found = f"{cpus} CPUs / {memory_gb:.1f} GB RAM ({profile})"
+    required = f"≥{NEAT_COLIMA_MIN_CPUS} CPUs / ≥{NEAT_COLIMA_MIN_MEMORY_GB} GB RAM"
+    if cpus >= NEAT_COLIMA_MIN_CPUS and memory_gb >= NEAT_COLIMA_MIN_MEMORY_GB:
+        console.print(f"✅ Colima {found} (Required {required})", style="green")
+        return [["Colima", required, found, "✅ PASS"]]
+
+    console.print(
+        f"⚠️  Colima {found} may be too small for Neat SDK native builds "
+        f"(Required {required})",
+        style="yellow",
+    )
+    return [["Colima", required, found, "⚠️ WARNING"]]
 
 
 def _restart_colima_with_resources(profile: str) -> None:
@@ -339,11 +529,12 @@ def syscheck(force_install: bool, noninteractive: bool = False):
     py_failed, py_info = check_python(req["python"])
     dock_failed, dock_info = check_docker(req["docker"])
     cpu_failed, cpu_info = check_cpu_ram(req["min_cores"], req["min_ram_gb"])
-    rosetta_failed, fw_failed, rf_info = check_rosetta_and_firewall(use_sudo=True)
-    all_data = [py_info, dock_info, cpu_info] + rf_info
+    fw_failed, fw_info = check_firewall(use_sudo=True)
+    colima_info = check_colima_resources()
+    all_data = [py_info, dock_info, cpu_info] + colima_info + fw_info
     print_system_report(all_data)
 
-    if any([py_failed, dock_failed, cpu_failed, fw_failed, rosetta_failed]):
+    if any([py_failed, dock_failed, cpu_failed, fw_failed]):
         if force_install:
             console.print("[yellow]⚠️  Force install enabled — continuing despite warnings.[/yellow]")
             return 1

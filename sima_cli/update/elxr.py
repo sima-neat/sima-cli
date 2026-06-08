@@ -476,7 +476,7 @@ def print_current_versions():
     click.secho('Current SiMa component versions:', fg='green')
     click.secho(out)
 
-def update_elxr(version_or_url: Optional[str], internal: bool = False):
+def update_elxr(version_or_url: Optional[str], internal: bool = False, dryrun: bool = False):
     """
     Update packages on an ELXR-based devkit using simaai-ota.
     Enhanced:
@@ -664,6 +664,12 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
     # -----------------------------
     # Execute update
     # -----------------------------
+    cmd = ["sudo"] + cmd
+    if dryrun:
+        click.echo(f"🧪 ELXR dry run complete. Would run: {' '.join(cmd)}")
+        click.echo("ℹ️  No ELXR update was applied.")
+        return
+
     click.secho(
         "⚠️  This update will reset the u-boot environment variable to the target version.\n"
         "   For standard setups, this is expected and typically harmless.\n"
@@ -674,7 +680,6 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False):
         click.echo("❌ Update cancelled")
         return
 
-    cmd = ["sudo"] + cmd
     click.echo(f"➡️  {desc}\n   " + click.style(f"Running: {' '.join(cmd)}", fg="cyan"))
 
     if subprocess.call(["sudo", "-n", "true"],

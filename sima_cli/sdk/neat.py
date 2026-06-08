@@ -152,8 +152,11 @@ def _allocate_first_available_port_range(
     )
 
 
-def allocate_neat_ports(no_insight: bool = False) -> Tuple[Dict, List[str]]:
-    reserved = set()
+def allocate_neat_ports(
+    no_insight: bool = False,
+    reserved_ports: Optional[set] = None,
+) -> Tuple[Dict, List[str]]:
+    reserved = set(reserved_ports or set())
 
     port_map = {
         "schema": NEAT_PORT_MAP_SCHEMA,
@@ -478,6 +481,30 @@ def _write_port_map(config_dir: Path, port_map: Dict) -> Path:
     return path
 
 
+def reserved_ports_from_neat_port_map(port_map: Dict) -> set:
+    reserved = set()
+    for entry in port_map.values():
+        if not isinstance(entry, dict):
+            continue
+        protocol = entry.get("protocol")
+        if protocol not in {"tcp", "udp"}:
+            continue
+        if "host" in entry:
+            reserved.add((protocol, int(entry["host"])))
+            continue
+        if "hostStart" in entry and "hostEnd" in entry:
+            reserved.update(
+                (protocol, port)
+                for port in range(int(entry["hostStart"]), int(entry["hostEnd"]) + 1)
+            )
+    rtsp = port_map.get("rtsp")
+    if isinstance(rtsp, dict):
+        for protocol, entry in rtsp.items():
+            if protocol in {"tcp", "udp"} and isinstance(entry, dict) and "host" in entry:
+                reserved.add((protocol, int(entry["host"])))
+    return reserved
+
+
 def prepare_neat_container_run(
     workspace: str,
     container_name: str,
@@ -486,12 +513,16 @@ def prepare_neat_container_run(
     noninteractive: bool = False,
     no_insight: bool = False,
     minimal: bool = False,
+    reserved_ports: Optional[set] = None,
 ) -> NeatRunConfig:
     no_insight = no_insight or minimal
     container_dir = Path(workspace) / f".{container_name}"
     config_dir = container_dir / "insight-config"
     cert_dir = container_dir / "sdk-cert"
-    port_map, port_args = allocate_neat_ports(no_insight=no_insight)
+    port_map, port_args = allocate_neat_ports(
+        no_insight=no_insight,
+        reserved_ports=reserved_ports,
+    )
     if no_insight:
         return NeatRunConfig(
             port_map=port_map,

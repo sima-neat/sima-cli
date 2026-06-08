@@ -50,6 +50,35 @@ def _configure_stdio_errors() -> None:
             continue
 
 
+def _command_name_from_argv(argv):
+    for arg in argv[1:]:
+        if arg in ("-i", "--internal"):
+            continue
+        if arg.startswith("-"):
+            continue
+        return arg
+    return None
+
+
+def _should_rerun_after_update(argv):
+    args = argv[1:]
+    if not args:
+        return False
+    if any(arg in ("-h", "--help", "-?") for arg in args):
+        return False
+
+    command_name = _command_name_from_argv(argv)
+    return command_name not in (None, "selfupdate", "version")
+
+
+def _rerun_current_command() -> None:
+    env = os.environ.copy()
+    env["SIMA_CLI_CHECK_FOR_UPDATE"] = "0"
+    cmd = [sys.executable, "-m", "sima_cli", *sys.argv[1:]]
+    click.secho("✅ Update complete. Re-running the original command with the current sima-cli.", fg="green")
+    os.execvpe(sys.executable, cmd, env)
+
+
 # Entry point for the CLI tool using Click's command group decorator
 @click.group(context_settings=dict(help_option_names=["-h", "--help", "-?"], max_content_width=120))
 @click.option('-i', '--internal', is_flag=True, help="Use internal Artifactory resources, Authorized Sima employees only")
@@ -62,7 +91,8 @@ def main(ctx, internal):
       --internal  Use internal Artifactory resources (can also be set via env variable SIMA_CLI_INTERNAL=1)
     """
     _configure_stdio_errors()
-    check_for_update('sima-cli')
+    if check_for_update('sima-cli') and _should_rerun_after_update(sys.argv):
+        _rerun_current_command()
     ctx.ensure_object(dict)
 
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
@@ -228,8 +258,14 @@ def download(ctx, url, dest):
     default=False,
     help="Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion."
 )
+@click.option(
+    "--dryrun",
+    is_flag=True,
+    default=False,
+    help="For ELXR updates only, validate the update path and print the simaai-ota command without running it."
+)
 @click.pass_context
-def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_only):
+def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_only, dryrun):
     """
     Update the software on a SiMa DevKit or remote SiMa device.
 
@@ -287,6 +323,10 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
 
         sima-cli update -v 1.7.0 -y
 
+        # Validate ELXR update path without running simaai-ota
+
+        sima-cli update --dryrun
+
         # Provide root password for remote updates
 
         sima-cli update --ip 192.168.6.5 --passwd root
@@ -294,14 +334,18 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
     """
     # Prioritize explicit --version option over positional argument
     version_or_url = version_option or version_or_url
+    is_elxr = is_devkit_running_elxr()
+
+    if dryrun and not is_elxr:
+        raise click.ClickException("--dryrun is only supported when running update on an ELXR devkit.")
 
     # Resolve the version or tag (GA/Beta/Alpha/QA) if not on eLxr
     # On eLxr always use latest (no version) or explicit version string
 
-    if not is_devkit_running_elxr():
+    if not is_elxr:
         version_or_url = resolve_version(version_or_url)
     
-    if is_devkit_running_elxr() and troot_only:
+    if is_elxr and troot_only:
         click.secho("⚠️  Running update on eLxr with troot_only flag is not supported, this setting is ignored..", fg='yellow')
 
     click.echo(f"➡️  Updating with {version_or_url}")
@@ -315,7 +359,8 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
         passwd=passwd,
         auto_confirm=yes,
         flavor=flavor,
-        troot_only=troot_only
+        troot_only=troot_only,
+        dryrun=dryrun,
     )
 
 # ----------------------
@@ -716,7 +761,7 @@ def network_cmd(ctx):
 # ----------------------
 # NVME Subcommands
 # ----------------------
-NVME_OPERATIONS = {"format", "remount"}
+NVME_OPERATIONS = ("format", "remount")
 @main.command(name="nvme")
 @click.argument("operation", type=click.Choice(NVME_OPERATIONS, case_sensitive=False))
 @click.pass_context
@@ -758,9 +803,9 @@ def nvme_cmd(ctx, operation):
 # ----------------------
 # NVME Subcommands
 # ----------------------
-NVME_OPERATIONS = {"format"}
+SDCARD_OPERATIONS = ("format",)
 @main.command(name="sdcard")
-@click.argument("operation", type=click.Choice(NVME_OPERATIONS, case_sensitive=False))
+@click.argument("operation", type=click.Choice(SDCARD_OPERATIONS, case_sensitive=False))
 @click.pass_context
 def sdcard_cmd(ctx, operation):
     """

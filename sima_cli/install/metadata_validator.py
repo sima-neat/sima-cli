@@ -3,7 +3,12 @@ import sys
 import json
 from pathlib import Path
 
-from sima_cli.install.compatibility import VALID_OS, VALID_PLATFORM_TYPES, validate_version_spec
+from sima_cli.install.compatibility import (
+    VALID_OS,
+    VALID_PLATFORM_TYPES,
+    normalize_exact_version,
+    validate_version_spec,
+)
 
 class MetadataValidationError(Exception):
     pass
@@ -79,6 +84,14 @@ def validate_metadata(data: dict):
                     raise MetadataValidationError(
                         f"Invalid OS '{os_value}' in platform entry {i}. Supported: {VALID_OS}"
                     )
+
+        if platform["type"] == "palette" and "version" in platform:
+            if not isinstance(platform["version"], str):
+                raise MetadataValidationError(f"'version' must be a string for palette in entry {i}")
+            try:
+                normalize_exact_version(platform["version"])
+            except ValueError as exc:
+                raise MetadataValidationError(f"Invalid palette version in entry {i}: {exc}")
 
     # Validate resources
     if not isinstance(data["resources"], list) or not data["resources"]:

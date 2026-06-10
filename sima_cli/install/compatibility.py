@@ -51,6 +51,15 @@ def validate_version_spec(spec: str) -> None:
     normalize_version_spec(spec)
 
 
+def normalize_exact_version(version: str) -> str:
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError("version must be a non-empty string")
+    normalized = version.strip()
+    if not re.fullmatch(_VERSION_RE, normalized):
+        raise ValueError("invalid exact version '{}'; expected a version like 2.0.0".format(version))
+    return normalized
+
+
 def version_matches(version: str, spec: str) -> bool:
     normalized_spec = normalize_version_spec(spec)
     current = _version_tuple(version)
@@ -139,11 +148,14 @@ def parse_board_platform_specs(board_platforms: Optional[Sequence[str]]) -> List
 def build_platform_specs(
     host_platforms: Optional[Sequence[str]] = None,
     board_platforms: Optional[Sequence[str]] = None,
-    palette_platform: bool = False,
+    palette_platform: Optional[str] = None,
 ) -> List[Dict]:
     platforms = []
     platforms.extend(parse_host_platform_specs(host_platforms))
     platforms.extend(parse_board_platform_specs(board_platforms))
-    if palette_platform:
-        platforms.append({"type": "palette"})
+    if palette_platform is not None:
+        platform = {"type": "palette"}
+        if palette_platform:
+            platform["version"] = normalize_exact_version(palette_platform)
+        platforms.append(platform)
     return platforms

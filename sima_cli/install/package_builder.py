@@ -247,7 +247,7 @@ def build_metadata(
     download_compatible_files_only: bool = False,
     host_platforms: Optional[Sequence[str]] = None,
     board_platforms: Optional[Sequence[str]] = None,
-    palette_platform: bool = False,
+    palette_platform: Optional[str] = None,
 ) -> Dict:
     artifacts_folder = artifacts_folder.expanduser().resolve()
     if not artifacts_folder.is_dir():

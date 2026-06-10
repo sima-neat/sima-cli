@@ -111,7 +111,7 @@ class PackageBuilderTests(unittest.TestCase):
                     install_script="install.sh",
                     host_platforms=("mac,linux",),
                     board_platforms=("modalix,mlsoc@>=2.1.0,<=2.1.2",),
-                    palette_platform=True,
+                    palette_platform="2.0.0",
                 )
 
             self.assertEqual(
@@ -123,7 +123,7 @@ class PackageBuilderTests(unittest.TestCase):
                         "compatible_with": ["modalix", "mlsoc"],
                         "version": ">=2.1.0,<=2.1.2",
                     },
-                    {"type": "palette"},
+                    {"type": "palette", "version": "2.0.0"},
                 ],
             )
 
@@ -139,6 +139,15 @@ class PackageBuilderTests(unittest.TestCase):
                     version="1.0.0",
                     install_script="install.sh",
                     board_platforms=("modalix@~2.1",),
+                )
+
+            with self.assertRaisesRegex(ValueError, "invalid exact version"):
+                build_metadata(
+                    artifacts_folder=artifacts,
+                    name="demo",
+                    version="1.0.0",
+                    install_script="install.sh",
+                    palette_platform=">=2.0.0",
                 )
 
     def test_build_metadata_rejects_selectable_excluded_by_pattern(self):
@@ -328,6 +337,7 @@ class PackageBuilderTests(unittest.TestCase):
                         "--board-platform",
                         "modalix@>=2.1.0,<=2.1.2",
                         "--palette-platform",
+                        "2.0.0",
                     ],
                 )
 
@@ -342,9 +352,37 @@ class PackageBuilderTests(unittest.TestCase):
                         "compatible_with": ["modalix"],
                         "version": ">=2.1.0,<=2.1.2",
                     },
-                    {"type": "palette"},
+                    {"type": "palette", "version": "2.0.0"},
                 ],
             )
+
+    def test_packages_build_command_writes_bare_palette_compatibility(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "payload.txt").write_text("payload", encoding="utf-8")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                result = runner.invoke(
+                    main,
+                    [
+                        "packages",
+                        "build",
+                        str(artifacts),
+                        "--name",
+                        "demo",
+                        "--version",
+                        "1.0.0",
+                        "--install-script",
+                        "install.sh",
+                        "--palette-platform",
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            metadata = json.loads((artifacts / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["platforms"], [{"type": "palette"}])
 
     def test_packages_build_command_writes_variant_metadata_json(self):
         runner = CliRunner()

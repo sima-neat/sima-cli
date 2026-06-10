@@ -442,6 +442,17 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
+          for docker_cli_dir in \
+            "/Applications/Docker.app/Contents/Resources/bin" \
+            "$HOME/.docker/bin" \
+            "/opt/homebrew/bin" \
+            "/usr/local/bin"; do
+            if [[ -d "$docker_cli_dir" ]]; then
+              echo "$docker_cli_dir" >> "$GITHUB_PATH"
+              export PATH="$docker_cli_dir:$PATH"
+            fi
+          done
+          command -v docker
           docker info
 
       - name: Install Docker from Snap on Ubuntu

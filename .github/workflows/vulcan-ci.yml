@@ -355,7 +355,7 @@ jobs:
       matrix:
         include:
           - name: macOS
-            runs_on: '{"group":"Default-Neat-Runners","labels":["self-hosted","macOS","osx"]}'
+            runs_on: '["self-hosted","macOS","osx"]'
           - name: Ubuntu x86
             runs_on: '"ubuntu-24.04"'
           - name: Ubuntu x86 Snap Docker

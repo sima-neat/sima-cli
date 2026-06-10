@@ -707,19 +707,19 @@ def _setup_sdk_extensions(
 ) -> str:
     if not _supports_model_sdk_extension_mount(selected_images):
         if any(is_neat_sdk_image(image) for image in selected_images):
-            click.secho("⚠️  Model SDK extension mount is not available on ARM64 platforms before Neat SDK 2.1.1; skipping /sdk-extensions mount.", fg="yellow")
+            click.secho("⚠️  Model Compiler extension mount is not available on ARM64 platforms before Neat SDK 2.1.1; skipping /sdk-extensions mount.", fg="yellow")
         return ""
 
     default_extensions_dir = Path.home() / "sima-sdk-extensions"
     home_usage = shutil.disk_usage(Path.home())
     click.echo(
-        "ℹ️  Model SDK extension may require about "
+        "ℹ️  Model Compiler extension may require about "
         f"{MODEL_SDK_EXTENSION_REQUIRED_GB} GB of additional disk space. "
         f"Available under {Path.home()}: {_format_gb(home_usage.free)}."
     )
     if home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
         click.secho(
-            "⚠️  The default home filesystem may not have enough free space for the Model SDK extension.",
+            "⚠️  The default home filesystem may not have enough free space for the Model Compiler extension.",
             fg="yellow",
         )
 
@@ -1010,8 +1010,8 @@ def setup_and_start(
     if skip_model_sdk:
         sdk_extensions_dir = ""
         if any(is_neat_sdk_image(img) for img in selected_images):
-            reason = "--minimal" if minimal else "--no-model-sdk"
-            click.echo(f"ℹ️  Skipping Model SDK extension setup because {reason} was specified.")
+            reason = "--minimal" if minimal else "--no-model-compiler"
+            click.echo(f"ℹ️  Skipping Model Compiler extension setup because {reason} was specified.")
     else:
         sdk_extensions_dir = _setup_sdk_extensions(
             selected_images,

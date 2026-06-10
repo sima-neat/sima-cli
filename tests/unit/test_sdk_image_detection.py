@@ -62,6 +62,7 @@ from sima_cli.sdk.utils import (
     is_neat_elxr_image,
     is_neat_sdk_image,
     is_snap_docker_cli,
+    prompt_multi_select,
     sanitize_container_hostname,
     sanitize_container_name,
     start_docker_container,
@@ -1024,6 +1025,47 @@ table ip6 nm-shared-enx6c1ff720d573 {
             launch_sdk_tool("neat", ("echo", "hello"), ctx=None)
 
         exec_container_cmd.assert_called_once_with(None, "neat", "echo hello")
+
+    def test_launch_sdk_tool_warns_for_legacy_palette_sdks(self):
+        with patch("sima_cli.sdk.commands.console.print") as console_print, \
+             patch("sima_cli.sdk.commands.exec_container_cmd"):
+            for tool in ("elxr", "model", "yocto", "mpk"):
+                with self.subTest(tool=tool):
+                    console_print.reset_mock()
+
+                    launch_sdk_tool(tool, (), ctx=None)
+
+                    console_print.assert_called_once()
+                    panel = console_print.call_args.args[0]
+                    self.assertEqual(panel.title, "Legacy Palette SDK")
+                    self.assertEqual(panel.border_style, "yellow")
+                    self.assertIn("Palette Neat", panel.renderable)
+                    self.assertIn("https://developer.sima.ai", panel.renderable)
+
+    def test_launch_sdk_tool_does_not_warn_for_neat_sdk(self):
+        with patch("sima_cli.sdk.commands.console.print") as console_print, \
+             patch("sima_cli.sdk.commands.exec_container_cmd"):
+            launch_sdk_tool("neat", (), ctx=None)
+
+        console_print.assert_not_called()
+
+    def test_setup_help_includes_model_compiler_flag_and_legacy_alias(self):
+        with patch("sima_cli.sdk.commands.check_and_start_docker"):
+            result = CliRunner().invoke(sdk, ["setup", "--help"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("--no-model-compiler", result.output)
+        self.assertIn("--no-model-sdk", result.output)
+
+    def test_setup_accepts_no_model_compiler_aliases(self):
+        for flag in ("--no-model-compiler", "--no-model-sdk"):
+            with self.subTest(flag=flag), \
+                 patch("sima_cli.sdk.commands.check_and_start_docker"), \
+                 patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+                result = CliRunner().invoke(sdk, ["setup", flag, "-y", "-n"])
+
+                self.assertEqual(result.exit_code, 0)
+                self.assertTrue(setup_start.call_args.kwargs["no_model_sdk"])
 
     def test_neat_port_allocator_uses_defaults_when_available(self):
         with patch("sima_cli.sdk.neat._is_port_available", return_value=True):
@@ -2344,6 +2386,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn('. "$HOME/.bashrc"', script)
         self.assertIn('chown 1000:1000 "$home" "$profile"', script)
 
+    def test_prompt_multi_select_accepts_modelsdk_display_name(self):
+        with patch("builtins.print"), patch("builtins.input", return_value="ModelSDK"):
+            self.assertEqual(prompt_multi_select(baseline_present=True), ["modelsdk"])
+
     def test_installer_profile_bootstrap_runs_before_alias_setup(self):
         installer = Path("scripts/install/linux-mac.sh").read_text(encoding="utf-8")
 
@@ -2356,6 +2402,15 @@ table ip6 nm-shared-enx6c1ff720d573 {
             installer.index('ensure_bashrc_sourced_from_profile "$RC_FILE"'),
             installer.index('add_aliases "$RC_FILE"'),
         )
+
+    def test_installers_preserve_modelsdk_alias(self):
+        shell_installer = Path("scripts/install/linux-mac.sh").read_text(encoding="utf-8")
+        python_installer = Path("scripts/install/install.py").read_text(encoding="utf-8")
+
+        self.assertIn("modelsdk", shell_installer)
+        self.assertIn('"modelsdk": "sima-cli sdk model"', python_installer)
+        self.assertNotIn("modelcompiler", shell_installer)
+        self.assertNotIn('"modelcompiler": "sima-cli sdk model"', python_installer)
 
     def test_prepare_log_host_dir_makes_directory_container_writable(self):
         with TemporaryDirectory() as tmpdir:

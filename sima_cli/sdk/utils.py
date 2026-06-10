@@ -257,7 +257,7 @@ def prompt_multi_select(baseline_present: bool = False) -> List[str]:
         for idx, (img, cfg) in enumerate(IMAGE_CONFIG.items(), start=1):
             print(
                 f"{idx}. {cfg['display']}\n"
-                f"    📦 Description      : {cfg['description']}\n"
+                f"    📦 Description      : {cfg.get('description', 'N/A')}\n"
                 f"    💾 Final image size : {cfg.get('size', 'N/A')} GB (runtime requirement)\n"
                 f"    📂 Pull space need  : {cfg.get('pull_space', 'N/A')} GB (temporary during pull)\n"
             )
@@ -809,7 +809,7 @@ def ensure_model_sdk_extension_installed(
     gid: int = None,
 ):
     """
-    Install the Model SDK extension for Neat SDK containers.
+    Install the Model Compiler extension for Neat SDK containers.
     """
     image_ref = _get_container_image_ref(sdk_container_name)
     if not image_ref or not is_neat_sdk_image(image_ref):
@@ -822,23 +822,23 @@ def ensure_model_sdk_extension_installed(
         check=False,
     )
     if sdk_release.returncode != 0:
-        print(f"⚠️  Could not read /etc/sdk-release in '{sdk_container_name}'. Skipping Model SDK extension install.")
+        print(f"⚠️  Could not read /etc/sdk-release in '{sdk_container_name}'. Skipping Model Compiler extension install.")
         return
 
     base_version = _extract_sdk_base_version(sdk_release.stdout or "")
     if not base_version:
-        print(f"⚠️  Could not determine SDK base version in '{sdk_container_name}'. Skipping Model SDK extension install.")
+        print(f"⚠️  Could not determine SDK base version in '{sdk_container_name}'. Skipping Model Compiler extension install.")
         return
 
     extension_component = _model_sdk_extension_component(base_version)
     if not extension_component:
-        print("ℹ️  Model SDK extension install is not available on this host platform for SDK versions older than 2.1.1; skipping.")
+        print("ℹ️  Model Compiler extension install is not available on this host platform for SDK versions older than 2.1.1; skipping.")
         return
 
     console.print(
         Panel(
-            "[yellow]This SDK supports Model SDK as an extension.[/yellow]\n\n"
-            "The Model SDK extension lets you quantize and compile models "
+            "[yellow]This SDK supports Model Compiler as an extension.[/yellow]\n\n"
+            "The Model Compiler extension lets you quantize and compile models "
             "so they can run on SiMa hardware accelerated.\n"
             "It will be installed on your host in the SDK extensions directory "
             "mounted into this container at /sdk-extensions.\n"
@@ -846,20 +846,20 @@ def ensure_model_sdk_extension_installed(
             "\n\n"
             "If you decide to install it later, run this from within the SDK container shell:\n"
             f"sima-cli install -v {base_version} {extension_component}",
-            title="Model SDK Extension",
+            title="Model Compiler Extension",
             border_style="green",
             style="green",
             expand=False,
         )
     )
     if auto_install:
-        print("ℹ️  Auto-installing Model SDK extension.")
+        print("ℹ️  Auto-installing Model Compiler extension.")
     else:
-        if not yes_no_prompt("Install the Model SDK extension now?"):
-            print("ℹ️  Skipping Model SDK extension install.")
+        if not yes_no_prompt("Install the Model Compiler extension now?"):
+            print("ℹ️  Skipping Model Compiler extension install.")
             return
 
-    print("ℹ️  Logging in to sima-cli before installing the Model SDK extension...")
+    print("ℹ️  Logging in to sima-cli before installing the Model Compiler extension...")
     run_command(
         _docker_exec_interactive_prefix() + [
             "-u",
@@ -906,7 +906,7 @@ def ensure_model_sdk_extension_installed(
         f"su -s /bin/bash {shlex.quote(login_name)} -c 'sudo -n true'; "
         f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
     )
-    print(f"ℹ️  Installing Model SDK extension for SDK base version {base_version}...")
+    print(f"ℹ️  Installing Model Compiler extension for SDK base version {base_version}...")
     run_command(
         [
             "docker",
@@ -919,7 +919,7 @@ def ensure_model_sdk_extension_installed(
             install_script,
         ]
     )
-    print(f"✅ Model SDK extension installed for SDK base version {base_version}.")
+    print(f"✅ Model Compiler extension installed for SDK base version {base_version}.")
 
 
 def _is_skills_enabled_image(image_ref: str) -> bool:
@@ -1281,8 +1281,8 @@ def configure_container(
     else:
         ensure_sima_cli_installed(sdk_container_name, login_name)
     if no_model_sdk:
-        reason = "--minimal" if minimal else "--no-model-sdk"
-        print(f"ℹ️  Skipping Model SDK extension installation because {reason} was specified.")
+        reason = "--minimal" if minimal else "--no-model-compiler"
+        print(f"ℹ️  Skipping Model Compiler extension installation because {reason} was specified.")
     else:
         ensure_model_sdk_extension_installed(
             sdk_container_name,

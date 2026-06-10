@@ -120,7 +120,7 @@ sima-cli sdk setup
 sima-cli sdk neat
 ```
 
-Install a package from metadata:
+Install Model Compiler from package metadata:
 
 ```bash
 sima-cli install -v 2.1.1 sdk-extensions/model

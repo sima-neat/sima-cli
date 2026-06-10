@@ -25,16 +25,18 @@ Use the generated docs for detailed options, arguments, subcommands, and full he
 
 ## Installation
 
-Install the latest `main` build:
+Install the latest official PyPI release:
 
 ```bash
-curl -fsSL https://artifacts.sima-neat.com/tools/sima-cli-install.py -o sima-cli-install.py
-python3 sima-cli-install.py main latest
+curl -fsSL https://artifacts.neat.sima.ai/sima-cli/linux-mac.sh | bash
 ```
+
+To install a tested branch build instead of the official PyPI release, use the cross-platform installer:
 
 Install interactively:
 
 ```bash
+curl -fsSL https://artifacts.neat.sima.ai/sima-cli/install.py -o sima-cli-install.py
 python3 sima-cli-install.py
 ```
 
@@ -45,12 +47,32 @@ python3 sima-cli-install.py feature/my-branch latest
 python3 sima-cli-install.py v2.1.6 latest
 ```
 
+Release tags such as `v2.1.6` are installed from public PyPI. Branch names install tested artifacts from `artifacts.neat.sima.ai/sima-cli`.
+
 On Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest https://artifacts.sima-neat.com/tools/sima-cli-install.py -OutFile sima-cli-install.py
-python .\sima-cli-install.py main latest
+Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile sima-cli-install.bat
+.\sima-cli-install.bat
 ```
+
+To install a tested branch build instead of the official PyPI release, use the cross-platform installer:
+
+Install interactively:
+
+```powershell
+Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/install.py -OutFile sima-cli-install.py
+python .\sima-cli-install.py
+```
+
+To install a specific branch or release:
+
+```powershell
+python .\sima-cli-install.py feature/my-branch latest
+python .\sima-cli-install.py v2.1.6 latest
+```
+
+Release tags such as `v2.1.6` are installed from public PyPI. Branch names install tested artifacts from `artifacts.neat.sima.ai/sima-cli`.
 
 Public PyPI releases can also be installed directly:
 

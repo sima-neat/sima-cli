@@ -25,10 +25,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_BASE_URL = os.environ.get(
     "SIMA_CLI_ARTIFACT_BASE_URL",
-    "https://artifacts.sima-neat.com/sima-cli",
+    "https://artifacts.neat.sima.ai/sima-cli",
 ).rstrip("/")
 PUBLIC_PYPI_JSON_URL = "https://pypi.org/pypi/sima-cli/json"
 PUBLIC_PYPI_SIMPLE_URL = "https://pypi.org/simple"
+DEFAULT_PYPI_RELEASE_LIMIT = 5
 
 
 def branch_key(ref: str) -> str:
@@ -406,8 +407,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pypi-release-limit",
         type=int,
-        default=None,
-        help="Limit how many recent PyPI releases are included in interactive release selection.",
+        default=DEFAULT_PYPI_RELEASE_LIMIT,
+        help=f"Limit how many recent PyPI releases are included in interactive release selection (default: {DEFAULT_PYPI_RELEASE_LIMIT}).",
     )
     return parser
 

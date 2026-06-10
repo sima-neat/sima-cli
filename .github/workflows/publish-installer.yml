@@ -1,0 +1,88 @@
+name: Publish Installer
+
+on:
+  push:
+    branches:
+      - main
+      - codex/publish-installer-workflow
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  resolve-vulcan-config:
+    name: Resolve Vulcan Config
+    uses: sima-neat/.github/.github/workflows/vulcan-resolve-config.yml@main
+    with:
+      vulcan_env: prod
+
+  publish-installer:
+    name: Publish Installer Scripts
+    runs-on: ubuntu-latest
+    needs: resolve-vulcan-config
+    environment: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+    env:
+      AWS_REGION: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+      ARTIFACT_BUCKET: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
+      SSE_KMS_KEY_ID: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ needs.resolve-vulcan-config.outputs.artifact_cloudfront_distribution_id }}
+      AWS_EC2_METADATA_DISABLED: "true"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+          role-to-assume: ${{ needs.resolve-vulcan-config.outputs.artifact_publisher_role_arn }}
+          role-session-name: publish-installer-${{ github.run_id }}
+
+      - name: Verify installer sources
+        run: |
+          set -euo pipefail
+          test -f scripts/install/sima-cli-install.bat
+          test -f scripts/install/sima-cli-installer.sh
+          test -f scripts/install/install.py
+
+      - name: Upload installer scripts
+        run: |
+          set -euo pipefail
+          s3_args=(--sse aws:kms)
+          if [[ -n "${SSE_KMS_KEY_ID:-}" ]]; then
+            s3_args+=(--sse-kms-key-id "${SSE_KMS_KEY_ID}")
+          fi
+
+          aws s3 cp \
+            scripts/install/sima-cli-install.bat \
+            "s3://${ARTIFACT_BUCKET}/sima-cli/windows.bat" \
+            --content-type application/x-msdos-program \
+            "${s3_args[@]}"
+
+          aws s3 cp \
+            scripts/install/sima-cli-installer.sh \
+            "s3://${ARTIFACT_BUCKET}/sima-cli/linux-mac.sh" \
+            --content-type text/x-shellscript \
+            "${s3_args[@]}"
+
+          aws s3 cp \
+            scripts/install/install.py \
+            "s3://${ARTIFACT_BUCKET}/sima-cli/install.py" \
+            --content-type text/x-python \
+            "${s3_args[@]}"
+
+      - name: Invalidate installer CDN paths
+        if: ${{ env.CLOUDFRONT_DISTRIBUTION_ID != '' }}
+        run: |
+          set -euo pipefail
+          aws cloudfront create-invalidation \
+            --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}" \
+            --paths \
+              /sima-cli/windows.bat \
+              /sima-cli/linux-mac.sh \
+              /sima-cli/install.py

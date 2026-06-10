@@ -23,7 +23,6 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  SIMA_CLI_CHECK_FOR_UPDATE: "0"
 
 jobs:
   build:

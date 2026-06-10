@@ -25,10 +25,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_BASE_URL = os.environ.get(
     "SIMA_CLI_ARTIFACT_BASE_URL",
-    "https://artifacts.sima-neat.com/sima-cli",
+    "https://artifacts.neat.sima.ai/sima-cli",
 ).rstrip("/")
 PUBLIC_PYPI_JSON_URL = "https://pypi.org/pypi/sima-cli/json"
 PUBLIC_PYPI_SIMPLE_URL = "https://pypi.org/simple"
+DEFAULT_PYPI_RELEASE_LIMIT = 5
 
 
 def branch_key(ref: str) -> str:
@@ -221,10 +222,10 @@ def find_one(root: Path, pattern: str) -> Path:
 
 def run_helper(package_dir: Path, wheel_path: Path) -> None:
     if platform.system().lower() == "windows":
-        helper = find_one(package_dir, "sima-cli-install.bat")
+        helper = find_one(package_dir, "windows.bat")
         cmd = ["cmd.exe", "/c", str(helper), str(wheel_path)]
     else:
-        helper = find_one(package_dir, "sima-cli-installer.sh")
+        helper = find_one(package_dir, "linux-mac.sh")
         helper.chmod(helper.stat().st_mode | 0o755)
         cmd = ["bash", str(helper), str(wheel_path)]
     subprocess.run(cmd, check=True)
@@ -406,8 +407,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pypi-release-limit",
         type=int,
-        default=None,
-        help="Limit how many recent PyPI releases are included in interactive release selection.",
+        default=DEFAULT_PYPI_RELEASE_LIMIT,
+        help=f"Limit how many recent PyPI releases are included in interactive release selection (default: {DEFAULT_PYPI_RELEASE_LIMIT}).",
     )
     return parser
 

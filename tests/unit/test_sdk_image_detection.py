@@ -2345,7 +2345,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn('chown 1000:1000 "$home" "$profile"', script)
 
     def test_installer_profile_bootstrap_runs_before_alias_setup(self):
-        installer = Path("scripts/install/sima-cli-installer.sh").read_text(encoding="utf-8")
+        installer = Path("scripts/install/linux-mac.sh").read_text(encoding="utf-8")
 
         self.assertIn("ensure_bashrc_sourced_from_profile()", installer)
         self.assertLess(

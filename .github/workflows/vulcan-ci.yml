@@ -99,8 +99,8 @@ jobs:
           metadata = {
               "wheel": wheel.name,
               "helpers": [
-                  "sima-cli-installer.sh",
-                  "sima-cli-install.bat",
+                  "linux-mac.sh",
+                  "windows.bat",
               ],
               "commit": os.environ["GITHUB_SHA"],
               "ref": os.environ.get("GITHUB_HEAD_REF") or os.environ["GITHUB_REF_NAME"],
@@ -108,8 +108,8 @@ jobs:
 
           with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zf:
               zf.write(wheel, wheel.name)
-              zf.write("scripts/install/sima-cli-installer.sh", "sima-cli-installer.sh")
-              zf.write("scripts/install/sima-cli-install.bat", "sima-cli-install.bat")
+              zf.write("scripts/install/linux-mac.sh", "linux-mac.sh")
+              zf.write("scripts/install/windows.bat", "windows.bat")
               zf.writestr("install_metadata.json", json.dumps(metadata, indent=2) + "\n")
 
           target_stub = dist / "install.py"
@@ -145,10 +145,10 @@ jobs:
 
                       wheel = find_one(package_dir, "*.whl")
                       if platform.system().lower() == "windows":
-                          helper = find_one(package_dir, "sima-cli-install.bat")
+                          helper = find_one(package_dir, "windows.bat")
                           cmd = ["cmd.exe", "/c", str(helper), str(wheel)]
                       else:
-                          helper = find_one(package_dir, "sima-cli-installer.sh")
+                          helper = find_one(package_dir, "linux-mac.sh")
                           helper.chmod(helper.stat().st_mode | 0o755)
                           cmd = ["bash", str(helper), str(wheel)]
                       subprocess.run(cmd, check=True)
@@ -233,7 +233,7 @@ jobs:
           package = sorted(Path("dist").glob("sima-cli-package-*.zip"))[-1]
           with zipfile.ZipFile(package) as zf:
               names = set(zf.namelist())
-          required = {"sima-cli-installer.sh", "sima-cli-install.bat", "install_metadata.json"}
+          required = {"linux-mac.sh", "windows.bat", "install_metadata.json"}
           missing = sorted(required - names)
           if missing:
               raise SystemExit(f"{package} is missing {missing}")
@@ -344,7 +344,7 @@ jobs:
 
   e2e-install:
     name: E2E Install (${{ matrix.name }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
     needs:
       - build
       - publish-vulcan-artifacts
@@ -354,17 +354,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS CLI only
-            os: macos-latest
+          - name: macOS
+            runs_on: '["self-hosted","macOS","osx"]'
           - name: Ubuntu x86
-            os: ubuntu-24.04
+            runs_on: '"ubuntu-24.04"'
           - name: Ubuntu x86 Snap Docker
-            os: ubuntu-24.04
+            runs_on: '"ubuntu-24.04"'
             docker_install: snap
           - name: Ubuntu ARM64
-            os: ubuntu-24.04-arm
+            runs_on: '"ubuntu-24.04-arm"'
           - name: Windows
-            os: windows-latest
+            runs_on: '"windows-latest"'
 
     steps:
       - name: Checkout
@@ -395,6 +395,25 @@ jobs:
           python -m pip install .
           sima-cli version
 
+      - name: Test repo installer script
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          export HOME="${RUNNER_TEMP}/repo-installer-home"
+          mkdir -p "$HOME"
+          bash scripts/install/linux-mac.sh
+          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+
+      - name: Test repo installer script on native Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:USERPROFILE = Join-Path $env:RUNNER_TEMP "repo-installer-home"
+          New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
+          cmd.exe /c scripts\install\windows.bat
+          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" version
+
       - name: Install candidate on native Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -417,6 +436,23 @@ jobs:
       - name: Verify Docker on Ubuntu
         if: runner.os == 'Linux' && matrix.docker_install != 'snap'
         run: |
+          docker info
+
+      - name: Verify Docker on macOS
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          for docker_cli_dir in \
+            "/Applications/Docker.app/Contents/Resources/bin" \
+            "$HOME/.docker/bin" \
+            "/opt/homebrew/bin" \
+            "/usr/local/bin"; do
+            if [[ -d "$docker_cli_dir" ]]; then
+              echo "$docker_cli_dir" >> "$GITHUB_PATH"
+              export PATH="$docker_cli_dir:$PATH"
+            fi
+          done
+          command -v docker
           docker info
 
       - name: Install Docker from Snap on Ubuntu
@@ -460,7 +496,7 @@ jobs:
           exit 1
 
       - name: Install candidate
-        if: runner.os != 'Windows' && runner.os != 'macOS'
+        if: runner.os != 'Windows'
         run: |
           set -euo pipefail
           sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "${RUNNER_TEMP}/sima-cli-vulcan-install"
@@ -475,16 +511,6 @@ jobs:
           fi
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --minimal
-
-      - name: Install candidate on macOS without SDK container setup
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "${RUNNER_TEMP}/sima-cli-vulcan-install"
-          candidate_version="$("$HOME/.sima-cli/.venv/bin/sima-cli" version)"
-          printf '%s\n' "$candidate_version"
-          grep -F "${{ needs.build.outputs.short_sha }}" <<<"$candidate_version"
-          echo "Skipping Neat SDK container setup on GitHub-hosted macOS: no supported Docker backend is available."
 
       - name: Install candidate in WSL2
         if: runner.os == 'Windows'

@@ -3,11 +3,11 @@ import sys
 import json
 from pathlib import Path
 
+from sima_cli.install.compatibility import VALID_OS, VALID_PLATFORM_TYPES, validate_version_spec
+
 class MetadataValidationError(Exception):
     pass
 
-VALID_TYPES = {"board", "palette", "host"}
-VALID_OS = {"linux", "windows", "mac", "ubuntu"}
 VALID_DEVKIT_SW = {"yocto", "elxr"}
 
 def _validate_sha256_field(value, field_name: str):
@@ -28,11 +28,13 @@ def validate_metadata(data: dict):
         raise MetadataValidationError("'platforms' must be a list")
 
     for i, platform in enumerate(data["platforms"]):
+        if not isinstance(platform, dict):
+            raise MetadataValidationError(f"platform entry {i} must be an object")
         if "type" not in platform:
             raise MetadataValidationError(f"Missing 'type' in platform entry {i}")
-        if platform["type"] not in VALID_TYPES:
+        if platform["type"] not in VALID_PLATFORM_TYPES:
             raise MetadataValidationError(
-                f"Invalid platform type '{platform['type']}' in entry {i}. Must be one of {VALID_TYPES}"
+                f"Invalid platform type '{platform['type']}' in entry {i}. Must be one of {VALID_PLATFORM_TYPES}"
             )
 
         if platform["type"] == "board":
@@ -40,6 +42,21 @@ def validate_metadata(data: dict):
                 raise MetadataValidationError(f"'compatible_with' is required for board in entry {i}")
             if not isinstance(platform["compatible_with"], list):
                 raise MetadataValidationError(f"'compatible_with' must be a list in entry {i}")
+            if not platform["compatible_with"]:
+                raise MetadataValidationError(f"'compatible_with' must be a non-empty list in entry {i}")
+            for compat_value in platform["compatible_with"]:
+                if not isinstance(compat_value, str) or not compat_value.strip():
+                    raise MetadataValidationError(
+                        f"'compatible_with' values must be non-empty strings in entry {i}"
+                    )
+
+            if "version" in platform:
+                if not isinstance(platform["version"], str):
+                    raise MetadataValidationError(f"'version' must be a string for board in entry {i}")
+                try:
+                    validate_version_spec(platform["version"])
+                except ValueError as exc:
+                    raise MetadataValidationError(f"Invalid board version spec in entry {i}: {exc}")
 
             # ✅ Check optional devkit_sw
             if "devkit_sw" in platform:
@@ -50,11 +67,15 @@ def validate_metadata(data: dict):
                         f"Must be one of {VALID_DEVKIT_SW}"
                     )
 
-        if "os" in platform:
+        if platform["type"] == "host":
+            if "os" not in platform:
+                raise MetadataValidationError(f"'os' is required for host in entry {i}")
             if not isinstance(platform["os"], list):
                 raise MetadataValidationError(f"'os' must be a list in entry {i}")
+            if not platform["os"]:
+                raise MetadataValidationError(f"'os' must be a non-empty list in entry {i}")
             for os_value in platform["os"]:
-                if os_value.lower() not in VALID_OS:
+                if not isinstance(os_value, str) or os_value.lower() not in VALID_OS:
                     raise MetadataValidationError(
                         f"Invalid OS '{os_value}' in platform entry {i}. Supported: {VALID_OS}"
                     )

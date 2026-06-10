@@ -29,6 +29,173 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
     ):
         self.assertTrue(_is_platform_compatible({"platforms": []}))
 
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("2.1.1", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("board", "modalix"))
+    def test_board_without_version_is_compatible_with_matching_board(
+        self,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "board",
+                    "compatible_with": ["modalix"],
+                }
+            ]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("2.1.1", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("board", "modalix"))
+    def test_board_legacy_exact_version_string_is_compatible(
+        self,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "board",
+                    "compatible_with": ["modalix"],
+                    "version": "2.1.1",
+                }
+            ]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("2.1.1", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("board", "modalix"))
+    def test_board_exact_version_spec_is_compatible(
+        self,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "board",
+                    "compatible_with": ["modalix"],
+                    "version": "==2.1.1",
+                }
+            ]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("2.1.1", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("board", "modalix"))
+    def test_board_range_version_spec_is_compatible(
+        self,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "board",
+                    "compatible_with": ["modalix"],
+                    "version": ">=2.1.0,<=2.1.2",
+                }
+            ]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("2.2.0", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("board", "modalix"))
+    def test_board_range_version_spec_rejects_incompatible_version(
+        self,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "board",
+                    "compatible_with": ["modalix"],
+                    "version": ">=2.1.0,<=2.1.2",
+                }
+            ]
+        }
+
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible(metadata)
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("2.1.1", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="modalix-ea")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("board", "modalix"))
+    def test_board_matches_exact_devkit_type_alias(
+        self,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "board",
+                    "compatible_with": ["modalix-ea"],
+                    "version": ">=2.1.0",
+                }
+            ]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("sdk", "palette"))
+    def test_palette_platform_matches_palette_sdk_container(
+        self,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        self.assertTrue(_is_platform_compatible({"platforms": [{"type": "palette"}]}))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "mac"))
+    @patch("sima_cli.install.metadata_installer.platform.mac_ver", return_value=("14.5", ("", "", ""), ""))
+    @patch("sima_cli.install.metadata_installer.platform.system", return_value="Darwin")
+    def test_host_platform_matches_macos(
+        self,
+        _mock_system,
+        _mock_mac_ver,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        self.assertTrue(_is_platform_compatible({"platforms": [{"type": "host", "os": ["mac"]}]}))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer.subprocess.check_output", return_value="Ubuntu 22.04.5 LTS")
+    @patch("sima_cli.install.metadata_installer.platform.system", return_value="Linux")
+    def test_host_linux_platform_matches_ubuntu(
+        self,
+        _mock_system,
+        _mock_check_output,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        self.assertTrue(_is_platform_compatible({"platforms": [{"type": "host", "os": ["linux"]}]}))
+
     @patch("sima_cli.install.metadata_installer.platform.system", return_value="Darwin")
     @patch("sima_cli.install.metadata_installer.platform.machine", return_value="arm64")
     def test_download_compatible_resources_keeps_macos_arm_wheels_and_non_wheels(

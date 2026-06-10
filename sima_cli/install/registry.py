@@ -109,6 +109,28 @@ def show_metadata(name, version):
     default=False,
     help="Add download-compatible-files-only so installers download only wheel files compatible with the current platform.",
 )
+@click.option(
+    "--host-platform",
+    multiple=True,
+    help=(
+        "Host OS compatibility as a comma-separated list. Supported values: "
+        "linux, ubuntu, mac, windows. May be repeated."
+    ),
+)
+@click.option(
+    "--board-platform",
+    multiple=True,
+    help=(
+        "Board compatibility as COMPAT[,COMPAT...][@VERSION_SPEC], for example "
+        "modalix, modalix@==2.1.1, or modalix@>=2.1.0,<=2.1.2. May be repeated."
+    ),
+)
+@click.option(
+    "--palette-platform",
+    is_flag=True,
+    default=False,
+    help="Mark the package as compatible with Palette SDK containers.",
+)
 def build_package_metadata(
     artifacts_folder,
     name,
@@ -119,6 +141,9 @@ def build_package_metadata(
     exclude,
     variant,
     download_compatible_files_only,
+    host_platform,
+    board_platform,
+    palette_platform,
 ):
     """
     Generate metadata.json, or metadata-<variant>.json, for sima-cli package installation.
@@ -133,6 +158,9 @@ def build_package_metadata(
             selectables=selectables,
             exclude=exclude,
             download_compatible_files_only=download_compatible_files_only,
+            host_platforms=host_platform,
+            board_platforms=board_platform,
+            palette_platform=palette_platform,
         )
         output_path = write_metadata(artifacts_folder, metadata, variant=variant)
     except ValueError as exc:

@@ -22,6 +22,9 @@ sima-cli packages build [OPTIONS] ARTIFACTS_FOLDER
 | `--exclude` | Exclude artifact files whose relative path or filename contains this text. May be repeated. |
 | `--variant` | Optional metadata variant name. Writes metadata-<variant>.json instead of metadata.json. |
 | `--download-compatible-files-only` | Add download-compatible-files-only so installers download only wheel files compatible with the current platform. |
+| `--host-platform` | Host OS compatibility as a comma-separated list. Supported values: linux, ubuntu, mac, windows. May be repeated. |
+| `--board-platform` | Board compatibility as COMPAT[,COMPAT...][@VERSION_SPEC], for example modalix, modalix@==2.1.1, or modalix@>=2.1.0,<=2.1.2. May be repeated. |
+| `--palette-platform` | Mark the package as compatible with Palette SDK containers. |
 
 ## Arguments
 
@@ -57,5 +60,14 @@ Options:
                                   Add download-compatible-files-only so
                                   installers download only wheel files
                                   compatible with the current platform.
+  --host-platform TEXT            Host OS compatibility as a comma-separated
+                                  list. Supported values: linux, ubuntu, mac,
+                                  windows. May be repeated.
+  --board-platform TEXT           Board compatibility as
+                                  COMPAT[,COMPAT...][@VERSION_SPEC], for
+                                  example modalix, modalix@==2.1.1, or
+                                  modalix@>=2.1.0,<=2.1.2. May be repeated.
+  --palette-platform              Mark the package as compatible with Palette
+                                  SDK containers.
   --help                          Show this message and exit.
 ```

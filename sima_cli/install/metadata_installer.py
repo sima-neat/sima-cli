@@ -28,6 +28,7 @@ from sima_cli.utils.disk import check_disk_space
 from sima_cli.utils.env import get_environment_type, get_exact_devkit_type, get_sima_build_version
 from sima_cli.download.downloader import download_file_from_url
 from sima_cli.install.metadata_validator import validate_metadata, MetadataValidationError
+from sima_cli.install.compatibility import version_matches
 from sima_cli.install.metadata_info import print_metadata_summary, parse_size_string_to_bytes
 from sima_cli.utils.container_registries import install_from_cr
 from sima_cli.install.registry import PackageRegistry
@@ -1179,10 +1180,10 @@ def _is_platform_compatible(metadata: dict, force: bool = False) -> bool:
             if env_subtype not in compat and exact_devkit_type not in compat:
                 continue
             else:
-                compatible_board_version = platform_entry.get('version', '')
-                # If version field exists in metadata then check if the board is running compatible version
+                compatible_board_version = platform_entry.get("version", "")
+                # If version field exists in metadata then check if the board is running compatible version.
                 if len(compatible_board_version) > 0:
-                    if board_ver == compatible_board_version:
+                    if board_ver and version_matches(board_ver, compatible_board_version):
                         return True
                 else:
                     # otherwise return true as it's generally compatible

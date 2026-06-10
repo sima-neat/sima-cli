@@ -4,7 +4,7 @@
     "release": "beta",
     "description": "A tool for pipeline analysis",
     "platforms": [
-        {"type": "devkit", "compatible_with": ["modalix-ea", "mlsoc"]},
+        {"type": "board", "compatible_with": ["modalix-ea", "mlsoc"]},
         {"type": "palette"},
         {"type": "host", "os": ["mac"]}
     ],

@@ -9,6 +9,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import requests
 
+from sima_cli.install.compatibility import build_platform_specs
+
 
 METADATA_FILENAME = "metadata.json"
 DEFAULT_POST_MESSAGE = "[bold]Package installed successfully.[/bold]\n"
@@ -243,6 +245,9 @@ def build_metadata(
     selectables: Optional[str] = None,
     exclude: Optional[Sequence[str]] = None,
     download_compatible_files_only: bool = False,
+    host_platforms: Optional[Sequence[str]] = None,
+    board_platforms: Optional[Sequence[str]] = None,
+    palette_platform: bool = False,
 ) -> Dict:
     artifacts_folder = artifacts_folder.expanduser().resolve()
     if not artifacts_folder.is_dir():
@@ -272,7 +277,11 @@ def build_metadata(
         "version": version or default_version(artifacts_folder),
         "release": "",
         "description": resolved_description or "",
-        "platforms": [],
+        "platforms": build_platform_specs(
+            host_platforms=host_platforms,
+            board_platforms=board_platforms,
+            palette_platform=palette_platform,
+        ),
         "resources": resources,
         "resources-checksum": checksums,
         "selectable-resources": selectable_resources,

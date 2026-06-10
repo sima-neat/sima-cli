@@ -12,7 +12,7 @@
 [![E2E Ubuntu x86](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=E2E%20Install%20(Ubuntu%20x86)&label=e2e%20Ubuntu%20x86&logo=ubuntu&logoColor=white)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![E2E Ubuntu ARM64](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=E2E%20Install%20(Ubuntu%20ARM64)&label=e2e%20Ubuntu%20ARM64&logo=ubuntu&logoColor=white)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 
-`sima-cli` is the command-line interface for SiMa developer workflows. It handles authentication, SDK container setup, DevKit updates, package installation, artifact downloads, Model Zoo/App Zoo access, and related development utilities.
+`sima-cli` is the command-line interface for SiMa developer workflows. Use it to authenticate, set up SDK containers, update DevKits, install packages, download artifacts, and access Model Zoo and App Zoo content.
 
 ## Documentation
 
@@ -25,15 +25,42 @@ Use the generated docs for detailed options, arguments, subcommands, and full he
 
 ## Installation
 
-Install the latest official PyPI release:
+For most users, install the latest official release from the public installer URL for your operating system.
+
+### Linux, macOS, and DevKit
+
+Run the installer from a terminal:
 
 ```bash
 curl -fsSL https://artifacts.neat.sima.ai/sima-cli/linux-mac.sh | bash
 ```
 
-To install a tested branch build instead of the official PyPI release, use the cross-platform installer:
+After installation, open a new terminal or reload your shell profile, then verify the install:
 
-Install interactively:
+```bash
+sima-cli version
+```
+
+### Windows PowerShell
+
+Download and run the Windows installer from PowerShell:
+
+```powershell
+Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile windows.bat
+.\windows.bat
+```
+
+After installation, open a new Command Prompt or PowerShell window, then verify the install:
+
+```powershell
+sima-cli version
+```
+
+### Advanced: choose a branch or release
+
+Use `install.py` only when you need to choose a specific tested branch build or release instead of installing the latest official PyPI release.
+
+On Linux, macOS, or DevKit:
 
 ```bash
 curl -fsSL https://artifacts.neat.sima.ai/sima-cli/install.py -o sima-cli-install.py
@@ -47,18 +74,7 @@ python3 sima-cli-install.py feature/my-branch latest
 python3 sima-cli-install.py v2.1.6 latest
 ```
 
-Release tags such as `v2.1.6` are installed from public PyPI. Branch names install tested artifacts from `artifacts.neat.sima.ai/sima-cli`.
-
 On Windows PowerShell:
-
-```powershell
-Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile windows.bat
-.\windows.bat
-```
-
-To install a tested branch build instead of the official PyPI release, use the cross-platform installer:
-
-Install interactively:
 
 ```powershell
 Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/install.py -OutFile sima-cli-install.py
@@ -72,7 +88,7 @@ python .\sima-cli-install.py feature/my-branch latest
 python .\sima-cli-install.py v2.1.6 latest
 ```
 
-Release tags such as `v2.1.6` are installed from public PyPI. Branch names install tested artifacts from `artifacts.neat.sima.ai/sima-cli`.
+Release tags such as `v2.1.6` install from public PyPI. Branch names install tested artifacts from `artifacts.neat.sima.ai/sima-cli`.
 
 Public PyPI releases can also be installed directly:
 

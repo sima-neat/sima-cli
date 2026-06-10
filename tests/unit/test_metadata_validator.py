@@ -25,7 +25,7 @@ class MetadataValidatorTests(unittest.TestCase):
                     "compatible_with": ["modalix"],
                     "version": ">=2.1.0,<=2.1.2",
                 },
-                {"type": "palette"},
+                {"type": "palette", "version": "2.0.0"},
             ]
         )
 
@@ -55,6 +55,10 @@ class MetadataValidatorTests(unittest.TestCase):
                     ]
                 )
             )
+
+    def test_palette_version_must_be_exact_version(self):
+        with self.assertRaisesRegex(MetadataValidationError, "Invalid palette version"):
+            validate_metadata(_base_metadata([{"type": "palette", "version": ">=2.0.0"}]))
 
     def test_metadata_fixture_files_match_validator_expectations(self):
         fixture_dir = Path(__file__).parent / "pkg-metadata"

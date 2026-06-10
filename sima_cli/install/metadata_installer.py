@@ -1115,6 +1115,19 @@ def _compare_versions(current: str, condition: str) -> bool:
         return cur <= target
     return False
 
+
+def _get_palette_sdk_version(release_file: Path = Path("/etc/sdk-release")) -> str:
+    try:
+        content = release_file.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+    match = re.search(r"^SDK Version\s*=\s*(\S+)", content, flags=re.MULTILINE)
+    if not match:
+        return ""
+    return match.group(1).split("_", 1)[0].strip()
+
+
 def _is_platform_compatible(metadata: dict, force: bool = False) -> bool:
     """
     Determines if the current environment is compatible with the package metadata.
@@ -1170,7 +1183,17 @@ def _is_platform_compatible(metadata: dict, force: bool = False) -> bool:
     for platform_entry in platforms:
         platform_type = platform_entry.get("type")
         if (platform_type, env_type, env_subtype) == ("palette", "sdk", "palette"):
-            return True
+            compatible_palette_version = platform_entry.get("version", "")
+            if not compatible_palette_version:
+                return True
+            palette_sdk_version = _get_palette_sdk_version()
+            if palette_sdk_version and version_matches(palette_sdk_version, compatible_palette_version):
+                return True
+            click.echo(
+                f"❌ Palette SDK version {palette_sdk_version or 'unknown'} is not compatible. "
+                f"Required: {compatible_palette_version}"
+            )
+            continue
         if platform_type != env_type:
             continue
 

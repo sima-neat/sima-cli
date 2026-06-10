@@ -18,6 +18,7 @@ Whenever `sima-cli install <package>` is executed, this registry stores:
 import json
 import click
 import datetime
+import re
 from pathlib import Path
 from sima_cli.install.package_builder import build_metadata, write_metadata
 from rich.table import Table
@@ -28,6 +29,27 @@ from rich.panel import Panel
 
 # Default registry path (cross-platform)
 REGISTRY_PATH = Path.home() / ".sima-cli" / "registry.json"
+
+
+class OptionalExactVersionFlag(click.Option):
+    _VERSION_RE = re.compile(r"^v?\d+(?:\.\d+)*$")
+
+    def add_to_parser(self, parser, ctx):
+        super().add_to_parser(parser, ctx)
+        for opt in self.opts:
+            parser_option = parser._long_opt.get(opt) or parser._short_opt.get(opt)
+            if parser_option is None:
+                continue
+            original_process = parser_option.process
+
+            def process(value, state, parser_option=parser_option, original_process=original_process):
+                if state.rargs and self._VERSION_RE.fullmatch(state.rargs[0]):
+                    state.opts[parser_option.dest] = state.rargs.pop(0)
+                    state.order.append(parser_option.obj)
+                    return
+                original_process(value, state)
+
+            parser_option.process = process
 
 # ------------------------------------------------------------------------------------------------------------
 # Register the "packages" group to the main CLI entrypoint
@@ -127,9 +149,13 @@ def show_metadata(name, version):
 )
 @click.option(
     "--palette-platform",
-    is_flag=True,
-    default=False,
-    help="Mark the package as compatible with Palette SDK containers.",
+    cls=OptionalExactVersionFlag,
+    default=None,
+    flag_value="",
+    help=(
+        "Mark the package as compatible with Palette SDK containers. Optionally pass "
+        "an exact SDK version, for example --palette-platform 2.0.0."
+    ),
 )
 def build_package_metadata(
     artifacts_folder,

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from sima_cli.install.metadata_installer import (
     _download_metadata_file_resource,
     _filter_download_compatible_resources,
+    _get_palette_sdk_version,
     _is_platform_compatible,
     _mark_install_script_executable,
     _metadata_resource_path,
@@ -165,6 +166,44 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
         _mock_version,
     ):
         self.assertTrue(_is_platform_compatible({"platforms": [{"type": "palette"}]}))
+
+    def test_get_palette_sdk_version_reads_sdk_release_prefix(self):
+        with TemporaryDirectory() as tmpdir:
+            release_file = Path(tmpdir) / "sdk-release"
+            release_file.write_text(
+                "SDK Version = 2.0.0_Palette_SDK_neat_main_7547251\n"
+                "eLXr Version = 2.0.0_release_neat_main_7547251\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_get_palette_sdk_version(release_file), "2.0.0")
+
+    @patch("sima_cli.install.metadata_installer._get_palette_sdk_version", return_value="2.0.0")
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("sdk", "palette"))
+    def test_palette_platform_version_matches_palette_sdk_container(
+        self,
+        _mock_env,
+        _mock_devkit,
+        _mock_build_version,
+        _mock_palette_version,
+    ):
+        self.assertTrue(_is_platform_compatible({"platforms": [{"type": "palette", "version": "2.0.0"}]}))
+
+    @patch("sima_cli.install.metadata_installer._get_palette_sdk_version", return_value="2.1.0")
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("sdk", "palette"))
+    def test_palette_platform_version_rejects_incompatible_sdk_container(
+        self,
+        _mock_env,
+        _mock_devkit,
+        _mock_build_version,
+        _mock_palette_version,
+    ):
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible({"platforms": [{"type": "palette", "version": "2.0.0"}]})
 
     @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
     @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")

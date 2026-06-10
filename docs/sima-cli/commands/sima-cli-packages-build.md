@@ -24,7 +24,7 @@ sima-cli packages build [OPTIONS] ARTIFACTS_FOLDER
 | `--download-compatible-files-only` | Add download-compatible-files-only so installers download only wheel files compatible with the current platform. |
 | `--host-platform` | Host OS compatibility as a comma-separated list. Supported values: linux, ubuntu, mac, windows. May be repeated. |
 | `--board-platform` | Board compatibility as COMPAT[,COMPAT...][@VERSION_SPEC], for example modalix, modalix@==2.1.1, or modalix@>=2.1.0,<=2.1.2. May be repeated. |
-| `--palette-platform` | Mark the package as compatible with Palette SDK containers. |
+| `--palette-platform` | Mark the package as compatible with Palette SDK containers. Optionally pass an exact SDK version, for example --palette-platform 2.0.0. |
 
 ## Arguments
 
@@ -68,6 +68,8 @@ Options:
                                   example modalix, modalix@==2.1.1, or
                                   modalix@>=2.1.0,<=2.1.2. May be repeated.
   --palette-platform              Mark the package as compatible with Palette
-                                  SDK containers.
+                                  SDK containers. Optionally pass an exact SDK
+                                  version, for example --palette-platform
+                                  2.0.0.
   --help                          Show this message and exit.
 ```

@@ -18,6 +18,7 @@ import click
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "docs" / "sima-cli"
+README_PATH = ROOT / "README.md"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -207,14 +208,29 @@ def render_command_page(doc: CommandDoc, docs_by_path: dict[str, CommandDoc]) ->
     return "\n".join(lines)
 
 
+def read_readme_section(heading: str, readme_path: Path = README_PATH) -> str:
+    text = readme_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"(^## {}\s*$.*?)(?=^## \S|\Z)".format(re.escape(heading)),
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        raise RuntimeError("README.md is missing required '## {}' section".format(heading))
+    return match.group(1).strip()
+
+
 def render_index(docs: List[CommandDoc]) -> str:
     root = docs[0]
     top_level = [doc for doc in docs if doc.parent_path == root.path]
+    installation = read_readme_section("Installation")
 
     lines = [
         "# sima-cli Command Reference",
         "",
         "Generated Markdown reference documentation for the sima-cli command line interface.",
+        "",
+        installation,
         "",
         "## Top-Level Commands",
         "",

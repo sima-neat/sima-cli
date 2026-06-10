@@ -132,4 +132,4 @@ jobs:
 
       - name: Build trigger note
         run: |
-          echo "Pushed ${{ steps.tag.outputs.tag }}. The Build workflow is triggered by the tag push."
+          echo "Pushed ${{ steps.tag.outputs.tag }}. The Vulcan CI workflow is triggered by the tag push."

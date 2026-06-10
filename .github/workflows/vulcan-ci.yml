@@ -99,8 +99,8 @@ jobs:
           metadata = {
               "wheel": wheel.name,
               "helpers": [
-                  "sima-cli-installer.sh",
-                  "sima-cli-install.bat",
+                  "linux-mac.sh",
+                  "windows.bat",
               ],
               "commit": os.environ["GITHUB_SHA"],
               "ref": os.environ.get("GITHUB_HEAD_REF") or os.environ["GITHUB_REF_NAME"],
@@ -108,8 +108,8 @@ jobs:
 
           with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zf:
               zf.write(wheel, wheel.name)
-              zf.write("scripts/install/sima-cli-installer.sh", "sima-cli-installer.sh")
-              zf.write("scripts/install/sima-cli-install.bat", "sima-cli-install.bat")
+              zf.write("scripts/install/linux-mac.sh", "linux-mac.sh")
+              zf.write("scripts/install/windows.bat", "windows.bat")
               zf.writestr("install_metadata.json", json.dumps(metadata, indent=2) + "\n")
 
           target_stub = dist / "install.py"
@@ -145,10 +145,10 @@ jobs:
 
                       wheel = find_one(package_dir, "*.whl")
                       if platform.system().lower() == "windows":
-                          helper = find_one(package_dir, "sima-cli-install.bat")
+                          helper = find_one(package_dir, "windows.bat")
                           cmd = ["cmd.exe", "/c", str(helper), str(wheel)]
                       else:
-                          helper = find_one(package_dir, "sima-cli-installer.sh")
+                          helper = find_one(package_dir, "linux-mac.sh")
                           helper.chmod(helper.stat().st_mode | 0o755)
                           cmd = ["bash", str(helper), str(wheel)]
                       subprocess.run(cmd, check=True)
@@ -233,7 +233,7 @@ jobs:
           package = sorted(Path("dist").glob("sima-cli-package-*.zip"))[-1]
           with zipfile.ZipFile(package) as zf:
               names = set(zf.namelist())
-          required = {"sima-cli-installer.sh", "sima-cli-install.bat", "install_metadata.json"}
+          required = {"linux-mac.sh", "windows.bat", "install_metadata.json"}
           missing = sorted(required - names)
           if missing:
               raise SystemExit(f"{package} is missing {missing}")

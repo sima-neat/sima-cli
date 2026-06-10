@@ -46,8 +46,8 @@ jobs:
       - name: Verify installer sources
         run: |
           set -euo pipefail
-          test -f scripts/install/sima-cli-install.bat
-          test -f scripts/install/sima-cli-installer.sh
+          test -f scripts/install/windows.bat
+          test -f scripts/install/linux-mac.sh
           test -f scripts/install/install.py
 
       - name: Upload installer scripts
@@ -59,13 +59,13 @@ jobs:
           fi
 
           aws s3 cp \
-            scripts/install/sima-cli-install.bat \
+            scripts/install/windows.bat \
             "s3://${ARTIFACT_BUCKET}/sima-cli/windows.bat" \
             --content-type application/x-msdos-program \
             "${s3_args[@]}"
 
           aws s3 cp \
-            scripts/install/sima-cli-installer.sh \
+            scripts/install/linux-mac.sh \
             "s3://${ARTIFACT_BUCKET}/sima-cli/linux-mac.sh" \
             --content-type text/x-shellscript \
             "${s3_args[@]}"

@@ -222,10 +222,10 @@ def find_one(root: Path, pattern: str) -> Path:
 
 def run_helper(package_dir: Path, wheel_path: Path) -> None:
     if platform.system().lower() == "windows":
-        helper = find_one(package_dir, "sima-cli-install.bat")
+        helper = find_one(package_dir, "windows.bat")
         cmd = ["cmd.exe", "/c", str(helper), str(wheel_path)]
     else:
-        helper = find_one(package_dir, "sima-cli-installer.sh")
+        helper = find_one(package_dir, "linux-mac.sh")
         helper.chmod(helper.stat().st_mode | 0o755)
         cmd = ["bash", str(helper), str(wheel_path)]
     subprocess.run(cmd, check=True)

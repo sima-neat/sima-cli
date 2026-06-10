@@ -637,7 +637,7 @@ def ensure_sima_cli_installed(sdk_container_name: str, login_name: str):
             sdk_container_name,
             "bash",
             "-lc",
-            "curl https://docs.sima.ai/_static/tools/sima-cli-installer.sh | bash",
+            "curl https://artifacts.neat.sima.ai/sima-cli/linux-mac.sh | bash",
         ]
     )
     print(f"✅ sima-cli installed for user '{login_name}' in '{sdk_container_name}'.")

@@ -52,8 +52,8 @@ Release tags such as `v2.1.6` are installed from public PyPI. Branch names insta
 On Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile sima-cli-install.bat
-.\sima-cli-install.bat
+Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile windows.bat
+.\windows.bat
 ```
 
 To install a tested branch build instead of the official PyPI release, use the cross-platform installer:

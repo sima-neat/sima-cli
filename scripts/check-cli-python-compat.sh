@@ -166,7 +166,7 @@ run_smoke() {
   fi
 
   (cd "$tmpdir" && SIMA_CLI_CHECK_FOR_UPDATE=0 HOME="$home_dir" "$py" -m sima_cli -h >/dev/null)
-  cli_version="$(cd "$tmpdir" && SIMA_CLI_CHECK_FOR_UPDATE=0 HOME="$home_dir" "$py" -m sima_cli version)"
+  cli_version="$(cd "$tmpdir" && SIMA_CLI_CHECK_FOR_UPDATE=0 HOME="$home_dir" "$py" -m sima_cli --version)"
   (cd "$tmpdir" && SIMA_CLI_CHECK_FOR_UPDATE=0 HOME="$home_dir" "$venv/bin/sima-cli" -h >/dev/null)
   installed_version="$("$py" -c 'from importlib.metadata import version; print(version("sima-cli"))')"
 

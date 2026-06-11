@@ -100,8 +100,8 @@ pip install sima-cli
 
 ```bash
 sima-cli --help
+sima-cli --version
 sima-cli login
-sima-cli version
 ```
 
 Use `--internal` or `SIMA_CLI_INTERNAL=1` when internal Artifactory resources are required:
@@ -169,7 +169,6 @@ sima-cli appzoo list
 | `sima-cli selfupdate` | Update sima-cli manually. | [docs](docs/sima-cli/commands/sima-cli-selfupdate.md) |
 | `sima-cli serial` | Connect to the UART serial console of a DevKit. | [docs](docs/sima-cli/commands/sima-cli-serial.md) |
 | `sima-cli update` | Update a SiMa DevKit or remote device. | [docs](docs/sima-cli/commands/sima-cli-update.md) |
-| `sima-cli version` | Show the installed CLI version. | [docs](docs/sima-cli/commands/sima-cli-version.md) |
 
 ## Development
 

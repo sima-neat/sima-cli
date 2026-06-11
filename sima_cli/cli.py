@@ -82,6 +82,7 @@ def _rerun_current_command() -> None:
 # Entry point for the CLI tool using Click's command group decorator
 @click.group(context_settings=dict(help_option_names=["-h", "--help", "-?"], max_content_width=120))
 @click.option('-i', '--internal', is_flag=True, help="Use internal Artifactory resources, Authorized Sima employees only")
+@click.version_option(version=f"{__version__}", message="SiMa CLI version: %(version)s")
 @click.pass_context
 def main(ctx, internal):
     """
@@ -142,14 +143,6 @@ def login(ctx):
 
     internal = ctx.obj.get("internal", False)
     perform_login.login("internal" if internal else "external")
-
-# ----------------------
-# Version Command
-# ----------------------
-@main.command(name="version")
-def version_cmd():
-    """Show the version of the CLI tool."""
-    click.echo(f"SiMa CLI version: {__version__}")
 
 # ----------------------
 # Logout Command

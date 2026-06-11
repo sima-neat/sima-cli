@@ -139,7 +139,7 @@ def launch_sdk_tool(tool: str, cmd, ctx):
             Panel(
                 "[yellow]Legacy Palette SDK functionality will be deprecated soon.[/yellow]\n\n"
                 "For application development, migrate to Palette Neat.\n"
-                "Visit https://developer.sima.ai for current migration guidance and documentation.",
+                "Visit https://community.sima.ai for current documentation.",
                 title="Legacy Palette SDK",
                 border_style="yellow",
                 style="yellow",

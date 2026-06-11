@@ -1041,7 +1041,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     self.assertEqual(panel.title, "Legacy Palette SDK")
                     self.assertEqual(panel.border_style, "yellow")
                     self.assertIn("Palette Neat", panel.renderable)
-                    self.assertIn("https://developer.sima.ai", panel.renderable)
+                    self.assertIn("https://community.sima.ai", panel.renderable)
 
     def test_launch_sdk_tool_suppresses_legacy_palette_warning_before_neat_ga(self):
         with patch("sima_cli.sdk.commands.console.print") as console_print, \

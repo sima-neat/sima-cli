@@ -1028,6 +1028,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_launch_sdk_tool_warns_for_legacy_palette_sdks(self):
         with patch("sima_cli.sdk.commands.console.print") as console_print, \
+             patch("sima_cli.sdk.commands.should_show_post_neat_ga_deprecation_notice", return_value=True), \
              patch("sima_cli.sdk.commands.exec_container_cmd"):
             for tool in ("elxr", "model", "yocto", "mpk"):
                 with self.subTest(tool=tool):
@@ -1042,8 +1043,18 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     self.assertIn("Palette Neat", panel.renderable)
                     self.assertIn("https://developer.sima.ai", panel.renderable)
 
+    def test_launch_sdk_tool_suppresses_legacy_palette_warning_before_neat_ga(self):
+        with patch("sima_cli.sdk.commands.console.print") as console_print, \
+             patch("sima_cli.sdk.commands.should_show_post_neat_ga_deprecation_notice", return_value=False), \
+             patch("sima_cli.sdk.commands.exec_container_cmd") as exec_container_cmd:
+            launch_sdk_tool("mpk", (), ctx=None)
+
+        console_print.assert_not_called()
+        exec_container_cmd.assert_called_once_with(None, "mpk", None)
+
     def test_launch_sdk_tool_does_not_warn_for_neat_sdk(self):
         with patch("sima_cli.sdk.commands.console.print") as console_print, \
+             patch("sima_cli.sdk.commands.should_show_post_neat_ga_deprecation_notice", return_value=True), \
              patch("sima_cli.sdk.commands.exec_container_cmd"):
             launch_sdk_tool("neat", (), ctx=None)
 

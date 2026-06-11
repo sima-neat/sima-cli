@@ -32,8 +32,8 @@ USERINFO_AUDIENCE = PROD_USERINFO_AUDIENCE
 LATEST_EULA_GRANT = "LatestEULA"
 DOC_ACCESS_GRANT = "DocsAccess"
 DOC_ACCESS_GRANT_ALIASES = (DOC_ACCESS_GRANT, "DocAccess")
-PROD_DISCOURSE_URL = "https://developer.sima.ai/login"
-STAGING_DISCOURSE_URL = "https://discourse-dev.sima.ai/login"
+PROD_DISCOURSE_URL = "https://community.sima.ai/login"
+STAGING_DISCOURSE_URL = "https://community-dev.sima.ai/login"
 
 # ─────────────────────────────────────────────
 # Configuration loader

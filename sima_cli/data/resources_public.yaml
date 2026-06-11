@@ -1,5 +1,5 @@
 artifactory:
-  url: "https://developer.sima.ai"
+  url: "https://community.sima.ai"
 
 auth:
   auth_url: "/login"

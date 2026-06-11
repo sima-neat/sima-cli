@@ -2,8 +2,12 @@
 set -euo pipefail
 
 WHEEL_PATH="${1:-}"
-if [[ -z "$WHEEL_PATH" || ! -f "$WHEEL_PATH" ]]; then
-    echo "Usage: $0 /path/to/sima_cli.whl" >&2
+INSTALL_FROM_PYPI=false
+if [[ -z "$WHEEL_PATH" ]]; then
+    INSTALL_FROM_PYPI=true
+elif [[ ! -f "$WHEEL_PATH" ]]; then
+    echo "Wheel not found: $WHEEL_PATH" >&2
+    echo "Usage: $0 [/path/to/sima_cli.whl]" >&2
     exit 2
 fi
 
@@ -137,9 +141,21 @@ if ! "$VENV_PY" -m pip --version >/dev/null 2>&1; then
     "$VENV_PY" -m ensurepip --upgrade
 fi
 
-echo "Installing sima-cli wheel into venv..."
+if $INSTALL_FROM_PYPI; then
+    echo "Installing official sima-cli release from PyPI into venv..."
+else
+    echo "Installing sima-cli wheel into venv..."
+fi
 PIP_DISABLE_PIP_VERSION_CHECK=1 "$VENV_PY" -m pip install --no-cache-dir --upgrade pip
-PIP_DISABLE_PIP_VERSION_CHECK=1 "$VENV_PY" -m pip install --no-cache-dir --force-reinstall "$WHEEL_PATH"
+if $INSTALL_FROM_PYPI; then
+    PIP_DISABLE_PIP_VERSION_CHECK=1 "$VENV_PY" -m pip install \
+        --no-cache-dir \
+        --force-reinstall \
+        --index-url https://pypi.org/simple \
+        sima-cli
+else
+    PIP_DISABLE_PIP_VERSION_CHECK=1 "$VENV_PY" -m pip install --no-cache-dir --force-reinstall "$WHEEL_PATH"
+fi
 
 if $skip_sdk_aliases; then
     ALIAS_NAMES=( sima-cli )

@@ -1,8 +1,30 @@
 
 import click
+from rich.console import Console
+from rich.panel import Panel
 
 from sima_cli.app_zoo.app import list_apps, download_app, describe_app, clone_apps
+from sima_cli.utils.deprecation import should_show_post_neat_ga_deprecation_notice
 from sima_cli.utils.tag import resolve_version
+
+console = Console()
+
+
+def show_appzoo_deprecation_notice() -> None:
+    if not should_show_post_neat_ga_deprecation_notice():
+        return
+
+    console.print(
+        Panel(
+            "[yellow]App Zoo is compatible with legacy Palette SDKs and will be deprecated soon.[/yellow]\n\n"
+            "Use https://developer.sima.ai/examples to access current example applications.",
+            title="App Zoo Deprecation Notice",
+            border_style="yellow",
+            style="yellow",
+            expand=False,
+        )
+    )
+
 
 @click.group()
 @click.option(
@@ -15,6 +37,7 @@ from sima_cli.utils.tag import resolve_version
 def appzoo(ctx, ver):
     """Access sample apps from the App Zoo."""
     ctx.ensure_object(dict)
+    show_appzoo_deprecation_notice()
     internal = ctx.obj.get("internal", False)
     if not internal:
         ver = resolve_version(ver)
@@ -71,4 +94,3 @@ def register_appzoo_commands(main):
         register_appzoo_commands(main)
     """
     main.add_command(appzoo)
-

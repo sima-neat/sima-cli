@@ -292,14 +292,24 @@ def _route_interface_for_target(target_ip: str) -> str:
     return match.group(1) if match else ""
 
 
-def _colima_supports_bridged_network_flags() -> bool:
+def _colima_start_help() -> str:
     colima_cmd = shutil.which("colima")
     if not colima_cmd:
-        return False
+        return ""
 
     try:
-        output = subprocess.check_output([colima_cmd, "start", "--help"], text=True, stderr=subprocess.DEVNULL)
+        return subprocess.check_output([colima_cmd, "start", "--help"], text=True, stderr=subprocess.DEVNULL)
     except Exception:
+        return ""
+
+
+def _colima_supports_network_address_flag() -> bool:
+    return "--network-address" in _colima_start_help()
+
+
+def _colima_supports_bridged_network_flags() -> bool:
+    output = _colima_start_help()
+    if not output:
         return False
 
     return "--network-mode" in output and "--network-interface" in output
@@ -320,13 +330,18 @@ def warn_if_colima_devkit_network_may_need_bridged(
     interface = _route_interface_for_target(devkit_ip) or "en0"
     profile_args = [] if profile == "default" else ["--profile", profile]
     profile_display = "" if profile == "default" else f" --profile {profile}"
+    supports_network_address = _colima_supports_network_address_flag()
     supports_bridged_flags = _colima_supports_bridged_network_flags()
+    start_flags = ["--network-address"]
+    start_display_flags = list(start_flags)
+    if supports_bridged_flags:
+        start_flags.extend(["--network-mode", "bridged", "--network-interface", interface])
+        start_display_flags.extend(["--network-mode", "bridged", "--network-interface", interface])
+    start_flags.append("--save-config")
+    start_display_flags.append("--save-config")
     command_lines = [
         f"colima stop{profile_display}",
-        (
-            f"colima start{profile_display} --network-address --network-mode bridged "
-            f"--network-interface {interface} --save-config"
-        ),
+        f"colima start{profile_display} {' '.join(start_display_flags)}",
     ]
     command_text = "\n".join(command_lines)
 
@@ -341,10 +356,14 @@ def warn_if_colima_devkit_network_may_need_bridged(
                 "Recommended Colima setup:",
                 f"[cyan]{command_lines[0]}[/cyan]",
                 f"[cyan]{command_lines[1]}[/cyan]",
-                "" if supports_bridged_flags else "",
-                "" if supports_bridged_flags else (
-                    "[yellow]Your Colima version does not expose the bridged network flags. "
+                "" if supports_network_address else "",
+                "" if supports_network_address else (
+                    "[yellow]Your Colima version does not expose the network-address flag. "
                     "Upgrade Colima before running this command.[/yellow]"
+                ),
+                "" if supports_bridged_flags else (
+                    "[yellow]This Colima version does not expose --network-mode/--network-interface; "
+                    "using --network-address only.[/yellow]"
                 ),
             ]),
             title="Colima DevKit-Sync Network Warning",
@@ -356,10 +375,10 @@ def warn_if_colima_devkit_network_may_need_bridged(
     if noninteractive or yes_to_all:
         return False
 
-    if not supports_bridged_flags:
+    if not supports_network_address:
         console.print(
             "[yellow]⚠️  Not restarting Colima automatically because this Colima version "
-            "does not support the required bridged network flags.[/yellow]"
+            "does not support the required network-address flag.[/yellow]"
         )
         return False
 
@@ -376,20 +395,10 @@ def warn_if_colima_devkit_network_may_need_bridged(
     try:
         subprocess.run([colima_cmd, "stop", *profile_args], check=True)
         subprocess.run(
-            [
-                colima_cmd,
-                "start",
-                *profile_args,
-                "--network-address",
-                "--network-mode",
-                "bridged",
-                "--network-interface",
-                interface,
-                "--save-config",
-            ],
+            [colima_cmd, "start", *profile_args, *start_flags],
             check=True,
         )
-        console.print("[green]✅ Colima restarted in bridged network mode for DevKit-Sync.[/green]")
+        console.print("[green]✅ Colima restarted with reachable VM networking for DevKit-Sync.[/green]")
         return True
     except subprocess.CalledProcessError:
         console.print(

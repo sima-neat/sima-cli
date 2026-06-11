@@ -7,12 +7,12 @@
 [![Python 3.12](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=Compatibility%20Python%203.12&label=python%203.12)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![Python 3.13](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=Compatibility%20Python%203.13&label=python%203.13)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![Python 3.14](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=Compatibility%20Python%203.14&label=python%203.14)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
-[![E2E macOS](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=E2E%20Install%20(macOS%20CLI%20only)&label=e2e%20macOS&logo=apple&logoColor=white)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
+[![E2E macOS](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=E2E%20Install%20(macOS)&label=e2e%20macOS&logo=apple&logoColor=white)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![E2E Windows](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=E2E%20Install%20(Windows)&label=e2e%20Windows&logo=windows&logoColor=white)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![E2E Ubuntu x86](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=E2E%20Install%20(Ubuntu%20x86)&label=e2e%20Ubuntu%20x86&logo=ubuntu&logoColor=white)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![E2E Ubuntu ARM64](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=E2E%20Install%20(Ubuntu%20ARM64)&label=e2e%20Ubuntu%20ARM64&logo=ubuntu&logoColor=white)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 
-`sima-cli` is the command-line interface for SiMa developer workflows. It handles authentication, SDK container setup, DevKit updates, package installation, artifact downloads, Model Zoo/App Zoo access, and related development utilities.
+`sima-cli` is the command-line interface for SiMa developer workflows. Use it to authenticate, set up SDK containers, update DevKits, install packages, download artifacts, and access Model Zoo and App Zoo content.
 
 ## Documentation
 
@@ -25,16 +25,45 @@ Use the generated docs for detailed options, arguments, subcommands, and full he
 
 ## Installation
 
-Install the latest `main` build:
+For most users, install the latest official release from the public installer URL for your operating system.
+
+### Linux, macOS, and DevKit
+
+Run the installer from a terminal:
 
 ```bash
-curl -fsSL https://artifacts.sima-neat.com/tools/sima-cli-install.py -o sima-cli-install.py
-python3 sima-cli-install.py main latest
+curl -fsSL https://artifacts.neat.sima.ai/sima-cli/linux-mac.sh | bash
 ```
 
-Install interactively:
+After installation, open a new terminal or reload your shell profile, then verify the install:
 
 ```bash
+sima-cli version
+```
+
+### Windows PowerShell
+
+Download and run the Windows installer from PowerShell:
+
+```powershell
+Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile windows.bat
+.\windows.bat
+```
+
+After installation, open a new Command Prompt or PowerShell window, then verify the install:
+
+```powershell
+sima-cli version
+```
+
+### Advanced: choose a branch or release
+
+Use `install.py` only when you need to choose a specific tested branch build or release instead of installing the latest official PyPI release.
+
+On Linux, macOS, or DevKit:
+
+```bash
+curl -fsSL https://artifacts.neat.sima.ai/sima-cli/install.py -o sima-cli-install.py
 python3 sima-cli-install.py
 ```
 
@@ -48,9 +77,18 @@ python3 sima-cli-install.py v2.1.6 latest
 On Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest https://artifacts.sima-neat.com/tools/sima-cli-install.py -OutFile sima-cli-install.py
-python .\sima-cli-install.py main latest
+Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/install.py -OutFile sima-cli-install.py
+python .\sima-cli-install.py
 ```
+
+To install a specific branch or release:
+
+```powershell
+python .\sima-cli-install.py feature/my-branch latest
+python .\sima-cli-install.py v2.1.6 latest
+```
+
+Release tags such as `v2.1.6` install from public PyPI. Branch names install tested artifacts from `artifacts.neat.sima.ai/sima-cli`.
 
 Public PyPI releases can also be installed directly:
 
@@ -62,8 +100,8 @@ pip install sima-cli
 
 ```bash
 sima-cli --help
+sima-cli --version
 sima-cli login
-sima-cli version
 ```
 
 Use `--internal` or `SIMA_CLI_INTERNAL=1` when internal Artifactory resources are required:
@@ -82,7 +120,7 @@ sima-cli sdk setup
 sima-cli sdk neat
 ```
 
-Install a package from metadata:
+Install Model Compiler from package metadata:
 
 ```bash
 sima-cli install -v 2.1.1 sdk-extensions/model
@@ -131,7 +169,6 @@ sima-cli appzoo list
 | `sima-cli selfupdate` | Update sima-cli manually. | [docs](docs/sima-cli/commands/sima-cli-selfupdate.md) |
 | `sima-cli serial` | Connect to the UART serial console of a DevKit. | [docs](docs/sima-cli/commands/sima-cli-serial.md) |
 | `sima-cli update` | Update a SiMa DevKit or remote device. | [docs](docs/sima-cli/commands/sima-cli-update.md) |
-| `sima-cli version` | Show the installed CLI version. | [docs](docs/sima-cli/commands/sima-cli-version.md) |
 
 ## Development
 

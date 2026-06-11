@@ -4,11 +4,13 @@ title Sima-CLI Installer
 
 set "WHEEL_PATH=%~1"
 if "%WHEEL_PATH%"=="" (
-    echo Usage: %~nx0 path\to\sima_cli.whl
-    exit /b 2
+    set "INSTALL_FROM_PYPI=1"
+) else (
+    set "INSTALL_FROM_PYPI=0"
 )
-if not exist "%WHEEL_PATH%" (
+if "%INSTALL_FROM_PYPI%"=="0" if not exist "%WHEEL_PATH%" (
     echo Wheel not found: %WHEEL_PATH%
+    echo Usage: %~nx0 [path\to\sima_cli.whl]
     exit /b 2
 )
 
@@ -40,10 +42,18 @@ if not exist "%INSTALL_DIR%" (
     python -m venv "%INSTALL_DIR%"
 )
 
-echo Installing/Upgrading sima-cli from %WHEEL_PATH%...
+if "%INSTALL_FROM_PYPI%"=="1" (
+    echo Installing/Upgrading official sima-cli release from PyPI...
+) else (
+    echo Installing/Upgrading sima-cli from %WHEEL_PATH%...
+)
 call "%INSTALL_DIR%\Scripts\activate.bat"
 python -m pip install --upgrade pip
-python -m pip install --force-reinstall "%WHEEL_PATH%"
+if "%INSTALL_FROM_PYPI%"=="1" (
+    python -m pip install --force-reinstall --index-url https://pypi.org/simple sima-cli
+) else (
+    python -m pip install --force-reinstall "%WHEEL_PATH%"
+)
 
 set "VENV_PATH=%INSTALL_DIR%\Scripts"
 echo %PATH% | findstr /I /C:"%VENV_PATH%" >nul

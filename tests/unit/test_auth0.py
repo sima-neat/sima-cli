@@ -93,6 +93,11 @@ class TestAuth0AccessTokenRequirements(unittest.TestCase):
     def test_discourse_url_uses_staging_when_enabled(self):
         with patch.dict("os.environ", {"USE_STAGING_DEV_PORTAL": "true"}):
             self.assertEqual(auth0._discourse_sign_in_url(), auth0.STAGING_DISCOURSE_URL)
+            self.assertEqual(auth0._discourse_sign_in_url(), "https://community-dev.sima.ai/login")
+
+    def test_discourse_url_uses_community_in_production(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(auth0._discourse_sign_in_url(), "https://community.sima.ai/login")
 
     def test_cached_invalid_token_logs_out_when_user_declines_discourse_sign_in(self):
         invalid_tokens = _tokens({"aud": "https://docs.sima.ai", "permissions": [auth0.DOC_ACCESS_GRANT]})

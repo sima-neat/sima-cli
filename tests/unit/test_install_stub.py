@@ -110,6 +110,23 @@ def test_resolve_ref_fetches_branches_when_not_provided():
         assert installer.resolve_ref("https://example.invalid/sima-cli", None, True) == "main"
 
 
+def test_install_defaults_to_last_five_pypi_releases_in_menu():
+    installer = load_installer()
+    args = installer.build_parser().parse_args([])
+
+    with patch.object(installer, "resolve_ref", return_value="v2.1.5") as resolve_ref, \
+         patch.object(installer, "install_from_pypi") as install_from_pypi:
+        installer.install(args)
+
+    resolve_ref.assert_called_once_with(
+        installer.DEFAULT_BASE_URL,
+        None,
+        False,
+        pypi_release_limit=5,
+    )
+    install_from_pypi.assert_called_once_with("v2.1.5")
+
+
 def test_resolve_tag_reads_latest_tag():
     installer = load_installer()
 

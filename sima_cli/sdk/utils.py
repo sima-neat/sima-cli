@@ -12,6 +12,8 @@ import json
 import re
 import shlex
 import platform
+import shutil
+import tempfile
 from collections import defaultdict
 from rich.console import Console
 from rich.panel import Panel
@@ -24,7 +26,7 @@ from sima_cli.sdk.config import (
 )
 
 
-FILTER_KEYWORDS = ["elxr", "yocto", "mpk", "modelsdk", "sima-neat/sdk", "sima-neat/elxr"]
+FILTER_KEYWORDS = ["elxr", "yocto", "mpk", "modelsdk", "neat-sdk", "sima-neat/sdk", "sima-neat/elxr"]
 SDK_KEYWORD_ALIASES = {
     "model": "modelsdk",
     "mpk": "mpk_cli_toolset",
@@ -255,7 +257,7 @@ def prompt_multi_select(baseline_present: bool = False) -> List[str]:
         for idx, (img, cfg) in enumerate(IMAGE_CONFIG.items(), start=1):
             print(
                 f"{idx}. {cfg['display']}\n"
-                f"    📦 Description      : {cfg['description']}\n"
+                f"    📦 Description      : {cfg.get('description', 'N/A')}\n"
                 f"    💾 Final image size : {cfg.get('size', 'N/A')} GB (runtime requirement)\n"
                 f"    📂 Pull space need  : {cfg.get('pull_space', 'N/A')} GB (temporary during pull)\n"
             )
@@ -635,7 +637,7 @@ def ensure_sima_cli_installed(sdk_container_name: str, login_name: str):
             sdk_container_name,
             "bash",
             "-lc",
-            "curl https://docs.sima.ai/_static/tools/sima-cli-installer.sh | bash",
+            "curl https://artifacts.neat.sima.ai/sima-cli/linux-mac.sh | bash",
         ]
     )
     print(f"✅ sima-cli installed for user '{login_name}' in '{sdk_container_name}'.")
@@ -649,6 +651,16 @@ def _get_container_image_ref(container_name: str) -> str:
         ).strip()
     except subprocess.CalledProcessError:
         return ""
+
+
+def is_snap_docker_cli() -> bool:
+    docker_bin = shutil.which("docker") or ""
+    resolved = os.path.realpath(docker_bin) if docker_bin else ""
+    return (
+        "/snap/" in docker_bin
+        or "/snap/" in resolved
+        or resolved.endswith("/usr/bin/snap")
+    )
 
 
 def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: str, uid: int, gid: int) -> None:
@@ -692,25 +704,48 @@ def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: 
         print("⚠️  Could not update ownership for sima-cli auth cache directory; continuing setup.")
 
     copied = []
-    for filename in existing_files:
-        host_path = os.path.join(host_sima_cli_dir, filename)
-        container_path = f"{container_auth_dir}/{filename}"
-        if not run_command(["docker", "cp", host_path, f"{sdk_container_name}:{container_path}"], fatal=False):
-            print(f"⚠️  Could not copy host sima-cli auth cache file '{filename}' into Neat SDK container; continuing setup.")
-            continue
-        if not run_command([
-            "docker",
-            "exec",
-            "-u",
-            "root",
-            sdk_container_name,
-            "chown",
-            f"{uid}:{gid}",
-            container_path,
-        ], fatal=False):
-            print(f"⚠️  Could not update ownership for copied sima-cli auth cache file '{filename}'; continuing setup.")
-            continue
-        copied.append(filename)
+    with _docker_cp_staging_dir() as tmpdir:
+        for filename in existing_files:
+            host_path = os.path.join(host_sima_cli_dir, filename)
+            staged_path = os.path.join(tmpdir, filename)
+            container_path = f"{container_auth_dir}/{filename}"
+            cleanup_target = [
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                sdk_container_name,
+                "rm",
+                "-f",
+                container_path,
+            ]
+
+            try:
+                shutil.copy2(host_path, staged_path)
+                os.chmod(staged_path, 0o600)
+            except OSError as e:
+                print(f"⚠️  Could not stage host sima-cli auth cache file '{filename}': {e}; continuing setup.")
+                continue
+
+            run_command(cleanup_target, fatal=False)
+            if not run_command(["docker", "cp", staged_path, f"{sdk_container_name}:{container_path}"], fatal=False):
+                run_command(cleanup_target, fatal=False)
+                print(f"⚠️  Could not copy host sima-cli auth cache file '{filename}' into Neat SDK container; continuing setup.")
+                continue
+            if not run_command([
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                sdk_container_name,
+                "chown",
+                f"{uid}:{gid}",
+                container_path,
+            ], fatal=False):
+                run_command(cleanup_target, fatal=False)
+                print(f"⚠️  Could not update ownership for copied sima-cli auth cache file '{filename}'; continuing setup.")
+                continue
+            copied.append(filename)
 
     if not copied:
         print("ℹ️  No sima-cli auth cache files were copied into Neat SDK container; continuing setup.")
@@ -735,16 +770,49 @@ def _is_x86_platform() -> bool:
     return machine in {"x86_64", "amd64", "i386", "i686", "x86"}
 
 
-def ensure_model_sdk_extension_installed(sdk_container_name: str, login_name: str, auto_install: bool = False):
+def _is_arm64_platform() -> bool:
+    machine = platform.machine().lower()
+    return machine in {"aarch64", "arm64"}
+
+
+def _version_at_least(version: str, minimum: str) -> bool:
+    def parts(value: str) -> List[int]:
+        match = re.match(r"^\s*(\d+(?:\.\d+)*)", value or "")
+        if not match:
+            return []
+        return [int(part) for part in match.group(1).split(".")]
+
+    current_parts = parts(version)
+    minimum_parts = parts(minimum)
+    if not current_parts or not minimum_parts:
+        return False
+
+    length = max(len(current_parts), len(minimum_parts))
+    current_parts.extend([0] * (length - len(current_parts)))
+    minimum_parts.extend([0] * (length - len(minimum_parts)))
+    return current_parts >= minimum_parts
+
+
+def _model_sdk_extension_component(base_version: str) -> str:
+    if _is_x86_platform():
+        return "sdk-extensions/model"
+    if _is_arm64_platform() and _version_at_least(base_version, "2.1.1"):
+        return "sdk-extensions/model-aarch64"
+    return ""
+
+
+def ensure_model_sdk_extension_installed(
+    sdk_container_name: str,
+    login_name: str,
+    auto_install: bool = False,
+    uid: int = None,
+    gid: int = None,
+):
     """
-    Install the Model SDK extension for Neat SDK containers.
+    Install the Model Compiler extension for Neat SDK containers.
     """
     image_ref = _get_container_image_ref(sdk_container_name)
     if not image_ref or not is_neat_sdk_image(image_ref):
-        return
-
-    if not _is_x86_platform():
-        print("ℹ️  Model SDK extension install is not available on ARM64 platforms; skipping.")
         return
 
     sdk_release = subprocess.run(
@@ -754,39 +822,44 @@ def ensure_model_sdk_extension_installed(sdk_container_name: str, login_name: st
         check=False,
     )
     if sdk_release.returncode != 0:
-        print(f"⚠️  Could not read /etc/sdk-release in '{sdk_container_name}'. Skipping Model SDK extension install.")
+        print(f"⚠️  Could not read /etc/sdk-release in '{sdk_container_name}'. Skipping Model Compiler extension install.")
         return
 
     base_version = _extract_sdk_base_version(sdk_release.stdout or "")
     if not base_version:
-        print(f"⚠️  Could not determine SDK base version in '{sdk_container_name}'. Skipping Model SDK extension install.")
+        print(f"⚠️  Could not determine SDK base version in '{sdk_container_name}'. Skipping Model Compiler extension install.")
+        return
+
+    extension_component = _model_sdk_extension_component(base_version)
+    if not extension_component:
+        print("ℹ️  Model Compiler extension install is not available on this host platform for SDK versions older than 2.1.1; skipping.")
         return
 
     console.print(
         Panel(
-            "[yellow]This SDK supports Model SDK as an extension.[/yellow]\n\n"
-            "The Model SDK extension lets you quantize and compile models "
+            "[yellow]This SDK supports Model Compiler as an extension.[/yellow]\n\n"
+            "The Model Compiler extension lets you quantize and compile models "
             "so they can run on SiMa hardware accelerated.\n"
             "It will be installed on your host in the SDK extensions directory "
             "mounted into this container at /sdk-extensions.\n"
             "Depending on network conditions, installation may take up to 15 minutes.\n"
             "\n\n"
             "If you decide to install it later, run this from within the SDK container shell:\n"
-            f"sima-cli install -v {base_version} sdk-extensions/model",
-            title="Model SDK Extension",
+            f"sima-cli install -v {base_version} {extension_component}",
+            title="Model Compiler Extension",
             border_style="green",
             style="green",
             expand=False,
         )
     )
     if auto_install:
-        print("ℹ️  Auto-installing Model SDK extension.")
+        print("ℹ️  Auto-installing Model Compiler extension.")
     else:
-        if not yes_no_prompt("Install the Model SDK extension now?"):
-            print("ℹ️  Skipping Model SDK extension install.")
+        if not yes_no_prompt("Install the Model Compiler extension now?"):
+            print("ℹ️  Skipping Model Compiler extension install.")
             return
 
-    print("ℹ️  Logging in to sima-cli before installing the Model SDK extension...")
+    print("ℹ️  Logging in to sima-cli before installing the Model Compiler extension...")
     run_command(
         _docker_exec_interactive_prefix() + [
             "-u",
@@ -798,20 +871,55 @@ def ensure_model_sdk_extension_installed(sdk_container_name: str, login_name: st
         ]
     )
 
-    print(f"ℹ️  Installing Model SDK extension for SDK base version {base_version}...")
+    home_directory = f"/home/{login_name}"
+    owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
+    user_install_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"export USER={shlex.quote(login_name)}; "
+        f"export LOGNAME={shlex.quote(login_name)}; "
+        "export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"; "
+        "mkdir -p \"$HOME/extension-installation\"; "
+        "cd \"$HOME/extension-installation\"; "
+        "if command -v sima-cli >/dev/null 2>&1; then "
+        "SIMA_CLI_BIN=\"$(command -v sima-cli)\"; "
+        "elif [ -x \"$HOME/.sima-cli/.venv/bin/sima-cli\" ]; then "
+        "SIMA_CLI_BIN=\"$HOME/.sima-cli/.venv/bin/sima-cli\"; "
+        "else "
+        "echo \"sima-cli was not found for user $USER. Expected $HOME/.sima-cli/.venv/bin/sima-cli.\" >&2; "
+        "exit 127; "
+        "fi; "
+        f"\"$SIMA_CLI_BIN\" install -v {shlex.quote(base_version)} {shlex.quote(extension_component)}"
+    )
+    install_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"{_sudoers_drop_in_script(login_name)}; "
+        "cleanup_model_sdk_install() { "
+        f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
+        f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions || true; fi; "
+        f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\" || true; fi; "
+        "}; "
+        "trap cleanup_model_sdk_install EXIT; "
+        "mkdir -p \"$HOME/extension-installation\"; "
+        "cleanup_model_sdk_install; "
+        f"su -s /bin/bash {shlex.quote(login_name)} -c 'sudo -n true'; "
+        f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
+    )
+    print(f"ℹ️  Installing Model Compiler extension for SDK base version {base_version}...")
     run_command(
         [
             "docker",
             "exec",
             "-u",
-            login_name,
+            "root",
             sdk_container_name,
             "bash",
             "-lc",
-            f"mkdir -p ~/extension-installation && cd ~/extension-installation && sima-cli install -v {base_version} sdk-extensions/model",
+            install_script,
         ]
     )
-    print(f"✅ Model SDK extension installed for SDK base version {base_version}.")
+    print(f"✅ Model Compiler extension installed for SDK base version {base_version}.")
 
 
 def _is_skills_enabled_image(image_ref: str) -> bool:
@@ -865,8 +973,31 @@ def _sudoers_drop_in_script(login_name: str) -> str:
     return (
         "set -eu; "
         "mkdir -p /etc/sudoers.d; "
+        "if ! grep -Eq '^[[:space:]]*([#@]includedir)[[:space:]]+/etc/sudoers\\.d([[:space:]]+.*)?$' /etc/sudoers; then "
+        "printf '\\n#includedir /etc/sudoers.d\\n' >> /etc/sudoers; "
+        "fi; "
         f"printf '%s\\n' {shlex.quote(sudoers_line)} > /etc/sudoers.d/sima-cli-user; "
         "chmod 0440 /etc/sudoers.d/sima-cli-user"
+    )
+
+
+def _bash_profile_sources_bashrc_script(login_name: str, uid: int, gid: int) -> str:
+    home = f"/home/{login_name}"
+    profile = f"{home}/.bash_profile"
+    return (
+        "set -eu; "
+        f"home={shlex.quote(home)}; "
+        f"profile={shlex.quote(profile)}; "
+        "mkdir -p \"$home\"; "
+        "touch \"$profile\"; "
+        "if ! grep -Eq '(^|[[:space:]])(\\.|source)[[:space:]]+(\"?\\$HOME\"?/|~/)?\\.bashrc' \"$profile\" 2>/dev/null; then "
+        "cat >> \"$profile\" <<'SIMA_CLI_BASHRC_SOURCE'\n\n"
+        "if [ -f \"$HOME/.bashrc\" ]; then\n"
+        "    . \"$HOME/.bashrc\"\n"
+        "fi\n"
+        "SIMA_CLI_BASHRC_SOURCE\n"
+        "fi; "
+        f"chown {uid}:{gid} \"$home\" \"$profile\""
     )
 
 
@@ -881,13 +1012,52 @@ def _append_unique_line(path: str, line: str) -> None:
         f.write(line + "\n")
 
 
+def _ensure_passwd_user(path: str, login_name: str, uid: int, gid: int) -> None:
+    user_line = f"{login_name}:x:{uid}:{gid}::/home/{login_name}:/bin/bash"
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    filtered = []
+    insert_index = None
+    for line in lines:
+        parts = line.split(":")
+        if len(parts) >= 3 and parts[0] == login_name:
+            continue
+        if insert_index is None and len(parts) >= 3 and parts[2] == str(uid):
+            insert_index = len(filtered)
+        filtered.append(line)
+
+    if insert_index is None:
+        insert_index = len(filtered)
+    filtered.insert(insert_index, user_line)
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(filtered) + "\n")
+
+
+def _ensure_shadow_user(path: str, login_name: str) -> None:
+    shadow_line = f"{login_name}:$6$hash$placeholder:::::::"
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    filtered = [
+        line
+        for line in lines
+        if not (line.split(":", 1)[0] == login_name)
+    ]
+    filtered.append(shadow_line)
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(filtered) + "\n")
+
+
 def _configure_group_file(path: str, login_name: str, gid: int) -> None:
     primary_group_line = f"{login_name}:x:{gid}:"
     with open(path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
 
-    has_primary_group = False
     updated_lines = []
+    insert_index = None
     for line in lines:
         parts = line.split(":")
         if len(parts) < 4:
@@ -895,16 +1065,19 @@ def _configure_group_file(path: str, login_name: str, gid: int) -> None:
             continue
         name, password, group_id, members = parts[:4]
         if name == login_name:
-            has_primary_group = True
-        if name == "docker":
+            continue
+        if insert_index is None and group_id == str(gid):
+            insert_index = len(updated_lines)
+        if name in {"docker", "sudo"}:
             member_list = [member for member in members.split(",") if member]
             if login_name not in member_list:
                 member_list.append(login_name)
             line = ":".join([name, password, group_id, ",".join(member_list), *parts[4:]])
         updated_lines.append(line)
 
-    if not has_primary_group:
-        updated_lines.append(primary_group_line)
+    if insert_index is None:
+        insert_index = len(updated_lines)
+    updated_lines.insert(insert_index, primary_group_line)
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(updated_lines) + "\n")
@@ -916,6 +1089,91 @@ def _prepare_log_host_dir(path: str) -> None:
         os.chmod(path, 0o777)
     except OSError as e:
         print(f"⚠️ Could not make log folder writable for container services: {path} ({e})")
+
+
+def _docker_cp_staging_dir():
+    """
+    Docker installed through Snap may not see host /tmp paths. Stage files under
+    a non-hidden user home directory so docker cp can access them across Docker
+    variants, including Snap confinement.
+    """
+    home = os.path.expanduser("~")
+    if home and os.path.isdir(home) and os.access(home, os.W_OK):
+        staging = tempfile.TemporaryDirectory(prefix="sima-cli-sdk-", dir=home)
+        try:
+            os.chmod(staging.name, 0o755)
+        except OSError:
+            staging.cleanup()
+            raise
+        return staging
+    return tempfile.TemporaryDirectory(prefix="sima-cli-sdk-")
+
+
+def configure_container_user(
+    sdk_container_name: str,
+    login_name: str,
+    uid: int,
+    gid: int,
+    platform_os: str = None,
+) -> None:
+    platform_os = platform_os or check_os()
+    home_directory = f"/home/{login_name}"
+
+    if platform_os in ["linux", "macos"]:
+        with _docker_cp_staging_dir() as tmpdir:
+            passwd_path = os.path.join(tmpdir, "passwd.txt")
+            shadow_path = os.path.join(tmpdir, "shadow.txt")
+            group_path = os.path.join(tmpdir, "group.txt")
+
+            run_command(["docker", "cp", f"{sdk_container_name}:/etc/passwd", passwd_path])
+            _ensure_passwd_user(passwd_path, login_name, uid, gid)
+            run_command(["docker", "cp", passwd_path, f"{sdk_container_name}:/etc/passwd"])
+
+            run_command(["docker", "cp", f"{sdk_container_name}:/etc/shadow", shadow_path])
+            _ensure_shadow_user(shadow_path, login_name)
+            run_command(["docker", "cp", shadow_path, f"{sdk_container_name}:/etc/shadow"])
+
+            run_command(["docker", "cp", f"{sdk_container_name}:/etc/group", group_path])
+            _configure_group_file(group_path, login_name, gid)
+            run_command(["docker", "cp", group_path, f"{sdk_container_name}:/etc/group"])
+
+        run_command([
+            "docker",
+            "exec",
+            "-u",
+            "0",
+            sdk_container_name,
+            "bash",
+            "-lc",
+            _sudoers_drop_in_script(login_name),
+        ])
+
+        run_command([
+            "docker",
+            "exec",
+            "-u",
+            login_name,
+            sdk_container_name,
+            "bash",
+            "-lc",
+            "sudo -n true",
+        ])
+
+        run_command(["docker", "exec", "-u", "root", sdk_container_name, "mkdir", "-p", home_directory])
+        run_command(["docker", "exec", "-u", "root", sdk_container_name, "chown", f"{uid}:{gid}", home_directory])
+        run_command([
+            "docker",
+            "exec",
+            "-u",
+            "root",
+            sdk_container_name,
+            "bash",
+            "-lc",
+            _bash_profile_sources_bashrc_script(login_name, uid, gid),
+        ])
+    else:
+        command = f"echo '{login_name} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers"
+        run_command(["docker", "exec", "-u", "root", sdk_container_name, "sh", "-c", command])
 
 
 def install_neat_playbooks(sdk_container_name: str, login_name: str) -> None:
@@ -972,39 +1230,7 @@ def configure_container(
     print(f"⚙️  Configuring container '{sdk_container_name}' for user '{login_name}' (UID={uid}, GID={gid})")
     home_directory = f"/home/{login_name}"
 
-    # ---- Linux / MacOS User Setup ----
-    if platform_os in ["linux", "macos"]:
-        run_command(["docker", "cp", f"{sdk_container_name}:/etc/passwd", "./passwd.txt"])
-        _append_unique_line("./passwd.txt", f"{login_name}:x:{uid}:{gid}::/home/{login_name}:/bin/bash")
-        run_command(["docker", "cp", "./passwd.txt", f"{sdk_container_name}:/etc/passwd"])
-        os.remove("./passwd.txt")
-
-        run_command(["docker", "cp", f"{sdk_container_name}:/etc/shadow", "./shadow.txt"])
-        _append_unique_line("./shadow.txt", f"{login_name}:$6$hash$placeholder:::::::")
-        run_command(["docker", "cp", "./shadow.txt", f"{sdk_container_name}:/etc/shadow"])
-        os.remove("./shadow.txt")
-
-        run_command(["docker", "cp", f"{sdk_container_name}:/etc/group", "./group.txt"])
-        _configure_group_file("./group.txt", login_name, gid)
-        run_command(["docker", "cp", "./group.txt", f"{sdk_container_name}:/etc/group"])
-        os.remove("./group.txt")
-
-        run_command([
-            "docker",
-            "exec",
-            "-u",
-            "0",
-            sdk_container_name,
-            "bash",
-            "-lc",
-            _sudoers_drop_in_script(login_name),
-        ])
-
-        run_command(["docker", "exec", "-u", "root", sdk_container_name, "mkdir", "-p", home_directory])
-        run_command(["docker", "exec", "-u", "root", sdk_container_name, "chown", f"{uid}:{gid}", home_directory])
-    else:
-        command = f"echo '{login_name} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers"
-        run_command(["docker", "exec", "-u", "root", sdk_container_name, "sh", "-c", command])
+    configure_container_user(sdk_container_name, login_name, uid, gid, platform_os=platform_os)
 
     run_command(
         [
@@ -1055,13 +1281,15 @@ def configure_container(
     else:
         ensure_sima_cli_installed(sdk_container_name, login_name)
     if no_model_sdk:
-        reason = "--minimal" if minimal else "--no-model-sdk"
-        print(f"ℹ️  Skipping Model SDK extension installation because {reason} was specified.")
+        reason = "--minimal" if minimal else "--no-model-compiler"
+        print(f"ℹ️  Skipping Model Compiler extension installation because {reason} was specified.")
     else:
         ensure_model_sdk_extension_installed(
             sdk_container_name,
             login_name,
             auto_install=(noninteractive or yes_to_all),
+            uid=uid,
+            gid=gid,
         )
     _sync_codex_skills(sdk_container_name, login_name, uid, gid)
     if minimal:
@@ -1292,10 +1520,12 @@ def start_docker_container(
             is_docker_port_collision_error,
             prepare_neat_container_run,
             print_neat_setup_summary,
+            reserved_ports_from_neat_port_map,
         )
 
         base_docker_cmd = list(docker_cmd)
         last_result = None
+        reserved_ports = set()
         for attempt in range(1, NEAT_DOCKER_RETRY_LIMIT + 1):
             neat_run_config = prepare_neat_container_run(
                 workspace=workspace,
@@ -1305,6 +1535,7 @@ def start_docker_container(
                 noninteractive=noninteractive,
                 no_insight=no_insight,
                 minimal=minimal,
+                reserved_ports=reserved_ports,
             )
             launch_cmd = list(base_docker_cmd)
             append_neat_docker_args(launch_cmd, neat_run_config)
@@ -1320,6 +1551,7 @@ def start_docker_container(
             error_text = "\n".join(part for part in [result.stdout, result.stderr] if part)
             if attempt < NEAT_DOCKER_RETRY_LIMIT and is_docker_port_collision_error(error_text):
                 _remove_failed_neat_container(container_name)
+                reserved_ports.update(reserved_ports_from_neat_port_map(neat_run_config.port_map))
                 print(
                     f"⚠️  Docker reported a Neat SDK port collision. Regenerating port map and retrying "
                     f"({attempt}/{NEAT_DOCKER_RETRY_LIMIT})..."
@@ -1841,15 +2073,24 @@ def _is_sima_neat_repo(repo: str) -> bool:
 
 
 def _is_local_neat_sdk_repo(repo: str) -> bool:
-    return "/" not in repo and (repo == "sdk" or repo.startswith("sdk-"))
+    return "/" not in repo and (
+        repo == "sdk"
+        or repo.startswith("sdk-")
+        or _is_neat_sdk_alias_repo_name(repo)
+    )
 
 
-def _is_neat_repo_name(repo_name: str) -> bool:
+def _is_neat_sdk_alias_repo_name(repo_name: str) -> bool:
+    return repo_name == "neat-sdk" or repo_name.startswith("neat-sdk-")
+
+
+def _is_neat_repo_name(repo_name: str, include_neat_sdk_alias: bool = False) -> bool:
     return (
         repo_name == "sdk"
         or repo_name.startswith("sdk-")
         or repo_name == "elxr"
         or repo_name.startswith("elxr-")
+        or (include_neat_sdk_alias and _is_neat_sdk_alias_repo_name(repo_name))
     )
 
 
@@ -1859,7 +2100,8 @@ def is_neat_sdk_image(image: str) -> bool:
 
     Current Neat SDK images are published as ghcr.io/sima-neat/sdk*. Legacy
     ghcr.io/sima-neat/elxr* images are kept compatible and classified as Neat.
-    Local development builds may also be tagged as bare sdk* repositories.
+    Local development builds may also be tagged as bare sdk* or neat-sdk*
+    repositories.
     """
     repo = _image_repository(image)
     if _is_local_neat_sdk_repo(repo):
@@ -1869,7 +2111,7 @@ def is_neat_sdk_image(image: str) -> bool:
         return False
 
     repo_name = repo.rsplit("/", 1)[-1]
-    return _is_neat_repo_name(repo_name)
+    return _is_neat_repo_name(repo_name, include_neat_sdk_alias=True)
 
 
 def _canonical_sdk_image_name(image: str) -> str:
@@ -1891,6 +2133,8 @@ def _is_sanitized_neat_sdk_container_name(container_name: str) -> bool:
         or normalized.startswith("ghcr-io-sima-neat-sdk-")
         or normalized == "ghcr-io-sima-neat-elxr"
         or normalized.startswith("ghcr-io-sima-neat-elxr-")
+        or normalized == "neat-sdk"
+        or normalized.startswith("neat-sdk-")
     )
 
 

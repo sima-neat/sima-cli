@@ -21,6 +21,7 @@ import ipaddress
 import subprocess
 from typing import Optional
 from rich.console import Console
+from rich.panel import Panel
 from sima_cli.sdk.install import setup_and_start
 from sima_cli.sdk.cmdexec import exec_container_cmd
 from sima_cli.sdk.uninstall import remove_containers, remove_unused_images
@@ -31,9 +32,11 @@ from sima_cli.discover.discover import discover_and_probe
 from rich.table import Table
 from sima_cli.utils.env import get_environment_type
 from sima_cli.utils.docker import check_and_start_docker
+from sima_cli.utils.deprecation import should_show_post_neat_ga_deprecation_notice
 from sima_cli.sdk.config import IMAGE_CONFIG
 
 console = Console()
+LEGACY_PALETTE_SDK_TOOLS = {"elxr", "model", "yocto", "mpk"}
 
 # ------------------------------------------------------------
 # Group Definition
@@ -131,6 +134,19 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     Launch a selected SDK tool container, optionally executing a command inside it.
     If no command is provided, defaults to an interactive bash login shell.
     """
+    if tool in LEGACY_PALETTE_SDK_TOOLS and should_show_post_neat_ga_deprecation_notice():
+        console.print(
+            Panel(
+                "[yellow]Legacy Palette SDK functionality will be deprecated soon.[/yellow]\n\n"
+                "For application development, migrate to Palette Neat.\n"
+                "Visit https://community.sima.ai for current documentation.",
+                title="Legacy Palette SDK",
+                border_style="yellow",
+                style="yellow",
+                expand=False,
+            )
+        )
+
     # Normalize click's tuple argument
     if not cmd:
         cmd_str = None
@@ -169,9 +185,11 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     help="Start Neat SDK without Insight UI/video/WebRTC port mappings.",
 )
 @click.option(
+    "--no-model-compiler",
     "--no-model-sdk",
+    "no_model_sdk",
     is_flag=True,
-    help="Skip Model SDK extension setup. Intended for CI installation tests.",
+    help="Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility.",
 )
 @click.option(
     "--minimal",
@@ -296,8 +314,19 @@ def remove(ctx, sdk, yes):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def mpk(ctx, cmd):
-    """Access MPK CLI toolset container for managing and building pipelines along with the device manager.
+    """
+    Access MPK CLI toolset container for managing and building pipelines along with the device manager.
     It also includes the plugins zoo and the Performance Estimator tool.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk mpk
+        sima-cli sdk mpk mpk --help
+        sima-cli sdk mpk "mpk compile --help"
     """
     launch_sdk_tool("mpk", cmd, ctx)
 
@@ -309,7 +338,19 @@ def mpk(ctx, cmd):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def model(ctx, cmd):
-    """Launch the Model SDK tool environment."""
+    """
+    Launch the Model SDK tool environment.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk model
+        sima-cli sdk model python --version
+        sima-cli sdk model "python script.py --flag"
+    """
     launch_sdk_tool("model", cmd, ctx)
 
 
@@ -320,7 +361,19 @@ def model(ctx, cmd):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def yocto(ctx, cmd):
-    """Launch the Yocto SDK tool environment."""
+    """
+    Launch the Yocto SDK tool environment.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk yocto
+        sima-cli sdk yocto bitbake --version
+        sima-cli sdk yocto "bitbake core-image-minimal"
+    """
     launch_sdk_tool("yocto", cmd, ctx)
 
 
@@ -331,7 +384,19 @@ def yocto(ctx, cmd):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def neat(ctx, cmd):
-    """Launch the Neat SDK tool environment."""
+    """
+    Launch the Neat SDK tool environment.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk neat
+        sima-cli sdk neat python --version
+        sima-cli sdk neat "python app.py --config config.json"
+    """
     launch_sdk_tool("neat", cmd, ctx)
 
 
@@ -342,7 +407,19 @@ def neat(ctx, cmd):
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def elxr(ctx, cmd):
-    """Launch the eLxr SDK tool environment."""
+    """
+    Launch the eLxr SDK tool environment.
+
+    If CMD is provided, all remaining tokens are executed inside the matching
+    running container with bash -lc. If CMD is omitted, sima-cli opens an
+    interactive login shell.
+
+    \b
+    Examples:
+        sima-cli sdk elxr
+        sima-cli sdk elxr uname -a
+        sima-cli sdk elxr "source /opt/bin/simaai-init-build-env modalix && bitbake --version"
+    """
     launch_sdk_tool("elxr", cmd, ctx)
 
 

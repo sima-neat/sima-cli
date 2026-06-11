@@ -18,6 +18,7 @@ Whenever `sima-cli install <package>` is executed, this registry stores:
 import json
 import click
 import datetime
+import re
 from pathlib import Path
 from sima_cli.install.package_builder import build_metadata, write_metadata
 from rich.table import Table
@@ -28,6 +29,27 @@ from rich.panel import Panel
 
 # Default registry path (cross-platform)
 REGISTRY_PATH = Path.home() / ".sima-cli" / "registry.json"
+
+
+class OptionalExactVersionFlag(click.Option):
+    _VERSION_RE = re.compile(r"^v?\d+(?:\.\d+)*$")
+
+    def add_to_parser(self, parser, ctx):
+        super().add_to_parser(parser, ctx)
+        for opt in self.opts:
+            parser_option = parser._long_opt.get(opt) or parser._short_opt.get(opt)
+            if parser_option is None:
+                continue
+            original_process = parser_option.process
+
+            def process(value, state, parser_option=parser_option, original_process=original_process):
+                if state.rargs and self._VERSION_RE.fullmatch(state.rargs[0]):
+                    state.opts[parser_option.dest] = state.rargs.pop(0)
+                    state.order.append(parser_option.obj)
+                    return
+                original_process(value, state)
+
+            parser_option.process = process
 
 # ------------------------------------------------------------------------------------------------------------
 # Register the "packages" group to the main CLI entrypoint
@@ -109,6 +131,32 @@ def show_metadata(name, version):
     default=False,
     help="Add download-compatible-files-only so installers download only wheel files compatible with the current platform.",
 )
+@click.option(
+    "--host-platform",
+    multiple=True,
+    help=(
+        "Host OS compatibility as a comma-separated list. Supported values: "
+        "linux, ubuntu, mac, windows. May be repeated."
+    ),
+)
+@click.option(
+    "--board-platform",
+    multiple=True,
+    help=(
+        "Board compatibility as COMPAT[,COMPAT...][@VERSION_SPEC], for example "
+        "modalix, modalix@==2.1.1, or modalix@>=2.1.0,<=2.1.2. May be repeated."
+    ),
+)
+@click.option(
+    "--palette-platform",
+    cls=OptionalExactVersionFlag,
+    default=None,
+    flag_value="",
+    help=(
+        "Mark the package as compatible with Palette SDK containers. Optionally pass "
+        "an exact SDK version, for example --palette-platform 2.0.0."
+    ),
+)
 def build_package_metadata(
     artifacts_folder,
     name,
@@ -119,6 +167,9 @@ def build_package_metadata(
     exclude,
     variant,
     download_compatible_files_only,
+    host_platform,
+    board_platform,
+    palette_platform,
 ):
     """
     Generate metadata.json, or metadata-<variant>.json, for sima-cli package installation.
@@ -133,6 +184,9 @@ def build_package_metadata(
             selectables=selectables,
             exclude=exclude,
             download_compatible_files_only=download_compatible_files_only,
+            host_platforms=host_platform,
+            board_platforms=board_platform,
+            palette_platform=palette_platform,
         )
         output_path = write_metadata(artifacts_folder, metadata, variant=variant)
     except ValueError as exc:

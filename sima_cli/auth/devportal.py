@@ -40,15 +40,14 @@ HOST_DOCKER_CONTEXTS_DIR = os.path.join(os.path.expanduser("~"), ".docker", "con
 # Detect staging or production environment
 is_staging = False
 if os.getenv("USE_STAGING_DEV_PORTAL", "false").lower() in ("1", "true", "yes"):
-    DEV_PORTAL = "https://discourse-dev.sima.ai"
+    DEV_PORTAL = "https://community-dev.sima.ai"
     DOCS_PORTAL = "https://docs-dev.sima.ai"
     is_staging = True
 else:
-    DEV_PORTAL = "https://developer.sima.ai"
+    DEV_PORTAL = "https://community.sima.ai"
     DOCS_PORTAL = "https://docs.sima.ai"
 
 # Derived endpoints
-LOGIN_URL = f"{DEV_PORTAL}/session"
 DEV_PORTAL_LOGIN_URL = f"{DEV_PORTAL}/login"
 DUMMY_CHECK_URL = f"{DOCS_PORTAL}/pkg_downloads/validation"
 ACCESS_REQUEST_FORM_URL = "https://www2.sima.ai/l/1041271/2025-05-05/37bndg"

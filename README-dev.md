@@ -141,4 +141,4 @@ twine upload dist/*
 
 ### 🔗 Related Links
 
-- [SiMa Developer Portal](https://developer.sima.ai/)
+- [SiMa Developer Portal](https://community.sima.ai/)

@@ -32,6 +32,7 @@ from sima_cli.discover.discover import discover_and_probe
 from rich.table import Table
 from sima_cli.utils.env import get_environment_type
 from sima_cli.utils.docker import check_and_start_docker
+from sima_cli.utils.deprecation import should_show_post_neat_ga_deprecation_notice
 from sima_cli.sdk.config import IMAGE_CONFIG
 
 console = Console()
@@ -133,7 +134,7 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     Launch a selected SDK tool container, optionally executing a command inside it.
     If no command is provided, defaults to an interactive bash login shell.
     """
-    if tool in LEGACY_PALETTE_SDK_TOOLS:
+    if tool in LEGACY_PALETTE_SDK_TOOLS and should_show_post_neat_ga_deprecation_notice():
         console.print(
             Panel(
                 "[yellow]Legacy Palette SDK functionality will be deprecated soon.[/yellow]\n\n"

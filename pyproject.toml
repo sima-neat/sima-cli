@@ -37,7 +37,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://developer.sima.ai/"
+Homepage = "https://community.sima.ai/"
 
 [project.scripts]
 sima-cli = "sima_cli.cli:main"

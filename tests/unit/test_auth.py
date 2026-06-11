@@ -1,4 +1,5 @@
 import unittest
+import importlib
 from unittest.mock import Mock, patch
 
 from sima_cli.auth import devportal
@@ -31,6 +32,28 @@ class _FakePostResponse:
 
 
 class TestDevportalLogin(unittest.TestCase):
+    def test_production_devportal_uses_community_url(self):
+        with patch.dict("os.environ", {}, clear=True):
+            reloaded = importlib.reload(devportal)
+
+        self.assertEqual(reloaded.DEV_PORTAL, "https://community.sima.ai")
+        self.assertEqual(reloaded.DEV_PORTAL_LOGIN_URL, "https://community.sima.ai/login")
+        self.assertEqual(reloaded.HEADERS["Origin"], "https://community.sima.ai")
+        self.assertEqual(reloaded.HEADERS["Referer"], "https://community.sima.ai/login")
+
+    def test_staging_devportal_uses_community_dev_url(self):
+        with patch.dict("os.environ", {"USE_STAGING_DEV_PORTAL": "true"}):
+            reloaded = importlib.reload(devportal)
+
+        try:
+            self.assertEqual(reloaded.DEV_PORTAL, "https://community-dev.sima.ai")
+            self.assertEqual(reloaded.DEV_PORTAL_LOGIN_URL, "https://community-dev.sima.ai/login")
+            self.assertEqual(reloaded.HEADERS["Origin"], "https://community-dev.sima.ai")
+            self.assertEqual(reloaded.HEADERS["Referer"], "https://community-dev.sima.ai/login")
+        finally:
+            with patch.dict("os.environ", {}, clear=True):
+                importlib.reload(devportal)
+
     def test_request_access_redirect_does_not_recurse_login(self):
         fake_session = _FakeSession(_FakeResponse())
 

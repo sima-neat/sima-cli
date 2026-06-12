@@ -108,7 +108,7 @@ Use `--internal` or `SIMA_CLI_INTERNAL=1` when internal Artifactory resources ar
 
 ```bash
 sima-cli --internal login
-SIMA_CLI_INTERNAL=1 sima-cli install -v 2.1.1 sdk-extensions/model
+SIMA_CLI_INTERNAL=1 sima-cli install -v 2.1.2 tools/model-compiler/amd64
 ```
 
 ## Common Workflows
@@ -123,7 +123,10 @@ sima-cli sdk neat
 Install Model Compiler from package metadata:
 
 ```bash
-sima-cli install -v 2.1.1 sdk-extensions/model
+# amd64 host
+sima-cli install -v 2.1.2 tools/model-compiler/amd64
+# arm64 host
+sima-cli install -v 2.1.2 tools/model-compiler/arm64
 ```
 
 Download or install Neat artifacts:

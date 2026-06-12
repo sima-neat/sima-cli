@@ -2119,11 +2119,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("su -s /bin/bash docker -c 'sudo -n true'", install_script)
         self.assertIn("trap cleanup_model_sdk_install EXIT", install_script)
         self.assertLess(install_script.index("/etc/sudoers.d/sima-cli-user"), install_script.index("su -s /bin/bash docker -c"))
-        self.assertLess(install_script.index("sudo -n true"), install_script.index("\"$SIMA_CLI_BIN\" install -v 2.0.0 sdk-extensions/model"))
+        self.assertLess(install_script.index("sudo -n true"), install_script.index("\"$SIMA_CLI_BIN\" install -v 2.0.0 tools/model-compiler/amd64"))
         self.assertLess(install_script.index("trap cleanup_model_sdk_install EXIT"), install_script.index("su -s /bin/bash docker -c"))
         self.assertIn("chown -R docker:docker \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true", install_script)
         self.assertIn("su -s /bin/bash docker -c", install_script)
-        self.assertIn("\"$SIMA_CLI_BIN\" install -v 2.0.0 sdk-extensions/model", install_script)
+        self.assertIn("\"$SIMA_CLI_BIN\" install -v 2.0.0 tools/model-compiler/amd64", install_script)
         self.assertNotIn("libllvm", install_script)
         self.assertEqual(run_command.call_args_list, [
             unittest.mock.call([
@@ -2174,7 +2174,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ]),
         )
         self.assertIn(
-            "\"$SIMA_CLI_BIN\" install -v 2.1.1 sdk-extensions/model-aarch64",
+            "\"$SIMA_CLI_BIN\" install -v 2.1.1 tools/model-compiler/arm64",
             run_command.call_args_list[-1].args[0][-1],
         )
         self.assertIn(

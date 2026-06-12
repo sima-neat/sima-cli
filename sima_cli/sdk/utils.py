@@ -795,9 +795,9 @@ def _version_at_least(version: str, minimum: str) -> bool:
 
 def _model_sdk_extension_component(base_version: str) -> str:
     if _is_x86_platform():
-        return "sdk-extensions/model"
+        return "tools/model-compiler/amd64"
     if _is_arm64_platform() and _version_at_least(base_version, "2.1.1"):
-        return "sdk-extensions/model-aarch64"
+        return "tools/model-compiler/arm64"
     return ""
 
 

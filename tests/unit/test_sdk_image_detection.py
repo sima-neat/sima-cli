@@ -2479,6 +2479,19 @@ table ip6 nm-shared-enx6c1ff720d573 {
             installer.index('add_aliases "$RC_FILE"'),
         )
 
+    def test_linux_installer_skips_apt_when_python_venv_and_pip_are_ready(self):
+        installer = Path("scripts/install/linux-mac.sh").read_text(encoding="utf-8")
+
+        self.assertIn("python_venv_and_pip_ready()", installer)
+        self.assertIn('python3 -m venv "$tmp_dir/venv"', installer)
+        self.assertIn('"$tmp_dir/venv/bin/python" -m pip --version', installer)
+        self.assertIn("python3 venv and pip are already available; skipping apt", installer)
+        self.assertIn("DPkg::Lock::Timeout=120", installer)
+        self.assertLess(
+            installer.index("elif python_venv_and_pip_ready; then"),
+            installer.index("sudo apt-get install -y -o DPkg::Lock::Timeout=120"),
+        )
+
     def test_installers_preserve_modelsdk_alias(self):
         shell_installer = Path("scripts/install/linux-mac.sh").read_text(encoding="utf-8")
         python_installer = Path("scripts/install/install.py").read_text(encoding="utf-8")

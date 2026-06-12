@@ -38,7 +38,7 @@ curl -fsSL https://artifacts.neat.sima.ai/sima-cli/linux-mac.sh | bash
 After installation, open a new terminal or reload your shell profile, then verify the install:
 
 ```bash
-sima-cli version
+sima-cli --version
 ```
 
 ### Windows PowerShell
@@ -53,7 +53,7 @@ Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile w
 After installation, open a new Command Prompt or PowerShell window, then verify the install:
 
 ```powershell
-sima-cli version
+sima-cli --version
 ```
 
 ### Advanced: choose a branch or release
@@ -108,7 +108,7 @@ Use `--internal` or `SIMA_CLI_INTERNAL=1` when internal Artifactory resources ar
 
 ```bash
 sima-cli --internal login
-SIMA_CLI_INTERNAL=1 sima-cli install -v 2.1.1 sdk-extensions/model
+SIMA_CLI_INTERNAL=1 sima-cli install -v 2.1.2 tools/model-compiler/amd64
 ```
 
 ## Common Workflows
@@ -123,7 +123,10 @@ sima-cli sdk neat
 Install Model Compiler from package metadata:
 
 ```bash
-sima-cli install -v 2.1.1 sdk-extensions/model
+# amd64 host
+sima-cli install -v 2.1.2 tools/model-compiler/amd64
+# arm64 host
+sima-cli install -v 2.1.2 tools/model-compiler/arm64
 ```
 
 Download or install Neat artifacts:

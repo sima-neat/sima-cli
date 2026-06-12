@@ -1,6 +1,7 @@
 # utils.py
 from typing import Dict, List, Set
 import hashlib
+import locale
 import os
 import sys
 import time
@@ -64,6 +65,19 @@ def check_os() -> str:
     if sys.platform in ("win32", "cygwin"):
         return "windows"
     return "not_supported"
+
+
+def _decode_subprocess_output(output) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+
+    encoding = locale.getpreferredencoding(False) or "utf-8"
+    try:
+        return output.decode(encoding, errors="replace")
+    except LookupError:
+        return output.decode("utf-8", errors="replace")
 
 
 def is_docker_user_mapping_error(output: str) -> bool:
@@ -385,7 +399,7 @@ def is_port_in_use(port):
             stderr=subprocess.PIPE,
         )
         if result.stdout:
-            lines = result.stdout.decode("utf-8").splitlines()
+            lines = _decode_subprocess_output(result.stdout).splitlines()
             for line in lines:
                 if str(port) in line:
                     print(f"Port {port} is in use. Line: {line}")
@@ -795,9 +809,9 @@ def _version_at_least(version: str, minimum: str) -> bool:
 
 def _model_sdk_extension_component(base_version: str) -> str:
     if _is_x86_platform():
-        return "sdk-extensions/model"
+        return "tools/model-compiler/amd64"
     if _is_arm64_platform() and _version_at_least(base_version, "2.1.1"):
-        return "sdk-extensions/model-aarch64"
+        return "tools/model-compiler/arm64"
     return ""
 
 

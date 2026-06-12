@@ -20,6 +20,28 @@ is_model_sdk=false
 skip_sdk_aliases=false
 is_debian=false
 
+python_venv_and_pip_ready() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d /tmp/sima-cli-venv-probe.XXXXXX)"
+
+    if ! python3 -m venv "$tmp_dir/venv" >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    if ! "$tmp_dir/venv/bin/python" -m pip --version >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    rm -rf "$tmp_dir"
+    return 0
+}
+
 if [[ -f /etc/build ]]; then
     build_file="/etc/build"
 elif [[ -f /etc/buildinfo ]]; then
@@ -88,15 +110,18 @@ if $is_elxr_sdk && [[ -f /etc/apt/sources.list.d/elxr.list ]]; then
 fi
 
 if [[ "$is_debian" == true || "$is_elxr" == true ]]; then
-    echo "Debian-based or eLXR environment detected, installing system dependencies..."
+    echo "Debian-based or eLXR environment detected, checking system dependencies..."
     if [[ "$is_model_sdk" == true ]]; then
         echo "Model SDK detected, skipping apt dependency install."
+    elif python_venv_and_pip_ready; then
+        echo "python3 venv and pip are already available; skipping apt dependency install."
     else
+        echo "Installing python3-venv and python3-pip with apt..."
         if ! sudo apt-get update -o Acquire::Retries=3; then
             echo "WARNING: apt package index refresh failed. Continuing because sima-cli only requires python3-venv and python3-pip." >&2
             echo "If those packages are not available from existing indexes, the package install step will fail with the real missing dependency." >&2
         fi
-        sudo apt-get install -y python3-venv python3-pip
+        sudo apt-get install -y -o DPkg::Lock::Timeout=120 python3-venv python3-pip
     fi
 fi
 

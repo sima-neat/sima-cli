@@ -304,6 +304,34 @@ def _detect_host_ip(devkit_ip: Optional[str]) -> Tuple[str, str, List[Tuple[str,
     finally:
         s.close()
 
+def _detect_routed_host_ip(devkit_ip: Optional[str]) -> Tuple[str, str, List[Tuple[str, str]]]:
+    """Return the host source IP the kernel actually routes toward the DevKit.
+
+    Unlike _detect_host_ip, this trusts the kernel's routing decision directly and
+    does not require the routed IP to belong to a supported non-VPN interface. The
+    routed IP is matched against the local candidates to recover an interface name
+    when possible; otherwise the interface is reported as "routed".
+    """
+    candidates = _detect_local_ip_candidates()
+
+    if devkit_ip:
+        routed_ip = _routed_ipv4_for_target(devkit_ip)
+        if routed_ip:
+            for iface, ip in candidates:
+                if ip == routed_ip:
+                    return ip, iface, candidates
+            return routed_ip, "routed", candidates
+
+    if candidates:
+        iface, ip = candidates[0]
+        return ip, iface, candidates
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((devkit_ip or "8.8.8.8", 80))
+        return s.getsockname()[0], "auto", []
+    finally:
+        s.close()
 
 def _print_devkit_nfs_banner(workspace: str, devkit_ip: str, host_os: str) -> None:
     console = Console()
@@ -564,7 +592,8 @@ def _setup_devkit_share(devkit_ip: str, workspace: str, selected_images: List[st
 
     host_os = platform.system().lower()
     host_dir = Path(workspace)
-    host_ip, auto_iface, auto_candidates = _detect_host_ip(devkit_ip)
+    host_ip, auto_iface, auto_candidates = _detect_routed_host_ip(devkit_ip)
+    print("✅ Fetched Routed Host IP details: {} (Interface: {}, Candidates: {})".format(host_ip, auto_iface, auto_candidates))
 
     existing_export = _detect_existing_linux_nfs_export(host_dir, devkit_ip, host_ip)
     if existing_export:

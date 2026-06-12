@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -33,7 +34,7 @@ DEFAULT_PYPI_RELEASE_LIMIT = 5
 
 
 def branch_key(ref: str) -> str:
-    return ref.replace("/", "-").replace(" ", "-")
+    return urllib.parse.quote(ref, safe="")
 
 
 def fetch_bytes(url: str) -> bytes:
@@ -51,10 +52,33 @@ def fetch_json(url: str) -> Dict[str, Any]:
 
 
 def normalize_index(payload: Dict[str, Any]) -> Tuple[List[str], List[str]]:
-    branches = sorted({str(x).strip() for x in payload.get("branches", []) if str(x).strip()})
-    tags = sorted({str(x).strip() for x in payload.get("tags", []) if str(x).strip()})
+    branch_names = []
+    for item in payload.get("branches", []):
+        if isinstance(item, dict):
+            item = item.get("name") or item.get("key") or ""
+        name = str(item).strip()
+        if name:
+            branch_names.append(name)
+
+    tag_names = []
+    for item in payload.get("tags", []):
+        if isinstance(item, dict):
+            item = item.get("name") or item.get("tag") or ""
+        name = str(item).strip()
+        if name:
+            tag_names.append(name)
+
+    branches = sorted(set(branch_names))
+    tags = sorted(set(tag_names))
     if not tags:
-        tags = sorted({str(x).strip() for x in payload.get("releases", []) if str(x).strip()})
+        release_names = []
+        for item in payload.get("releases", []):
+            if isinstance(item, dict):
+                item = item.get("name") or item.get("tag") or ""
+            name = str(item).strip()
+            if name:
+                release_names.append(name)
+        tags = sorted(set(release_names))
     return branches, tags
 
 
@@ -167,16 +191,39 @@ def resolve_tag(base_url: str, ref: str, requested_tag: str) -> str:
 
 
 def resolve_metadata(base_url: str, ref: str, tag: str) -> Dict[str, Any]:
-    url = f"{base_url}/{branch_key(ref)}/{tag}.json"
-    payload = fetch_json(url)
-    payload["_metadata_url"] = url
-    return payload
+    urls = [
+        f"{base_url}/{branch_key(ref)}/{tag}/metadata.json",
+        f"{base_url}/{branch_key(ref)}/{tag}.json",
+    ]
+    last_http_error: Optional[urllib.error.HTTPError] = None
+    for url in urls:
+        try:
+            payload = fetch_json(url)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (403, 404):
+                raise
+            last_http_error = exc
+            continue
+        payload["_metadata_url"] = url
+        payload["_resource_base_url"] = url.rsplit("/", 1)[0]
+        return payload
+    if last_http_error is not None:
+        raise last_http_error
+    raise SystemExit(f"No metadata found for {ref} @ {tag}")
 
 
 def iter_artifacts(metadata: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     for item in metadata.get("artifacts", []):
         if isinstance(item, dict):
             yield item
+    resource_base_url = str(metadata.get("_resource_base_url", "")).rstrip("/")
+    for item in metadata.get("resources", []):
+        filename = str(item).strip()
+        if filename:
+            artifact = {"filename": filename}
+            if resource_base_url:
+                artifact["url"] = f"{resource_base_url}/{urllib.parse.quote(filename)}"
+            yield artifact
 
 
 def find_artifact(metadata: Dict[str, Any], suffix: str, contains: str = "") -> Dict[str, Any]:

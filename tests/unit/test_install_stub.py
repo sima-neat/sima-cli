@@ -1,4 +1,5 @@
 import importlib.util
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,7 +17,7 @@ def load_installer():
 def test_branch_key_normalizes_slashes_and_spaces():
     installer = load_installer()
 
-    assert installer.branch_key("feature/foo bar") == "feature-foo-bar"
+    assert installer.branch_key("feature/foo bar") == "feature%2Ffoo%20bar"
 
 
 def test_normalize_index_uses_tags_and_releases_fallback():
@@ -28,6 +29,20 @@ def test_normalize_index_uses_tags_and_releases_fallback():
     assert installer.normalize_index(
         {"branches": ["main"], "releases": ["v2.1.5"]}
     ) == (["main"], ["v2.1.5"])
+
+
+def test_normalize_index_accepts_vulcan_branch_objects():
+    installer = load_installer()
+
+    assert installer.normalize_index(
+        {
+            "branches": [
+                {"name": "develop", "key": "develop"},
+                {"name": "main", "key": "main"},
+            ],
+            "tags": [{"name": "v2.1.6"}],
+        }
+    ) == (["develop", "main"], ["v2.1.6"])
 
 
 def test_choose_ref_noninteractive_prefers_main():
@@ -133,7 +148,38 @@ def test_resolve_tag_reads_latest_tag():
     with patch.object(installer, "fetch_text", return_value="abc1234\n") as fetch_text:
         assert installer.resolve_tag("https://example.invalid/sima-cli", "feature/foo", "latest") == "abc1234"
 
-    fetch_text.assert_called_once_with("https://example.invalid/sima-cli/feature-foo/latest.tag")
+    fetch_text.assert_called_once_with("https://example.invalid/sima-cli/feature%2Ffoo/latest.tag")
+
+
+def test_resolve_metadata_prefers_vulcan_metadata_json():
+    installer = load_installer()
+
+    with patch.object(installer, "fetch_json", return_value={"resources": []}) as fetch_json:
+        metadata = installer.resolve_metadata("https://example.invalid/sima-cli", "feature/foo", "abc1234")
+
+    fetch_json.assert_called_once_with("https://example.invalid/sima-cli/feature%2Ffoo/abc1234/metadata.json")
+    assert metadata["_metadata_url"] == "https://example.invalid/sima-cli/feature%2Ffoo/abc1234/metadata.json"
+    assert metadata["_resource_base_url"] == "https://example.invalid/sima-cli/feature%2Ffoo/abc1234"
+
+
+def test_resolve_metadata_falls_back_to_legacy_json():
+    installer = load_installer()
+    missing = urllib.error.HTTPError(
+        "https://example.invalid/sima-cli/main/abc1234/metadata.json",
+        404,
+        "Not Found",
+        {},
+        None,
+    )
+
+    with patch.object(installer, "fetch_json", side_effect=[missing, {"artifacts": []}]) as fetch_json:
+        metadata = installer.resolve_metadata("https://example.invalid/sima-cli", "main", "abc1234")
+
+    assert [call.args[0] for call in fetch_json.call_args_list] == [
+        "https://example.invalid/sima-cli/main/abc1234/metadata.json",
+        "https://example.invalid/sima-cli/main/abc1234.json",
+    ]
+    assert metadata["_metadata_url"] == "https://example.invalid/sima-cli/main/abc1234.json"
 
 
 def test_find_artifact_selects_package_zip():
@@ -146,6 +192,22 @@ def test_find_artifact_selects_package_zip():
     }
 
     assert installer.find_artifact(metadata, ".zip", "sima-cli-package")["filename"] == "sima-cli-package-2.1.5.zip"
+
+
+def test_find_artifact_selects_package_zip_from_vulcan_resources():
+    installer = load_installer()
+    metadata = {
+        "_resource_base_url": "https://example.invalid/sima-cli/main/abc1234",
+        "resources": [
+            "install_vulcan_package.py",
+            "sima-cli-package-2.1.5+main.abc1234.zip",
+        ],
+    }
+
+    artifact = installer.find_artifact(metadata, ".zip", "sima-cli-package")
+
+    assert artifact["filename"] == "sima-cli-package-2.1.5+main.abc1234.zip"
+    assert artifact["url"] == "https://example.invalid/sima-cli/main/abc1234/sima-cli-package-2.1.5%2Bmain.abc1234.zip"
 
 
 def test_artifact_url_uses_explicit_url_or_base_filename():

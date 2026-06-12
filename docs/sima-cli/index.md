@@ -17,7 +17,7 @@ curl -fsSL https://artifacts.neat.sima.ai/sima-cli/linux-mac.sh | bash
 After installation, open a new terminal or reload your shell profile, then verify the install:
 
 ```bash
-sima-cli version
+sima-cli --version
 ```
 
 ### Windows PowerShell
@@ -32,7 +32,7 @@ Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile w
 After installation, open a new Command Prompt or PowerShell window, then verify the install:
 
 ```powershell
-sima-cli version
+sima-cli --version
 ```
 
 ### Advanced: choose a branch or release
@@ -98,7 +98,6 @@ pip install sima-cli
 | [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md) | Update sima-cli manually from PyPI or a direct wheel URL. |
 | [`sima-cli serial`](commands/sima-cli-serial.md) | Connect to the UART serial console of the DevKit. |
 | [`sima-cli update`](commands/sima-cli-update.md) | Update the software on a SiMa DevKit or remote SiMa device. |
-| [`sima-cli version`](commands/sima-cli-version.md) | Show the version of the CLI tool. |
 
 ## Complete Command List
 
@@ -122,7 +121,6 @@ pip install sima-cli
 - [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md)
 - [`sima-cli serial`](commands/sima-cli-serial.md)
 - [`sima-cli update`](commands/sima-cli-update.md)
-- [`sima-cli version`](commands/sima-cli-version.md)
 - [`sima-cli appzoo clone`](commands/sima-cli-appzoo-clone.md)
 - [`sima-cli appzoo describe`](commands/sima-cli-appzoo-describe.md)
 - [`sima-cli appzoo get`](commands/sima-cli-appzoo-get.md)

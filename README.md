@@ -38,7 +38,7 @@ curl -fsSL https://artifacts.neat.sima.ai/sima-cli/linux-mac.sh | bash
 After installation, open a new terminal or reload your shell profile, then verify the install:
 
 ```bash
-sima-cli version
+sima-cli --version
 ```
 
 ### Windows PowerShell
@@ -53,7 +53,7 @@ Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile w
 After installation, open a new Command Prompt or PowerShell window, then verify the install:
 
 ```powershell
-sima-cli version
+sima-cli --version
 ```
 
 ### Advanced: choose a branch or release

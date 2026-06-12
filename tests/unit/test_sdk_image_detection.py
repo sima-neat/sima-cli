@@ -61,6 +61,7 @@ from sima_cli.sdk.utils import (
     install_neat_playbooks,
     is_neat_elxr_image,
     is_neat_sdk_image,
+    is_port_in_use,
     is_snap_docker_cli,
     prompt_multi_select,
     sanitize_container_hostname,
@@ -80,6 +81,24 @@ ghcr.io/sima-neat/sdk-feature-devkit-sync:latest
 
 
 class TestSdkImageDetection(unittest.TestCase):
+    def test_windows_port_check_handles_non_utf8_netstat_output(self):
+        netstat_output = (
+            "활성 연결\n"
+            "  프로토콜  로컬 주소              외부 주소              상태           PID\n"
+            "  TCP    0.0.0.0:49152          0.0.0.0:0              LISTENING       1234\n"
+        ).encode("cp949")
+        result = subprocess.CompletedProcess(
+            ["netstat", "-ano", "-p", "TCP"],
+            0,
+            stdout=netstat_output,
+            stderr=b"",
+        )
+
+        with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
+             patch("sima_cli.sdk.utils.locale.getpreferredencoding", return_value="cp949"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            self.assertTrue(is_port_in_use(49152))
+
     @patch("sima_cli.sdk.utils.subprocess.check_output", return_value=SAMPLE_DOCKER_IMAGES)
     def test_get_local_sima_images_includes_ghcr_elxr(self, _mock_check_output):
         images = get_local_sima_images()

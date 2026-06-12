@@ -13,6 +13,7 @@ sima-cli [OPTIONS] COMMAND [ARGS]...
 | Name | Description |
 | --- | --- |
 | `-i, --internal` | Use internal Artifactory resources, Authorized Sima employees only |
+| `--version` | Show the version and exit. |
 
 ## Arguments
 
@@ -39,7 +40,6 @@ None.
 - [`sima-cli selfupdate`](./sima-cli-selfupdate.md): Update sima-cli manually from PyPI or a direct wheel URL.
 - [`sima-cli serial`](./sima-cli-serial.md): Connect to the UART serial console of the DevKit.
 - [`sima-cli update`](./sima-cli-update.md): Update the software on a SiMa DevKit or remote SiMa device.
-- [`sima-cli version`](./sima-cli-version.md): Show the version of the CLI tool.
 
 ## Full Help
 
@@ -54,6 +54,7 @@ Usage: sima-cli [OPTIONS] COMMAND [ARGS]...
 Options:
   -i, --internal  Use internal Artifactory resources, Authorized Sima
                   employees only
+  --version       Show the version and exit.
   --help          Show this message and exit.
 
 Commands:
@@ -76,5 +77,4 @@ Commands:
   selfupdate  Update sima-cli manually from PyPI or a direct wheel URL.
   serial      Connect to the UART serial console of the DevKit.
   update      Update the software on a SiMa DevKit or remote SiMa device.
-  version     Show the version of the CLI tool.
 ```

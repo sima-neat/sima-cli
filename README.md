@@ -171,6 +171,7 @@ sima-cli appzoo list
 | `sima-cli sdk` | Manage and launch SDK container environments. | [docs](docs/sima-cli/commands/sima-cli-sdk.md) |
 | `sima-cli selfupdate` | Update sima-cli manually. | [docs](docs/sima-cli/commands/sima-cli-selfupdate.md) |
 | `sima-cli serial` | Connect to the UART serial console of a DevKit. | [docs](docs/sima-cli/commands/sima-cli-serial.md) |
+| `sima-cli shell` | Start an interactive shell with a live command menu. | [docs](docs/sima-cli/commands/sima-cli-shell.md) |
 | `sima-cli update` | Update a SiMa DevKit or remote device. | [docs](docs/sima-cli/commands/sima-cli-update.md) |
 
 ## Development

@@ -10,17 +10,50 @@ Always-on live command menu, built directly on prompt_toolkit:
 If prompt_toolkit is missing we fall back to a plain input() loop so the
 `shell` command still works (no menu, no history).
 
-Still open (next pass, on purpose):
-  - heavy group startup (env print + update check) re-runs per typed command
-  - terminal-takeover commands (serial, selfupdate, network) not blocked yet
+In-shell dispatch re-enters the root CLI for every typed command, so it
+suppresses the repeated environment banner and self-update check, and blocks
+terminal-takeover commands (serial, network, selfupdate) that don't behave
+inside the REPL — those must be run directly.
 """
 
 import os
 import shlex
+import contextlib
 import click
 
 # Words that leave the loop.
 _EXIT_WORDS = {"exit", "quit"}
+
+# Commands that take over the terminal — they spawn a terminal emulator, run
+# their own interactive menu, or re-exec the process — and don't work when
+# driven from inside the REPL. We block them and point the user at running
+# `sima-cli <cmd>` directly.
+_TERMINAL_TAKEOVER_COMMANDS = {"serial", "network", "selfupdate"}
+
+# Environment overrides applied only while a typed command runs through the
+# root group, then restored. They stop the group callback from repeating the
+# self-update check (which could also discard the typed command, see _dispatch)
+# and the environment banner on every command. The outer `-i/--internal` flag
+# is propagated separately, for the whole session, by shell_cmd.
+_DISPATCH_ENV = {
+    "SIMA_CLI_CHECK_FOR_UPDATE": "0",
+    "SIMA_CLI_SUPPRESS_ENV_BANNER": "1",
+}
+
+
+@contextlib.contextmanager
+def _dispatch_env():
+    """Apply _DISPATCH_ENV for the duration of one dispatch, then restore."""
+    saved = {key: os.environ.get(key) for key in _DISPATCH_ENV}
+    os.environ.update(_DISPATCH_ENV)
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 # Where prompt history is stored for the rich shell.
 _HISTORY_PATH = os.path.expanduser("~/.sima-cli/.shell_history")
@@ -65,18 +98,31 @@ def _dispatch(line):
     if not args:
         return
 
-    try:
-        # standalone_mode=False stops Click from calling sys.exit() and lets
-        # us keep the loop alive after a command finishes or errors.
-        main.main(args=args, standalone_mode=False)
-    except click.ClickException as e:
-        e.show()
-    except SystemExit:
-        pass
-        # A subcommand failure shouldn't terminate the interactive shell
+    # Terminal-takeover commands hijack the TTY (serial/network) or re-exec the
+    # process (selfupdate); none of that works from inside the REPL. Block them
+    # with a hint rather than letting them misbehave.
+    if args[0] in _TERMINAL_TAKEOVER_COMMANDS:
+        click.echo(
+            f"⚠️  '{args[0]}' takes over the terminal and can't run inside the shell. "
+            f"Leave the shell (exit / Ctrl-D) and run 'sima-cli {args[0]}' directly."
+        )
         return
-    except Exception as e:
-        click.echo(f"❌ {e}")
+
+    # _dispatch_env() disables the per-command self-update check (so an available
+    # update can't discard the typed command by re-execing `sima-cli shell`) and
+    # silences the repeated environment banner, restoring both afterwards.
+    with _dispatch_env():
+        try:
+            # standalone_mode=False stops Click from calling sys.exit() and lets
+            # us keep the loop alive after a command finishes or errors.
+            main.main(args=args, standalone_mode=False)
+        except click.ClickException as e:
+            e.show()
+        except SystemExit:
+            # A subcommand failure shouldn't terminate the interactive shell.
+            return
+        except Exception as e:
+            click.echo(f"❌ {e}")
 
 
 def _make_completer():
@@ -273,11 +319,24 @@ def shell_cmd(ctx, theme):
     theme = theme.lower() if theme else _get_saved_theme()
     _save_theme(theme)
 
+    # Each typed command is a fresh Click invocation (see _dispatch), so the
+    # outer `-i/--internal` flag would otherwise be lost. Propagate it for the
+    # whole session via SIMA_CLI_INTERNAL, which the root group honours, and
+    # restore the prior value on exit so we don't leak state to the caller.
+    prev_internal = os.environ.get("SIMA_CLI_INTERNAL")
+    if ctx.obj.get("internal"):
+        os.environ["SIMA_CLI_INTERNAL"] = "1"
+
     try:
         _rich_repl(theme)
     except ImportError:
         click.echo("ℹ️  prompt_toolkit not installed; using basic shell (no menu/history).")
         _basic_repl()
+    finally:
+        if prev_internal is None:
+            os.environ.pop("SIMA_CLI_INTERNAL", None)
+        else:
+            os.environ["SIMA_CLI_INTERNAL"] = prev_internal
 
 
 def register_shell_command(main):

@@ -116,12 +116,15 @@ def main(ctx, internal):
 
     ctx.obj["internal"] = internal
 
-    env_type, env_subtype = get_environment_type()
-
-    if internal:
-        click.echo(f"🔧 Environment: {env_type} ({env_subtype}) | Internal: {internal}")
-    else:
-        click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
+    # The interactive shell re-enters this callback for every typed command and
+    # sets SIMA_CLI_SUPPRESS_ENV_BANNER so the banner (and the environment probe)
+    # isn't repeated on each one. It's still printed for normal invocations.
+    if os.environ.get("SIMA_CLI_SUPPRESS_ENV_BANNER", "0") != "1":
+        env_type, env_subtype = get_environment_type()
+        if internal:
+            click.echo(f"🔧 Environment: {env_type} ({env_subtype}) | Internal: {internal}")
+        else:
+            click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
 
 
 # ----------------------

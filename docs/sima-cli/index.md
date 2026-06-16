@@ -81,11 +81,12 @@ pip install sima-cli
 | --- | --- |
 | [`sima-cli appzoo`](commands/sima-cli-appzoo.md) | Access sample apps from the App Zoo. |
 | [`sima-cli bootimg`](commands/sima-cli-bootimg.md) | Prepare a bootable image for the SiMa DevKit. |
-| [`sima-cli device`](commands/sima-cli-device.md) | Discover nearby SiMa.ai devices on the local network. |
+| [`sima-cli device`](commands/sima-cli-device.md) | Discover and manage device(s) for MPK deployment and app lifecycle management purposes, compatible with both PCIe and Ethernet deployment models. Host side only. |
 | [`sima-cli download`](commands/sima-cli-download.md) | Download a file or a whole folder from a given URL. |
 | [`sima-cli install`](commands/sima-cli-install.md) | Install SiMa packages. |
 | [`sima-cli login`](commands/sima-cli-login.md) | Authenticate with the SiMa Developer Portal. |
 | [`sima-cli logout`](commands/sima-cli-logout.md) | Log out by deleting cached credentials and config files. |
+| [`sima-cli mcp`](commands/sima-cli-mcp.md) | Run sima-cli as an MCP server so coding agents can drive the DevKit. |
 | [`sima-cli mla`](commands/sima-cli-mla.md) | Machine Learning Accelerator Utilities. |
 | [`sima-cli modelzoo`](commands/sima-cli-modelzoo.md) | Access models from the Model Zoo. |
 | [`sima-cli neat`](commands/sima-cli-neat.md) | Discover, download, and install Neat build artifacts. |
@@ -109,6 +110,7 @@ pip install sima-cli
 - [`sima-cli install`](commands/sima-cli-install.md)
 - [`sima-cli login`](commands/sima-cli-login.md)
 - [`sima-cli logout`](commands/sima-cli-logout.md)
+- [`sima-cli mcp`](commands/sima-cli-mcp.md)
 - [`sima-cli mla`](commands/sima-cli-mla.md)
 - [`sima-cli modelzoo`](commands/sima-cli-modelzoo.md)
 - [`sima-cli neat`](commands/sima-cli-neat.md)
@@ -126,6 +128,10 @@ pip install sima-cli
 - [`sima-cli appzoo get`](commands/sima-cli-appzoo-get.md)
 - [`sima-cli appzoo list`](commands/sima-cli-appzoo-list.md)
 - [`sima-cli device discover`](commands/sima-cli-device-discover.md)
+- [`sima-cli mcp available`](commands/sima-cli-mcp-available.md)
+- [`sima-cli mcp install`](commands/sima-cli-mcp-install.md)
+- [`sima-cli mcp serve`](commands/sima-cli-mcp-serve.md)
+- [`sima-cli mcp status`](commands/sima-cli-mcp-status.md)
 - [`sima-cli mla meminfo`](commands/sima-cli-mla-meminfo.md)
 - [`sima-cli modelzoo describe`](commands/sima-cli-modelzoo-describe.md)
 - [`sima-cli modelzoo get`](commands/sima-cli-modelzoo-get.md)

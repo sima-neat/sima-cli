@@ -36,6 +36,10 @@ dependencies = [
     "tabulate==0.9.0"
 ]
 
+[project.optional-dependencies]
+# Marking mcp as optional as it is not supported with python 3.8, 3.9 
+mcp = ["mcp>=1.2.0; python_version >= '3.10'"]
+
 [project.urls]
 Homepage = "https://community.sima.ai/"
 

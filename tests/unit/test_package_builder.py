@@ -333,7 +333,9 @@ class PackageBuilderTests(unittest.TestCase):
                         "--install-script",
                         "install.sh",
                         "--host-platform",
-                        "mac,linux",
+                        "mac,linux@>=22.04",
+                        "--host-arch",
+                        "x86_64",
                         "--board-platform",
                         "modalix@>=2.1.0,<=2.1.2",
                         "--palette-platform",
@@ -346,7 +348,12 @@ class PackageBuilderTests(unittest.TestCase):
             self.assertEqual(
                 metadata["platforms"],
                 [
-                    {"type": "host", "os": ["mac", "linux"]},
+                    {
+                        "type": "host",
+                        "os": ["mac", "linux"],
+                        "versions": {"linux": [">=22.04"]},
+                        "arch": ["amd64"],
+                    },
                     {
                         "type": "board",
                         "compatible_with": ["modalix"],

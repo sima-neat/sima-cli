@@ -19,7 +19,12 @@ class MetadataValidatorTests(unittest.TestCase):
     def test_accepts_strict_platform_entries(self):
         metadata = _base_metadata(
             [
-                {"type": "host", "os": ["mac", "linux"]},
+                {
+                    "type": "host",
+                    "os": ["mac", "linux"],
+                    "versions": {"linux": [">=22.04"]},
+                    "arch": ["amd64"],
+                },
                 {
                     "type": "board",
                     "compatible_with": ["modalix"],
@@ -30,6 +35,38 @@ class MetadataValidatorTests(unittest.TestCase):
         )
 
         self.assertTrue(validate_metadata(metadata))
+
+    def test_host_version_must_reference_declared_os(self):
+        with self.assertRaisesRegex(MetadataValidationError, "must also be listed in 'os'"):
+            validate_metadata(
+                _base_metadata(
+                    [
+                        {
+                            "type": "host",
+                            "os": ["ubuntu"],
+                            "versions": {"linux": ["==24.04"]},
+                        }
+                    ]
+                )
+            )
+
+    def test_host_version_must_be_valid_spec(self):
+        with self.assertRaisesRegex(MetadataValidationError, "Invalid host version spec"):
+            validate_metadata(
+                _base_metadata(
+                    [
+                        {
+                            "type": "host",
+                            "os": ["ubuntu"],
+                            "versions": {"ubuntu": ["~24.04"]},
+                        }
+                    ]
+                )
+            )
+
+    def test_host_arch_must_be_valid(self):
+        with self.assertRaisesRegex(MetadataValidationError, "Invalid host architecture"):
+            validate_metadata(_base_metadata([{"type": "host", "os": ["linux"], "arch": ["riscv64"]}]))
 
     def test_host_requires_non_empty_os_list(self):
         with self.assertRaisesRegex(MetadataValidationError, "'os' is required for host"):

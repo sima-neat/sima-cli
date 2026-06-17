@@ -22,7 +22,8 @@ sima-cli packages build [OPTIONS] ARTIFACTS_FOLDER
 | `--exclude` | Exclude artifact files whose relative path or filename contains this text. May be repeated. |
 | `--variant` | Optional metadata variant name. Writes metadata-<variant>.json instead of metadata.json. |
 | `--download-compatible-files-only` | Add download-compatible-files-only so installers download only wheel files compatible with the current platform. |
-| `--host-platform` | Host OS compatibility as a comma-separated list. Supported values: linux, ubuntu, mac, windows. May be repeated. |
+| `--host-platform` | Host OS compatibility as OS[,OS...][@VERSION_SPEC], for example linux, ubuntu@==24.04, or ubuntu@>=22.04,<=24.04. Supported OS values: linux, ubuntu, mac, windows. May be repeated. |
+| `--host-arch` | Host CPU architecture compatibility as ARCH[,ARCH...], for example amd64 or arm64. Aliases x86_64 and aarch64 are normalized. Requires --host-platform. |
 | `--board-platform` | Board compatibility as COMPAT[,COMPAT...][@VERSION_SPEC], for example modalix, modalix@==2.1.1, or modalix@>=2.1.0,<=2.1.2. May be repeated. |
 | `--palette-platform` | Mark the package as compatible with Palette SDK containers. Optionally pass an exact SDK version, for example --palette-platform 2.0.0. |
 
@@ -60,9 +61,16 @@ Options:
                                   Add download-compatible-files-only so
                                   installers download only wheel files
                                   compatible with the current platform.
-  --host-platform TEXT            Host OS compatibility as a comma-separated
-                                  list. Supported values: linux, ubuntu, mac,
-                                  windows. May be repeated.
+  --host-platform TEXT            Host OS compatibility as
+                                  OS[,OS...][@VERSION_SPEC], for example
+                                  linux, ubuntu@==24.04, or
+                                  ubuntu@>=22.04,<=24.04. Supported OS values:
+                                  linux, ubuntu, mac, windows. May be
+                                  repeated.
+  --host-arch TEXT                Host CPU architecture compatibility as
+                                  ARCH[,ARCH...], for example amd64 or arm64.
+                                  Aliases x86_64 and aarch64 are normalized.
+                                  Requires --host-platform.
   --board-platform TEXT           Board compatibility as
                                   COMPAT[,COMPAT...][@VERSION_SPEC], for
                                   example modalix, modalix@==2.1.1, or

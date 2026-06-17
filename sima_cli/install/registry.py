@@ -135,8 +135,17 @@ def show_metadata(name, version):
     "--host-platform",
     multiple=True,
     help=(
-        "Host OS compatibility as a comma-separated list. Supported values: "
+        "Host OS compatibility as OS[,OS...][@VERSION_SPEC], for example "
+        "linux, ubuntu@==24.04, or ubuntu@>=22.04,<=24.04. Supported OS values: "
         "linux, ubuntu, mac, windows. May be repeated."
+    ),
+)
+@click.option(
+    "--host-arch",
+    multiple=True,
+    help=(
+        "Host CPU architecture compatibility as ARCH[,ARCH...], for example amd64 or arm64. "
+        "Aliases x86_64 and aarch64 are normalized. Requires --host-platform."
     ),
 )
 @click.option(
@@ -168,6 +177,7 @@ def build_package_metadata(
     variant,
     download_compatible_files_only,
     host_platform,
+    host_arch,
     board_platform,
     palette_platform,
 ):
@@ -185,6 +195,7 @@ def build_package_metadata(
             exclude=exclude,
             download_compatible_files_only=download_compatible_files_only,
             host_platforms=host_platform,
+            host_arches=host_arch,
             board_platforms=board_platform,
             palette_platform=palette_platform,
         )

@@ -216,7 +216,9 @@ class TestDevportalLogin(unittest.TestCase):
         output = "\n".join(str(call.args[0]) for call in echo.call_args_list if call.args)
         self.assertNotIn(devportal.DUMMY_CHECK_URL, output)
         secho_output = "\n".join(str(call.args[0]) for call in secho.call_args_list if call.args)
-        self.assertIn("Open this page to accept EULA to proceed, press Y when you are done", secho_output)
+        self.assertIn("A browser could not be opened from this environment.", secho_output)
+        self.assertIn("Open the following URL in a browser on your workstation", secho_output)
+        self.assertIn("rerun the command that required authentication", secho_output)
         self.assertIn(devportal.DEV_PORTAL_LOGIN_URL, secho_output)
 
     def test_eula_flow_prints_developer_portal_login_on_headless_system(self):
@@ -232,7 +234,9 @@ class TestDevportalLogin(unittest.TestCase):
         output = "\n".join(str(call.args[0]) for call in echo.call_args_list if call.args)
         self.assertNotIn(devportal.DUMMY_CHECK_URL, output)
         secho_output = "\n".join(str(call.args[0]) for call in secho.call_args_list if call.args)
-        self.assertIn("Open this page to accept EULA to proceed, press Y when you are done", secho_output)
+        self.assertIn("A browser could not be opened from this environment.", secho_output)
+        self.assertIn("Open the following URL in a browser on your workstation", secho_output)
+        self.assertIn("rerun the command that required authentication", secho_output)
         self.assertIn(devportal.DEV_PORTAL_LOGIN_URL, secho_output)
 
     def test_limited_access_headless_flow_waits_for_eula_confirmation(self):
@@ -246,7 +250,9 @@ class TestDevportalLogin(unittest.TestCase):
         browser_open.assert_not_called()
         confirm.assert_called_once_with("Have you accepted the EULA?", default=True)
         secho_output = "\n".join(str(call.args[0]) for call in secho.call_args_list if call.args)
-        self.assertIn("Open this page to accept EULA to proceed, press Y when you are done", secho_output)
+        self.assertIn("A browser could not be opened from this environment.", secho_output)
+        self.assertIn("Open the following URL in a browser on your workstation", secho_output)
+        self.assertIn("return here and confirm when prompted", secho_output)
         self.assertIn(devportal.DEV_PORTAL_LOGIN_URL, secho_output)
 
     def test_access_request_eula_prompt_always_confirms_after_opening_portal(self):

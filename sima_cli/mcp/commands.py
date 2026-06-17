@@ -120,13 +120,16 @@ def register_mcp_commands(main):
     )
     def status(scope):
         """Show MCP availability and per-agent registration."""
-        from sima_cli.mcp.server import _user, _strict_host_key, _KEY_ENV
+        from sima_cli.mcp.server import _user, _strict_host_key, _KEY_ENV, PrivilegedUserError
 
         click.echo(f"MCP SDK installed : {'yes' if _mcp_available() else 'no'}")
-        click.echo(
-            f"DevKit SSH user   : {_user()}"
-            f"{' (from $SIMA_DEVKIT_USER)' if os.environ.get('SIMA_DEVKIT_USER') else ' (unprivileged default)'}"
-        )
+        try:
+            click.echo(
+                f"DevKit SSH user   : {_user()}"
+                f"{' (from $SIMA_DEVKIT_USER)' if os.environ.get('SIMA_DEVKIT_USER') else ' (unprivileged default)'}"
+            )
+        except PrivilegedUserError as e:
+            click.echo(f"DevKit SSH user   : ❌ {e}")
         key_file = os.environ.get(_KEY_ENV)
         if key_file:
             click.echo(f"DevKit auth       : key file ($SIMA_DEVKIT_KEY={key_file})")

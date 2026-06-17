@@ -31,7 +31,9 @@ _MAX_OUTPUT_CHARS = 20_000
 # is pinned here (overridable via env) rather than inherited from
 # sima_cli.update.remote's module defaults, so the agent-facing connection
 # always runs as a non-root user — the connection-layer half of the no-sudo
-# command-gating policy.
+# command-gating policy. A privileged override (``SIMA_DEVKIT_USER=root``) is
+# rejected outright rather than honoured, so the unprivileged guarantee can't be
+# silently weakened by the host or agent environment.
 _USER_ENV = "SIMA_DEVKIT_USER"
 _PASSWORD_ENV = "SIMA_DEVKIT_PASSWORD"
 _KEY_ENV = "SIMA_DEVKIT_KEY"  # path to a private key; if set, used instead of password
@@ -43,10 +45,30 @@ _CONNECT_TIMEOUT = 10
 # stalling the whole scan for the full connect timeout.
 _DISCOVERY_CONNECT_TIMEOUT = 3
 
+# SSH identities that would defeat the unprivileged-connection guarantee. Matched
+# case-insensitively against the resolved user name.
+_PRIVILEGED_USERS = {"root", "toor"}
+
+
+class PrivilegedUserError(ValueError):
+    """Raised when the configured DevKit SSH user is a privileged identity."""
+
 
 def _user() -> str:
-    """Resolve the unprivileged DevKit SSH user (env override, else the default)."""
-    return os.environ.get(_USER_ENV) or _DEFAULT_USER
+    """Resolve the unprivileged DevKit SSH user (env override, else the default).
+
+    A privileged override (e.g. ``SIMA_DEVKIT_USER=root``) is refused: the MCP
+    server's safety model assumes commands run as a non-root account, so we fail
+    loudly rather than silently execute as root.
+    """
+    user = (os.environ.get(_USER_ENV) or _DEFAULT_USER).strip()
+    if user.lower() in _PRIVILEGED_USERS:
+        raise PrivilegedUserError(
+            f"refusing to use privileged DevKit SSH user '{user}': the sima-cli "
+            f"MCP server must connect as an unprivileged account. Unset "
+            f"$SIMA_DEVKIT_USER or point it at a non-root user."
+        )
+    return user
 
 
 def _password() -> str:
@@ -246,10 +268,16 @@ def build_server():
     ) -> Dict[str, Any]:
         """Run a shell command on a DevKit over SSH and return its result.
 
-        For safety the command is screened before execution and rejected if it
-        attempts privilege escalation (sudo/su), recursive or wildcard deletion
-        (rm -r / rm *), writes to /sys, /proc or /dev, or other clearly
-        destructive operations. Run commands as the unprivileged DevKit user.
+        The command is screened before execution as a best-effort *guardrail*:
+        it rejects common destructive patterns — privilege escalation
+        (sudo/su/doas/pkexec, including absolute-path forms), recursive or
+        wildcard deletion (rm -r / rm *), writes to /sys, /proc or /dev, and
+        other clearly destructive operations. This screening is NOT a security
+        boundary: it cannot reliably stop interpreter payloads (python -c),
+        variable indirection, or other shell bypasses. Real enforcement must
+        come from the DevKit account, filesystem permissions, and runtime
+        environment. The connection runs as the unprivileged DevKit user (a
+        root override is refused).
 
         Args:
             ip: IP address of the DevKit board.

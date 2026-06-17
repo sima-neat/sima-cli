@@ -159,10 +159,13 @@ sima-cli mcp status                # show availability and per-agent registratio
 
 The agent then connects to the `sima-devkit` MCP server (`sima-cli mcp serve`, stdio) and
 gets tools to discover boards, query board info, and run commands on the DevKit over SSH.
-Commands run as the unprivileged `sima` user, and a best-effort client-side gate rejects
-common destructive patterns (`sudo`, recursive/wildcard `rm`, writes to `/sys`). This gate
-is a guardrail, not a security boundary — enforce real restrictions on the DevKit. See
-[`sima-cli mcp`](docs/sima-cli/commands/sima-cli-mcp.md).
+Commands run as the unprivileged `sima` user (a privileged override such as
+`SIMA_DEVKIT_USER=root` is refused), and a best-effort client-side gate rejects common
+destructive patterns (`sudo` — including absolute-path forms, recursive/wildcard `rm`,
+writes to `/sys`). This gate is a guardrail, **not** a security boundary: regex screening
+cannot reliably stop interpreter payloads, variable indirection, or other shell bypasses.
+Real enforcement must come from the DevKit account, filesystem permissions, and runtime
+environment. See [`sima-cli mcp`](docs/sima-cli/commands/sima-cli-mcp.md).
 
 ## Top-Level Commands
 

@@ -61,6 +61,11 @@ _SEGMENT_SPLIT = re.compile(r"\|\||&&|;|\||\n|&")
 # way (piped-in script, script file) the payload can't be inspected → blocked.
 _SHELLS = {"sh", "bash", "dash", "zsh", "ash", "ksh"}
 
+# Privilege-escalation tools, matched on the *basename* of the command so that
+# absolute-path (``/usr/bin/sudo``) and wrapper (``env sudo``) forms are caught,
+# not just the bare word.
+_PRIVILEGE_ESCALATION = {"sudo", "su", "doas", "pkexec"}
+
 # Commands that are destructive regardless of arguments.
 _DESTRUCTIVE_COMMANDS = {
     "dd": "raw disk/device writes (dd)",
@@ -144,6 +149,10 @@ def _check_segment(segment: str) -> Optional[str]:
         return None
 
     name = os.path.basename(tokens[0])
+    if name in _PRIVILEGE_ESCALATION:
+        # Caught here (not only by the word-boundary regex) so absolute-path and
+        # wrapper invocations like ``/usr/bin/sudo`` or ``env sudo`` are rejected.
+        return f"privilege escalation ('{name}') is not permitted"
     if name in _SHELLS:
         # Screen the literal argument of `sh -c '<cmd>'`; any other invocation
         # (piped-in script, script file) carries a payload we can't inspect.

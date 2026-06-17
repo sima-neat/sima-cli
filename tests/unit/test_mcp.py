@@ -160,6 +160,24 @@ class TestServerTools(unittest.TestCase):
         with patch.dict(os.environ, {mcp_server._USER_ENV: "devuser"}):
             self.assertEqual(mcp_server._user(), "devuser")
 
+    def test_privileged_user_override_is_rejected(self):
+        # SIMA_DEVKIT_USER=root (or other privileged identities) must be refused,
+        # not silently honoured, so the unprivileged guarantee can't be bypassed.
+        for name in ("root", "ROOT", "  root  ", "toor"):
+            with patch.dict(os.environ, {mcp_server._USER_ENV: name}):
+                with self.assertRaises(mcp_server.PrivilegedUserError):
+                    mcp_server._user()
+
+    def test_privileged_user_blocks_connection(self):
+        # _connect resolves the user first, so a root override never opens an SSH
+        # session as root — it raises before paramiko is touched.
+        fake_paramiko = MagicMock()
+        with patch.dict(os.environ, {mcp_server._USER_ENV: "root"}), \
+             patch.dict("sys.modules", {"paramiko": fake_paramiko}):
+            with self.assertRaises(mcp_server.PrivilegedUserError):
+                mcp_server._connect("1.2.3.4")
+        fake_paramiko.SSHClient.return_value.connect.assert_not_called()
+
     def _fake_connect(self, env=None):
         """Run _connect with paramiko mocked; return (fake_paramiko, connect_kwargs)."""
         fake_paramiko = MagicMock()
@@ -360,6 +378,13 @@ class TestSafety(unittest.TestCase):
         "sudo reboot",
         "su - root",
         "doas reboot",
+        # privilege escalation via absolute path / wrapper must not bypass the gate:
+        "/usr/bin/sudo id",
+        "/bin/su - root",
+        "/usr/bin/pkexec reboot",
+        "/usr/bin/doas reboot",
+        "env sudo reboot",                              # wrapper form
+        "uptime && /usr/bin/sudo reboot",               # absolute path in a later segment
         "echo 1 > /sys/class/leds/x/brightness",
         "echo performance >> /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
         "tee /proc/sys/vm/drop_caches",
@@ -412,6 +437,19 @@ class TestSafety(unittest.TestCase):
 
     def test_empty_command_is_allowed(self):
         self.assertEqual(evaluate_command("   "), (True, None))
+
+    def test_absolute_path_privilege_escalation_is_blocked(self):
+        # The basename check must catch escalation regardless of how it's spelled.
+        for cmd in (
+            "/usr/bin/sudo id",
+            "/bin/su - root",
+            "/usr/bin/pkexec reboot",
+            "/usr/bin/doas reboot",
+            "env sudo reboot",
+        ):
+            allowed, reason = evaluate_command(cmd)
+            self.assertFalse(allowed, f"should be blocked: {cmd!r}")
+            self.assertIn("privilege escalation", reason)
 
 
 if __name__ == "__main__":

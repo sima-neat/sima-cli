@@ -286,7 +286,7 @@ def request_device_code(auth_cfg):
 
 def poll_for_token(auth_cfg, device_code, interval):
     """Step 2: Poll for user authorization."""
-    print(f"⏳ Waiting for user authorization... polling every {interval} seconds.")
+    print(f"⏳ Waiting for authorization. Complete the browser login above; checking every {interval} seconds.")
     while True:
         time.sleep(interval)
         resp = requests.post(
@@ -333,16 +333,21 @@ def login_auth0(auth_cfg):
     highlighted_url = click.style(verify_complete, fg="cyan", bold=True)
     highlighted_code = click.style(user_code, fg="yellow", bold=True)
 
-    print(f"⏰ Link expires in {expires_in} minutes.\n")
+    print("🔐 sima-cli needs you to authorize this device login.")
+    print(f"⏰ Login link/code expires in {expires_in} minutes.\n")
 
     # Auto-open browser if possible
-    if is_browser_available() and verify_complete:
+    if is_browser_available() and verify_complete and webbrowser.open(verify_complete):
         print(f"🌐 Opening browser for login → {highlighted_url}")
-        webbrowser.open(verify_complete)
+        print("After signing in, return to this terminal. sima-cli will continue automatically.")
     else:
-        print("🔐 Browser not available — open manually:")
-        print(f"   👉 {highlighted_url}")
-        print(f"   🪄  Code: {highlighted_code}")
+        print("⚠️  A browser could not be opened from this environment.")
+        print("Action required:")
+        print("  1. Open this URL in a browser on your workstation:")
+        print(f"     {highlighted_url}")
+        print("  2. Sign in with your SiMa Developer Portal account.")
+        print(f"  3. If prompted, confirm this code: {highlighted_code}")
+        print("  4. Return to this terminal. sima-cli will continue automatically after authorization.")
 
     return poll_for_token(auth_cfg, data["device_code"], data["interval"])
 

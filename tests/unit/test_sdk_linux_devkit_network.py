@@ -222,6 +222,28 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
         configure.assert_called_once_with("10.42.0.78", persist=True)
         self.assertTrue(any(f.code == "shared-network-repair" for f in repaired.findings))
 
+    def test_repair_linux_devkit_network_errors_on_unsupported_host(self):
+        report = net.NetworkDoctorReport(devkit_ip="10.42.0.78")
+        with patch.object(net, "build_network_doctor_report", return_value=report), \
+             patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "configure_linux_shared_devkit_network") as configure:
+            repaired = net.repair_linux_devkit_network(devkit_ip="10.42.0.78")
+
+        configure.assert_not_called()
+        self.assertTrue(repaired.has_errors)
+        self.assertTrue(any(f.code == "repair-unsupported-host" for f in repaired.findings))
+
+    def test_repair_linux_devkit_network_errors_without_devkit(self):
+        report = net.NetworkDoctorReport()
+        with patch.object(net, "build_network_doctor_report", return_value=report), \
+             patch.object(net, "_is_linux_host", return_value=True), \
+             patch.object(net, "configure_linux_shared_devkit_network") as configure:
+            repaired = net.repair_linux_devkit_network()
+
+        configure.assert_not_called()
+        self.assertTrue(repaired.has_errors)
+        self.assertTrue(any(f.code == "repair-skipped-no-devkit" for f in repaired.findings))
+
 
 if __name__ == "__main__":
     unittest.main()

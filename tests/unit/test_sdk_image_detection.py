@@ -376,6 +376,24 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         repair.assert_called_once_with(container="", devkit_ip="10.42.0.78", persist=True)
 
+    def test_sdk_network_repair_requires_devkit(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"):
+            result = runner.invoke(sdk, ["network", "repair"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Missing option '--devkit'", result.output)
+
+    def test_sdk_network_repair_rejects_ipv6_devkit(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.repair_linux_devkit_network") as repair:
+            result = runner.invoke(sdk, ["network", "repair", "--devkit", "fe80::1"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("supports IPv4 DevKit addresses only", result.output)
+        repair.assert_not_called()
+
     def test_setup_devkit_share_marks_noninteractive_bootstrap(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("10.0.0.76", "en0", [("en0", "10.0.0.76")])), \

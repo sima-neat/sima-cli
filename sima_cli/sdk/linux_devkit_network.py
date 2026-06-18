@@ -808,6 +808,12 @@ def validate_running_neat_container_network(container: str, devkit_ip: str = "")
 def repair_linux_devkit_network(container: str = "", devkit_ip: str = "", persist: bool = False) -> NetworkDoctorReport:
     report = build_network_doctor_report(container=container, devkit_ip=devkit_ip)
     if not _is_linux_host():
+        report.add(
+            "error",
+            "repair-unsupported-host",
+            "SDK network repair is only supported on Ubuntu/Linux hosts.",
+            "Use 'sima-cli sdk doctor network --collect' for diagnostics on macOS or Windows.",
+        )
         return report
 
     if report.route and report.route.classification == "vpn":
@@ -833,7 +839,7 @@ def repair_linux_devkit_network(container: str = "", devkit_ip: str = "", persis
         return post_report
     else:
         report.add(
-            "warning",
+            "error",
             "repair-skipped-no-devkit",
             "No DevKit IP was provided; route and shared-network repair were skipped.",
         )

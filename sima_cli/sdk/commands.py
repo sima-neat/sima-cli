@@ -135,6 +135,22 @@ def _resolve_devkit_ip(devkit: Optional[str]) -> str:
     return selected
 
 
+def _resolve_devkit_ipv4(devkit: Optional[str]) -> str:
+    value = _resolve_devkit_ip(devkit)
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError as e:
+        raise click.ClickException(
+            f"Invalid --devkit value '{value}'. Provide a valid IPv4 address or 'auto'."
+        ) from e
+    if parsed.version != 4:
+        raise click.ClickException(
+            "SDK network repair currently supports IPv4 DevKit addresses only. "
+            "Use --devkit <IPv4> for repair, or use 'sima-cli sdk doctor network' for read-only diagnostics."
+        )
+    return value
+
+
 def launch_sdk_tool(tool: str, cmd, ctx):
     """
     Launch a selected SDK tool container, optionally executing a command inside it.
@@ -305,8 +321,8 @@ def network():
 @click.option(
     "--devkit",
     type=str,
-    default=None,
-    help="DevKit IP to use for route and shared-network repair.",
+    required=True,
+    help="DevKit IPv4 address to use for route and shared-network repair. Required.",
 )
 @click.option(
     "--container",
@@ -321,7 +337,7 @@ def network():
 )
 def network_repair(devkit, container, persist):
     """Apply scoped Ubuntu/Linux host network repair for Neat SDK Insight paths."""
-    devkit_ip = _resolve_devkit_ip(devkit) if devkit else ""
+    devkit_ip = _resolve_devkit_ipv4(devkit)
     report = repair_linux_devkit_network(container=container, devkit_ip=devkit_ip, persist=persist)
     print_network_doctor_report(report)
     if report.has_errors:

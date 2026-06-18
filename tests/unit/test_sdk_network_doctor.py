@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from sima_cli.sdk import linux_devkit_network as net
+from sima_cli.sdk import network_doctor as net
 
 
 class TestLinuxDevkitNetwork(unittest.TestCase):
@@ -106,6 +106,39 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
 
         self.assertTrue(report.has_errors)
         self.assertTrue(any(f.code == "vpn-route" for f in report.findings))
+
+    def test_report_includes_colima_network_address_enabled_on_macos(self):
+        with patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "_is_darwin_host", return_value=True), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": True, "mode": "shared", "interface": "bridge100"},
+             ), \
+             patch("sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit", return_value=True):
+            report = net.build_network_doctor_report(devkit_ip="10.0.0.244")
+
+        self.assertTrue(any(f.code == "colima-network-address-enabled" for f in report.findings))
+        self.assertTrue(any(f.code == "unsupported-host" for f in report.findings))
+        self.assertFalse(report.has_errors)
+
+    def test_report_warns_when_colima_network_address_disabled_on_macos(self):
+        with patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "_is_darwin_host", return_value=True), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": False, "mode": "shared", "interface": "en0"},
+             ), \
+             patch("sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit", return_value=False), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="en7"):
+            report = net.build_network_doctor_report(devkit_ip="10.0.0.244")
+
+        finding = next(f for f in report.findings if f.code == "colima-network-address-disabled")
+        self.assertEqual(finding.severity, "warning")
+        self.assertIn("--network-interface en7", finding.detail)
 
     def test_container_default_route_confirmed_from_docker_gateway(self):
         inspect = {

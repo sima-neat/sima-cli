@@ -113,6 +113,19 @@ class TestSdkPreinstall(unittest.TestCase):
 
         self.assertFalse(restarted)
 
+    def test_colima_devkit_network_warning_skips_colima_shared_mode_with_address(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": True, "mode": "shared", "interface": "bridge100"},
+             ), \
+             patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            restarted = warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
+
+        self.assertFalse(restarted)
+
     def test_colima_devkit_network_warning_allows_decline(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \

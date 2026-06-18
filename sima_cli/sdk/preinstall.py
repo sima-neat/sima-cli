@@ -267,16 +267,13 @@ def _boolish(value: Any) -> bool:
 
 def _is_colima_network_suitable_for_devkit(profile: str) -> bool:
     network = _colima_network_config(profile)
-    if not _boolish(network.get("address")):
-        return False
-
-    # Older Colima configs may only expose network.address. If mode is absent,
-    # accept address=true to avoid warning users who are already on a reachable VM network.
-    mode = network.get("mode")
-    if mode and str(mode).strip().lower() != "bridged":
-        return False
-
-    return True
+    # Colima 0.10 can persist reachable VM addressing as:
+    #   network.address: true
+    #   network.mode: shared
+    # The mode does not need to be "bridged" for the DevKit warning to be
+    # satisfied; the important signal is that Colima has an address reachable
+    # from the host/LAN path instead of the default isolated VM networking.
+    return _boolish(network.get("address"))
 
 
 def _route_interface_for_target(target_ip: str) -> str:

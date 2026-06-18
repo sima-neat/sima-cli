@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python scripts/generate_cli_markdown_docs.py
-python scripts/check_py_compatibility.py
-python -m build
+if [[ -z "${PYTHON:-}" && -x "venv/bin/python" ]]; then
+  PYTHON="venv/bin/python"
+else
+  PYTHON="${PYTHON:-python3}"
+fi
+
+"$PYTHON" scripts/generate_cli_markdown_docs.py
+"$PYTHON" scripts/check_py_compatibility.py
+"$PYTHON" -m build

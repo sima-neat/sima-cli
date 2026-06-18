@@ -35,7 +35,7 @@ from sima_cli.utils.env import get_environment_type
 from sima_cli.utils.docker import check_and_start_docker
 from sima_cli.utils.deprecation import should_show_post_neat_ga_deprecation_notice
 from sima_cli.sdk.config import IMAGE_CONFIG
-from sima_cli.sdk.linux_devkit_network import (
+from sima_cli.sdk.network_doctor import (
     build_network_doctor_report,
     collect_network_doctor_bundle,
     print_network_doctor_report,

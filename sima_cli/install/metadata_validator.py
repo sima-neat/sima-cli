@@ -6,6 +6,7 @@ from pathlib import Path
 from sima_cli.install.compatibility import (
     VALID_OS,
     VALID_PLATFORM_TYPES,
+    normalize_host_arch,
     normalize_exact_version,
     validate_version_spec,
 )
@@ -84,6 +85,45 @@ def validate_metadata(data: dict):
                     raise MetadataValidationError(
                         f"Invalid OS '{os_value}' in platform entry {i}. Supported: {VALID_OS}"
                     )
+
+            if "versions" in platform:
+                versions = platform["versions"]
+                if not isinstance(versions, dict):
+                    raise MetadataValidationError(f"'versions' must be an object for host in entry {i}")
+                for os_key, specs in versions.items():
+                    if not isinstance(os_key, str) or os_key.lower() not in VALID_OS:
+                        raise MetadataValidationError(
+                            f"Invalid OS '{os_key}' in host versions for platform entry {i}. Supported: {VALID_OS}"
+                        )
+                    if os_key.lower() not in [str(value).lower() for value in platform["os"]]:
+                        raise MetadataValidationError(
+                            f"Host versions key '{os_key}' must also be listed in 'os' for platform entry {i}"
+                        )
+                    if not isinstance(specs, list) or not specs:
+                        raise MetadataValidationError(
+                            f"'versions.{os_key}' must be a non-empty list in platform entry {i}"
+                        )
+                    for spec in specs:
+                        if not isinstance(spec, str):
+                            raise MetadataValidationError(
+                                f"'versions.{os_key}' values must be strings in platform entry {i}"
+                            )
+                        try:
+                            validate_version_spec(spec)
+                        except ValueError as exc:
+                            raise MetadataValidationError(
+                                f"Invalid host version spec for '{os_key}' in entry {i}: {exc}"
+                            )
+
+            if "arch" in platform:
+                arches = platform["arch"]
+                if not isinstance(arches, list) or not arches:
+                    raise MetadataValidationError(f"'arch' must be a non-empty list for host in entry {i}")
+                for arch in arches:
+                    try:
+                        normalize_host_arch(arch)
+                    except ValueError as exc:
+                        raise MetadataValidationError(f"Invalid host architecture in entry {i}: {exc}")
 
         if platform["type"] == "palette" and "version" in platform:
             if not isinstance(platform["version"], str):

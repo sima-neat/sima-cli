@@ -28,7 +28,7 @@ from sima_cli.utils.disk import check_disk_space
 from sima_cli.utils.env import get_environment_type, get_exact_devkit_type, get_sima_build_version
 from sima_cli.download.downloader import download_file_from_url
 from sima_cli.install.metadata_validator import validate_metadata, MetadataValidationError
-from sima_cli.install.compatibility import version_matches
+from sima_cli.install.compatibility import current_host_arch, normalize_host_arch, version_matches
 from sima_cli.install.metadata_info import print_metadata_summary, parse_size_string_to_bytes
 from sima_cli.utils.container_registries import install_from_cr
 from sima_cli.install.registry import PackageRegistry
@@ -1065,23 +1065,26 @@ def _print_compatible_platforms(platforms):
     table.add_column("Platform Type", style="bold cyan", no_wrap=True)
     table.add_column("Details", style="bold yellow")
     table.add_column("Supported Versions / Targets", style="white")
+    table.add_column("Arch", style="white")
 
     for p in platforms:
         ptype = p.get("type", "N/A")
 
         if ptype == "host":
+            arch = ", ".join(p.get("arch") or ["All"])
+            versions_by_os = {str(k).lower(): v for k, v in p.get("versions", {}).items()}
             for os_name in p.get("os", []):
-                versions = p.get("versions", {}).get(os_name, ["All"])
-                table.add_row(ptype, os_name.capitalize(), ", ".join(versions))
+                versions = versions_by_os.get(str(os_name).lower(), ["All"])
+                table.add_row(ptype, os_name.capitalize(), ", ".join(versions), arch)
 
         elif ptype == "board":
             compat = p.get("compatible_with", [])
             version = p.get("version", "All")
             compat_text = ", ".join(compat) if compat else "N/A"
-            table.add_row(ptype, compat_text, version)
+            table.add_row(ptype, compat_text, version, "N/A")
 
         else:
-            table.add_row(ptype, "N/A", "N/A")
+            table.add_row(ptype, "N/A", "N/A", "N/A")
 
     console.print(table)
     console.print()
@@ -1091,8 +1094,14 @@ def _compare_versions(current: str, condition: str) -> bool:
     Compare current version (e.g. '15.5') against a condition string like:
       '>=12', '<=16', '>20.04', '<23.0', '14'
     """
-    cur = _version_to_tuple(current)
     cond = condition.strip()
+    if re.match(r"^(>=|<=|==|=|>|<)", cond):
+        try:
+            return version_matches(current, cond)
+        except ValueError:
+            pass
+
+    cur = _version_to_tuple(current)
 
     # Detect operator and target
     match = re.match(r"^(>=|<=|>|<|=)?\s*([\d.]+)$", cond)
@@ -1128,6 +1137,73 @@ def _get_palette_sdk_version(release_file: Path = Path("/etc/sdk-release")) -> s
     return match.group(1).split("_", 1)[0].strip()
 
 
+def _detected_host_platform() -> tuple:
+    os_name = platform.system().lower()
+    os_version = "Unknown"
+
+    if os_name == "darwin":
+        return "mac", platform.mac_ver()[0] or "Unknown", current_host_arch()
+    if os_name == "windows":
+        return "windows", platform.release() or "Unknown", current_host_arch()
+    if os_name != "linux":
+        return os_name, os_version, current_host_arch()
+
+    os_release = {}
+    try:
+        with open("/etc/os-release", encoding="utf-8") as f:
+            for line in f:
+                key, separator, value = line.strip().partition("=")
+                if separator:
+                    os_release[key] = value.strip().strip('"')
+    except OSError:
+        os_release = {}
+
+    distro_id = (os_release.get("ID") or "").lower()
+    version_id = os_release.get("VERSION_ID") or ""
+    if distro_id == "ubuntu":
+        os_name = "ubuntu"
+        os_version = version_id or "Unknown"
+    else:
+        os_name = "linux"
+        os_version = version_id or "Unknown"
+
+    if os_version == "Unknown":
+        try:
+            out = subprocess.check_output(["lsb_release", "-ds"], text=True).strip().lower()
+            if "ubuntu" in out:
+                os_name = "ubuntu"
+            match = re.search(r"(\d+\.\d+|\d+)", out)
+            os_version = match.group(1) if match else "Unknown"
+        except Exception:
+            pass
+
+    match = re.search(r"(\d+\.\d+|\d+)", os_version)
+    if match:
+        os_version = match.group(1)
+    return os_name, os_version, current_host_arch()
+
+
+def _host_os_matches(detected_os: str, supported_oses: List[str]) -> bool:
+    if detected_os in supported_oses:
+        return True
+    return detected_os == "ubuntu" and "linux" in supported_oses
+
+
+def _host_versions_for_os(platform_entry: dict, detected_os: str) -> list:
+    versions_dict = {str(k).lower(): v for k, v in platform_entry.get("versions", {}).items()}
+    return versions_dict.get(detected_os) or (versions_dict.get("linux") if detected_os == "ubuntu" else []) or []
+
+
+def _host_arch_matches(platform_entry: dict, detected_arch: str) -> bool:
+    supported_arches = []
+    for value in platform_entry.get("arch", []):
+        try:
+            supported_arches.append(normalize_host_arch(value))
+        except ValueError:
+            supported_arches.append(str(value).lower())
+    return not supported_arches or detected_arch in supported_arches
+
+
 def _is_platform_compatible(metadata: dict, force: bool = False) -> bool:
     """
     Determines if the current environment is compatible with the package metadata.
@@ -1142,40 +1218,7 @@ def _is_platform_compatible(metadata: dict, force: bool = False) -> bool:
         click.echo("ℹ️  No platform restrictions specified; treating package as compatible with all platforms.")
         return True
 
-    # Detect current OS and version
-    os_name = platform.system().lower()  # 'darwin', 'windows', 'linux'
-    os_version = "Unknown"
-
-    if os_name == "darwin":
-        os_name = "mac"
-        os_version = platform.mac_ver()[0] or "Unknown"
-    elif os_name == "windows":
-        os_version = platform.release()
-    elif os_name == "linux":
-        try:
-            out = subprocess.check_output(["lsb_release", "-ds"], text=True).strip().lower()
-            if "ubuntu" in out:
-                os_name = "ubuntu"
-                match = re.search(r"(\d+\.\d+)", out)
-                os_version = match.group(1) if match else "Unknown"
-            else:
-                os_name = "linux"
-                match = re.search(r"(\d+\.\d+)", out)
-                os_version = match.group(1) if match else "Unknown"
-        except Exception:
-            os_name = "linux"
-            try:
-                with open("/etc/os-release") as f:
-                    for line in f:
-                        if line.startswith("VERSION_ID"):
-                            os_version = line.split("=")[1].strip().strip('"')
-                            break
-            except FileNotFoundError:
-                os_version = "Unknown"
-
-    match = re.search(r"(\d+\.\d+|\d+)", os_version)
-    if match:
-        os_version = match.group(1)
+    os_name, os_version, host_arch = _detected_host_platform()
 
     # ──────────────────────────────────────────────
     # Compatibility checks
@@ -1214,16 +1257,19 @@ def _is_platform_compatible(metadata: dict, force: bool = False) -> bool:
 
         # 2️⃣ OS match (mac, ubuntu, linux, windows)
         supported_oses = [o.lower() for o in platform_entry.get("os", [])]
-        if os_name not in supported_oses:
-            if not (os_name == "ubuntu" and "linux" in supported_oses):
-                continue
+        if not _host_os_matches(os_name, supported_oses):
+            continue
 
-        # 3️⃣ Version match
-        versions_dict = platform_entry.get("versions", {})
-        supported_versions = (
-            versions_dict.get(os_name)
-            or (versions_dict.get("linux") if os_name == "ubuntu" else [])
-        )
+        # 3️⃣ Architecture match
+        if not _host_arch_matches(platform_entry, host_arch):
+            click.echo(
+                f"❌ Host architecture {host_arch or 'unknown'} is not supported. "
+                f"Allowed: {platform_entry.get('arch')}"
+            )
+            continue
+
+        # 4️⃣ Version match
+        supported_versions = _host_versions_for_os(platform_entry, os_name)
 
         if supported_versions:
             ok = False
@@ -1248,11 +1294,12 @@ def _is_platform_compatible(metadata: dict, force: bool = False) -> bool:
 
     click.secho(
         f"❌ Current environment [{env_type}:{env_subtype}] "
-        f"({os_name} {os_version}) is not compatible with this package.", fg='red'
+        f"({os_name} {os_version} {host_arch}) is not compatible with this package.", fg='red'
     )
     _print_compatible_platforms(platforms)
     if not force:
         exit(1)
+    return False
 
 
 def _print_post_install_message(metadata: Dict):

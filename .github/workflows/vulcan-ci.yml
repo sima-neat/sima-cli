@@ -402,7 +402,7 @@ jobs:
           export HOME="${RUNNER_TEMP}/repo-installer-home"
           mkdir -p "$HOME"
           bash scripts/install/linux-mac.sh
-          "$HOME/.sima-cli/.venv/bin/sima-cli" version
+          "$HOME/.sima-cli/.venv/bin/sima-cli" --version
 
       - name: Test repo installer script on native Windows
         if: runner.os == 'Windows'
@@ -412,7 +412,7 @@ jobs:
           $env:USERPROFILE = Join-Path $env:RUNNER_TEMP "repo-installer-home"
           New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
           cmd.exe /c scripts\install\windows.bat
-          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" version
+          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" --version
 
       - name: Install candidate on native Windows
         if: runner.os == 'Windows'

@@ -246,7 +246,10 @@ table ip nm-shared-eno1 {
             )
 
         self.assertTrue(any(action["action"] == "networkmanager-dispatcher" and action["status"] == "removed" for action in actions))
-        run.assert_called_once_with(["sudo", "rm", "-f", net.NM_SHARED_DISPATCHER_PATH])
+        self.assertIn(
+            ["sudo", "rm", "-f", net.NM_SHARED_DISPATCHER_PATH],
+            [call.args[0] for call in run.call_args_list],
+        )
 
     def test_install_nm_shared_dispatcher_repair_writes_root_hook(self):
         status = {

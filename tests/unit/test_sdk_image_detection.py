@@ -2588,9 +2588,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
         script = _bash_profile_sources_bashrc_script("jim", 1000, 1000)
 
         self.assertIn("profile=/home/jim/.bash_profile", script)
+        self.assertIn("bashrc=/home/jim/.bashrc", script)
+        self.assertIn('touch "$bashrc"', script)
         self.assertIn('if [ -f "$HOME/.bashrc" ]; then', script)
         self.assertIn('. "$HOME/.bashrc"', script)
-        self.assertIn('chown 1000:1000 "$home" "$profile"', script)
+        self.assertIn('chown 1000:1000 "$home" "$profile" "$bashrc"', script)
 
     def test_prompt_multi_select_accepts_modelsdk_display_name(self):
         with patch("builtins.print"), patch("builtins.input", return_value="ModelSDK"):

@@ -998,11 +998,14 @@ def _sudoers_drop_in_script(login_name: str) -> str:
 def _bash_profile_sources_bashrc_script(login_name: str, uid: int, gid: int) -> str:
     home = f"/home/{login_name}"
     profile = f"{home}/.bash_profile"
+    bashrc = f"{home}/.bashrc"
     return (
         "set -eu; "
         f"home={shlex.quote(home)}; "
         f"profile={shlex.quote(profile)}; "
+        f"bashrc={shlex.quote(bashrc)}; "
         "mkdir -p \"$home\"; "
+        "touch \"$bashrc\"; "
         "touch \"$profile\"; "
         "if ! grep -Eq '(^|[[:space:]])(\\.|source)[[:space:]]+(\"?\\$HOME\"?/|~/)?\\.bashrc' \"$profile\" 2>/dev/null; then "
         "cat >> \"$profile\" <<'SIMA_CLI_BASHRC_SOURCE'\n\n"
@@ -1011,7 +1014,7 @@ def _bash_profile_sources_bashrc_script(login_name: str, uid: int, gid: int) -> 
         "fi\n"
         "SIMA_CLI_BASHRC_SOURCE\n"
         "fi; "
-        f"chown {uid}:{gid} \"$home\" \"$profile\""
+        f"chown {uid}:{gid} \"$home\" \"$profile\" \"$bashrc\""
     )
 
 

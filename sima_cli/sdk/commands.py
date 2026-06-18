@@ -204,7 +204,7 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     "--devkit",
     type=str,
     default=None,
-    help="Configure DevKit integration for setup. Use '--devkit <IP>' or '--devkit auto'.",
+    help="Configure DevKit integration for setup. Use '--devkit <IP>'.",
 )
 @click.option(
     "--no-insight",

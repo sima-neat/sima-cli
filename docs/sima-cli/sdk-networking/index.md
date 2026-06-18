@@ -31,12 +31,6 @@ Use:
 sima-cli sdk setup --devkit <devkit-ip>
 ```
 
-To let `sima-cli` discover a DevKit:
-
-```bash
-sima-cli sdk setup --devkit auto
-```
-
 ## Persistent Linux shared-network repair
 
 On some Ubuntu hosts, NetworkManager shared networking can recreate firewall chains when the cable reconnects or the host reboots. In that case, setup may repair the current session but warn that the repair is not persistent.

@@ -22,7 +22,10 @@ from sima_cli.sdk.preinstall import (
     warn_if_colima_devkit_network_may_need_bridged,
 )
 from sima_cli.sdk.config import IMAGE_CONFIG
-from sima_cli.sdk.linux_shared_network import configure_linux_shared_devkit_network
+from sima_cli.sdk.linux_shared_network import (
+    configure_linux_shared_devkit_network,
+    maybe_install_nm_shared_dispatcher_repair,
+)
 from sima_cli.sdk.linux_devkit_network import ensure_existing_neat_container_startable
 from sima_cli.utils.net import get_local_ip_candidates
 
@@ -584,7 +587,22 @@ def _configure_nfs_export(host_dir: Path, devkit_ip: Optional[str], host_os: str
     raise RuntimeError("Host NFS setup is only implemented for macOS/Linux")
 
 
-def _setup_devkit_share(devkit_ip: str, workspace: str, selected_images: List[str], noninteractive: bool = False):
+def _configure_devkit_shared_network_for_setup(devkit_ip: str, noninteractive: bool = False, yes_to_all: bool = False) -> None:
+    configure_linux_shared_devkit_network(devkit_ip)
+    maybe_install_nm_shared_dispatcher_repair(
+        devkit_ip,
+        noninteractive=noninteractive,
+        yes_to_all=yes_to_all,
+    )
+
+
+def _setup_devkit_share(
+    devkit_ip: str,
+    workspace: str,
+    selected_images: List[str],
+    noninteractive: bool = False,
+    yes_to_all: bool = False,
+):
     if not devkit_ip:
         return {}
     if not any(is_neat_sdk_image(image) for image in selected_images):
@@ -614,7 +632,7 @@ def _setup_devkit_share(devkit_ip: str, workspace: str, selected_images: List[st
                 )
                 _print_devkit_nfs_banner(workspace, devkit_ip, host_os)
                 _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)
-                configure_linux_shared_devkit_network(devkit_ip)
+                _configure_devkit_shared_network_for_setup(devkit_ip, noninteractive=noninteractive, yes_to_all=yes_to_all)
                 print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
                 return {
                     "devkit_ip": devkit_ip,
@@ -640,7 +658,7 @@ def _setup_devkit_share(devkit_ip: str, workspace: str, selected_images: List[st
                 existing_export.export_path,
             )
         )
-        configure_linux_shared_devkit_network(devkit_ip)
+        _configure_devkit_shared_network_for_setup(devkit_ip, noninteractive=noninteractive, yes_to_all=yes_to_all)
         return {
             "devkit_ip": devkit_ip,
             "host_ip": existing_export.server,
@@ -652,7 +670,7 @@ def _setup_devkit_share(devkit_ip: str, workspace: str, selected_images: List[st
 
     _print_devkit_nfs_banner(workspace, devkit_ip, host_os)
     _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)
-    configure_linux_shared_devkit_network(devkit_ip)
+    _configure_devkit_shared_network_for_setup(devkit_ip, noninteractive=noninteractive, yes_to_all=yes_to_all)
     print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
 
     if auto_iface != "auto":
@@ -1034,7 +1052,13 @@ def setup_and_start(
     )
     uid = os.getuid() if hasattr(os, "getuid") else 900
     gid = os.getgid() if hasattr(os, "getgid") else 900
-    devkit_env = _setup_devkit_share(devkit_ip, workspace, selected_images, noninteractive=noninteractive)
+    devkit_env = _setup_devkit_share(
+        devkit_ip,
+        workspace,
+        selected_images,
+        noninteractive=noninteractive,
+        yes_to_all=yes_to_all,
+    )
     skip_model_sdk = no_model_sdk or minimal
     skip_insight = no_insight or minimal
     if skip_model_sdk:

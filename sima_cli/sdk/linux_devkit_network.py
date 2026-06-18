@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from sima_cli.sdk.linux_shared_network import configure_linux_shared_devkit_network
+from sima_cli.sdk.linux_shared_network import (
+    NM_SHARED_DISPATCHER_PATH,
+    configure_linux_shared_devkit_network,
+    nm_shared_iptables_repair_status,
+)
 
 
 SDK_BRIDGE_NETWORK = "simasdkbridge"
@@ -494,6 +498,30 @@ def build_network_doctor_report(container: str = "", devkit_ip: str = "") -> Net
         else:
             report.add("warning", "route-unresolved", "Could not resolve route to DevKit.", route.raw)
 
+        iptables_status = nm_shared_iptables_repair_status(devkit_ip, allow_sudo_prompt=False)
+        if iptables_status.get("applicable"):
+            chain = str(iptables_status.get("chain") or "")
+            report.add(
+                "info",
+                "nm-shared-iptables-route",
+                f"DevKit route uses NetworkManager shared-mode chain {chain}.",
+                f"iface={iptables_status.get('devkit_iface')} devkitSubnet={iptables_status.get('devkit_subnet')} sdkSubnet={iptables_status.get('docker_subnet')}",
+            )
+            if not iptables_status.get("rule_present"):
+                report.add(
+                    "error",
+                    "nm-shared-iptables-blocking",
+                    f"NetworkManager shared-mode chain {chain} rejects SDK bridge traffic before DOCKER-USER.",
+                    f"Run: sima-cli sdk network repair --devkit {devkit_ip} --persist",
+                )
+            if iptables_status.get("rule_present") and not iptables_status.get("dispatcher_installed"):
+                report.add(
+                    "warning",
+                    "nm-shared-dispatcher-missing",
+                    "Runtime NetworkManager shared-mode SDK forwarding rule is present, but no dispatcher hook is installed for reconnects/reboots.",
+                    f"Install persistence with: sima-cli sdk network repair --devkit {devkit_ip} --persist ({NM_SHARED_DISPATCHER_PATH})",
+                )
+
     resolved_container, error = resolve_neat_sdk_container(container)
     if error:
         report.add("warning", "container-unresolved", error)
@@ -777,7 +805,7 @@ def validate_running_neat_container_network(container: str, devkit_ip: str = "")
         raise RuntimeError(blocking[0].message)
 
 
-def repair_linux_devkit_network(container: str = "", devkit_ip: str = "") -> NetworkDoctorReport:
+def repair_linux_devkit_network(container: str = "", devkit_ip: str = "", persist: bool = False) -> NetworkDoctorReport:
     report = build_network_doctor_report(container=container, devkit_ip=devkit_ip)
     if not _is_linux_host():
         return report
@@ -792,14 +820,14 @@ def repair_linux_devkit_network(container: str = "", devkit_ip: str = "") -> Net
         return report
 
     if devkit_ip:
-        configure_linux_shared_devkit_network(devkit_ip)
+        configure_linux_shared_devkit_network(devkit_ip, persist=persist)
         post_report = build_network_doctor_report(container=container, devkit_ip=devkit_ip)
         post_report.findings.insert(
             0,
             NetworkFinding(
                 "info",
                 "shared-network-repair",
-                "Applied existing scoped NetworkManager shared-network repair checks where applicable.",
+                "Applied scoped NetworkManager shared-network repair checks where applicable.",
             ),
         )
         return post_report

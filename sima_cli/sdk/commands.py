@@ -308,10 +308,15 @@ def network():
     default="",
     help="Neat SDK container name. Required when multiple Neat SDK containers exist.",
 )
-def network_repair(devkit, container):
+@click.option(
+    "--persist",
+    is_flag=True,
+    help="Install/update a persistent NetworkManager dispatcher hook after applying runtime repair.",
+)
+def network_repair(devkit, container, persist):
     """Apply scoped Ubuntu/Linux host network repair for Neat SDK Insight paths."""
     devkit_ip = _resolve_devkit_ip(devkit) if devkit else ""
-    report = repair_linux_devkit_network(container=container, devkit_ip=devkit_ip)
+    report = repair_linux_devkit_network(container=container, devkit_ip=devkit_ip, persist=persist)
     print_network_doctor_report(report)
     if report.has_errors:
         raise click.ClickException("Network repair did not resolve all blocking issues.")

@@ -19,6 +19,7 @@ Usage:
 import click
 import ipaddress
 import subprocess
+from pathlib import Path
 from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
@@ -40,7 +41,10 @@ from sima_cli.sdk.linux_devkit_network import (
     print_network_doctor_report,
     repair_linux_devkit_network,
 )
-from sima_cli.sdk.linux_shared_network import rollback_linux_shared_devkit_network
+from sima_cli.sdk.linux_shared_network import (
+    NM_SHARED_DISPATCHER_PATH,
+    rollback_linux_shared_devkit_network,
+)
 
 console = Console()
 LEGACY_PALETTE_SDK_TOOLS = {"elxr", "model", "yocto", "mpk"}
@@ -354,6 +358,19 @@ def network_rollback(devkit, apply_changes, remove_persistent_profile):
         raise click.ClickException("Provide --devkit <IP> for Linux SDK network rollback.")
 
     dry_run = not apply_changes
+    if apply_changes and not remove_persistent_profile and Path(NM_SHARED_DISPATCHER_PATH).exists():
+        click.echo(
+            "ℹ️  A persistent SDK network repair profile is installed on this host.\n"
+            "   In plain terms, this is a small NetworkManager hook that reapplies the SDK-to-DevKit\n"
+            "   network fix after you reconnect the DevKit cable, restart networking, or reboot.\n"
+            "   Removing it is safe if you want to fully undo the SDK network repair, but DevKit\n"
+            "   connectivity may need to be repaired again later."
+        )
+        remove_persistent_profile = click.confirm(
+            "Remove the persistent SDK network repair profile as part of rollback?",
+            default=False,
+        )
+
     actions = rollback_linux_shared_devkit_network(
         devkit_ip,
         dry_run=dry_run,

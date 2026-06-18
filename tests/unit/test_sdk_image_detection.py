@@ -394,6 +394,42 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertIn("supports IPv4 DevKit addresses only", result.output)
         repair.assert_not_called()
 
+    def test_sdk_network_rollback_defaults_to_dry_run(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.rollback_linux_shared_devkit_network", return_value=[]) as rollback:
+            result = runner.invoke(sdk, ["network", "rollback", "--devkit", "10.42.0.78"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        rollback.assert_called_once_with(
+            "10.42.0.78",
+            dry_run=True,
+            remove_persistent_profile=False,
+        )
+
+    def test_sdk_network_rollback_apply_removes_persistent_profile_when_requested(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.rollback_linux_shared_devkit_network", return_value=[]) as rollback:
+            result = runner.invoke(
+                sdk,
+                [
+                    "network",
+                    "rollback",
+                    "--devkit",
+                    "10.42.0.78",
+                    "--apply",
+                    "--remove-persistent-profile",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        rollback.assert_called_once_with(
+            "10.42.0.78",
+            dry_run=False,
+            remove_persistent_profile=True,
+        )
+
     def test_setup_devkit_share_marks_noninteractive_bootstrap(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("10.0.0.76", "en0", [("en0", "10.0.0.76")])), \

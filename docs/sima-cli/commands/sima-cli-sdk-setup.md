@@ -4,6 +4,12 @@ Initialize SDK environment and select components to start.
 
 Parent command: [`sima-cli sdk`](./sima-cli-sdk.md)
 
+When `--devkit <IP>` is provided on an affected Ubuntu/NetworkManager host,
+setup applies the current-session SDK bridge forwarding repair automatically.
+If a persistent NetworkManager dispatcher hook would help across reconnects or
+reboots, setup prompts before installing it. Use `--persistent-network-profile`
+to explicitly allow the persistent host network profile in automated setup.
+
 ## Usage
 
 ```bash
@@ -21,6 +27,7 @@ sima-cli sdk setup [OPTIONS]
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
+| `--persistent-network-profile` | Allow setup to install a persistent NetworkManager shared-network repair profile without prompting. |
 
 ## Arguments
 
@@ -50,5 +57,8 @@ Options:
                                   CI compilation jobs.
   --workspace DIRECTORY           Host workspace directory to mount into SDK
                                   containers instead of ~/workspace.
+  --persistent-network-profile    Allow setup to install a persistent
+                                  NetworkManager shared-network repair profile
+                                  without prompting.
   --help                          Show this message and exit.
 ```

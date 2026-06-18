@@ -22,11 +22,13 @@ None.
 
 ## Subcommands
 
+- [`sima-cli sdk doctor`](./sima-cli-sdk-doctor.md): Run read-only SDK diagnostics.
 - [`sima-cli sdk elxr`](./sima-cli-sdk-elxr.md): Launch the eLxr SDK tool environment.
 - [`sima-cli sdk ls`](./sima-cli-sdk-ls.md): List installed and running SiMa SDK containers.
 - [`sima-cli sdk model`](./sima-cli-sdk-model.md): Launch the Model SDK tool environment.
 - [`sima-cli sdk mpk`](./sima-cli-sdk-mpk.md): Access MPK CLI toolset container for managing and building pipelines along with the device manager.
 - [`sima-cli sdk neat`](./sima-cli-sdk-neat.md): Launch the Neat SDK tool environment.
+- [`sima-cli sdk network`](./sima-cli-sdk-network.md): Probe or repair SDK network configuration.
 - [`sima-cli sdk remove`](./sima-cli-sdk-remove.md): Remove SDK containers and images.
 - [`sima-cli sdk run`](./sima-cli-sdk-run.md): Run a .sima hybrid script with local + container commands.
 - [`sima-cli sdk setup`](./sima-cli-sdk-setup.md): Initialize SDK environment and select components to start.
@@ -64,15 +66,17 @@ Options:
   --help              Show this message and exit.
 
 Commands:
-  elxr    Launch the eLxr SDK tool environment.
-  ls      List installed and running SiMa SDK containers.
-  model   Launch the Model SDK tool environment.
-  mpk     Access MPK CLI toolset container for managing and building...
-  neat    Launch the Neat SDK tool environment.
-  remove  Remove SDK containers and images.
-  run     Run a .sima hybrid script with local + container commands.
-  setup   Initialize SDK environment and select components to start.
-  start   Select and start one or more SDK containers.
-  stop    Stop one or more running SDK containers.
-  yocto   Launch the Yocto SDK tool environment.
+  doctor   Run read-only SDK diagnostics.
+  elxr     Launch the eLxr SDK tool environment.
+  ls       List installed and running SiMa SDK containers.
+  model    Launch the Model SDK tool environment.
+  mpk      Access MPK CLI toolset container for managing and building...
+  neat     Launch the Neat SDK tool environment.
+  network  Probe or repair SDK network configuration.
+  remove   Remove SDK containers and images.
+  run      Run a .sima hybrid script with local + container commands.
+  setup    Initialize SDK environment and select components to start.
+  start    Select and start one or more SDK containers.
+  stop     Stop one or more running SDK containers.
+  yocto    Launch the Yocto SDK tool environment.
 ```

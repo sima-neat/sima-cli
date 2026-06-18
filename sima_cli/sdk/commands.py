@@ -34,6 +34,12 @@ from sima_cli.utils.env import get_environment_type
 from sima_cli.utils.docker import check_and_start_docker
 from sima_cli.utils.deprecation import should_show_post_neat_ga_deprecation_notice
 from sima_cli.sdk.config import IMAGE_CONFIG
+from sima_cli.sdk.linux_devkit_network import (
+    build_network_doctor_report,
+    collect_network_doctor_bundle,
+    print_network_doctor_report,
+    repair_linux_devkit_network,
+)
 
 console = Console()
 LEGACY_PALETTE_SDK_TOOLS = {"elxr", "model", "yocto", "mpk"}
@@ -129,6 +135,22 @@ def _resolve_devkit_ip(devkit: Optional[str]) -> str:
     return selected
 
 
+def _resolve_devkit_ipv4(devkit: Optional[str]) -> str:
+    value = _resolve_devkit_ip(devkit)
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError as e:
+        raise click.ClickException(
+            f"Invalid --devkit value '{value}'. Provide a valid IPv4 address or 'auto'."
+        ) from e
+    if parsed.version != 4:
+        raise click.ClickException(
+            "SDK network repair currently supports IPv4 DevKit addresses only. "
+            "Use --devkit <IPv4> for repair, or use 'sima-cli sdk doctor network' for read-only diagnostics."
+        )
+    return value
+
+
 def launch_sdk_tool(tool: str, cmd, ctx):
     """
     Launch a selected SDK tool container, optionally executing a command inside it.
@@ -202,8 +224,13 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     default=None,
     help="Host workspace directory to mount into SDK containers instead of ~/workspace.",
 )
+@click.option(
+    "--persistent-network-profile",
+    is_flag=True,
+    help="Allow setup to install a persistent NetworkManager shared-network repair profile without prompting.",
+)
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, workspace):
+def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, workspace, persistent_network_profile):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
@@ -215,6 +242,7 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, w
             no_model_sdk=no_model_sdk,
             minimal=minimal,
             workspace=workspace,
+            persistent_network_profile=persistent_network_profile,
         )
     except subprocess.CalledProcessError as e:
         raise click.ClickException(f"SDK setup failed while running: {' '.join(e.cmd)}") from e
@@ -241,6 +269,79 @@ def start(ctx, yes, noninteractive):
         raise click.ClickException(f"SDK start failed while running: {' '.join(e.cmd)}") from e
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
+
+
+@sdk.group(name="doctor")
+def doctor():
+    """Run read-only SDK diagnostics."""
+
+
+@doctor.command(name="network")
+@click.option(
+    "--devkit",
+    type=str,
+    default=None,
+    help="DevKit IP to use for route and reachability diagnostics.",
+)
+@click.option(
+    "--container",
+    type=str,
+    default="",
+    help="Neat SDK container name. Required when multiple Neat SDK containers exist.",
+)
+@click.option(
+    "--collect",
+    is_flag=True,
+    help="Create a read-only support bundle with sanitized network, Docker, and Insight diagnostics.",
+)
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=True, file_okay=True),
+    default="",
+    help="Output .tar.gz file or directory for --collect. Defaults to ./sima-sdk-network-doctor-<timestamp>.tar.gz.",
+)
+def doctor_network(devkit, container, collect, output):
+    """Diagnose Ubuntu/Linux host networking for Neat SDK Insight ports."""
+    devkit_ip = _resolve_devkit_ip(devkit) if devkit else ""
+    report = build_network_doctor_report(container=container, devkit_ip=devkit_ip)
+    print_network_doctor_report(report)
+    if collect:
+        bundle_path = collect_network_doctor_bundle(report, output_path=output)
+        click.echo(f"📦 Network doctor support bundle written to: {bundle_path}")
+    if report.has_errors:
+        raise click.ClickException("Network doctor found blocking issues.")
+
+
+@sdk.group(name="network")
+def network():
+    """Probe or repair SDK network configuration."""
+
+
+@network.command(name="repair")
+@click.option(
+    "--devkit",
+    type=str,
+    required=True,
+    help="DevKit IPv4 address to use for route and shared-network repair. Required.",
+)
+@click.option(
+    "--container",
+    type=str,
+    default="",
+    help="Neat SDK container name. Required when multiple Neat SDK containers exist.",
+)
+@click.option(
+    "--persist",
+    is_flag=True,
+    help="Install/update a persistent NetworkManager dispatcher hook after applying runtime repair.",
+)
+def network_repair(devkit, container, persist):
+    """Apply scoped Ubuntu/Linux host network repair for Neat SDK Insight paths."""
+    devkit_ip = _resolve_devkit_ipv4(devkit)
+    report = repair_linux_devkit_network(container=container, devkit_ip=devkit_ip, persist=persist)
+    print_network_doctor_report(report)
+    if report.has_errors:
+        raise click.ClickException("Network repair did not resolve all blocking issues.")
 
 @sdk.command(
     name="stop",

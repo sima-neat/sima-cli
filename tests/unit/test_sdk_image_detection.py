@@ -674,6 +674,13 @@ table ip nm-shared-enx6c1ff720d573 {
   }
 }
 """
+        nft_nat_chain = """
+table ip nm-shared-enx6c1ff720d573 {
+  chain nat_postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+  }
+}
+"""
 
         def run_side_effect(cmd, **_kwargs):
             if cmd[:4] == ["/usr/bin/ip", "-o", "-4", "route"]:
@@ -684,7 +691,13 @@ table ip nm-shared-enx6c1ff720d573 {
                 return Mock(returncode=0, stdout=docker_inspect, stderr="")
             if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
                 return Mock(returncode=0, stdout=nft_chain, stderr="")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "nat_postrouting"]:
+                return Mock(returncode=0, stdout=nft_nat_chain, stderr="")
             if cmd[:7] == ["sudo", "/usr/sbin/nft", "insert", "rule", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "insert", "rule", "ip", "nm-shared-enx6c1ff720d573", "nat_postrouting"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd[:4] == ["sudo", "/usr/sbin/iptables", "-t", "nat"]:
                 return Mock(returncode=0, stdout="", stderr="")
             return Mock(returncode=1, stdout="", stderr="unexpected command")
 
@@ -695,15 +708,15 @@ table ip nm-shared-enx6c1ff720d573 {
                      "ip": "/usr/bin/ip",
                      "docker": "/usr/bin/docker",
                      "nft": "/usr/sbin/nft",
+                     "iptables": "/usr/sbin/iptables",
                  }.get(name),
              ), \
              patch("sima_cli.sdk.linux_shared_network.subprocess.run", side_effect=run_side_effect) as run:
             applied = _configure_nm_shared_devkit_forwarding("10.42.0.175")
 
         self.assertTrue(applied)
-        insert_cmd = run.call_args_list[-1][0][0]
-        self.assertEqual(
-            insert_cmd,
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(
             [
                 "sudo",
                 "/usr/sbin/nft",
@@ -724,6 +737,48 @@ table ip nm-shared-enx6c1ff720d573 {
                 "10.42.0.0/24",
                 "accept",
             ],
+            commands,
+        )
+        self.assertIn(
+            [
+                "sudo",
+                "/usr/sbin/nft",
+                "insert",
+                "rule",
+                "ip",
+                "nm-shared-enx6c1ff720d573",
+                "nat_postrouting",
+                "ip",
+                "saddr",
+                "172.23.0.0/16",
+                "oifname",
+                "enx6c1ff720d573",
+                "masquerade",
+            ],
+            commands,
+        )
+        self.assertIn(
+            [
+                "sudo",
+                "/usr/sbin/nft",
+                "insert",
+                "rule",
+                "ip",
+                "nm-shared-enx6c1ff720d573",
+                "filter_forward",
+                "iifname",
+                "enx6c1ff720d573",
+                "oifname",
+                "br-ca007b7ec8f5",
+                "ip",
+                "daddr",
+                "172.23.0.0/16",
+                "ct",
+                "state",
+                "related,established",
+                "accept",
+            ],
+            commands,
         )
 
     def test_configure_nm_shared_forwarding_is_idempotent(self):
@@ -738,6 +793,7 @@ table ip nm-shared-enx6c1ff720d573 {
 table ip nm-shared-enx6c1ff720d573 {
   chain filter_forward {
     iifname "br-ca007b7ec8f5" oifname "enx6c1ff720d573" ip saddr 172.23.0.0/16 ip daddr 10.42.0.0/24 accept
+    iifname "enx6c1ff720d573" oifname "br-ca007b7ec8f5" ip daddr 172.23.0.0/16 ct state established,related accept
     oifname "enx6c1ff720d573" reject
   }
 }
@@ -752,6 +808,8 @@ table ip nm-shared-enx6c1ff720d573 {
                 return Mock(returncode=0, stdout=docker_inspect, stderr="")
             if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
                 return Mock(returncode=0, stdout=nft_chain, stderr="")
+            if cmd[:4] == ["sudo", "/usr/sbin/iptables", "-t", "nat"]:
+                return Mock(returncode=0, stdout="-A POSTROUTING -s 172.23.0.0/16 ! -o br-ca007b7ec8f5 -j MASQUERADE\n", stderr="")
             return Mock(returncode=1, stdout="", stderr="unexpected command")
 
         with patch("sima_cli.sdk.linux_shared_network.platform.system", return_value="Linux"), \
@@ -761,6 +819,7 @@ table ip nm-shared-enx6c1ff720d573 {
                      "ip": "/usr/bin/ip",
                      "docker": "/usr/bin/docker",
                      "nft": "/usr/sbin/nft",
+                     "iptables": "/usr/sbin/iptables",
                  }.get(name),
              ), \
              patch("sima_cli.sdk.linux_shared_network.subprocess.run", side_effect=run_side_effect) as run:
@@ -769,6 +828,77 @@ table ip nm-shared-enx6c1ff720d573 {
         self.assertTrue(applied)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertFalse(any(cmd[:3] == ["sudo", "/usr/sbin/nft", "insert"] for cmd in commands))
+
+    def test_configure_nm_shared_forwarding_uses_iptables_nat_fallback(self):
+        docker_inspect = """[
+          {
+            "Id": "ca007b7ec8f512345678",
+            "Options": {},
+            "IPAM": {"Config": [{"Subnet": "172.23.0.0/16"}]}
+          }
+        ]"""
+        nft_chain = """
+table ip nm-shared-enx6c1ff720d573 {
+  chain filter_forward {
+    oifname "enx6c1ff720d573" reject
+  }
+}
+"""
+
+        def run_side_effect(cmd, **_kwargs):
+            if cmd[:4] == ["/usr/bin/ip", "-o", "-4", "route"]:
+                return Mock(returncode=0, stdout="10.42.0.175 dev enx6c1ff720d573 src 10.42.0.1\n", stderr="")
+            if cmd[:5] == ["/usr/bin/ip", "-o", "-4", "addr", "show"]:
+                return Mock(returncode=0, stdout="2: enx6c1ff720d573 inet 10.42.0.1/24 brd 10.42.0.255 scope global enx6c1ff720d573\n", stderr="")
+            if cmd[:4] == ["/usr/bin/docker", "network", "inspect", "simasdkbridge"]:
+                return Mock(returncode=0, stdout=docker_inspect, stderr="")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
+                return Mock(returncode=0, stdout=nft_chain, stderr="")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "nat_postrouting"]:
+                return Mock(returncode=1, stdout="", stderr="no such chain")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "insert", "rule", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd == ["sudo", "/usr/sbin/iptables", "-t", "nat", "-S", "POSTROUTING"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd[:6] == ["sudo", "/usr/sbin/iptables", "-t", "nat", "-C", "POSTROUTING"]:
+                return Mock(returncode=1, stdout="", stderr="missing")
+            if cmd[:6] == ["sudo", "/usr/sbin/iptables", "-t", "nat", "-I", "POSTROUTING"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            return Mock(returncode=1, stdout="", stderr="unexpected command")
+
+        with patch("sima_cli.sdk.linux_shared_network.platform.system", return_value="Linux"), \
+             patch(
+                 "sima_cli.sdk.linux_shared_network._find_executable",
+                 side_effect=lambda name: {
+                     "ip": "/usr/bin/ip",
+                     "docker": "/usr/bin/docker",
+                     "nft": "/usr/sbin/nft",
+                     "iptables": "/usr/sbin/iptables",
+                 }.get(name),
+             ), \
+             patch("sima_cli.sdk.linux_shared_network.subprocess.run", side_effect=run_side_effect) as run:
+            applied = _configure_nm_shared_devkit_forwarding("10.42.0.175")
+
+        self.assertTrue(applied)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(
+            [
+                "sudo",
+                "/usr/sbin/iptables",
+                "-t",
+                "nat",
+                "-I",
+                "POSTROUTING",
+                "1",
+                "-s",
+                "172.23.0.0/16",
+                "-o",
+                "enx6c1ff720d573",
+                "-j",
+                "MASQUERADE",
+            ],
+            commands,
+        )
 
     def test_configure_nm_shared_forwarding_skips_wsl(self):
         with patch("sima_cli.sdk.linux_shared_network.platform.system", return_value="Linux"), \

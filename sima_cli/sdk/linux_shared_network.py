@@ -174,16 +174,30 @@ def _docker_bridge_network_details(network_name: str = "simasdkbridge") -> Tuple
     return _docker_bridge_name_from_network(network), subnet
 
 
-def _nft_rule_present(chain_output: str, bridge_iface: str, devkit_iface: str, docker_subnet: str, devkit_subnet: str) -> bool:
+def _nft_forward_rule_present(chain_output: str, src_iface: str, dst_iface: str, src_subnet: str = "", dst_subnet: str = "", established_only: bool = False) -> bool:
+    normalized = (chain_output or "").replace('"', "")
+    fragments = [
+        f"iifname {src_iface}",
+        f"oifname {dst_iface}",
+        "accept",
+    ]
+    if src_subnet:
+        fragments.append(f"ip saddr {src_subnet}")
+    if dst_subnet:
+        fragments.append(f"ip daddr {dst_subnet}")
+    if established_only:
+        fragments.append("established")
+    return all(fragment in normalized for fragment in fragments)
+
+
+def _nft_nat_rule_present(chain_output: str, docker_subnet: str, devkit_iface: str) -> bool:
     normalized = (chain_output or "").replace('"', "")
     return all(
         fragment in normalized
         for fragment in (
-            f"iifname {bridge_iface}",
-            f"oifname {devkit_iface}",
             f"ip saddr {docker_subnet}",
-            f"ip daddr {devkit_subnet}",
-            "accept",
+            f"oifname {devkit_iface}",
+            "masquerade",
         )
     )
 
@@ -200,6 +214,20 @@ def _nm_shared_forward_chain(devkit_iface: str, family: str = "ip") -> Tuple[str
 
     table = f"nm-shared-{devkit_iface}"
     list_cmd = ["sudo", nft_cmd, "list", "chain", family, table, "filter_forward"]
+    chain_result = _run_captured(list_cmd)
+    if chain_result.returncode != 0:
+        return nft_cmd, table, ""
+
+    return nft_cmd, table, chain_result.stdout or ""
+
+
+def _nm_shared_nat_chain(devkit_iface: str, family: str = "ip") -> Tuple[str, str, str]:
+    nft_cmd = _find_executable("nft")
+    if not nft_cmd:
+        return "", "", ""
+
+    table = f"nm-shared-{devkit_iface}"
+    list_cmd = ["sudo", nft_cmd, "list", "chain", family, table, "nat_postrouting"]
     chain_result = _run_captured(list_cmd)
     if chain_result.returncode != 0:
         return nft_cmd, table, ""
@@ -233,46 +261,82 @@ def _configure_nm_shared_devkit_forwarding(devkit_ip: str, docker_network: str =
     if not (bridge_iface and docker_subnet and devkit_subnet and nft_cmd and chain_output):
         return False
 
-    if _nft_rule_present(chain_output, bridge_iface, devkit_iface, docker_subnet, devkit_subnet):
-        print(f"✅ NetworkManager shared connection already allows SDK bridge {bridge_iface} -> {devkit_iface}.")
-        return True
-
     if not _nm_shared_chain_blocks_iface(chain_output, devkit_iface):
         return False
 
-    insert_cmd = [
-        "sudo",
-        nft_cmd,
-        "insert",
-        "rule",
-        "ip",
-        table,
-        "filter_forward",
-        "iifname",
-        bridge_iface,
-        "oifname",
-        devkit_iface,
-        "ip",
-        "saddr",
-        docker_subnet,
-        "ip",
-        "daddr",
-        devkit_subnet,
-        "accept",
-    ]
-    insert_result = _run_captured(insert_cmd)
-    if insert_result.returncode != 0:
-        raise RuntimeError(
-            "Failed to allow the SDK Docker bridge through NetworkManager shared networking.\n"
-            "Command: {}\n"
-            "Error: {}".format(
-                " ".join(shlex.quote(part) for part in insert_cmd),
-                (insert_result.stderr or insert_result.stdout or "").strip(),
+    inserted = False
+    if not _nft_forward_rule_present(chain_output, bridge_iface, devkit_iface, docker_subnet, devkit_subnet):
+        insert_cmd = [
+            "sudo",
+            nft_cmd,
+            "insert",
+            "rule",
+            "ip",
+            table,
+            "filter_forward",
+            "iifname",
+            bridge_iface,
+            "oifname",
+            devkit_iface,
+            "ip",
+            "saddr",
+            docker_subnet,
+            "ip",
+            "daddr",
+            devkit_subnet,
+            "accept",
+        ]
+        insert_result = _run_captured(insert_cmd)
+        if insert_result.returncode != 0:
+            raise RuntimeError(
+                "Failed to allow the SDK Docker bridge through NetworkManager shared networking.\n"
+                "Command: {}\n"
+                "Error: {}".format(
+                    " ".join(shlex.quote(part) for part in insert_cmd),
+                    (insert_result.stderr or insert_result.stdout or "").strip(),
+                )
             )
-        )
+        inserted = True
+
+    if not _nft_forward_rule_present(chain_output, devkit_iface, bridge_iface, dst_subnet=docker_subnet, established_only=True):
+        reverse_cmd = [
+            "sudo",
+            nft_cmd,
+            "insert",
+            "rule",
+            "ip",
+            table,
+            "filter_forward",
+            "iifname",
+            devkit_iface,
+            "oifname",
+            bridge_iface,
+            "ip",
+            "daddr",
+            docker_subnet,
+            "ct",
+            "state",
+            "related,established",
+            "accept",
+        ]
+        reverse_result = _run_captured(reverse_cmd)
+        if reverse_result.returncode != 0:
+            raise RuntimeError(
+                "Failed to allow return traffic from the DevKit to the SDK Docker bridge.\n"
+                "Command: {}\n"
+                "Error: {}".format(
+                    " ".join(shlex.quote(part) for part in reverse_cmd),
+                    (reverse_result.stderr or reverse_result.stdout or "").strip(),
+                )
+            )
+        inserted = True
+
+    nat_configured = _configure_sdk_bridge_devkit_nat(bridge_iface, docker_subnet, devkit_iface)
+    inserted = inserted or nat_configured
 
     print(
-        "✅ NetworkManager shared connection updated: allowed {} ({}) -> {} ({}) for DevKit {}.".format(
+        "✅ NetworkManager shared connection {}: SDK bridge {} ({}) <-> {} ({}) for DevKit {}.".format(
+            "updated" if inserted else "already allows traffic",
             bridge_iface,
             docker_subnet,
             devkit_iface,
@@ -280,6 +344,80 @@ def _configure_nm_shared_devkit_forwarding(devkit_ip: str, docker_network: str =
             devkit_ip,
         )
     )
+    return True
+
+
+def _iptables_nat_rule_exists(iptables_cmd: str, check_args: List[str]) -> bool:
+    return _run_captured(["sudo", iptables_cmd, *check_args]).returncode == 0
+
+
+def _docker_default_masquerade_present(iptables_cmd: str, docker_subnet: str, bridge_iface: str) -> bool:
+    result = _run_captured(["sudo", iptables_cmd, "-t", "nat", "-S", "POSTROUTING"])
+    if result.returncode != 0:
+        return False
+
+    normalized = result.stdout or ""
+    return (
+        f"-s {docker_subnet}" in normalized
+        and f"! -o {bridge_iface}" in normalized
+        and "-j MASQUERADE" in normalized
+    )
+
+
+def _configure_sdk_bridge_devkit_nat(bridge_iface: str, docker_subnet: str, devkit_iface: str) -> bool:
+    iptables_cmd = _find_executable("iptables")
+    if iptables_cmd and _docker_default_masquerade_present(iptables_cmd, docker_subnet, bridge_iface):
+        return False
+
+    nft_cmd, table, nat_output = _nm_shared_nat_chain(devkit_iface)
+    if nft_cmd and nat_output:
+        if _nft_nat_rule_present(nat_output, docker_subnet, devkit_iface):
+            return False
+        insert_cmd = [
+            "sudo",
+            nft_cmd,
+            "insert",
+            "rule",
+            "ip",
+            table,
+            "nat_postrouting",
+            "ip",
+            "saddr",
+            docker_subnet,
+            "oifname",
+            devkit_iface,
+            "masquerade",
+        ]
+        insert_result = _run_captured(insert_cmd)
+        if insert_result.returncode != 0:
+            raise RuntimeError(
+                "Failed to configure SDK bridge NAT through NetworkManager shared networking.\n"
+                "Command: {}\n"
+                "Error: {}".format(
+                    " ".join(shlex.quote(part) for part in insert_cmd),
+                    (insert_result.stderr or insert_result.stdout or "").strip(),
+                )
+            )
+        return True
+
+    if not iptables_cmd:
+        return False
+
+    check_args = ["-t", "nat", "-C", "POSTROUTING", "-s", docker_subnet, "-o", devkit_iface, "-j", "MASQUERADE"]
+    if _iptables_nat_rule_exists(iptables_cmd, check_args):
+        return False
+
+    insert_cmd = ["sudo", iptables_cmd, "-t", "nat", "-I", "POSTROUTING", "1", "-s", docker_subnet, "-o", devkit_iface, "-j", "MASQUERADE"]
+    insert_result = _run_captured(insert_cmd)
+    if insert_result.returncode != 0:
+        raise RuntimeError(
+            "Failed to configure SDK bridge NAT for DevKit shared networking.\n"
+            "Command: {}\n"
+            "Error: {}".format(
+                " ".join(shlex.quote(part) for part in insert_cmd),
+                (insert_result.stderr or insert_result.stdout or "").strip(),
+            )
+        )
     return True
 
 

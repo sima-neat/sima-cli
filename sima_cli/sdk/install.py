@@ -23,6 +23,7 @@ from sima_cli.sdk.preinstall import (
 )
 from sima_cli.sdk.config import IMAGE_CONFIG
 from sima_cli.sdk.linux_shared_network import configure_linux_shared_devkit_network
+from sima_cli.sdk.linux_devkit_network import ensure_existing_neat_container_startable
 from sima_cli.utils.net import get_local_ip_candidates
 
 from sima_cli.sdk.utils import (
@@ -1095,6 +1096,8 @@ def setup_and_start(
                 )
 
             if not is_container_running(existing_container):
+                if is_neat_sdk_image(img):
+                    ensure_existing_neat_container_startable(existing_container)
                 subprocess.run(["docker", "start", existing_container], check=True)
 
             if check_os() in ["linux", "macos"]:

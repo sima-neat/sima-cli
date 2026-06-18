@@ -1593,6 +1593,14 @@ def start_docker_container(
     else:
         print(f"✅ Container '{container_name}' started successfully (no external port mapping).")
 
+    if neat_sdk_image and devkit_env:
+        from sima_cli.sdk.linux_devkit_network import validate_running_neat_container_network
+
+        validate_running_neat_container_network(
+            container_name,
+            devkit_ip=(devkit_env or {}).get("devkit_ip", ""),
+        )
+
     configure_container(
         container_name,
         port,

@@ -4,19 +4,6 @@ Best-effort rollback for Linux SDK network setup/repair changes.
 
 Parent command: [`sima-cli sdk network`](./sima-cli-sdk-network.md)
 
-Rollback removes only SDK-specific Linux host network rules that `sima-cli` can
-match exactly. It does not reset NetworkManager sharing, delete Docker networks,
-flush firewall tables, restore previous IPv6 profile values, or change
-`net.ipv4.ip_forward`.
-
-By default, rollback runs as a dry run. Pass `--apply` to remove the listed
-rules.
-
-When a persistent SDK network repair profile is installed, `--apply` explains
-what the profile does and asks whether to remove it. Pass
-`--remove-persistent-profile` to remove it without prompting, for example in
-automation.
-
 ## Usage
 
 ```bash

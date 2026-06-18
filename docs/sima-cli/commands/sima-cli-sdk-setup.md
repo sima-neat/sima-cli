@@ -4,12 +4,6 @@ Initialize SDK environment and select components to start.
 
 Parent command: [`sima-cli sdk`](./sima-cli-sdk.md)
 
-When `--devkit <IP>` is provided on an affected Ubuntu/NetworkManager host,
-setup applies the current-session SDK bridge forwarding repair automatically.
-If a persistent NetworkManager dispatcher hook would help across reconnects or
-reboots, setup prompts before installing it. Use `--persistent-network-profile`
-to explicitly allow the persistent host network profile in automated setup.
-
 ## Usage
 
 ```bash

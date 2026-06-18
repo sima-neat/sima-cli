@@ -14,6 +14,22 @@ from typing import Dict, List, Optional, Tuple
 NM_SHARED_DISPATCHER_PATH = "/etc/NetworkManager/dispatcher.d/90-sima-sdk-shared-network"
 
 
+def _rollback_action(action: str, detail: str, dry_run: bool = False) -> Dict[str, str]:
+    return {
+        "action": action,
+        "detail": detail,
+        "status": "would-remove" if dry_run else "removed",
+    }
+
+
+def _rollback_skip(action: str, detail: str) -> Dict[str, str]:
+    return {
+        "action": action,
+        "detail": detail,
+        "status": "skipped",
+    }
+
+
 def _find_executable(name: str) -> Optional[str]:
     candidates = [
         shutil.which(name),
@@ -204,6 +220,48 @@ def _nft_nat_rule_present(chain_output: str, docker_subnet: str, devkit_iface: s
             "masquerade",
         )
     )
+
+
+def _matching_nft_rule_handles(chain_output: str, fragments: List[str]) -> List[str]:
+    handles = []
+    for line in (chain_output or "").splitlines():
+        normalized = line.replace('"', "")
+        if not all(fragment in normalized for fragment in fragments):
+            continue
+        match = re.search(r"#\s*handle\s+(\d+)\s*$", normalized)
+        if match:
+            handles.append(match.group(1))
+    return handles
+
+
+def _delete_matching_nft_rules(
+    family: str,
+    table: str,
+    chain: str,
+    fragments: List[str],
+    dry_run: bool = False,
+) -> List[Dict[str, str]]:
+    nft_cmd = _find_executable("nft")
+    if not nft_cmd or not table:
+        return []
+
+    list_result = _run_captured(["sudo", nft_cmd, "-a", "list", "chain", family, table, chain])
+    if list_result.returncode != 0:
+        return []
+
+    actions = []
+    for handle in _matching_nft_rule_handles(list_result.stdout, fragments):
+        detail = f"{family} {table} {chain} handle {handle}"
+        if dry_run:
+            actions.append(_rollback_action("nft-rule", detail, dry_run=True))
+            continue
+        delete_cmd = ["sudo", nft_cmd, "delete", "rule", family, table, chain, "handle", handle]
+        delete_result = _run_captured(delete_cmd)
+        if delete_result.returncode == 0:
+            actions.append(_rollback_action("nft-rule", detail))
+        else:
+            actions.append(_rollback_skip("nft-rule", f"{detail}: {(delete_result.stderr or delete_result.stdout or '').strip()}"))
+    return actions
 
 
 def _nm_shared_chain_blocks_iface(chain_output: str, devkit_iface: str) -> bool:
@@ -442,6 +500,170 @@ def _ensure_iptables_rule(iptables_cmd: str, check_args: List[str], insert_args:
             )
         )
     return True
+
+
+def _delete_iptables_rule(
+    iptables_cmd: str,
+    check_args: List[str],
+    delete_args: List[str],
+    action: str,
+    detail: str,
+    dry_run: bool = False,
+) -> List[Dict[str, str]]:
+    check_result = _run_captured(["sudo", iptables_cmd, *check_args])
+    if check_result.returncode != 0:
+        return []
+    if dry_run:
+        return [_rollback_action(action, detail, dry_run=True)]
+
+    delete_result = _run_captured(["sudo", iptables_cmd, *delete_args])
+    if delete_result.returncode == 0:
+        return [_rollback_action(action, detail)]
+    return [_rollback_skip(action, f"{detail}: {(delete_result.stderr or delete_result.stdout or '').strip()}")]
+
+
+def _rollback_nm_shared_nft_rules(
+    bridge_iface: str,
+    docker_subnet: str,
+    devkit_iface: str,
+    devkit_subnet: str,
+    dry_run: bool = False,
+) -> List[Dict[str, str]]:
+    actions = []
+    nft_cmd, forward_table, _forward_chain = _nm_shared_forward_chain(devkit_iface)
+    if nft_cmd and forward_table:
+        actions.extend(_delete_matching_nft_rules(
+            "ip",
+            forward_table,
+            "filter_forward",
+            [
+                f"iifname {bridge_iface}",
+                f"oifname {devkit_iface}",
+                f"ip saddr {docker_subnet}",
+                f"ip daddr {devkit_subnet}",
+                "accept",
+            ],
+            dry_run=dry_run,
+        ))
+        actions.extend(_delete_matching_nft_rules(
+            "ip",
+            forward_table,
+            "filter_forward",
+            [
+                f"iifname {devkit_iface}",
+                f"oifname {bridge_iface}",
+                f"ip daddr {docker_subnet}",
+                "established",
+                "accept",
+            ],
+            dry_run=dry_run,
+        ))
+
+    nft_cmd, nat_table, _nat_chain = _nm_shared_nat_chain(devkit_iface)
+    if nft_cmd and nat_table:
+        actions.extend(_delete_matching_nft_rules(
+            "ip",
+            nat_table,
+            "nat_postrouting",
+            [
+                f"ip saddr {docker_subnet}",
+                f"oifname {devkit_iface}",
+                "masquerade",
+            ],
+            dry_run=dry_run,
+        ))
+    return actions
+
+
+def _rollback_nm_shared_iptables_rule(
+    devkit_ip: str,
+    docker_network: str = "simasdkbridge",
+    dry_run: bool = False,
+) -> List[Dict[str, str]]:
+    status = nm_shared_iptables_repair_status(devkit_ip, docker_network=docker_network)
+    if not status.get("chain"):
+        return []
+
+    iptables_cmd = _find_executable("iptables")
+    if not iptables_cmd:
+        return []
+
+    rule_args = _iptables_nm_shared_allow_rule_args(
+        str(status["chain"]),
+        str(status["bridge_iface"]),
+        str(status["docker_subnet"]),
+        str(status["devkit_iface"]),
+        str(status["devkit_subnet"]),
+    )
+    return _delete_iptables_rule(
+        iptables_cmd,
+        ["-C", *rule_args],
+        ["-D", *rule_args],
+        "iptables-nm-shared-forward",
+        " ".join(rule_args),
+        dry_run=dry_run,
+    )
+
+
+def _rollback_sdk_bridge_devkit_nat(
+    bridge_iface: str,
+    docker_subnet: str,
+    devkit_iface: str,
+    dry_run: bool = False,
+) -> List[Dict[str, str]]:
+    iptables_cmd = _find_executable("iptables")
+    if not iptables_cmd or not docker_subnet or not devkit_iface:
+        return []
+
+    return _delete_iptables_rule(
+        iptables_cmd,
+        ["-t", "nat", "-C", "POSTROUTING", "-s", docker_subnet, "-o", devkit_iface, "-j", "MASQUERADE"],
+        ["-t", "nat", "-D", "POSTROUTING", "-s", docker_subnet, "-o", devkit_iface, "-j", "MASQUERADE"],
+        "iptables-sdk-bridge-nat",
+        f"{docker_subnet} -> {devkit_iface}",
+        dry_run=dry_run,
+    )
+
+
+def _rollback_devkit_internet_forwarding(devkit_ip: str, dry_run: bool = False) -> List[Dict[str, str]]:
+    devkit_iface, _route_src = _route_iface_and_source_for_target(devkit_ip)
+    if not devkit_iface:
+        return []
+
+    internet_iface, _internet_src = _route_iface_and_source_for_target("8.8.8.8")
+    if not internet_iface:
+        internet_iface, _internet_src = _route_iface_and_source_for_target("1.1.1.1")
+    devkit_subnet = _iface_ipv4_network_for_target(devkit_iface, devkit_ip)
+    iptables_cmd = _find_executable("iptables")
+    if not (internet_iface and devkit_subnet and iptables_cmd) or internet_iface == devkit_iface:
+        return []
+
+    actions = []
+    actions.extend(_delete_iptables_rule(
+        iptables_cmd,
+        ["-C", "FORWARD", "-i", devkit_iface, "-o", internet_iface, "-s", devkit_subnet, "-j", "ACCEPT"],
+        ["-D", "FORWARD", "-i", devkit_iface, "-o", internet_iface, "-s", devkit_subnet, "-j", "ACCEPT"],
+        "iptables-devkit-internet-forward",
+        f"{devkit_iface} ({devkit_subnet}) -> {internet_iface}",
+        dry_run=dry_run,
+    ))
+    actions.extend(_delete_iptables_rule(
+        iptables_cmd,
+        ["-C", "FORWARD", "-i", internet_iface, "-o", devkit_iface, "-d", devkit_subnet, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+        ["-D", "FORWARD", "-i", internet_iface, "-o", devkit_iface, "-d", devkit_subnet, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+        "iptables-devkit-internet-return",
+        f"{internet_iface} -> {devkit_iface} ({devkit_subnet}) established",
+        dry_run=dry_run,
+    ))
+    actions.extend(_delete_iptables_rule(
+        iptables_cmd,
+        ["-t", "nat", "-C", "POSTROUTING", "-s", devkit_subnet, "-o", internet_iface, "-j", "MASQUERADE"],
+        ["-t", "nat", "-D", "POSTROUTING", "-s", devkit_subnet, "-o", internet_iface, "-j", "MASQUERADE"],
+        "iptables-devkit-internet-nat",
+        f"{devkit_subnet} -> {internet_iface}",
+        dry_run=dry_run,
+    ))
+    return actions
 
 
 def _configure_nm_shared_devkit_internet(devkit_ip: str) -> bool:
@@ -1109,6 +1331,81 @@ def _disable_nm_shared_devkit_ipv6(devkit_ip: str) -> bool:
     else:
         print(f"✅ Disabled IPv6 on NetworkManager shared connection '{connection_name}' so the DevKit uses the working IPv4 path.")
     return True
+
+
+def rollback_linux_shared_devkit_network(
+    devkit_ip: str,
+    docker_network: str = "simasdkbridge",
+    dry_run: bool = False,
+    remove_persistent_profile: bool = False,
+) -> List[Dict[str, str]]:
+    """Best-effort rollback of Linux host network changes inserted by SDK setup/repair."""
+    actions: List[Dict[str, str]] = []
+
+    if platform.system().lower() != "linux" or not devkit_ip or _is_wsl():
+        return [_rollback_skip("rollback", "Linux host with DevKit IP is required.")]
+
+    devkit_iface, _route_src = _route_iface_and_source_for_target(devkit_ip)
+    bridge_iface, docker_subnet = _docker_bridge_network_details(docker_network)
+    devkit_subnet = _iface_ipv4_network_for_target(devkit_iface, devkit_ip) if devkit_iface else ""
+
+    if bridge_iface and docker_subnet and devkit_iface and devkit_subnet:
+        actions.extend(_rollback_nm_shared_nft_rules(
+            bridge_iface,
+            docker_subnet,
+            devkit_iface,
+            devkit_subnet,
+            dry_run=dry_run,
+        ))
+        actions.extend(_rollback_sdk_bridge_devkit_nat(
+            bridge_iface,
+            docker_subnet,
+            devkit_iface,
+            dry_run=dry_run,
+        ))
+    else:
+        actions.append(_rollback_skip(
+            "sdk-bridge-context",
+            "Could not resolve SDK bridge, Docker subnet, DevKit interface, or DevKit subnet.",
+        ))
+
+    actions.extend(_rollback_nm_shared_iptables_rule(
+        devkit_ip,
+        docker_network=docker_network,
+        dry_run=dry_run,
+    ))
+    actions.extend(_rollback_devkit_internet_forwarding(devkit_ip, dry_run=dry_run))
+
+    if remove_persistent_profile:
+        if Path(NM_SHARED_DISPATCHER_PATH).exists():
+            if dry_run:
+                actions.append(_rollback_action("networkmanager-dispatcher", NM_SHARED_DISPATCHER_PATH, dry_run=True))
+            else:
+                rm_result = _run_captured(["sudo", "rm", "-f", NM_SHARED_DISPATCHER_PATH])
+                if rm_result.returncode == 0:
+                    actions.append(_rollback_action("networkmanager-dispatcher", NM_SHARED_DISPATCHER_PATH))
+                else:
+                    actions.append(_rollback_skip(
+                        "networkmanager-dispatcher",
+                        f"{NM_SHARED_DISPATCHER_PATH}: {(rm_result.stderr or rm_result.stdout or '').strip()}",
+                    ))
+        else:
+            actions.append(_rollback_skip("networkmanager-dispatcher", f"{NM_SHARED_DISPATCHER_PATH} is not installed."))
+    else:
+        actions.append(_rollback_skip(
+            "networkmanager-dispatcher",
+            "Persistent dispatcher hook left unchanged. Pass --remove-persistent-profile to remove it.",
+        ))
+
+    actions.append(_rollback_skip(
+        "networkmanager-ipv6",
+        "IPv6 profile changes are not restored by best-effort rollback because previous settings were not recorded.",
+    ))
+    actions.append(_rollback_skip(
+        "sysctl-ip-forward",
+        "net.ipv4.ip_forward is left unchanged because other host services may depend on it.",
+    ))
+    return actions
 
 
 def configure_linux_shared_devkit_network(devkit_ip: str, persist: bool = False) -> None:

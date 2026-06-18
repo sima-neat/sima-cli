@@ -21,6 +21,7 @@ None.
 ## Subcommands
 
 - [`sima-cli sdk network repair`](./sima-cli-sdk-network-repair.md): Apply scoped Ubuntu/Linux host network repair for Neat SDK Insight paths.
+- [`sima-cli sdk network rollback`](./sima-cli-sdk-network-rollback.md): Best-effort rollback for Linux SDK network setup/repair changes.
 
 ## Full Help
 
@@ -33,5 +34,6 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  repair  Apply scoped Ubuntu/Linux host network repair for Neat SDK...
+  repair    Apply scoped Ubuntu/Linux host network repair for Neat SDK...
+  rollback  Best-effort rollback for Linux SDK network setup/repair...
 ```

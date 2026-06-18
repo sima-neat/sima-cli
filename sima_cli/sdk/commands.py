@@ -40,6 +40,7 @@ from sima_cli.sdk.linux_devkit_network import (
     print_network_doctor_report,
     repair_linux_devkit_network,
 )
+from sima_cli.sdk.linux_shared_network import rollback_linux_shared_devkit_network
 
 console = Console()
 LEGACY_PALETTE_SDK_TOOLS = {"elxr", "model", "yocto", "mpk"}
@@ -326,6 +327,50 @@ def network_repair(devkit, container, persist):
     print_network_doctor_report(report)
     if report.has_errors:
         raise click.ClickException("Network repair did not resolve all blocking issues.")
+
+
+@network.command(name="rollback")
+@click.option(
+    "--devkit",
+    type=str,
+    default=None,
+    help="DevKit IP to use for route and shared-network rollback.",
+)
+@click.option(
+    "--apply",
+    "apply_changes",
+    is_flag=True,
+    help="Apply rollback changes. Without this flag, rollback runs in dry-run mode.",
+)
+@click.option(
+    "--remove-persistent-profile",
+    is_flag=True,
+    help="Remove the persistent NetworkManager dispatcher hook installed by SDK network repair.",
+)
+def network_rollback(devkit, apply_changes, remove_persistent_profile):
+    """Best-effort rollback for Linux SDK network setup/repair changes."""
+    devkit_ip = _resolve_devkit_ip(devkit) if devkit else ""
+    if not devkit_ip:
+        raise click.ClickException("Provide --devkit <IP> for Linux SDK network rollback.")
+
+    dry_run = not apply_changes
+    actions = rollback_linux_shared_devkit_network(
+        devkit_ip,
+        dry_run=dry_run,
+        remove_persistent_profile=remove_persistent_profile,
+    )
+
+    table = Table(title="SDK Network Rollback" + (" (dry run)" if dry_run else ""))
+    table.add_column("Status", style="bold")
+    table.add_column("Action")
+    table.add_column("Detail")
+    for action in actions:
+        table.add_row(action.get("status", ""), action.get("action", ""), action.get("detail", ""))
+    console.print(table)
+
+    if dry_run:
+        click.echo("ℹ️  Dry run only. Rerun with --apply to remove the listed SDK-specific network rules.")
+    click.echo("ℹ️  Best-effort rollback does not restore previous IPv6 profile values or net.ipv4.ip_forward.")
 
 @sdk.command(
     name="stop",

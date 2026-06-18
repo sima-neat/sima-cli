@@ -159,6 +159,95 @@ class TestLinuxSharedNetwork(unittest.TestCase):
         self.assertIn('[ "$SDK_BRIDGE" = "<no value>" ]', script)
         self.assertIn('-C "$CHAIN" -i "$SDK_BRIDGE"', script)
 
+    def test_matching_nft_rule_handles_requires_all_fragments(self):
+        output = """
+table ip nm-shared-eno1 {
+  chain filter_forward {
+    iifname "br-sdk" oifname "eno1" ip saddr 172.19.0.0/16 ip daddr 10.42.0.0/24 accept # handle 11
+    iifname "br-other" oifname "eno1" ip saddr 172.20.0.0/16 accept # handle 12
+  }
+}
+"""
+        handles = net._matching_nft_rule_handles(output, [
+            "iifname br-sdk",
+            "oifname eno1",
+            "ip saddr 172.19.0.0/16",
+            "ip daddr 10.42.0.0/24",
+            "accept",
+        ])
+
+        self.assertEqual(handles, ["11"])
+
+    def test_delete_iptables_rule_uses_exact_check_and_delete_args(self):
+        def run_side_effect(cmd):
+            if cmd[:3] == ["sudo", "iptables", "-C"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd[:3] == ["sudo", "iptables", "-D"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            return Mock(returncode=1, stdout="", stderr="unexpected")
+
+        with patch("sima_cli.sdk.linux_shared_network._run_captured", side_effect=run_side_effect) as run:
+            actions = net._delete_iptables_rule(
+                "iptables",
+                ["-C", "FORWARD", "-i", "eno1", "-j", "ACCEPT"],
+                ["-D", "FORWARD", "-i", "eno1", "-j", "ACCEPT"],
+                "iptables-test",
+                "eno1 accept",
+            )
+
+        self.assertEqual(actions[0]["status"], "removed")
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[0], ["sudo", "iptables", "-C", "FORWARD", "-i", "eno1", "-j", "ACCEPT"])
+        self.assertEqual(commands[1], ["sudo", "iptables", "-D", "FORWARD", "-i", "eno1", "-j", "ACCEPT"])
+
+    def test_delete_iptables_rule_dry_run_does_not_delete(self):
+        with patch("sima_cli.sdk.linux_shared_network._run_captured", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+            actions = net._delete_iptables_rule(
+                "iptables",
+                ["-C", "FORWARD", "-i", "eno1", "-j", "ACCEPT"],
+                ["-D", "FORWARD", "-i", "eno1", "-j", "ACCEPT"],
+                "iptables-test",
+                "eno1 accept",
+                dry_run=True,
+            )
+
+        self.assertEqual(actions[0]["status"], "would-remove")
+        self.assertEqual(run.call_count, 1)
+
+    def test_rollback_linux_shared_devkit_network_keeps_dispatcher_by_default(self):
+        with patch("sima_cli.sdk.linux_shared_network.platform.system", return_value="Linux"), \
+             patch("sima_cli.sdk.linux_shared_network._is_wsl", return_value=False), \
+             patch("sima_cli.sdk.linux_shared_network._route_iface_and_source_for_target", return_value=("eno1", "10.42.0.1")), \
+             patch("sima_cli.sdk.linux_shared_network._docker_bridge_network_details", return_value=("br-sdk", "172.19.0.0/16")), \
+             patch("sima_cli.sdk.linux_shared_network._iface_ipv4_network_for_target", return_value="10.42.0.0/24"), \
+             patch("sima_cli.sdk.linux_shared_network._rollback_nm_shared_nft_rules", return_value=[{"status": "would-remove", "action": "nft-rule", "detail": "handle 1"}]), \
+             patch("sima_cli.sdk.linux_shared_network._rollback_sdk_bridge_devkit_nat", return_value=[]), \
+             patch("sima_cli.sdk.linux_shared_network._rollback_nm_shared_iptables_rule", return_value=[]), \
+             patch("sima_cli.sdk.linux_shared_network._rollback_devkit_internet_forwarding", return_value=[]), \
+             patch("sima_cli.sdk.linux_shared_network._run_captured") as run:
+            actions = net.rollback_linux_shared_devkit_network("10.42.0.78", dry_run=True)
+
+        self.assertTrue(any(action["status"] == "would-remove" and action["action"] == "nft-rule" for action in actions))
+        self.assertTrue(any(action["action"] == "networkmanager-dispatcher" and "left unchanged" in action["detail"] for action in actions))
+        run.assert_not_called()
+
+    def test_rollback_linux_shared_devkit_network_removes_persistent_dispatcher_when_requested(self):
+        with patch("sima_cli.sdk.linux_shared_network.platform.system", return_value="Linux"), \
+             patch("sima_cli.sdk.linux_shared_network._is_wsl", return_value=False), \
+             patch("sima_cli.sdk.linux_shared_network._route_iface_and_source_for_target", return_value=("eno1", "10.42.0.1")), \
+             patch("sima_cli.sdk.linux_shared_network._docker_bridge_network_details", return_value=("", "")), \
+             patch("sima_cli.sdk.linux_shared_network._rollback_nm_shared_iptables_rule", return_value=[]), \
+             patch("sima_cli.sdk.linux_shared_network._rollback_devkit_internet_forwarding", return_value=[]), \
+             patch("sima_cli.sdk.linux_shared_network.Path.exists", return_value=True), \
+             patch("sima_cli.sdk.linux_shared_network._run_captured", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+            actions = net.rollback_linux_shared_devkit_network(
+                "10.42.0.78",
+                remove_persistent_profile=True,
+            )
+
+        self.assertTrue(any(action["action"] == "networkmanager-dispatcher" and action["status"] == "removed" for action in actions))
+        run.assert_called_once_with(["sudo", "rm", "-f", net.NM_SHARED_DISPATCHER_PATH])
+
     def test_install_nm_shared_dispatcher_repair_writes_root_hook(self):
         status = {
             "applicable": True,

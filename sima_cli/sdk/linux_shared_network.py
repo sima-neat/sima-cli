@@ -1023,27 +1023,27 @@ def maybe_install_nm_shared_dispatcher_repair(
     devkit_ip: str,
     docker_network: str = "simasdkbridge",
     noninteractive: bool = False,
-    yes_to_all: bool = False,
+    persistent_network_profile: bool = False,
 ) -> bool:
     status = nm_shared_iptables_repair_status(
         devkit_ip,
         docker_network=docker_network,
-        allow_sudo_prompt=not noninteractive or yes_to_all,
+        allow_sudo_prompt=not noninteractive or persistent_network_profile,
     )
     if not status.get("applicable") or status.get("dispatcher_installed"):
         return False
 
-    if yes_to_all or noninteractive:
+    if persistent_network_profile:
         print(
             "ℹ️  Installing persistent NetworkManager dispatcher hook for SDK bridge forwarding "
-            "because the Ubuntu shared-mode iptables repair is applicable."
+            "because --persistent-network-profile was provided and the Ubuntu shared-mode iptables repair is applicable."
         )
         return install_nm_shared_dispatcher_repair(devkit_ip, docker_network=docker_network, status=status)
 
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(
             "⚠️  SDK bridge forwarding was repaired for this session, but persistence requires confirmation. "
-            f"Run: sima-cli sdk network repair --devkit {devkit_ip} --persist"
+            f"Run: sima-cli sdk network repair --devkit {devkit_ip} --persist, or rerun setup with --persistent-network-profile."
         )
         return False
 

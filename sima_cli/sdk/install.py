@@ -587,12 +587,16 @@ def _configure_nfs_export(host_dir: Path, devkit_ip: Optional[str], host_os: str
     raise RuntimeError("Host NFS setup is only implemented for macOS/Linux")
 
 
-def _configure_devkit_shared_network_for_setup(devkit_ip: str, noninteractive: bool = False, yes_to_all: bool = False) -> None:
+def _configure_devkit_shared_network_for_setup(
+    devkit_ip: str,
+    noninteractive: bool = False,
+    persistent_network_profile: bool = False,
+) -> None:
     configure_linux_shared_devkit_network(devkit_ip)
     maybe_install_nm_shared_dispatcher_repair(
         devkit_ip,
         noninteractive=noninteractive,
-        yes_to_all=yes_to_all,
+        persistent_network_profile=persistent_network_profile,
     )
 
 
@@ -602,6 +606,7 @@ def _setup_devkit_share(
     selected_images: List[str],
     noninteractive: bool = False,
     yes_to_all: bool = False,
+    persistent_network_profile: bool = False,
 ):
     if not devkit_ip:
         return {}
@@ -632,7 +637,11 @@ def _setup_devkit_share(
                 )
                 _print_devkit_nfs_banner(workspace, devkit_ip, host_os)
                 _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)
-                _configure_devkit_shared_network_for_setup(devkit_ip, noninteractive=noninteractive, yes_to_all=yes_to_all)
+                _configure_devkit_shared_network_for_setup(
+                    devkit_ip,
+                    noninteractive=noninteractive,
+                    persistent_network_profile=persistent_network_profile,
+                )
                 print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
                 return {
                     "devkit_ip": devkit_ip,
@@ -658,7 +667,11 @@ def _setup_devkit_share(
                 existing_export.export_path,
             )
         )
-        _configure_devkit_shared_network_for_setup(devkit_ip, noninteractive=noninteractive, yes_to_all=yes_to_all)
+        _configure_devkit_shared_network_for_setup(
+            devkit_ip,
+            noninteractive=noninteractive,
+            persistent_network_profile=persistent_network_profile,
+        )
         return {
             "devkit_ip": devkit_ip,
             "host_ip": existing_export.server,
@@ -670,7 +683,11 @@ def _setup_devkit_share(
 
     _print_devkit_nfs_banner(workspace, devkit_ip, host_os)
     _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)
-    _configure_devkit_shared_network_for_setup(devkit_ip, noninteractive=noninteractive, yes_to_all=yes_to_all)
+    _configure_devkit_shared_network_for_setup(
+        devkit_ip,
+        noninteractive=noninteractive,
+        persistent_network_profile=persistent_network_profile,
+    )
     print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
 
     if auto_iface != "auto":
@@ -1001,6 +1018,7 @@ def setup_and_start(
     no_model_sdk: bool = False,
     minimal: bool = False,
     workspace: Optional[str] = None,
+    persistent_network_profile: bool = False,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -1058,6 +1076,7 @@ def setup_and_start(
         selected_images,
         noninteractive=noninteractive,
         yes_to_all=yes_to_all,
+        persistent_network_profile=persistent_network_profile,
     )
     skip_model_sdk = no_model_sdk or minimal
     skip_insight = no_insight or minimal

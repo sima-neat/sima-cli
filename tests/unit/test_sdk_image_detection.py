@@ -356,6 +356,15 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(setup_start.call_args.kwargs["minimal"])
 
+    def test_sdk_setup_persistent_network_profile_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "--devkit", "10.42.0.78", "--persistent-network-profile", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(setup_start.call_args.kwargs["persistent_network_profile"])
+
     def test_sdk_network_repair_persist_option_is_forwarded(self):
         runner = CliRunner()
         with patch("sima_cli.sdk.commands.check_and_start_docker"), \
@@ -440,7 +449,7 @@ class TestSdkImageDetection(unittest.TestCase):
 
         banner.assert_not_called()
         configure_export.assert_not_called()
-        configure_network.assert_called_once_with("192.168.4.20", noninteractive=True, yes_to_all=False)
+        configure_network.assert_called_once_with("192.168.4.20", noninteractive=True, persistent_network_profile=False)
         self.assertEqual(env["host_ip"], "192.168.1.10")
         self.assertEqual(env["workspace"], "/share/workspace")
         self.assertFalse(env["bootstrap_interactive"])
@@ -497,7 +506,7 @@ class TestSdkImageDetection(unittest.TestCase):
 
         banner.assert_called_once_with(str(workspace), "192.168.2.100", "linux")
         configure_export.assert_called_once_with(workspace, "192.168.2.100", "linux", "192.168.2.10")
-        configure_network.assert_called_once_with("192.168.2.100", noninteractive=True, yes_to_all=False)
+        configure_network.assert_called_once_with("192.168.2.100", noninteractive=True, persistent_network_profile=False)
         self.assertEqual(env["host_ip"], "192.168.2.10")
         self.assertEqual(env["workspace"], str(workspace))
         self.assertFalse(env["bootstrap_interactive"])

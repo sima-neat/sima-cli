@@ -271,7 +271,7 @@ class TestLinuxSharedNetwork(unittest.TestCase):
         self.assertFalse(installed)
         install.assert_not_called()
 
-    def test_maybe_install_dispatcher_auto_installs_for_noninteractive_setup(self):
+    def test_maybe_install_dispatcher_skips_noninteractive_without_explicit_profile(self):
         status = {
             "applicable": True,
             "dispatcher_installed": False,
@@ -282,8 +282,27 @@ class TestLinuxSharedNetwork(unittest.TestCase):
              patch("sima_cli.sdk.linux_shared_network.install_nm_shared_dispatcher_repair", return_value=True) as install:
             installed = net.maybe_install_nm_shared_dispatcher_repair("10.42.0.78", noninteractive=True)
 
-        self.assertTrue(installed)
+        self.assertFalse(installed)
         repair_status.assert_called_once_with("10.42.0.78", docker_network="simasdkbridge", allow_sudo_prompt=False)
+        install.assert_not_called()
+
+    def test_maybe_install_dispatcher_auto_installs_with_explicit_profile(self):
+        status = {
+            "applicable": True,
+            "dispatcher_installed": False,
+            "devkit_iface": "eno1",
+            "devkit_subnet": "10.42.0.0/24",
+        }
+        with patch("sima_cli.sdk.linux_shared_network.nm_shared_iptables_repair_status", return_value=status) as repair_status, \
+             patch("sima_cli.sdk.linux_shared_network.install_nm_shared_dispatcher_repair", return_value=True) as install:
+            installed = net.maybe_install_nm_shared_dispatcher_repair(
+                "10.42.0.78",
+                noninteractive=True,
+                persistent_network_profile=True,
+            )
+
+        self.assertTrue(installed)
+        repair_status.assert_called_once_with("10.42.0.78", docker_network="simasdkbridge", allow_sudo_prompt=True)
         install.assert_called_once_with("10.42.0.78", docker_network="simasdkbridge", status=status)
 
 

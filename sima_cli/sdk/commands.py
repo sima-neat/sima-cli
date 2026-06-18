@@ -208,8 +208,13 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     default=None,
     help="Host workspace directory to mount into SDK containers instead of ~/workspace.",
 )
+@click.option(
+    "--persistent-network-profile",
+    is_flag=True,
+    help="Allow setup to install a persistent NetworkManager shared-network repair profile without prompting.",
+)
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, workspace):
+def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, workspace, persistent_network_profile):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
@@ -221,6 +226,7 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, w
             no_model_sdk=no_model_sdk,
             minimal=minimal,
             workspace=workspace,
+            persistent_network_profile=persistent_network_profile,
         )
     except subprocess.CalledProcessError as e:
         raise click.ClickException(f"SDK setup failed while running: {' '.join(e.cmd)}") from e

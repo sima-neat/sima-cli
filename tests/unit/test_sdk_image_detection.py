@@ -356,13 +356,33 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(setup_start.call_args.kwargs["minimal"])
 
+    def test_sdk_setup_persistent_network_profile_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "--devkit", "10.42.0.78", "--persistent-network-profile", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(setup_start.call_args.kwargs["persistent_network_profile"])
+
+    def test_sdk_network_repair_persist_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.repair_linux_devkit_network") as repair, \
+             patch("sima_cli.sdk.commands.print_network_doctor_report"):
+            repair.return_value.has_errors = False
+            result = runner.invoke(sdk, ["network", "repair", "--devkit", "10.42.0.78", "--persist"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        repair.assert_called_once_with(container="", devkit_ip="10.42.0.78", persist=True)
+
     def test_setup_devkit_share_marks_noninteractive_bootstrap(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("10.0.0.76", "en0", [("en0", "10.0.0.76")])), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner"), \
                  patch("sima_cli.sdk.install._configure_nfs_export"), \
                  patch("sima_cli.sdk.install._detect_existing_linux_nfs_export", return_value=None), \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network"):
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup"):
                 env = _setup_devkit_share(
                     "10.0.0.20",
                     tmpdir,
@@ -419,7 +439,7 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner") as banner, \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
                 env = _setup_devkit_share(
                     "192.168.4.20",
                     str(workspace),
@@ -429,7 +449,7 @@ class TestSdkImageDetection(unittest.TestCase):
 
         banner.assert_not_called()
         configure_export.assert_not_called()
-        configure_network.assert_called_once_with("192.168.4.20")
+        configure_network.assert_called_once_with("192.168.4.20", noninteractive=True, persistent_network_profile=False)
         self.assertEqual(env["host_ip"], "192.168.1.10")
         self.assertEqual(env["workspace"], "/share/workspace")
         self.assertFalse(env["bootstrap_interactive"])
@@ -447,7 +467,7 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
                 with self.assertRaisesRegex(RuntimeError, "not allowed by the export client"):
                     _setup_devkit_share(
                         "192.168.135.40",
@@ -476,7 +496,7 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner") as banner, \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
                 env = _setup_devkit_share(
                     "192.168.2.100",
                     str(workspace),
@@ -486,7 +506,7 @@ class TestSdkImageDetection(unittest.TestCase):
 
         banner.assert_called_once_with(str(workspace), "192.168.2.100", "linux")
         configure_export.assert_called_once_with(workspace, "192.168.2.100", "linux", "192.168.2.10")
-        configure_network.assert_called_once_with("192.168.2.100")
+        configure_network.assert_called_once_with("192.168.2.100", noninteractive=True, persistent_network_profile=False)
         self.assertEqual(env["host_ip"], "192.168.2.10")
         self.assertEqual(env["workspace"], str(workspace))
         self.assertFalse(env["bootstrap_interactive"])
@@ -514,7 +534,7 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
                 with self.assertRaisesRegex(RuntimeError, "existing unmanaged NFS export"):
                     _setup_devkit_share(
                         "192.168.2.100",

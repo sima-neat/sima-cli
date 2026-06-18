@@ -184,6 +184,44 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
         self.assertIn('"token": "<redacted>"', content)
         self.assertNotIn("$ docker network inspect", content)
 
+    def test_report_flags_nm_shared_iptables_blocking_before_container_resolution(self):
+        route = net.RouteProbe(
+            target_ip="10.42.0.78",
+            interface="eno1",
+            source_ip="10.42.0.1",
+            raw="10.42.0.78 dev eno1 src 10.42.0.1",
+            classification="physical",
+        )
+        status = {
+            "applicable": True,
+            "rule_present": False,
+            "dispatcher_installed": False,
+            "chain": "nm-sh-fw-eno1",
+            "devkit_iface": "eno1",
+            "devkit_subnet": "10.42.0.0/24",
+            "docker_subnet": "172.19.0.0/16",
+        }
+
+        with patch.object(net, "_is_linux_host", return_value=True), \
+             patch.object(net, "probe_route_to_devkit", return_value=route), \
+             patch.object(net, "nm_shared_iptables_repair_status", return_value=status) as repair_status, \
+             patch.object(net, "resolve_neat_sdk_container", return_value=("", "No Neat SDK containers were found.")):
+            report = net.build_network_doctor_report(devkit_ip="10.42.0.78")
+
+        repair_status.assert_called_once_with("10.42.0.78", allow_sudo_prompt=False)
+        self.assertTrue(any(f.code == "nm-shared-iptables-blocking" for f in report.findings))
+        self.assertTrue(any("--persist" in f.detail for f in report.findings))
+
+    def test_repair_linux_devkit_network_forwards_persist_flag(self):
+        report = net.NetworkDoctorReport(devkit_ip="10.42.0.78")
+        with patch.object(net, "build_network_doctor_report", return_value=report), \
+             patch.object(net, "_is_linux_host", return_value=True), \
+             patch.object(net, "configure_linux_shared_devkit_network") as configure:
+            repaired = net.repair_linux_devkit_network(devkit_ip="10.42.0.78", persist=True)
+
+        configure.assert_called_once_with("10.42.0.78", persist=True)
+        self.assertTrue(any(f.code == "shared-network-repair" for f in repaired.findings))
+
 
 if __name__ == "__main__":
     unittest.main()

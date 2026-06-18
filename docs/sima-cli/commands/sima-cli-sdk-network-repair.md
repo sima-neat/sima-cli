@@ -16,6 +16,7 @@ sima-cli sdk network repair [OPTIONS]
 | --- | --- |
 | `--devkit` | DevKit IP to use for route and shared-network repair. |
 | `--container` | Neat SDK container name. Required when multiple Neat SDK containers exist. |
+| `--persist` | Install/update a persistent NetworkManager dispatcher hook after applying runtime repair. |
 
 ## Arguments
 
@@ -32,5 +33,7 @@ Options:
   --devkit TEXT     DevKit IP to use for route and shared-network repair.
   --container TEXT  Neat SDK container name. Required when multiple Neat SDK
                     containers exist.
+  --persist         Install/update a persistent NetworkManager dispatcher hook
+                    after applying runtime repair.
   --help            Show this message and exit.
 ```

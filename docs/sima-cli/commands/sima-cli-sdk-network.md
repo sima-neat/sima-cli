@@ -35,5 +35,5 @@ Options:
 
 Commands:
   repair    Apply scoped Ubuntu/Linux host network repair for Neat SDK...
-  rollback  Best-effort rollback for Linux SDK network setup/repair...
+  rollback  Best-effort rollback for Linux SDK network setup/repair changes.
 ```

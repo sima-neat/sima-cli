@@ -157,3 +157,4 @@ pip install sima-cli
 - [`sima-cli sdk yocto`](commands/sima-cli-sdk-yocto.md)
 - [`sima-cli sdk doctor network`](commands/sima-cli-sdk-doctor-network.md)
 - [`sima-cli sdk network repair`](commands/sima-cli-sdk-network-repair.md)
+- [`sima-cli sdk network rollback`](commands/sima-cli-sdk-network-rollback.md)

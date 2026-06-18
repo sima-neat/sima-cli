@@ -9,10 +9,15 @@ import shutil
 import glob
 import os
 import re
+import time
+from pathlib import Path
 
 PUBLIC_PYPI_SIMPLE_URL = "https://pypi.org/simple"
 AUTO_ACCEPT_UPDATE_ENV = "SIMA_CLI_AUTO_ACCEPT_UPDATE"
 FORCE_UPDATE_CHECK_RESULT_ENV = "FORCE_UPDATE_CHECK_RESULT"
+UPDATE_CHECK_CACHE_ENV = "SIMA_CLI_UPDATE_CHECK_CACHE"
+UPDATE_CHECK_CACHE_TTL_SECONDS = 60 * 60
+UPDATE_CHECK_FAILURE_TTL_SECONDS = 5 * 60
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -99,6 +104,81 @@ def has_internet(timeout: float = 1.0) -> bool:
     return try_connect("1.1.1.1") or try_connect("8.8.8.8")
 
 
+def _update_cache_path() -> Path:
+    override = os.environ.get(UPDATE_CHECK_CACHE_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".sima-cli" / "update-check.json"
+
+
+def _read_update_cache() -> dict:
+    try:
+        return json.loads(_update_cache_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_update_cache(cache: dict) -> None:
+    path = _update_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def _cached_update_entry(package_name: str, now: float) -> dict:
+    cache = _read_update_cache()
+    if cache.get("package") != package_name:
+        return {}
+
+    try:
+        checked_at = float(cache.get("checked_at", 0))
+    except (TypeError, ValueError):
+        return {}
+
+    if cache.get("status") == "ok" and cache.get("latest_version"):
+        if now - checked_at < UPDATE_CHECK_CACHE_TTL_SECONDS:
+            return cache
+    if cache.get("status") == "unavailable":
+        if now - checked_at < UPDATE_CHECK_FAILURE_TTL_SECONDS:
+            return cache
+    return {}
+
+
+def _fetch_latest_version(package_name: str, timeout: float) -> str:
+    with urllib.request.urlopen(f"https://pypi.org/pypi/{package_name}/json", timeout=timeout) as resp:
+        return json.load(resp)["info"]["version"]
+
+
+def _latest_version_for_update_check(package_name: str, timeout: float) -> str:
+    now = time.time()
+    cached = _cached_update_entry(package_name, now)
+    if cached.get("status") == "ok":
+        return str(cached["latest_version"])
+    if cached.get("status") == "unavailable":
+        return ""
+
+    try:
+        latest_version = _fetch_latest_version(package_name, timeout)
+    except Exception:
+        _write_update_cache({
+            "package": package_name,
+            "status": "unavailable",
+            "checked_at": now,
+        })
+        print("⚠️  sima-cli update check unavailable; continuing without checking for updates.")
+        return ""
+
+    _write_update_cache({
+        "package": package_name,
+        "status": "ok",
+        "checked_at": now,
+        "latest_version": latest_version,
+    })
+    return latest_version
+
+
 def _parse_numeric_version(version: str):
     match = re.match(r"^\s*(\d+(?:\.\d+)*)", version or "")
     if not match:
@@ -134,15 +214,9 @@ def check_for_update(package_name: str, timeout: float = 2.0):
         print(f'❌ package not found {package_name}')
         return False
 
-    if not has_internet(timeout=0.2):
-        print(f'⚠️  Offline mode, skipping sima-cli update check..')
+    latest_version = _latest_version_for_update_check(package_name, timeout)
+    if not latest_version:
         return False
-
-    try:
-        with urllib.request.urlopen(f"https://pypi.org/pypi/{package_name}/json", timeout=timeout) as resp:
-            latest_version = json.load(resp)["info"]["version"]
-    except Exception:
-        return False  # PyPI unreachable or network error; skip
 
     version_comparison = _compare_versions(current_version, latest_version)
     if version_comparison is None:

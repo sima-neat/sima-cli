@@ -75,6 +75,14 @@ Public PyPI releases can also be installed directly:
 pip install sima-cli
 ```
 
+## Guides
+
+| Guide | Description |
+| --- | --- |
+| [Neat SDK Networking Setup](sdk-networking/index.md) | Understand how SDK, Docker, Insight, and DevKit networking are configured. |
+| [Troubleshoot SDK Networking](sdk-networking/troubleshooting.md) | Run network diagnostics, repair Linux shared-network routing, and collect support bundles. |
+| [Roll Back SDK Network Changes](sdk-networking/rollback.md) | Preview and undo Linux SDK network setup or repair changes. |
+
 ## Top-Level Commands
 
 | Command | Description |

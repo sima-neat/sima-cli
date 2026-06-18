@@ -235,6 +235,126 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
     ):
         self.assertTrue(_is_platform_compatible({"platforms": [{"type": "host", "os": ["linux"]}]}))
 
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "24.04", "amd64"))
+    def test_host_version_and_arch_match(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["==24.04"]},
+                    "arch": ["amd64"],
+                }
+            ]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "24.04", "amd64"))
+    def test_host_bare_version_preserves_prefix_match(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["24"]},
+                }
+            ]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "22.04", "amd64"))
+    def test_host_version_rejects_incompatible_ubuntu(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["==24.04"]},
+                }
+            ]
+        }
+
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible(metadata)
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "24.04", "arm64"))
+    def test_host_arch_rejects_incompatible_arch(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["==24.04"]},
+                    "arch": ["amd64"],
+                }
+            ]
+        }
+
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible(metadata)
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "22.04", "amd64"))
+    def test_force_bypasses_host_platform_rejection(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["==24.04"]},
+                    "arch": ["amd64"],
+                }
+            ]
+        }
+
+        self.assertFalse(_is_platform_compatible(metadata, force=True))
+
     @patch("sima_cli.install.metadata_installer.platform.system", return_value="Darwin")
     @patch("sima_cli.install.metadata_installer.platform.machine", return_value="arm64")
     def test_download_compatible_resources_keeps_macos_arm_wheels_and_non_wheels(

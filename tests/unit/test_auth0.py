@@ -29,6 +29,36 @@ def _tokens(payload):
 
 
 class TestAuth0AccessTokenRequirements(unittest.TestCase):
+    def test_login_auth0_prints_actionable_manual_browser_instructions(self):
+        auth_cfg = {"CLIENT_ID": "client"}
+        device_code_response = {
+            "verification_uri": "https://auth.example/activate",
+            "verification_uri_complete": "https://auth.example/activate?user_code=WGCB-ZWVF",
+            "user_code": "WGCB-ZWVF",
+            "device_code": "device-code",
+            "expires_in": 900,
+            "interval": 5,
+        }
+
+        with patch.object(auth0, "request_device_code", return_value=device_code_response), \
+             patch.object(auth0, "is_browser_available", return_value=False), \
+             patch.object(auth0, "poll_for_token", return_value={"access_token": "token"}) as poll_for_token, \
+             patch("builtins.print") as print_mock:
+            result = auth0.login_auth0(auth_cfg)
+
+        self.assertEqual(result, {"access_token": "token"})
+        poll_for_token.assert_called_once_with(auth_cfg, "device-code", 5)
+        output = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        self.assertIn("authorize this device login", output)
+        self.assertIn("A browser could not be opened", output)
+        self.assertIn("Action required", output)
+        self.assertIn("Open this URL in a browser", output)
+        self.assertIn("Sign in with your SiMa Developer Portal account", output)
+        self.assertIn("Return to this terminal", output)
+        self.assertIn("15 minutes", output)
+        self.assertIn("WGCB-ZWVF", output)
+        self.assertIn("https://auth.example/activate?user_code=WGCB-ZWVF", output)
+
     def test_validates_latest_eula_and_userinfo_audience(self):
         tokens = _tokens({
             "aud": ["https://docs.sima.ai", auth0.PROD_USERINFO_AUDIENCE],

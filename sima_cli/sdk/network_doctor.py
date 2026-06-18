@@ -481,7 +481,8 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
         f"profile={profile} "
         f"address={network.get('address')} "
         f"mode={network.get('mode') or 'unset'} "
-        f"interface={network.get('interface') or 'unset'}"
+        f"interface={network.get('interface') or 'unset'} "
+        f"ipAddress={network.get('ip_address') or 'unset'}"
     )
     if preinstall._is_colima_network_suitable_for_devkit(profile):
         report.add(

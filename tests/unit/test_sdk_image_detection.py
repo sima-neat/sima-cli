@@ -356,13 +356,126 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(setup_start.call_args.kwargs["minimal"])
 
+    def test_sdk_setup_persistent_network_profile_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "--devkit", "10.42.0.78", "--persistent-network-profile", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(setup_start.call_args.kwargs["persistent_network_profile"])
+
+    def test_sdk_network_repair_persist_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.repair_linux_devkit_network") as repair, \
+             patch("sima_cli.sdk.commands.print_network_doctor_report"):
+            repair.return_value.has_errors = False
+            result = runner.invoke(sdk, ["network", "repair", "--devkit", "10.42.0.78", "--persist"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        repair.assert_called_once_with(container="", devkit_ip="10.42.0.78", persist=True)
+
+    def test_sdk_network_repair_requires_devkit(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"):
+            result = runner.invoke(sdk, ["network", "repair"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Missing option '--devkit'", result.output)
+
+    def test_sdk_network_repair_rejects_ipv6_devkit(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.repair_linux_devkit_network") as repair:
+            result = runner.invoke(sdk, ["network", "repair", "--devkit", "fe80::1"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("supports IPv4 DevKit addresses only", result.output)
+        repair.assert_not_called()
+
+    def test_sdk_network_rollback_defaults_to_dry_run(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.rollback_linux_shared_devkit_network", return_value=[]) as rollback:
+            result = runner.invoke(sdk, ["network", "rollback", "--devkit", "10.42.0.78"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        rollback.assert_called_once_with(
+            "10.42.0.78",
+            dry_run=True,
+            remove_persistent_profile=False,
+        )
+
+    def test_sdk_network_rollback_apply_removes_persistent_profile_when_requested(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.Path.exists") as path_exists, \
+             patch("sima_cli.sdk.commands.rollback_linux_shared_devkit_network", return_value=[]) as rollback:
+            result = runner.invoke(
+                sdk,
+                [
+                    "network",
+                    "rollback",
+                    "--devkit",
+                    "10.42.0.78",
+                    "--apply",
+                    "--remove-persistent-profile",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        path_exists.assert_not_called()
+        rollback.assert_called_once_with(
+            "10.42.0.78",
+            dry_run=False,
+            remove_persistent_profile=True,
+        )
+
+    def test_sdk_network_rollback_apply_prompts_for_persistent_profile(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.Path.exists", return_value=True), \
+             patch("sima_cli.sdk.commands.rollback_linux_shared_devkit_network", return_value=[]) as rollback:
+            result = runner.invoke(
+                sdk,
+                ["network", "rollback", "--devkit", "10.42.0.78", "--apply"],
+                input="y\n",
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("persistent SDK network repair profile", result.output)
+        rollback.assert_called_once_with(
+            "10.42.0.78",
+            dry_run=False,
+            remove_persistent_profile=True,
+        )
+
+    def test_sdk_network_rollback_apply_keeps_persistent_profile_by_default(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.Path.exists", return_value=True), \
+             patch("sima_cli.sdk.commands.rollback_linux_shared_devkit_network", return_value=[]) as rollback:
+            result = runner.invoke(
+                sdk,
+                ["network", "rollback", "--devkit", "10.42.0.78", "--apply"],
+                input="\n",
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        rollback.assert_called_once_with(
+            "10.42.0.78",
+            dry_run=False,
+            remove_persistent_profile=False,
+        )
+
     def test_setup_devkit_share_marks_noninteractive_bootstrap(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("10.0.0.76", "en0", [("en0", "10.0.0.76")])), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner"), \
                  patch("sima_cli.sdk.install._configure_nfs_export"), \
                  patch("sima_cli.sdk.install._detect_existing_linux_nfs_export", return_value=None), \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network"):
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup"):
                 env = _setup_devkit_share(
                     "10.0.0.20",
                     tmpdir,
@@ -419,7 +532,7 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner") as banner, \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
                 env = _setup_devkit_share(
                     "192.168.4.20",
                     str(workspace),
@@ -429,7 +542,7 @@ class TestSdkImageDetection(unittest.TestCase):
 
         banner.assert_not_called()
         configure_export.assert_not_called()
-        configure_network.assert_called_once_with("192.168.4.20")
+        configure_network.assert_called_once_with("192.168.4.20", noninteractive=True, persistent_network_profile=False)
         self.assertEqual(env["host_ip"], "192.168.1.10")
         self.assertEqual(env["workspace"], "/share/workspace")
         self.assertFalse(env["bootstrap_interactive"])
@@ -447,7 +560,7 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
                 with self.assertRaisesRegex(RuntimeError, "not allowed by the export client"):
                     _setup_devkit_share(
                         "192.168.135.40",
@@ -476,7 +589,7 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._print_devkit_nfs_banner") as banner, \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
                 env = _setup_devkit_share(
                     "192.168.2.100",
                     str(workspace),
@@ -486,7 +599,7 @@ class TestSdkImageDetection(unittest.TestCase):
 
         banner.assert_called_once_with(str(workspace), "192.168.2.100", "linux")
         configure_export.assert_called_once_with(workspace, "192.168.2.100", "linux", "192.168.2.10")
-        configure_network.assert_called_once_with("192.168.2.100")
+        configure_network.assert_called_once_with("192.168.2.100", noninteractive=True, persistent_network_profile=False)
         self.assertEqual(env["host_ip"], "192.168.2.10")
         self.assertEqual(env["workspace"], str(workspace))
         self.assertFalse(env["bootstrap_interactive"])
@@ -514,7 +627,7 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
-                 patch("sima_cli.sdk.install.configure_linux_shared_devkit_network") as configure_network:
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
                 with self.assertRaisesRegex(RuntimeError, "existing unmanaged NFS export"):
                     _setup_devkit_share(
                         "192.168.2.100",
@@ -674,6 +787,13 @@ table ip nm-shared-enx6c1ff720d573 {
   }
 }
 """
+        nft_nat_chain = """
+table ip nm-shared-enx6c1ff720d573 {
+  chain nat_postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+  }
+}
+"""
 
         def run_side_effect(cmd, **_kwargs):
             if cmd[:4] == ["/usr/bin/ip", "-o", "-4", "route"]:
@@ -684,7 +804,13 @@ table ip nm-shared-enx6c1ff720d573 {
                 return Mock(returncode=0, stdout=docker_inspect, stderr="")
             if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
                 return Mock(returncode=0, stdout=nft_chain, stderr="")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "nat_postrouting"]:
+                return Mock(returncode=0, stdout=nft_nat_chain, stderr="")
             if cmd[:7] == ["sudo", "/usr/sbin/nft", "insert", "rule", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "insert", "rule", "ip", "nm-shared-enx6c1ff720d573", "nat_postrouting"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd[:4] == ["sudo", "/usr/sbin/iptables", "-t", "nat"]:
                 return Mock(returncode=0, stdout="", stderr="")
             return Mock(returncode=1, stdout="", stderr="unexpected command")
 
@@ -695,15 +821,15 @@ table ip nm-shared-enx6c1ff720d573 {
                      "ip": "/usr/bin/ip",
                      "docker": "/usr/bin/docker",
                      "nft": "/usr/sbin/nft",
+                     "iptables": "/usr/sbin/iptables",
                  }.get(name),
              ), \
              patch("sima_cli.sdk.linux_shared_network.subprocess.run", side_effect=run_side_effect) as run:
             applied = _configure_nm_shared_devkit_forwarding("10.42.0.175")
 
         self.assertTrue(applied)
-        insert_cmd = run.call_args_list[-1][0][0]
-        self.assertEqual(
-            insert_cmd,
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(
             [
                 "sudo",
                 "/usr/sbin/nft",
@@ -724,6 +850,48 @@ table ip nm-shared-enx6c1ff720d573 {
                 "10.42.0.0/24",
                 "accept",
             ],
+            commands,
+        )
+        self.assertIn(
+            [
+                "sudo",
+                "/usr/sbin/nft",
+                "insert",
+                "rule",
+                "ip",
+                "nm-shared-enx6c1ff720d573",
+                "nat_postrouting",
+                "ip",
+                "saddr",
+                "172.23.0.0/16",
+                "oifname",
+                "enx6c1ff720d573",
+                "masquerade",
+            ],
+            commands,
+        )
+        self.assertIn(
+            [
+                "sudo",
+                "/usr/sbin/nft",
+                "insert",
+                "rule",
+                "ip",
+                "nm-shared-enx6c1ff720d573",
+                "filter_forward",
+                "iifname",
+                "enx6c1ff720d573",
+                "oifname",
+                "br-ca007b7ec8f5",
+                "ip",
+                "daddr",
+                "172.23.0.0/16",
+                "ct",
+                "state",
+                "related,established",
+                "accept",
+            ],
+            commands,
         )
 
     def test_configure_nm_shared_forwarding_is_idempotent(self):
@@ -738,6 +906,7 @@ table ip nm-shared-enx6c1ff720d573 {
 table ip nm-shared-enx6c1ff720d573 {
   chain filter_forward {
     iifname "br-ca007b7ec8f5" oifname "enx6c1ff720d573" ip saddr 172.23.0.0/16 ip daddr 10.42.0.0/24 accept
+    iifname "enx6c1ff720d573" oifname "br-ca007b7ec8f5" ip daddr 172.23.0.0/16 ct state established,related accept
     oifname "enx6c1ff720d573" reject
   }
 }
@@ -752,6 +921,8 @@ table ip nm-shared-enx6c1ff720d573 {
                 return Mock(returncode=0, stdout=docker_inspect, stderr="")
             if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
                 return Mock(returncode=0, stdout=nft_chain, stderr="")
+            if cmd[:4] == ["sudo", "/usr/sbin/iptables", "-t", "nat"]:
+                return Mock(returncode=0, stdout="-A POSTROUTING -s 172.23.0.0/16 ! -o br-ca007b7ec8f5 -j MASQUERADE\n", stderr="")
             return Mock(returncode=1, stdout="", stderr="unexpected command")
 
         with patch("sima_cli.sdk.linux_shared_network.platform.system", return_value="Linux"), \
@@ -761,6 +932,7 @@ table ip nm-shared-enx6c1ff720d573 {
                      "ip": "/usr/bin/ip",
                      "docker": "/usr/bin/docker",
                      "nft": "/usr/sbin/nft",
+                     "iptables": "/usr/sbin/iptables",
                  }.get(name),
              ), \
              patch("sima_cli.sdk.linux_shared_network.subprocess.run", side_effect=run_side_effect) as run:
@@ -769,6 +941,77 @@ table ip nm-shared-enx6c1ff720d573 {
         self.assertTrue(applied)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertFalse(any(cmd[:3] == ["sudo", "/usr/sbin/nft", "insert"] for cmd in commands))
+
+    def test_configure_nm_shared_forwarding_uses_iptables_nat_fallback(self):
+        docker_inspect = """[
+          {
+            "Id": "ca007b7ec8f512345678",
+            "Options": {},
+            "IPAM": {"Config": [{"Subnet": "172.23.0.0/16"}]}
+          }
+        ]"""
+        nft_chain = """
+table ip nm-shared-enx6c1ff720d573 {
+  chain filter_forward {
+    oifname "enx6c1ff720d573" reject
+  }
+}
+"""
+
+        def run_side_effect(cmd, **_kwargs):
+            if cmd[:4] == ["/usr/bin/ip", "-o", "-4", "route"]:
+                return Mock(returncode=0, stdout="10.42.0.175 dev enx6c1ff720d573 src 10.42.0.1\n", stderr="")
+            if cmd[:5] == ["/usr/bin/ip", "-o", "-4", "addr", "show"]:
+                return Mock(returncode=0, stdout="2: enx6c1ff720d573 inet 10.42.0.1/24 brd 10.42.0.255 scope global enx6c1ff720d573\n", stderr="")
+            if cmd[:4] == ["/usr/bin/docker", "network", "inspect", "simasdkbridge"]:
+                return Mock(returncode=0, stdout=docker_inspect, stderr="")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
+                return Mock(returncode=0, stdout=nft_chain, stderr="")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "list", "chain", "ip", "nm-shared-enx6c1ff720d573", "nat_postrouting"]:
+                return Mock(returncode=1, stdout="", stderr="no such chain")
+            if cmd[:7] == ["sudo", "/usr/sbin/nft", "insert", "rule", "ip", "nm-shared-enx6c1ff720d573", "filter_forward"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd == ["sudo", "/usr/sbin/iptables", "-t", "nat", "-S", "POSTROUTING"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd[:6] == ["sudo", "/usr/sbin/iptables", "-t", "nat", "-C", "POSTROUTING"]:
+                return Mock(returncode=1, stdout="", stderr="missing")
+            if cmd[:6] == ["sudo", "/usr/sbin/iptables", "-t", "nat", "-I", "POSTROUTING"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            return Mock(returncode=1, stdout="", stderr="unexpected command")
+
+        with patch("sima_cli.sdk.linux_shared_network.platform.system", return_value="Linux"), \
+             patch(
+                 "sima_cli.sdk.linux_shared_network._find_executable",
+                 side_effect=lambda name: {
+                     "ip": "/usr/bin/ip",
+                     "docker": "/usr/bin/docker",
+                     "nft": "/usr/sbin/nft",
+                     "iptables": "/usr/sbin/iptables",
+                 }.get(name),
+             ), \
+             patch("sima_cli.sdk.linux_shared_network.subprocess.run", side_effect=run_side_effect) as run:
+            applied = _configure_nm_shared_devkit_forwarding("10.42.0.175")
+
+        self.assertTrue(applied)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(
+            [
+                "sudo",
+                "/usr/sbin/iptables",
+                "-t",
+                "nat",
+                "-I",
+                "POSTROUTING",
+                "1",
+                "-s",
+                "172.23.0.0/16",
+                "-o",
+                "enx6c1ff720d573",
+                "-j",
+                "MASQUERADE",
+            ],
+            commands,
+        )
 
     def test_configure_nm_shared_forwarding_skips_wsl(self):
         with patch("sima_cli.sdk.linux_shared_network.platform.system", return_value="Linux"), \
@@ -2458,9 +2701,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
         script = _bash_profile_sources_bashrc_script("jim", 1000, 1000)
 
         self.assertIn("profile=/home/jim/.bash_profile", script)
+        self.assertIn("bashrc=/home/jim/.bashrc", script)
+        self.assertIn('touch "$bashrc"', script)
         self.assertIn('if [ -f "$HOME/.bashrc" ]; then', script)
         self.assertIn('. "$HOME/.bashrc"', script)
-        self.assertIn('chown 1000:1000 "$home" "$profile"', script)
+        self.assertIn('chown 1000:1000 "$home" "$profile" "$bashrc"', script)
 
     def test_prompt_multi_select_accepts_modelsdk_display_name(self):
         with patch("builtins.print"), patch("builtins.input", return_value="ModelSDK"):

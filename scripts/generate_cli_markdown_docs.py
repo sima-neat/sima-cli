@@ -43,6 +43,13 @@ class CommandDoc:
         return f"{self.slug}.md"
 
 
+@dataclass(frozen=True)
+class ManualGuide:
+    relative_path: Path
+    title: str
+    description: str
+
+
 def slugify(value: str) -> str:
     value = value.strip().lower()
     value = re.sub(r"[^a-z0-9]+", "-", value)
@@ -220,10 +227,71 @@ def read_readme_section(heading: str, readme_path: Path = README_PATH) -> str:
     return match.group(1).strip()
 
 
-def render_index(docs: List[CommandDoc]) -> str:
+def _first_paragraph(lines: List[str], title_line: int) -> str:
+    paragraph: List[str] = []
+    for line in lines[title_line + 1:]:
+        stripped = line.strip()
+        if not stripped:
+            if paragraph:
+                break
+            continue
+        if stripped.startswith("#"):
+            if paragraph:
+                break
+            continue
+        paragraph.append(stripped)
+    return " ".join(paragraph)
+
+
+def collect_manual_guides(output_dir: Path) -> List[ManualGuide]:
+    if not output_dir.exists():
+        return []
+
+    guides: List[ManualGuide] = []
+    for path in sorted(output_dir.rglob("*.md")):
+        rel_path = path.relative_to(output_dir)
+        if rel_path == Path("index.md") or rel_path.parts[0] == "commands":
+            continue
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        title = path.stem.replace("-", " ").title()
+        title_line = -1
+        for index, line in enumerate(lines):
+            if line.startswith("# "):
+                title = line[2:].strip()
+                title_line = index
+                break
+        guides.append(
+            ManualGuide(
+                relative_path=rel_path,
+                title=title,
+                description=_first_paragraph(lines, title_line),
+            )
+        )
+    return guides
+
+
+def read_markdown_section(path: Path, heading: str) -> Optional[str]:
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"(^## {}\s*$.*?)(?=^## \S|\Z)".format(re.escape(heading)),
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(text)
+    return match.group(1).strip() if match else None
+
+
+def render_index(
+    docs: List[CommandDoc],
+    manual_guides: Optional[List[ManualGuide]] = None,
+    guides_section: Optional[str] = None,
+) -> str:
     root = docs[0]
     top_level = [doc for doc in docs if doc.parent_path == root.path]
     installation = read_readme_section("Installation")
+    manual_guides = manual_guides or []
 
     lines = [
         "# sima-cli Command Reference",
@@ -232,11 +300,29 @@ def render_index(docs: List[CommandDoc]) -> str:
         "",
         installation,
         "",
+    ]
+    if guides_section:
+        lines.extend([guides_section, ""])
+    elif manual_guides:
+        lines.extend([
+            "## Guides",
+            "",
+            "| Guide | Description |",
+            "| --- | --- |",
+        ])
+        for guide in manual_guides:
+            lines.append(
+                f"| [{markdown_escape(guide.title)}]({guide.relative_path.as_posix()}) | "
+                f"{markdown_escape(guide.description)} |"
+            )
+        lines.append("")
+
+    lines.extend([
         "## Top-Level Commands",
         "",
         "| Command | Description |",
         "| --- | --- |",
-    ]
+    ])
     for doc in top_level:
         lines.append(
             f"| [`{doc.full_name}`](commands/{doc.filename}) | {markdown_escape(first_help_line(doc.command))} |"
@@ -253,16 +339,23 @@ def render_index(docs: List[CommandDoc]) -> str:
     return "\n".join(lines)
 
 
-def write_docs(output_dir: Path) -> None:
+def write_docs(output_dir: Path, manual_source_dir: Optional[Path] = None) -> None:
     docs = collect_commands()
     docs_by_path = {doc.full_name: doc for doc in docs}
     commands_dir = output_dir / "commands"
+    manual_source_dir = manual_source_dir or output_dir
+    guides_section = read_markdown_section(manual_source_dir / "index.md", "Guides")
+    manual_guides = collect_manual_guides(manual_source_dir)
 
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if commands_dir.exists():
+        shutil.rmtree(commands_dir)
     commands_dir.mkdir(parents=True, exist_ok=True)
 
-    (output_dir / "index.md").write_text(render_index(docs), encoding="utf-8")
+    (output_dir / "index.md").write_text(
+        render_index(docs, manual_guides, guides_section=guides_section),
+        encoding="utf-8",
+    )
     for doc in docs:
         (commands_dir / doc.filename).write_text(render_command_page(doc, docs_by_path), encoding="utf-8")
 
@@ -271,8 +364,9 @@ def compare_dirs(expected: Path, actual: Path) -> List[str]:
     diffs: List[str] = []
     expected_files = sorted(path.relative_to(expected) for path in expected.rglob("*") if path.is_file())
     actual_files = sorted(path.relative_to(actual) for path in actual.rglob("*") if path.is_file())
-    if expected_files != actual_files:
-        diffs.append(f"Expected files {expected_files}, found {actual_files}")
+    missing_files = [path for path in expected_files if path not in actual_files]
+    if missing_files:
+        diffs.append(f"Missing generated files {missing_files}")
         return diffs
 
     for rel_path in expected_files:
@@ -294,7 +388,7 @@ def compare_dirs(expected: Path, actual: Path) -> List[str]:
 def check_docs(output_dir: Path) -> int:
     with tempfile.TemporaryDirectory(prefix="sima-cli-docs-") as tmp:
         generated = Path(tmp) / "docs"
-        write_docs(generated)
+        write_docs(generated, manual_source_dir=output_dir)
         diffs = compare_dirs(generated, output_dir)
     if not diffs:
         print(f"Markdown CLI docs are up to date: {output_dir}")

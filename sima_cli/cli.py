@@ -579,7 +579,7 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
     default=".",
     show_default=True,
     type=click.Path(file_okay=False, dir_okay=True, path_type=str),
-    help="Directory where Neat package resources are downloaded and installed. Used with --neat or --vulcan.",
+    help="Directory where package resources are downloaded and installed.",
 )
 @click.option("--json", "json_output", is_flag=True, help="With --neat or --vulcan, print resolved metadata URL and exit.")
 @click.option(
@@ -655,6 +655,7 @@ def install_cmd(
             install_dir=install_dir,
             force=force,
             json_output=json_output,
+            command_name="sima-cli install",
         )
         return None
 
@@ -663,7 +664,13 @@ def install_cmd(
         if component:
             click.echo(f"⚠️ Component '{component}' is ignored when using --metadata. Proceeding with metadata-based installation.")
         click.echo(f"🔧 Installing generic component from metadata URL: {mirror}")
-        install_from_metadata(metadata_url=mirror, internal=internal, force=force)
+        install_from_metadata(
+            metadata_url=mirror,
+            internal=internal,
+            install_dir=install_dir,
+            force=force,
+            command_name="sima-cli install",
+        )
         return None
 
     # No component and no metadata: error
@@ -673,7 +680,13 @@ def install_cmd(
 
     # if user specified gh: as component, treat it the same as -m
     if component.startswith("gh:"):
-        install_from_metadata(metadata_url=component, internal=False, force=force)
+        install_from_metadata(
+            metadata_url=component,
+            internal=False,
+            install_dir=install_dir,
+            force=force,
+            command_name="sima-cli install",
+        )
         return None
     
     # if the user specified cr: or ghcr: as component, install from container registry
@@ -707,8 +720,16 @@ def install_cmd(
         try:
             metadata_url = metadata_resolver(component, version, tag)
             click.echo(f"🔧 Installing '{component}' from resolved metadata: {metadata_url}")
-            if install_from_metadata(metadata_url=metadata_url, internal=internal, force=force):
+            if install_from_metadata(
+                metadata_url=metadata_url,
+                internal=internal,
+                install_dir=install_dir,
+                force=force,
+                command_name="sima-cli install",
+            ):
                 click.echo("✅ Installation complete.")
+        except click.ClickException:
+            raise
         except Exception as e:
             click.echo(f"❌ Failed to resolve metadata for component '{component}': {e}")
             ctx.exit(1)

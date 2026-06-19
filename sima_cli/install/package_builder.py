@@ -246,6 +246,7 @@ def build_metadata(
     exclude: Optional[Sequence[str]] = None,
     download_compatible_files_only: bool = False,
     host_platforms: Optional[Sequence[str]] = None,
+    host_arches: Optional[Sequence[str]] = None,
     board_platforms: Optional[Sequence[str]] = None,
     palette_platform: Optional[str] = None,
 ) -> Dict:
@@ -279,6 +280,7 @@ def build_metadata(
         "description": resolved_description or "",
         "platforms": build_platform_specs(
             host_platforms=host_platforms,
+            host_arches=host_arches,
             board_platforms=board_platforms,
             palette_platform=palette_platform,
         ),

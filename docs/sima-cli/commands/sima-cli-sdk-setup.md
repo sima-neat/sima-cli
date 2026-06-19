@@ -16,11 +16,12 @@ sima-cli sdk setup [OPTIONS]
 | --- | --- |
 | `--noninteractive, --non-interactive, -n` | Run in non-interactive mode (auto-select defaults). |
 | `-y, --yes` | Skip confirmation before starting the container. |
-| `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>' or '--devkit auto'. |
+| `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>'. |
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
+| `--persistent-network-profile` | Allow setup to install a persistent NetworkManager shared-network repair profile without prompting. |
 
 ## Arguments
 
@@ -40,7 +41,7 @@ Options:
   -y, --yes                       Skip confirmation before starting the
                                   container.
   --devkit TEXT                   Configure DevKit integration for setup. Use
-                                  '--devkit <IP>' or '--devkit auto'.
+                                  '--devkit <IP>'.
   --no-insight                    Start Neat SDK without Insight
                                   UI/video/WebRTC port mappings.
   --no-model-compiler, --no-model-sdk
@@ -50,5 +51,8 @@ Options:
                                   CI compilation jobs.
   --workspace DIRECTORY           Host workspace directory to mount into SDK
                                   containers instead of ~/workspace.
+  --persistent-network-profile    Allow setup to install a persistent
+                                  NetworkManager shared-network repair profile
+                                  without prompting.
   --help                          Show this message and exit.
 ```

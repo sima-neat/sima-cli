@@ -75,6 +75,14 @@ Public PyPI releases can also be installed directly:
 pip install sima-cli
 ```
 
+## Guides
+
+| Guide | Description |
+| --- | --- |
+| [Neat SDK Networking Setup](sdk-networking/index.md) | Understand how SDK, Docker, Insight, and DevKit networking are configured. |
+| [Troubleshoot SDK Networking](sdk-networking/troubleshooting.md) | Run network diagnostics, repair Linux shared-network routing, and collect support bundles. |
+| [Roll Back SDK Network Changes](sdk-networking/rollback.md) | Preview and undo Linux SDK network setup or repair changes. |
+
 ## Top-Level Commands
 
 | Command | Description |
@@ -142,14 +150,19 @@ pip install sima-cli
 - [`sima-cli playbooks list`](commands/sima-cli-playbooks-list.md)
 - [`sima-cli playbooks remove`](commands/sima-cli-playbooks-remove.md)
 - [`sima-cli playbooks update`](commands/sima-cli-playbooks-update.md)
+- [`sima-cli sdk doctor`](commands/sima-cli-sdk-doctor.md)
 - [`sima-cli sdk elxr`](commands/sima-cli-sdk-elxr.md)
 - [`sima-cli sdk ls`](commands/sima-cli-sdk-ls.md)
 - [`sima-cli sdk model`](commands/sima-cli-sdk-model.md)
 - [`sima-cli sdk mpk`](commands/sima-cli-sdk-mpk.md)
 - [`sima-cli sdk neat`](commands/sima-cli-sdk-neat.md)
+- [`sima-cli sdk network`](commands/sima-cli-sdk-network.md)
 - [`sima-cli sdk remove`](commands/sima-cli-sdk-remove.md)
 - [`sima-cli sdk run`](commands/sima-cli-sdk-run.md)
 - [`sima-cli sdk setup`](commands/sima-cli-sdk-setup.md)
 - [`sima-cli sdk start`](commands/sima-cli-sdk-start.md)
 - [`sima-cli sdk stop`](commands/sima-cli-sdk-stop.md)
 - [`sima-cli sdk yocto`](commands/sima-cli-sdk-yocto.md)
+- [`sima-cli sdk doctor network`](commands/sima-cli-sdk-doctor-network.md)
+- [`sima-cli sdk network repair`](commands/sima-cli-sdk-network-repair.md)
+- [`sima-cli sdk network rollback`](commands/sima-cli-sdk-network-rollback.md)

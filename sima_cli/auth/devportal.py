@@ -69,8 +69,17 @@ HEADERS = {
 
 
 def _prompt_manual_developer_portal_login(confirm_completion: bool = False) -> bool:
+    next_step = (
+        "After signing in and accepting the EULA, return here and confirm when prompted."
+        if confirm_completion
+        else "After signing in and accepting the EULA, rerun the command that required authentication."
+    )
     click.secho(
-        f"\nOpen this page to accept EULA to proceed, press Y when you are done:\n{DEV_PORTAL_LOGIN_URL}\n",
+        "\nA browser could not be opened from this environment.\n"
+        "Open the following URL in a browser on your workstation to authenticate "
+        "with the SiMa Developer Portal and accept the EULA if prompted:\n\n"
+        f"{DEV_PORTAL_LOGIN_URL}\n\n"
+        f"{next_step}\n",
         fg="green",
     )
     if confirm_completion:

@@ -254,6 +254,7 @@ def _colima_network_config(profile: str) -> dict:
         "address": status_network.get("address", network.get("address")),
         "mode": status_network.get("mode", network.get("mode")),
         "interface": status_network.get("interface", network.get("interface")),
+        "ip_address": status.get("ip_address") or status.get("address"),
     }
 
 
@@ -267,16 +268,13 @@ def _boolish(value: Any) -> bool:
 
 def _is_colima_network_suitable_for_devkit(profile: str) -> bool:
     network = _colima_network_config(profile)
-    if not _boolish(network.get("address")):
-        return False
-
-    # Older Colima configs may only expose network.address. If mode is absent,
-    # accept address=true to avoid warning users who are already on a reachable VM network.
-    mode = network.get("mode")
-    if mode and str(mode).strip().lower() != "bridged":
-        return False
-
-    return True
+    # Colima 0.10 can persist reachable VM addressing as:
+    #   network.address: true
+    #   network.mode: shared
+    # The mode does not need to be "bridged" for the DevKit warning to be
+    # satisfied; the important signal is that Colima has an address reachable
+    # from the host/LAN path instead of the default isolated VM networking.
+    return _boolish(network.get("address")) and bool(network.get("ip_address"))
 
 
 def _route_interface_for_target(target_ip: str) -> str:
@@ -290,6 +288,27 @@ def _route_interface_for_target(target_ip: str) -> str:
 
     match = re.search(r"^\s*interface:\s*(\S+)\s*$", output, flags=re.MULTILINE)
     return match.group(1) if match else ""
+
+
+def _is_safe_colima_bridge_interface(interface: str) -> bool:
+    normalized = (interface or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized == "lo" or normalized.startswith((
+        "utun",
+        "tun",
+        "tap",
+        "wg",
+        "bridge",
+        "vmnet",
+        "vboxnet",
+        "awdl",
+        "llw",
+        "stf",
+        "gif",
+    )):
+        return False
+    return True
 
 
 def _colima_start_help() -> str:
@@ -327,7 +346,16 @@ def warn_if_colima_devkit_network_may_need_bridged(
     if _is_colima_network_suitable_for_devkit(profile):
         return False
 
-    interface = _route_interface_for_target(devkit_ip) or "en0"
+    route_interface = _route_interface_for_target(devkit_ip)
+    if _is_safe_colima_bridge_interface(route_interface):
+        interface = route_interface
+        interface_warning = ""
+    else:
+        interface = "en0"
+        interface_warning = (
+            f"[yellow]Route to DevKit resolved through '{route_interface or 'unknown'}', "
+            "which is not a safe Colima bridged interface. Falling back to en0.[/yellow]"
+        )
     profile_args = [] if profile == "default" else ["--profile", profile]
     profile_display = "" if profile == "default" else f" --profile {profile}"
     supports_network_address = _colima_supports_network_address_flag()
@@ -365,15 +393,13 @@ def warn_if_colima_devkit_network_may_need_bridged(
                     "[yellow]This Colima version does not expose --network-mode/--network-interface; "
                     "using --network-address only.[/yellow]"
                 ),
+                interface_warning,
             ]),
             title="Colima DevKit-Sync Network Warning",
             border_style="red",
             expand=False,
         )
     )
-
-    if noninteractive or yes_to_all:
-        return False
 
     if not supports_network_address:
         console.print(
@@ -382,10 +408,13 @@ def warn_if_colima_devkit_network_may_need_bridged(
         )
         return False
 
-    choice = input("Restart Colima in bridged network mode now? [y/N]: ").strip().lower()
-    if choice not in ("y", "yes"):
-        console.print("[yellow]⚠️  Continuing with current Colima network. DevKit-Sync may fail from the SDK container.[/yellow]")
-        return False
+    should_restart = yes_to_all or noninteractive
+    if not should_restart:
+        choice = input("Restart Colima in bridged network mode now? [y/N]: ").strip().lower()
+        should_restart = choice in ("y", "yes")
+        if not should_restart:
+            console.print("[yellow]⚠️  Continuing with current Colima network. DevKit-Sync may fail from the SDK container.[/yellow]")
+            return False
 
     colima_cmd = shutil.which("colima")
     if not colima_cmd:

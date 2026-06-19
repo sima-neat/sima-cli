@@ -6,7 +6,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sima_cli.install.metadata_installer import (
+    InstallationPreflightError,
     _download_metadata_file_resource,
+    _ensure_install_dir_writable,
     _filter_download_compatible_resources,
     _get_palette_sdk_version,
     _is_platform_compatible,
@@ -235,6 +237,126 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
     ):
         self.assertTrue(_is_platform_compatible({"platforms": [{"type": "host", "os": ["linux"]}]}))
 
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "24.04", "amd64"))
+    def test_host_version_and_arch_match(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["==24.04"]},
+                    "arch": ["amd64"],
+                }
+            ]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "24.04", "amd64"))
+    def test_host_bare_version_preserves_prefix_match(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["24"]},
+                }
+            ]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "22.04", "amd64"))
+    def test_host_version_rejects_incompatible_ubuntu(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["==24.04"]},
+                }
+            ]
+        }
+
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible(metadata)
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "24.04", "arm64"))
+    def test_host_arch_rejects_incompatible_arch(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["==24.04"]},
+                    "arch": ["amd64"],
+                }
+            ]
+        }
+
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible(metadata)
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "22.04", "amd64"))
+    def test_force_bypasses_host_platform_rejection(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [
+                {
+                    "type": "host",
+                    "os": ["ubuntu"],
+                    "versions": {"ubuntu": ["==24.04"]},
+                    "arch": ["amd64"],
+                }
+            ]
+        }
+
+        self.assertFalse(_is_platform_compatible(metadata, force=True))
+
     @patch("sima_cli.install.metadata_installer.platform.system", return_value="Darwin")
     @patch("sima_cli.install.metadata_installer.platform.machine", return_value="arm64")
     def test_download_compatible_resources_keeps_macos_arm_wheels_and_non_wheels(
@@ -407,6 +529,43 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
             )
 
             self.assertFalse(os.stat(script_path).st_mode & stat.S_IXUSR)
+
+    def test_ensure_install_dir_writable_reports_current_directory(self):
+        with TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                with patch(
+                    "sima_cli.install.metadata_installer.tempfile.NamedTemporaryFile",
+                    side_effect=PermissionError("denied"),
+                ):
+                    with self.assertRaisesRegex(
+                        InstallationPreflightError,
+                        "(?s)Current directory .* is not writable.*downloads package assets",
+                    ):
+                        _ensure_install_dir_writable(".")
+            finally:
+                os.chdir(original_cwd)
+
+    def test_ensure_install_dir_writable_allows_writable_current_directory(self):
+        with TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                _ensure_install_dir_writable(".")
+            finally:
+                os.chdir(original_cwd)
+
+    def test_installation_preflight_error_renders_yellow_panel(self):
+        error = InstallationPreflightError("Current directory '/' is not writable.")
+
+        with patch("sima_cli.install.metadata_installer.console.print") as print_mock:
+            error.show()
+
+        panel = print_mock.call_args.args[0]
+        self.assertEqual(panel.title, "Installation Failed")
+        self.assertEqual(panel.border_style, "yellow")
+        self.assertIn("Current directory '/' is not writable.", str(panel.renderable))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-name: CodeQL
+name: CodeQL PR Preflight
 
 on:
   push:
@@ -14,7 +14,6 @@ on:
 permissions:
   actions: read
   contents: read
-  security-events: write
 
 concurrency:
   group: ${{ github.repository }}-${{ github.workflow }}-${{ github.ref }}
@@ -41,4 +40,49 @@ jobs:
           languages: ${{ matrix.language }}
 
       - name: Perform CodeQL Analysis
+        id: analyze
         uses: github/codeql-action/analyze@v4
+        with:
+          upload: never
+
+      - name: Fail on CodeQL findings
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          results_dir = pathlib.Path("${{ steps.analyze.outputs.sarif-output }}")
+          findings = []
+
+          for sarif_path in sorted(results_dir.glob("*.sarif")):
+              with sarif_path.open(encoding="utf-8") as f:
+                  sarif = json.load(f)
+
+              rules_by_id = {}
+              for run in sarif.get("runs", []):
+                  for rule in run.get("tool", {}).get("driver", {}).get("rules", []):
+                      rules_by_id[rule.get("id")] = rule
+
+                  for result in run.get("results", []):
+                      rule_id = result.get("ruleId", "")
+                      rule = rules_by_id.get(rule_id, {})
+                      level = result.get("level") or rule.get("defaultConfiguration", {}).get("level", "warning")
+                      if level not in {"error", "warning"}:
+                          continue
+
+                      location = result.get("locations", [{}])[0].get("physicalLocation", {})
+                      artifact = location.get("artifactLocation", {}).get("uri", "<unknown>")
+                      region = location.get("region", {})
+                      line = region.get("startLine", 1)
+                      message = result.get("message", {}).get("text", "")
+                      findings.append((level, rule_id, artifact, line, message))
+
+          if findings:
+              print("CodeQL findings detected:")
+              for level, rule_id, artifact, line, message in findings:
+                  print(f"- {level}: {rule_id} at {artifact}:{line}: {message}")
+              sys.exit(1)
+
+          print("No CodeQL error or warning findings detected.")
+          PY

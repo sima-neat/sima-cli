@@ -10,6 +10,7 @@ import select
 from typing import Tuple, Optional
 
 from sima_cli.update.cleanlog import LineSquelcher
+from sima_cli.utils.ssh import create_devkit_ssh_client
 
 DEFAULT_USER = "sima"
 DEFAULT_PASSWORD = "edgeai"
@@ -74,8 +75,7 @@ def get_remote_board_info(ip: str, passwd: str = DEFAULT_PASSWORD) -> Tuple[str,
     fwtype = ""
 
     try:
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh = create_devkit_ssh_client()
         ssh.connect(ip, username=DEFAULT_USER, password=passwd, timeout=10)
 
         # Retrieve build info
@@ -209,8 +209,7 @@ def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
 
 
 def init_ssh_session(ip: str, password: str = DEFAULT_PASSWORD):
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh = create_devkit_ssh_client()
 
     ssh.connect(ip, username=DEFAULT_USER, password=password, timeout=10)
     return ssh
@@ -220,8 +219,7 @@ def reboot_remote_board(ip: str, passwd: str):
     Reboot remote board by sending SSH command
     """    
     try:
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh = create_devkit_ssh_client()
 
         ssh.connect(ip, username=DEFAULT_USER, password=passwd, timeout=10)
 
@@ -287,8 +285,7 @@ def copy_file_to_remote_board(ip: str, file_path: str, remote_dir: str, passwd: 
     Copy a file to the remote board over SSH with tqdm progress bar.
     Assumes default credentials: sima / edgeai.
     """
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh = create_devkit_ssh_client()
     
     from tqdm import tqdm
 
@@ -327,8 +324,7 @@ def push_and_update_remote_board(ip: str, troot_path: str, palette_path: str, pa
     Assumes default credentials: sima / edgeai.
     Includes reboot and SSH wait after each step.
     """
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh = create_devkit_ssh_client()
 
     try:
         ssh.connect(ip, username=DEFAULT_USER, password=passwd, timeout=10)
@@ -416,8 +412,7 @@ def push_and_update_remote_board(ip: str, troot_path: str, palette_path: str, pa
             try:
                 click.echo("🔍 Reconnecting to verify build version...")
                 time.sleep(10)
-                ssh = paramiko.SSHClient()
-                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh = create_devkit_ssh_client()
                 ssh.connect(ip, username=DEFAULT_USER, password=passwd, timeout=10)
 
                 run_remote_command(ssh, "grep SIMA_BUILD_VERSION /etc/build 2>/dev/null || grep SIMA_BUILD_VERSION /etc/buildinfo 2>/dev/null", password=passwd)

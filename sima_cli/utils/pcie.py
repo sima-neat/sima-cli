@@ -273,12 +273,11 @@ def _ensure_iperf3_installed() -> bool:
 
 def _ssh_run_command(host: str, username: str, password: str, command: str) -> Tuple[int, str, str]:
     try:
-        import paramiko
+        from sima_cli.utils.ssh import create_devkit_ssh_client
     except Exception as e:
         return 1, "", f"paramiko not available: {e}"
 
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client = create_devkit_ssh_client()
     try:
         client.connect(hostname=host, username=username, password=password, timeout=10)
         stdin, stdout, stderr = client.exec_command(command)

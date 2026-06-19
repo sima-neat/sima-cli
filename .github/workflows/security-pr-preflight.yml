@@ -1,4 +1,4 @@
-name: CodeQL PR Preflight
+name: Security PR Preflight
 
 on:
   push:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    name: Security scan (${{ matrix.language }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -39,7 +39,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
 
-      - name: Perform CodeQL Analysis
+      - name: Run CodeQL analysis
         id: analyze
         uses: github/codeql-action/analyze@v4
         with:

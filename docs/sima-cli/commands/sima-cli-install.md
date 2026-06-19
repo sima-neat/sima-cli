@@ -24,7 +24,7 @@ sima-cli install [OPTIONS] [COMPONENT]
 | `--prd, --prod` | Use production artifacts. |
 | `--env` | Neat artifact environment. Used with --neat or --vulcan. Defaults to production. |
 | `--base-url` | Override the Neat artifact base URL. Used with --neat or --vulcan. |
-| `-d, --install-dir` | Directory where Neat package resources are downloaded and installed. Used with --neat or --vulcan. (default: .) |
+| `-d, --install-dir` | Directory where package resources are downloaded and installed. (default: .) |
 | `--json` | With --neat or --vulcan, print resolved metadata URL and exit. |
 | `-f, --force` | Force installation even if compatibility checks fail. |
 
@@ -94,9 +94,8 @@ Options:
                                   or --vulcan. Defaults to production.
   --base-url TEXT                 Override the Neat artifact base URL. Used
                                   with --neat or --vulcan.
-  -d, --install-dir DIRECTORY     Directory where Neat package resources are
-                                  downloaded and installed. Used with --neat
-                                  or --vulcan.  [default: .]
+  -d, --install-dir DIRECTORY     Directory where package resources are
+                                  downloaded and installed.  [default: .]
   --json                          With --neat or --vulcan, print resolved
                                   metadata URL and exit.
   -f, --force                     Force installation even if compatibility

@@ -9,6 +9,7 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from sima_cli.cli import main
+from sima_cli.install.metadata_installer import InstallationPreflightError
 from sima_cli.vulcan.artifacts import (
     DownloadResult,
     ENV_BASE_URLS,
@@ -372,6 +373,7 @@ class VulcanCommandTests(unittest.TestCase):
             internal=False,
             install_dir=".",
             force=False,
+            command_name="sima-cli vulcan install",
         )
 
     def test_vulcan_install_forwards_metadata_type(self):
@@ -403,7 +405,62 @@ class VulcanCommandTests(unittest.TestCase):
             internal=False,
             install_dir=".",
             force=False,
+            command_name="sima-cli vulcan install",
         )
+
+    def test_neat_install_uses_neat_command_name_for_install_messages(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.resolve_install_metadata_url") as resolve_mock, patch(
+            "sima_cli.vulcan.commands.install_from_metadata"
+        ) as install_mock:
+            resolve_mock.return_value = type(
+                "Result",
+                (),
+                {
+                    "environment": "dev",
+                    "base_url": ENV_BASE_URLS["dev"],
+                    "repository": "internals",
+                    "ref": "main",
+                    "ref_key": "main",
+                    "requested_spec": "latest",
+                    "resolved_spec": "50649e9aa0ba",
+                    "metadata_url": f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata.json",
+                },
+            )()
+
+            result = runner.invoke(main, ["neat", "--env", "dev", "install", "internals"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(install_mock.call_args.kwargs["command_name"], "sima-cli neat install")
+
+    def test_neat_install_preflight_panel_uses_neat_command_name(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.resolve_install_metadata_url") as resolve_mock, patch(
+            "sima_cli.install.metadata_installer.tempfile.NamedTemporaryFile",
+            side_effect=PermissionError("denied"),
+        ):
+            resolve_mock.return_value = type(
+                "Result",
+                (),
+                {
+                    "environment": "dev",
+                    "base_url": ENV_BASE_URLS["dev"],
+                    "repository": "internals",
+                    "ref": "main",
+                    "ref_key": "main",
+                    "requested_spec": "latest",
+                    "resolved_spec": "50649e9aa0ba",
+                    "metadata_url": f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata.json",
+                },
+            )()
+
+            result = runner.invoke(main, ["neat", "--env", "dev", "install", "internals"])
+
+        self.assertNotEqual(result.exit_code, 0, result.output)
+        self.assertIn("Installation Failed", result.output)
+        self.assertIn("sima-cli neat install ...", result.output)
+        self.assertIn("sima-cli neat install ... --install-dir", result.output)
+        self.assertNotIn("sima-cli install ...", result.output)
 
     def test_vulcan_install_json_prints_metadata_without_installing(self):
         runner = CliRunner()
@@ -465,6 +522,7 @@ class VulcanCommandTests(unittest.TestCase):
             install_dir="tmp",
             force=True,
             json_output=False,
+            command_name="sima-cli install",
         )
 
     def test_top_level_install_normalizes_staging_alias(self):
@@ -505,6 +563,62 @@ class VulcanCommandTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(install_mock.call_args.kwargs["json_output"])
+
+    def test_top_level_install_metadata_url_forwards_install_dir(self):
+        runner = CliRunner()
+        with patch("sima_cli.cli.install_from_metadata") as install_mock:
+            result = runner.invoke(
+                main,
+                [
+                    "install",
+                    "--mirror",
+                    "https://example.invalid/package/metadata.json",
+                    "--install-dir",
+                    "downloads",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        install_mock.assert_called_once_with(
+            metadata_url="https://example.invalid/package/metadata.json",
+            internal=False,
+            install_dir="downloads",
+            force=False,
+            command_name="sima-cli install",
+        )
+
+    def test_top_level_install_resolved_metadata_forwards_install_dir(self):
+        runner = CliRunner()
+        with patch(
+            "sima_cli.cli.metadata_resolver",
+            return_value="https://example.invalid/component/metadata.json",
+        ), patch("sima_cli.cli.install_from_metadata") as install_mock:
+            result = runner.invoke(main, ["install", "samples/llima", "-v", "1.7.0", "-d", "downloads"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        install_mock.assert_called_once_with(
+            metadata_url="https://example.invalid/component/metadata.json",
+            internal=False,
+            install_dir="downloads",
+            force=False,
+            command_name="sima-cli install",
+        )
+
+    def test_top_level_install_preflight_error_is_not_wrapped_as_resolution_failure(self):
+        runner = CliRunner()
+        with patch(
+            "sima_cli.cli.metadata_resolver",
+            return_value="https://example.invalid/component/metadata.json",
+        ), patch(
+            "sima_cli.cli.install_from_metadata",
+            side_effect=InstallationPreflightError("Current directory '/' is not writable."),
+        ):
+            result = runner.invoke(main, ["install", "tools/oob", "-v", "1.7.0"])
+
+        self.assertNotEqual(result.exit_code, 0, result.output)
+        self.assertIn("Installation Failed", result.output)
+        self.assertIn("Current directory '/' is not writable.", result.output)
+        self.assertNotIn("Failed to resolve metadata", result.output)
 
     def test_top_level_install_vulcan_requires_target(self):
         runner = CliRunner()

@@ -6,7 +6,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sima_cli.install.metadata_installer import (
+    InstallationPreflightError,
     _download_metadata_file_resource,
+    _ensure_install_dir_writable,
     _filter_download_compatible_resources,
     _get_palette_sdk_version,
     _is_platform_compatible,
@@ -527,6 +529,43 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
             )
 
             self.assertFalse(os.stat(script_path).st_mode & stat.S_IXUSR)
+
+    def test_ensure_install_dir_writable_reports_current_directory(self):
+        with TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                with patch(
+                    "sima_cli.install.metadata_installer.tempfile.NamedTemporaryFile",
+                    side_effect=PermissionError("denied"),
+                ):
+                    with self.assertRaisesRegex(
+                        InstallationPreflightError,
+                        "(?s)Current directory .* is not writable.*downloads package assets",
+                    ):
+                        _ensure_install_dir_writable(".")
+            finally:
+                os.chdir(original_cwd)
+
+    def test_ensure_install_dir_writable_allows_writable_current_directory(self):
+        with TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                _ensure_install_dir_writable(".")
+            finally:
+                os.chdir(original_cwd)
+
+    def test_installation_preflight_error_renders_yellow_panel(self):
+        error = InstallationPreflightError("Current directory '/' is not writable.")
+
+        with patch("sima_cli.install.metadata_installer.console.print") as print_mock:
+            error.show()
+
+        panel = print_mock.call_args.args[0]
+        self.assertEqual(panel.title, "Installation Failed")
+        self.assertEqual(panel.border_style, "yellow")
+        self.assertIn("Current directory '/' is not writable.", str(panel.renderable))
 
 
 if __name__ == "__main__":

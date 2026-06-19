@@ -72,6 +72,7 @@ def install_vulcan_package(
     install_dir=".",
     force=False,
     json_output=False,
+    command_name="sima-cli neat install",
 ):
     resolved_environment = normalize_environment(environment) or "production"
     _ensure_available_environment(resolved_environment)
@@ -109,6 +110,7 @@ def install_vulcan_package(
         internal=False,
         install_dir=install_dir,
         force=force,
+        command_name=command_name,
     )
 
 
@@ -280,6 +282,7 @@ def install(ctx, target, environment, environment_flag, base_url, install_dir, p
     TARGET supports REPO, REPO@branch, REPO@branch:spec, REPO@latest, or
     REPO@githash. If no branch or spec is provided, latest main is used.
     """
+    group_name = ctx.parent.info_name if ctx.parent and ctx.parent.info_name else "neat"
     return install_vulcan_package(
         target=target,
         environment=(
@@ -292,6 +295,7 @@ def install(ctx, target, environment, environment_flag, base_url, install_dir, p
         install_dir=install_dir,
         force=force,
         json_output=json_output,
+        command_name=f"sima-cli {group_name} install",
     )
 
 

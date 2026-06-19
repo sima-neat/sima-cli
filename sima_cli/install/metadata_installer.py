@@ -20,6 +20,7 @@ import requests
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.text import Text
 from typing import Tuple
 
 from huggingface_hub import snapshot_download
@@ -35,6 +36,52 @@ from sima_cli.install.registry import PackageRegistry
 
 console = Console()
 registry = PackageRegistry()
+
+class InstallationPreflightError(click.ClickException):
+    def show(self, file=None) -> None:
+        console.print(
+            Panel(
+                Text(str(self.message), style="yellow"),
+                title="Installation Failed",
+                border_style="yellow",
+                expand=False,
+            )
+        )
+
+
+def _ensure_install_dir_writable(install_dir: str, command_name: str = "sima-cli install") -> None:
+    target = Path(install_dir or ".").expanduser()
+    display_path = Path.cwd() if str(target) == "." else target
+
+    check_dir = target
+    if not check_dir.exists():
+        check_dir = target.parent
+        while not check_dir.exists() and check_dir != check_dir.parent:
+            check_dir = check_dir.parent
+
+    if not check_dir.is_dir():
+        raise click.ClickException(f"Install path '{display_path}' is not a directory.")
+
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".sima-cli-write-test-", dir=str(check_dir)):
+            pass
+    except OSError as exc:
+        if str(target) == ".":
+            raise InstallationPreflightError(
+                f"Current directory '{Path.cwd()}' is not writable.\n\n"
+                "This install downloads package assets into the current directory before installation.\n\n"
+                "Run the command again from a writable work directory, for example:\n"
+                "  mkdir -p ~/sima-install && cd ~/sima-install\n"
+                f"  {command_name} ...\n\n"
+                "Or choose a destination explicitly:\n"
+                f"  {command_name} ... --install-dir <writable-directory>"
+            ) from exc
+        raise InstallationPreflightError(
+            f"Install directory '{display_path}' is not writable.\n\n"
+            "This install downloads package assets into the install directory before installation.\n\n"
+            "Choose a writable destination and rerun the command:\n"
+            f"  {command_name} ... --install-dir <writable-directory>"
+        ) from exc
 
 def _copy_dir(src: Path, dest: Path, label: str):
     """
@@ -1460,7 +1507,15 @@ def _resolve_github_metadata_url(gh_ref: str) -> Tuple[str, str]:
     except Exception as e:
         raise RuntimeError(f"Failed to resolve GitHub metadata URL {gh_ref}: {e}")
 
-def install_from_metadata(metadata_url: str, internal: bool, install_dir: str = '.', force: bool = False):
+def install_from_metadata(
+    metadata_url: str,
+    internal: bool,
+    install_dir: str = '.',
+    force: bool = False,
+    command_name: str = "sima-cli install",
+):
+    _ensure_install_dir_writable(install_dir, command_name=command_name)
+
     try:
         tag = None
 

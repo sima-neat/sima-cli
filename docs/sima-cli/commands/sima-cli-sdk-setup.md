@@ -4,12 +4,6 @@ Initialize SDK environment and select components to start.
 
 Parent command: [`sima-cli sdk`](./sima-cli-sdk.md)
 
-When `--devkit <IP>` is provided on an affected Ubuntu/NetworkManager host,
-setup applies the current-session SDK bridge forwarding repair automatically.
-If a persistent NetworkManager dispatcher hook would help across reconnects or
-reboots, setup prompts before installing it. Use `--persistent-network-profile`
-to explicitly allow the persistent host network profile in automated setup.
-
 ## Usage
 
 ```bash
@@ -22,7 +16,7 @@ sima-cli sdk setup [OPTIONS]
 | --- | --- |
 | `--noninteractive, --non-interactive, -n` | Run in non-interactive mode (auto-select defaults). |
 | `-y, --yes` | Skip confirmation before starting the container. |
-| `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>' or '--devkit auto'. |
+| `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>'. |
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
@@ -47,7 +41,7 @@ Options:
   -y, --yes                       Skip confirmation before starting the
                                   container.
   --devkit TEXT                   Configure DevKit integration for setup. Use
-                                  '--devkit <IP>' or '--devkit auto'.
+                                  '--devkit <IP>'.
   --no-insight                    Start Neat SDK without Insight
                                   UI/video/WebRTC port mappings.
   --no-model-compiler, --no-model-sdk

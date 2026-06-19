@@ -26,7 +26,7 @@ from sima_cli.sdk.linux_shared_network import (
     configure_linux_shared_devkit_network,
     maybe_install_nm_shared_dispatcher_repair,
 )
-from sima_cli.sdk.linux_devkit_network import ensure_existing_neat_container_startable
+from sima_cli.sdk.network_doctor import ensure_existing_neat_container_startable
 from sima_cli.utils.net import get_local_ip_candidates
 
 from sima_cli.sdk.utils import (

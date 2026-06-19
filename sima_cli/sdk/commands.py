@@ -19,6 +19,7 @@ Usage:
 import click
 import ipaddress
 import subprocess
+from pathlib import Path
 from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
@@ -34,11 +35,15 @@ from sima_cli.utils.env import get_environment_type
 from sima_cli.utils.docker import check_and_start_docker
 from sima_cli.utils.deprecation import should_show_post_neat_ga_deprecation_notice
 from sima_cli.sdk.config import IMAGE_CONFIG
-from sima_cli.sdk.linux_devkit_network import (
+from sima_cli.sdk.network_doctor import (
     build_network_doctor_report,
     collect_network_doctor_bundle,
     print_network_doctor_report,
     repair_linux_devkit_network,
+)
+from sima_cli.sdk.linux_shared_network import (
+    NM_SHARED_DISPATCHER_PATH,
+    rollback_linux_shared_devkit_network,
 )
 
 console = Console()
@@ -199,7 +204,7 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     "--devkit",
     type=str,
     default=None,
-    help="Configure DevKit integration for setup. Use '--devkit <IP>' or '--devkit auto'.",
+    help="Configure DevKit integration for setup. Use '--devkit <IP>'.",
 )
 @click.option(
     "--no-insight",
@@ -342,6 +347,63 @@ def network_repair(devkit, container, persist):
     print_network_doctor_report(report)
     if report.has_errors:
         raise click.ClickException("Network repair did not resolve all blocking issues.")
+
+
+@network.command(name="rollback")
+@click.option(
+    "--devkit",
+    type=str,
+    default=None,
+    help="DevKit IP to use for route and shared-network rollback.",
+)
+@click.option(
+    "--apply",
+    "apply_changes",
+    is_flag=True,
+    help="Apply rollback changes. Without this flag, rollback runs in dry-run mode.",
+)
+@click.option(
+    "--remove-persistent-profile",
+    is_flag=True,
+    help="Remove the persistent NetworkManager dispatcher hook installed by SDK network repair.",
+)
+def network_rollback(devkit, apply_changes, remove_persistent_profile):
+    """Best-effort rollback for Linux SDK network setup/repair changes."""
+    devkit_ip = _resolve_devkit_ip(devkit) if devkit else ""
+    if not devkit_ip:
+        raise click.ClickException("Provide --devkit <IP> for Linux SDK network rollback.")
+
+    dry_run = not apply_changes
+    if apply_changes and not remove_persistent_profile and Path(NM_SHARED_DISPATCHER_PATH).exists():
+        click.echo(
+            "ℹ️  A persistent SDK network repair profile is installed on this host.\n"
+            "   In plain terms, this is a small NetworkManager hook that reapplies the SDK-to-DevKit\n"
+            "   network fix after you reconnect the DevKit cable, restart networking, or reboot.\n"
+            "   Removing it is safe if you want to fully undo the SDK network repair, but DevKit\n"
+            "   connectivity may need to be repaired again later."
+        )
+        remove_persistent_profile = click.confirm(
+            "Remove the persistent SDK network repair profile as part of rollback?",
+            default=False,
+        )
+
+    actions = rollback_linux_shared_devkit_network(
+        devkit_ip,
+        dry_run=dry_run,
+        remove_persistent_profile=remove_persistent_profile,
+    )
+
+    table = Table(title="SDK Network Rollback" + (" (dry run)" if dry_run else ""))
+    table.add_column("Status", style="bold")
+    table.add_column("Action")
+    table.add_column("Detail")
+    for action in actions:
+        table.add_row(action.get("status", ""), action.get("action", ""), action.get("detail", ""))
+    console.print(table)
+
+    if dry_run:
+        click.echo("ℹ️  Dry run only. Rerun with --apply to remove the listed SDK-specific network rules.")
+    click.echo("ℹ️  Best-effort rollback does not restore previous IPv6 profile values or net.ipv4.ip_forward.")
 
 @sdk.command(
     name="stop",

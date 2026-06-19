@@ -14,7 +14,7 @@ sima-cli sdk network repair [OPTIONS]
 
 | Name | Description |
 | --- | --- |
-| `--devkit` | DevKit IPv4 address to use for route and shared-network repair. Required. |
+| `--devkit` | DevKit IPv4 address to use for route and shared-network repair. Required. (required) |
 | `--container` | Neat SDK container name. Required when multiple Neat SDK containers exist. |
 | `--persist` | Install/update a persistent NetworkManager dispatcher hook after applying runtime repair. |
 
@@ -31,7 +31,7 @@ Usage: sima-cli sdk network repair [OPTIONS]
 
 Options:
   --devkit TEXT     DevKit IPv4 address to use for route and shared-network
-                    repair. Required.
+                    repair. Required.  [required]
   --container TEXT  Neat SDK container name. Required when multiple Neat SDK
                     containers exist.
   --persist         Install/update a persistent NetworkManager dispatcher hook

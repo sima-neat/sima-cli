@@ -17,6 +17,7 @@ inside the REPL — those must be run directly.
 """
 
 import os
+import sys
 import shlex
 import contextlib
 import click
@@ -123,6 +124,20 @@ def _dispatch(line):
             return
         except Exception as e:
             click.echo(f"❌ {e}")
+        finally:
+            # A failsafe mechanism to allow click commands to call exit()
+            _restore_stdin_if_closed()
+
+
+def _restore_stdin_if_closed():
+    """Reattach sys.stdin to the controlling terminal if a subcommand closed it."""
+    if not sys.stdin.closed:
+        return
+    try:
+        sys.stdin = open("/dev/tty")
+    except OSError:
+        # No controlling terminal (e.g. piped input); nothing we can do.
+        pass
 
 
 def _make_completer():

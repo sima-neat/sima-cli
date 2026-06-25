@@ -892,6 +892,7 @@ def ensure_model_sdk_extension_installed(
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
+        "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; "
         "export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"; "
         "mkdir -p \"$HOME/extension-installation\"; "
         "cd \"$HOME/extension-installation\"; "

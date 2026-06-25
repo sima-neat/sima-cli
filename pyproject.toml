@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sima-cli"
-version = "2.1.12"
+version = "2.1.13"
 description = "CLI tool for SiMa Developer Portal to download models, firmware, and apps."
 readme = "README.md"
 requires-python = ">=3.8"

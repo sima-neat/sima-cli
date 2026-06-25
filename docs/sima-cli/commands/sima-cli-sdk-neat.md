@@ -31,6 +31,9 @@ Usage: sima-cli sdk neat [OPTIONS] [CMD]...
   running container with bash -lc. If CMD is omitted, sima-cli opens an
   interactive login shell.
 
+  If no matching Neat SDK container is running, existing stopped Neat SDK
+  container(s) are started automatically and the command is retried.
+
   Examples:
       sima-cli sdk neat
       sima-cli sdk neat python --version

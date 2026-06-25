@@ -18,10 +18,15 @@ from sima_cli.sdk.utils import (
 
 console = Console()
 
+
+class SdkContainerUnavailable(RuntimeError):
+    """Raised when no running SDK container matches a requested tool."""
+
+
 # ─────────────────────────────────────────────
 # Core executer
 # ─────────────────────────────────────────────
-def exec_container_cmd(ctx, keyword: str, cmd: Optional[str] = None):
+def exec_container_cmd(ctx, keyword: str, cmd: Optional[str] = None, raise_on_missing: bool = False):
     """
     Find a running container matching the given SDK keyword (e.g. mpk, yocto),
     optionally filtering by version (from ctx.obj['version_filter']),
@@ -34,6 +39,8 @@ def exec_container_cmd(ctx, keyword: str, cmd: Optional[str] = None):
     containers = get_all_containers(running_containers_only=True)
     if not containers:
         console.print("[yellow]⚠️  No running containers found.[/yellow]")
+        if raise_on_missing:
+            raise SdkContainerUnavailable("No running containers found.")
         sys.exit(0)
 
     # ──────────────────────────────────────────────
@@ -61,11 +68,16 @@ def exec_container_cmd(ctx, keyword: str, cmd: Optional[str] = None):
         )
 
     if not matches:
-        console.print(
-            f"[red]❌ No running containers found for '{keyword}'"
+        message = (
+            f"No running containers found for '{keyword}'"
             + (f" with version '{version_filter}'" if version_filter else "")
-            + ".[/red]"
+            + "."
         )
+        console.print(
+            f"[red]❌ {message}[/red]"
+        )
+        if raise_on_missing:
+            raise SdkContainerUnavailable(message)
         sys.exit(1)
 
     # ──────────────────────────────────────────────

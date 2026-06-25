@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -192,6 +193,47 @@ class TestDocsGeneration(unittest.TestCase):
 
         names = {doc.full_name for doc in module.collect_commands()}
         self.assertIn("sima-cli shell", names)
+
+
+class TestUnsupportedCommandDocs(unittest.TestCase):
+    """The user-facing docs must list exactly the commands the shell blocks."""
+
+    def _docs(self):
+        root = Path(__file__).resolve().parents[2]
+        guide = (root / "docs" / "sima-cli" / "interactive-shell.md").read_text(encoding="utf-8")
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        return guide, readme
+
+    def test_blocked_commands_are_documented(self):
+        guide, readme = self._docs()
+        for cmd in shell_mod._TERMINAL_TAKEOVER_COMMANDS:
+            self.assertIn(
+                f"`{cmd}`", guide,
+                f"{cmd} is blocked in the shell but missing from interactive-shell.md",
+            )
+            self.assertIn(
+                f"`{cmd}`", readme,
+                f"{cmd} is blocked in the shell but missing from README.md",
+            )
+
+    def test_docs_do_not_claim_extra_blocked_commands(self):
+        # Guard against the docs listing a command as unsupported that the code
+        # actually allows. The unsupported table sits under this heading.
+        guide, _ = self._docs()
+        marker = "Unsupported inside"
+        self.assertIn(marker, guide)
+        unsupported_section = guide.split(marker, 1)[1]
+        # Pull the bare command from the first column of each table data row,
+        # skipping the header ("Command") and separator ("---") rows.
+        documented = set()
+        for line in unsupported_section.splitlines():
+            if not line.strip().startswith("|"):
+                continue
+            first_cell = line.strip().strip("|").split("|", 1)[0].strip()
+            match = re.fullmatch(r"`([a-z]+)`", first_cell)
+            if match:
+                documented.add(match.group(1))
+        self.assertEqual(documented, set(shell_mod._TERMINAL_TAKEOVER_COMMANDS))
 
 
 class TestUpdateCheckWarning(unittest.TestCase):

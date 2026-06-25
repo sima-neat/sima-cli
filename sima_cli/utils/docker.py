@@ -9,8 +9,6 @@ import getpass
 
 from sima_cli.utils.env import get_environment_type
 
-# Sentinel to break out of an infinite re-exec loop if `sg docker -c …`
-# somehow lands back here without socket access.
 _REEXEC_ENV_FLAG = "SIMA_CLI_DOCKER_GROUP_REEXEC"
 
 
@@ -74,57 +72,92 @@ def _user_in_docker_group(user: str) -> bool:
     return user in members
 
 
-def _reexec_with_docker_group() -> None:
-    """Re-run the current sima-cli invocation under `sg docker -c …`.
+def _active_user_in_docker_group() -> bool:
+    """Check whether this running process has the docker group active."""
+    try:
+        import grp
 
-    `sg <group> -c <cmd>` runs <cmd> with that supplementary group active for
-    the new process, which is what gives access to /var/run/docker.sock right
-    after `usermod -aG docker` — without forcing the user to open a new shell.
-    Sets a sentinel env var so a second pass through this code path cannot
-    loop forever. Returns only if re-exec is not possible (caller should fall
-    back to the manual-instruction path).
+        group_ids = set(os.getgroups())
+        group_ids.add(os.getgid())
+        group_ids.add(os.getegid())
+        active_group_names = {
+            grp.getgrgid(group_id).gr_name
+            for group_id in group_ids
+        }
+    except (ImportError, KeyError, OSError):
+        return False
+    return "docker" in active_group_names
+
+
+def _try_reexec_with_docker_group() -> None:
+    """Best-effort re-run under `sg docker` when it is known to work.
+
+    Some systems allow `sg docker -c ...` to activate a newly-added docker
+    group immediately, while others reject it or prompt for group auth. Probe
+    first so failures can fall back to deterministic user instructions.
     """
     if os.environ.get(_REEXEC_ENV_FLAG) == "1":
-        return  # already retried under sg; don't loop
+        return
     if not shutil.which("sg"):
-        return  # `sg` (from util-linux) unavailable; fall back
+        return
 
-    new_env = os.environ.copy()
-    new_env[_REEXEC_ENV_FLAG] = "1"
-    cmdline = shlex.join(sys.argv)
-    print("🔁 Activating 'docker' group for this command (no new shell needed)...")
+    probe_env = os.environ.copy()
+    probe_env[_REEXEC_ENV_FLAG] = "1"
     try:
-        os.execvpe("sg", ["sg", "docker", "-c", cmdline], new_env)
-    except OSError as e:
-        print(f"⚠️  Could not re-exec under 'sg docker': {e}")
-        return  # caller falls back to manual instructions
+        probe = subprocess.run(
+            ["sg", "docker", "-c", "docker info >/dev/null 2>&1"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=probe_env,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if probe.returncode != 0:
+        return
+
+    cmdline = shlex.join(sys.argv)
+    print("🔁 Activating 'docker' group for this command...")
+    try:
+        os.execvpe("sg", ["sg", "docker", "-c", cmdline], probe_env)
+    except OSError:
+        return
+
+
+def _print_docker_group_refresh_instructions() -> None:
+    command = shlex.join(sys.argv)
+    print("ℹ️  Docker group membership is configured, but this shell session cannot use it yet.")
+    print("   Start a shell with the updated group membership, then re-run this command:")
+    print("   newgrp docker")
+    print(f"   {command}")
+    print("   If that still does not work, log out and back in before retrying.")
 
 
 def _handle_docker_socket_permission_denied() -> bool:
     """Linux: daemon is up but the current user can't access the socket.
 
-    Offers to add the user to the 'docker' group via sudo and then re-execs
-    the current command under `sg docker -c …` so it completes in the same
-    shell session. Falls back to printed manual instructions only when the
-    re-exec path is unavailable or has already been retried.
+    Offers to add the user to the 'docker' group via sudo when needed, then
+    exits with clear instructions because newly-added group membership is not
+    available to the current shell/process on many Linux systems.
     """
     user = _current_user()
     print("⚠️  Docker daemon is running, but this user lacks permission to access it.")
     print(f"   (Cannot access /var/run/docker.sock as '{user}'.)")
 
-    already_retried = os.environ.get(_REEXEC_ENV_FLAG) == "1"
-
     if _user_in_docker_group(user):
-        if already_retried:
-            print(f"ℹ️  User '{user}' is already a member of the 'docker' group, but even after")
-            print("   re-exec'ing under 'sg docker' the socket is still not accessible.")
-            print("   👉 Log out and back in, then re-run this command.")
+        if _active_user_in_docker_group():
+            print(f"ℹ️  User '{user}' already has the 'docker' group active in this session.")
+            print("   The socket is still not accessible, so this is likely a Docker daemon")
+            print("   or /var/run/docker.sock ownership issue rather than group activation.")
+            print("   Check:  ls -l /var/run/docker.sock")
+            print("   Check:  sudo systemctl status docker")
             sys.exit(1)
-        print(f"ℹ️  User '{user}' is already a member of the 'docker' group, but the current")
+        print(f"ℹ️  User '{user}' is already a member of the 'docker' group, but this")
         print("   shell session has not picked up that membership yet.")
-        _reexec_with_docker_group()
-        # Re-exec failed; fall through to manual instructions.
-        print("   👉 Run 'newgrp docker' in this shell (or log out and back in), then re-run this command.")
+        _try_reexec_with_docker_group()
+        _print_docker_group_refresh_instructions()
         sys.exit(1)
 
     print(f"ℹ️  User '{user}' is not a member of the 'docker' group.")
@@ -143,12 +176,8 @@ def _handle_docker_socket_permission_denied() -> bool:
         sys.exit(1)
 
     print(f"✅ Added '{user}' to the 'docker' group.")
-    _reexec_with_docker_group()
-    # If we get here, re-exec was not possible (no `sg`, already retried, or
-    # OSError) and the original install/setup operation did NOT complete.
-    # Exit non-zero so parent scripts / CI do not treat this as success.
-    print("ℹ️  Group membership only takes effect in NEW shell sessions.")
-    print("   👉 Run 'newgrp docker' in this shell (or log out and back in), then re-run this command.")
+    _try_reexec_with_docker_group()
+    _print_docker_group_refresh_instructions()
     sys.exit(1)
 
 

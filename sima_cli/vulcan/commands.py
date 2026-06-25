@@ -92,6 +92,7 @@ def install_vulcan_package(
             "environment": result.environment,
             "base_url": result.base_url,
             "repository": result.repository,
+            "package_path": result.package_path,
             "ref": result.ref,
             "ref_key": result.ref_key,
             "requested_spec": result.requested_spec,
@@ -102,6 +103,8 @@ def install_vulcan_package(
 
     click.echo(f"Environment: {result.environment}")
     click.echo(f"Repository:  {result.repository}")
+    if result.package_path:
+        click.echo(f"Package:     {result.package_path}")
     click.echo(f"Ref:         {result.ref}")
     click.echo(f"Spec:        {result.resolved_spec}")
     click.echo(f"Metadata:    {result.metadata_url}")
@@ -279,8 +282,9 @@ def download(ctx, repo, ref, environment, environment_flag, base_url, output, ar
 def install(ctx, target, environment, environment_flag, base_url, install_dir, package_type, force, json_output):
     """Install a Neat artifact package from TARGET.
 
-    TARGET supports REPO, REPO@branch, REPO@branch:spec, REPO@latest, or
-    REPO@githash. If no branch or spec is provided, latest main is used.
+    TARGET supports REPO, REPO/folder, REPO@branch, REPO/folder@branch:spec,
+    REPO@latest, or REPO@githash. If no branch or spec is provided, latest main
+    is used.
     """
     group_name = ctx.parent.info_name if ctx.parent and ctx.parent.info_name else "neat"
     return install_vulcan_package(

@@ -134,22 +134,38 @@ class VulcanArtifactTests(unittest.TestCase):
             self.assertTrue((result.output_dir / "manifest.json").exists())
 
     def test_parse_install_target_defaults_to_latest_main(self):
-        self.assertEqual(parse_install_target("internals"), ("internals", "main", "latest"))
+        self.assertEqual(parse_install_target("internals"), ("internals", "", "main", "latest"))
+
+    def test_parse_install_target_accepts_subfolder(self):
+        self.assertEqual(
+            parse_install_target("model-compiler/examples@fix/compile-resnet50-docs-env:88caac51885b"),
+            ("model-compiler", "examples", "fix/compile-resnet50-docs-env", "88caac51885b"),
+        )
+
+    def test_parse_install_target_accepts_nested_subfolder(self):
+        self.assertEqual(
+            parse_install_target("model-compiler/examples/resnet50@main:latest"),
+            ("model-compiler", "examples/resnet50", "main", "latest"),
+        )
 
     def test_parse_install_target_accepts_colon_branch_and_spec(self):
         self.assertEqual(
             parse_install_target("internals@release/2.1:50649e9aa0ba"),
-            ("internals", "release/2.1", "50649e9aa0ba"),
+            ("internals", "", "release/2.1", "50649e9aa0ba"),
         )
 
     def test_parse_install_target_accepts_main_commit_shorthand(self):
         self.assertEqual(
             parse_install_target("internals@50649e9aa0ba"),
-            ("internals", "main", "50649e9aa0ba"),
+            ("internals", "", "main", "50649e9aa0ba"),
         )
 
     def test_parse_install_target_treats_tag_as_ref(self):
-        self.assertEqual(parse_install_target("internals@2.0.0"), ("internals", "2.0.0", "latest"))
+        self.assertEqual(parse_install_target("internals@2.0.0"), ("internals", "", "2.0.0", "latest"))
+
+    def test_parse_install_target_rejects_unsafe_subfolder(self):
+        with self.assertRaisesRegex(VulcanArtifactError, "package path"):
+            parse_install_target("model-compiler/../examples@main")
 
     def test_resolve_install_metadata_url_resolves_latest_tag(self):
         base_url = "https://example.invalid"
@@ -163,6 +179,7 @@ class VulcanArtifactTests(unittest.TestCase):
         )
 
         self.assertEqual(result.repository, "internals")
+        self.assertEqual(result.package_path, "")
         self.assertEqual(result.ref, "main")
         self.assertEqual(result.requested_spec, "latest")
         self.assertEqual(result.resolved_spec, "50649e9aa0ba")
@@ -186,6 +203,43 @@ class VulcanArtifactTests(unittest.TestCase):
         self.assertEqual(
             result.metadata_url,
             f"{base_url}/internals/vulcan-prep/50649e9aa0ba/metadata.json",
+        )
+
+    def test_resolve_install_metadata_url_uses_subfolder_metadata(self):
+        base_url = "https://example.invalid"
+        client = FakeClient({})
+
+        result = resolve_install_metadata_url(
+            environment="dev",
+            target="model-compiler/examples@fix/compile-resnet50-docs-env:88caac51885b",
+            base_url=base_url,
+            client=client,
+        )
+
+        self.assertEqual(result.repository, "model-compiler")
+        self.assertEqual(result.package_path, "examples")
+        self.assertEqual(client.urls, [])
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/model-compiler/fix%252Fcompile-resnet50-docs-env/88caac51885b/examples/metadata.json",
+        )
+
+    def test_resolve_install_metadata_url_uses_subfolder_metadata_for_latest(self):
+        base_url = "https://example.invalid"
+        latest_url = f"{base_url}/model-compiler/fix%252Fcompile-resnet50-docs-env/latest.tag"
+        client = FakeClient({latest_url: "88caac51885b\n"})
+
+        result = resolve_install_metadata_url(
+            environment="dev",
+            target="model-compiler/examples@fix/compile-resnet50-docs-env",
+            base_url=base_url,
+            client=client,
+        )
+
+        self.assertEqual(client.urls, [latest_url])
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/model-compiler/fix%252Fcompile-resnet50-docs-env/88caac51885b/examples/metadata.json",
         )
 
     def test_resolve_install_metadata_url_uses_metadata_type_variant(self):
@@ -354,6 +408,7 @@ class VulcanCommandTests(unittest.TestCase):
                     "environment": "dev",
                     "base_url": ENV_BASE_URLS["dev"],
                     "repository": "internals",
+                    "package_path": "",
                     "ref": "main",
                     "ref_key": "main",
                     "requested_spec": "latest",
@@ -388,6 +443,7 @@ class VulcanCommandTests(unittest.TestCase):
                     "environment": "dev",
                     "base_url": ENV_BASE_URLS["dev"],
                     "repository": "internals",
+                    "package_path": "",
                     "ref": "main",
                     "ref_key": "main",
                     "requested_spec": "latest",
@@ -408,6 +464,50 @@ class VulcanCommandTests(unittest.TestCase):
             command_name="sima-cli vulcan install",
         )
 
+    def test_neat_install_prints_subfolder_package_path(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.resolve_install_metadata_url") as resolve_mock, patch(
+            "sima_cli.vulcan.commands.install_from_metadata"
+        ) as install_mock:
+            resolve_mock.return_value = type(
+                "Result",
+                (),
+                {
+                    "environment": "dev",
+                    "base_url": ENV_BASE_URLS["dev"],
+                    "repository": "model-compiler",
+                    "package_path": "examples",
+                    "ref": "fix/compile-resnet50-docs-env",
+                    "ref_key": "fix%2Fcompile-resnet50-docs-env",
+                    "requested_spec": "88caac51885b",
+                    "resolved_spec": "88caac51885b",
+                    "metadata_url": (
+                        f"{ENV_BASE_URLS['dev']}/model-compiler/"
+                        "fix%252Fcompile-resnet50-docs-env/88caac51885b/examples/metadata.json"
+                    ),
+                },
+            )()
+
+            result = runner.invoke(
+                main,
+                [
+                    "neat",
+                    "--env",
+                    "dev",
+                    "install",
+                    "model-compiler/examples@fix/compile-resnet50-docs-env:88caac51885b",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Repository:  model-compiler", result.output)
+        self.assertIn("Package:     examples", result.output)
+        self.assertEqual(
+            resolve_mock.call_args.kwargs["target"],
+            "model-compiler/examples@fix/compile-resnet50-docs-env:88caac51885b",
+        )
+        install_mock.assert_called_once()
+
     def test_neat_install_uses_neat_command_name_for_install_messages(self):
         runner = CliRunner()
         with patch("sima_cli.vulcan.commands.resolve_install_metadata_url") as resolve_mock, patch(
@@ -420,6 +520,7 @@ class VulcanCommandTests(unittest.TestCase):
                     "environment": "dev",
                     "base_url": ENV_BASE_URLS["dev"],
                     "repository": "internals",
+                    "package_path": "",
                     "ref": "main",
                     "ref_key": "main",
                     "requested_spec": "latest",
@@ -446,6 +547,7 @@ class VulcanCommandTests(unittest.TestCase):
                     "environment": "dev",
                     "base_url": ENV_BASE_URLS["dev"],
                     "repository": "internals",
+                    "package_path": "",
                     "ref": "main",
                     "ref_key": "main",
                     "requested_spec": "latest",
@@ -474,6 +576,7 @@ class VulcanCommandTests(unittest.TestCase):
                     "environment": "dev",
                     "base_url": ENV_BASE_URLS["dev"],
                     "repository": "internals",
+                    "package_path": "",
                     "ref": "main",
                     "ref_key": "main",
                     "requested_spec": "latest",
@@ -490,6 +593,7 @@ class VulcanCommandTests(unittest.TestCase):
             payload["metadata_url"],
             f"{ENV_BASE_URLS['dev']}/internals/main/50649e9aa0ba/metadata.json",
         )
+        self.assertEqual(payload["package_path"], "")
         install_mock.assert_not_called()
 
     def test_top_level_install_forwards_neat_options(self):

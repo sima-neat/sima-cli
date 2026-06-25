@@ -24,10 +24,10 @@ from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
 from sima_cli.sdk.install import setup_and_start
-from sima_cli.sdk.cmdexec import exec_container_cmd
+from sima_cli.sdk.cmdexec import SdkContainerUnavailable, exec_container_cmd
 from sima_cli.sdk.uninstall import remove_containers, remove_unused_images
 from sima_cli.sdk.stop import stop_containers
-from sima_cli.sdk.utils import get_all_containers
+from sima_cli.sdk.utils import get_all_containers, container_matches_sdk_keyword
 from sima_cli.sdk.utils import extract_short_name
 from sima_cli.discover.discover import discover_and_probe
 from rich.table import Table
@@ -38,6 +38,7 @@ from sima_cli.sdk.config import IMAGE_CONFIG
 from sima_cli.sdk.network_doctor import (
     build_network_doctor_report,
     collect_network_doctor_bundle,
+    ensure_existing_neat_container_startable,
     print_network_doctor_report,
     repair_linux_devkit_network,
 )
@@ -156,7 +157,66 @@ def _resolve_devkit_ipv4(devkit: Optional[str]) -> str:
     return value
 
 
-def launch_sdk_tool(tool: str, cmd, ctx):
+def _container_name(container) -> str:
+    return container.get("Names") or container.get("Name") or container.get("name") or ""
+
+
+def _container_is_running(container) -> bool:
+    state = (container.get("State") or "").lower().strip()
+    status = (container.get("Status") or "").lower().strip()
+    return state == "running" or status.startswith("up") or "running" in status
+
+
+def _version_matches(container, version_filter: str) -> bool:
+    if not version_filter:
+        return True
+    needle = version_filter.lower()
+    name = _container_name(container).lower()
+    image = (container.get("Image") or container.get("image") or "").lower()
+    return needle in name or needle in image
+
+
+def _start_stopped_neat_containers(ctx) -> None:
+    version_filter = None
+    if ctx and getattr(ctx, "obj", None):
+        version_filter = ctx.obj.get("version_filter")
+
+    containers = get_all_containers(running_containers_only=False)
+    matches = [
+        container
+        for container in containers
+        if container_matches_sdk_keyword(container, "neat")
+        and _version_matches(container, version_filter)
+        and not _container_is_running(container)
+    ]
+
+    if not matches:
+        message = "No stopped Neat SDK containers found."
+        if version_filter:
+            message = f"No stopped Neat SDK containers found for version '{version_filter}'."
+        raise click.ClickException(f"{message} Run: sima-cli sdk setup")
+
+    for container in matches:
+        name = _container_name(container)
+        if not name:
+            continue
+        try:
+            ensure_existing_neat_container_startable(name)
+            console.print(
+                f"[cyan]▶ Starting existing Neat SDK container:[/cyan] [bold]{name}[/bold] "
+                "[dim](this may take a moment)[/dim]"
+            )
+            subprocess.run(["docker", "start", name], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            raise click.ClickException(
+                f"Failed to start Neat SDK container '{name}' while running: {' '.join(e.cmd)}"
+            ) from e
+        except RuntimeError as e:
+            raise click.ClickException(str(e)) from e
+        console.print(f"[green]✅ Started Neat SDK container:[/green] [bold]{name}[/bold]")
+
+
+def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     """
     Launch a selected SDK tool container, optionally executing a command inside it.
     If no command is provided, defaults to an interactive bash login shell.
@@ -182,7 +242,17 @@ def launch_sdk_tool(tool: str, cmd, ctx):
     else:
         cmd_str = str(cmd)
 
-    exec_container_cmd(ctx, tool, cmd_str)
+    if not recover_unavailable:
+        exec_container_cmd(ctx, tool, cmd_str)
+        return
+
+    try:
+        exec_container_cmd(ctx, tool, cmd_str, raise_on_missing=True)
+    except SdkContainerUnavailable:
+        if tool != "neat":
+            raise
+        _start_stopped_neat_containers(ctx)
+        exec_container_cmd(ctx, tool, cmd_str)
 
 
 # ------------------------------------------------------------
@@ -554,13 +624,16 @@ def neat(ctx, cmd):
     running container with bash -lc. If CMD is omitted, sima-cli opens an
     interactive login shell.
 
+    If no matching Neat SDK container is running, existing stopped Neat SDK
+    container(s) are started automatically and the command is retried.
+
     \b
     Examples:
         sima-cli sdk neat
         sima-cli sdk neat python --version
         sima-cli sdk neat "python app.py --config config.json"
     """
-    launch_sdk_tool("neat", cmd, ctx)
+    launch_sdk_tool("neat", cmd, ctx, recover_unavailable=True)
 
 
 @sdk.command(

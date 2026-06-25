@@ -1,7 +1,7 @@
 """Tests for the docker-startup / docker-group fix in sima_cli.utils.docker.
 
 Covers:
-  - `_reexec_with_docker_group` (sentinel guard, missing `sg`, success path)
+  - `_try_reexec_with_docker_group` (preflighted `sg docker` retry)
   - `_handle_docker_socket_permission_denied` (group-already-set vs. need-to-add,
     accept / decline, usermod success / failure)
   - The Linux branch of `check_and_start_docker`: systemctl return-code is
@@ -16,30 +16,33 @@ from unittest.mock import patch, MagicMock
 from sima_cli.utils import docker
 
 
-class TestReexecWithDockerGroup(unittest.TestCase):
+class TestTryReexecWithDockerGroup(unittest.TestCase):
     def test_sentinel_short_circuits(self):
-        # Already inside a re-exec — must NOT call execvpe a second time.
-        env = {docker._REEXEC_ENV_FLAG: "1"}
-        with patch.dict(docker.os.environ, env, clear=False), \
+        with patch.dict(docker.os.environ, {docker._REEXEC_ENV_FLAG: "1"}, clear=False), \
              patch("sima_cli.utils.docker.shutil.which") as which, \
+             patch("sima_cli.utils.docker.subprocess.run") as run, \
              patch("sima_cli.utils.docker.os.execvpe") as execvpe:
-            docker._reexec_with_docker_group()
+            docker._try_reexec_with_docker_group()
 
         which.assert_not_called()
+        run.assert_not_called()
         execvpe.assert_not_called()
 
-    def test_missing_sg_falls_back(self):
+    def test_probe_failure_falls_back_without_exec(self):
+        probe_result = MagicMock(returncode=1)
         with patch.dict(docker.os.environ, {}, clear=False), \
-             patch("sima_cli.utils.docker.shutil.which", return_value=None) as which, \
+             patch("sima_cli.utils.docker.shutil.which", return_value="/usr/bin/sg"), \
+             patch("sima_cli.utils.docker.subprocess.run", return_value=probe_result) as run, \
              patch("sima_cli.utils.docker.os.execvpe") as execvpe:
             docker.os.environ.pop(docker._REEXEC_ENV_FLAG, None)
-            docker._reexec_with_docker_group()
+            docker._try_reexec_with_docker_group()
 
-        which.assert_called_once_with("sg")
+        run.assert_called_once()
         execvpe.assert_not_called()
 
-    def test_invokes_sg_with_quoted_argv_and_sentinel(self):
+    def test_probe_success_execs_original_command_with_sentinel(self):
         argv = ["sima-cli", "sdk", "setup", "--devkit", "192.168.135.108"]
+        probe_result = MagicMock(returncode=0)
         captured = {}
 
         def fake_execvpe(file, args, env):
@@ -49,80 +52,67 @@ class TestReexecWithDockerGroup(unittest.TestCase):
 
         with patch.dict(docker.os.environ, {"PATH": "/usr/bin"}, clear=False), \
              patch("sima_cli.utils.docker.shutil.which", return_value="/usr/bin/sg"), \
+             patch("sima_cli.utils.docker.subprocess.run", return_value=probe_result), \
              patch("sima_cli.utils.docker.sys.argv", argv), \
              patch("sima_cli.utils.docker.os.execvpe", side_effect=fake_execvpe):
             docker.os.environ.pop(docker._REEXEC_ENV_FLAG, None)
-            docker._reexec_with_docker_group()
+            docker._try_reexec_with_docker_group()
 
         self.assertEqual(captured["file"], "sg")
-        # sg <group> -c "<shell-quoted argv>"
         self.assertEqual(captured["args"][0:3], ["sg", "docker", "-c"])
-        # shlex.join must produce a single string the child shell will parse
-        # back into the original argv.
         self.assertIn("sima-cli", captured["args"][3])
         self.assertIn("192.168.135.108", captured["args"][3])
-        # Sentinel must be set so the re-exec'd process won't loop.
         self.assertEqual(captured["env"].get(docker._REEXEC_ENV_FLAG), "1")
 
-    def test_execvpe_oserror_returns_to_caller(self):
-        with patch.dict(docker.os.environ, {}, clear=False), \
-             patch("sima_cli.utils.docker.shutil.which", return_value="/usr/bin/sg"), \
-             patch("sima_cli.utils.docker.os.execvpe", side_effect=OSError("denied")):
-            docker.os.environ.pop(docker._REEXEC_ENV_FLAG, None)
-            # Must NOT raise — caller relies on graceful fallback.
-            docker._reexec_with_docker_group()
+
+class TestDockerGroupRefreshInstructions(unittest.TestCase):
+    def test_print_refresh_instructions_include_newgrp_and_original_command(self):
+        argv = ["sima-cli", "sdk", "setup", "--devkit", "192.168.135.108"]
+        with patch("builtins.print") as print_mock, \
+             patch("sima_cli.utils.docker.sys.argv", argv), \
+             patch("sima_cli.utils.docker.shlex.join", return_value="sima-cli sdk setup --devkit 192.168.135.108"):
+            docker._print_docker_group_refresh_instructions()
+
+        printed = "\n".join(call.args[0] for call in print_mock.call_args_list)
+        self.assertIn("newgrp docker", printed)
+        self.assertIn("sima-cli sdk setup --devkit 192.168.135.108", printed)
 
 
 class TestHandleDockerSocketPermissionDenied(unittest.TestCase):
-    def setUp(self):
-        # Each test starts with a clean sentinel so we control which branch
-        # runs.
-        self._saved_sentinel = docker.os.environ.pop(docker._REEXEC_ENV_FLAG, None)
-
-    def tearDown(self):
-        if self._saved_sentinel is not None:
-            docker.os.environ[docker._REEXEC_ENV_FLAG] = self._saved_sentinel
-        else:
-            docker.os.environ.pop(docker._REEXEC_ENV_FLAG, None)
-
-    def test_already_in_group_first_pass_attempts_reexec_then_falls_back(self):
-        # User is in the docker group but the current session hasn't picked
-        # it up. First pass should attempt re-exec; if that returns (i.e.,
-        # could not actually re-exec, e.g. no `sg`), we fall through to the
-        # manual newgrp instructions and exit 1.
+    def test_persisted_group_but_not_active_session_exits_with_newgrp_instructions(self):
         with patch("sima_cli.utils.docker._current_user", return_value="alice"), \
              patch("sima_cli.utils.docker._user_in_docker_group", return_value=True), \
-             patch("sima_cli.utils.docker._reexec_with_docker_group") as reexec:
+             patch("sima_cli.utils.docker._active_user_in_docker_group", return_value=False), \
+             patch("sima_cli.utils.docker._try_reexec_with_docker_group") as reexec, \
+             patch("sima_cli.utils.docker._print_docker_group_refresh_instructions") as instructions:
             with self.assertRaises(SystemExit) as cm:
                 docker._handle_docker_socket_permission_denied()
 
-        reexec.assert_called_once()
+        reexec.assert_called_once_with()
+        instructions.assert_called_once_with()
         self.assertEqual(cm.exception.code, 1)
 
-    def test_already_in_group_after_retry_exits_with_logout_hint(self):
-        docker.os.environ[docker._REEXEC_ENV_FLAG] = "1"
+    def test_active_group_but_socket_still_denied_exits_with_socket_diagnostics(self):
         with patch("sima_cli.utils.docker._current_user", return_value="alice"), \
              patch("sima_cli.utils.docker._user_in_docker_group", return_value=True), \
-             patch("sima_cli.utils.docker._reexec_with_docker_group") as reexec:
+             patch("sima_cli.utils.docker._active_user_in_docker_group", return_value=True), \
+             patch("sima_cli.utils.docker._print_docker_group_refresh_instructions") as instructions:
             with self.assertRaises(SystemExit) as cm:
                 docker._handle_docker_socket_permission_denied()
 
-        # Already-retried branch must NOT re-exec a second time.
-        reexec.assert_not_called()
+        instructions.assert_not_called()
         self.assertEqual(cm.exception.code, 1)
 
     def test_not_in_group_user_declines_exits(self):
         with patch("sima_cli.utils.docker._current_user", return_value="alice"), \
              patch("sima_cli.utils.docker._user_in_docker_group", return_value=False), \
              patch("sima_cli.utils.docker.confirm", return_value=False), \
-             patch("sima_cli.utils.docker.subprocess.run") as run, \
-             patch("sima_cli.utils.docker._reexec_with_docker_group") as reexec:
+             patch("sima_cli.utils.docker.subprocess.run") as run:
             with self.assertRaises(SystemExit) as cm:
                 docker._handle_docker_socket_permission_denied()
 
-        # Declined: no usermod, no re-exec.
+        # Declined: no usermod.
         run.assert_not_called()
-        reexec.assert_not_called()
         self.assertEqual(cm.exception.code, 1)
 
     def test_not_in_group_usermod_fails_exits(self):
@@ -130,31 +120,29 @@ class TestHandleDockerSocketPermissionDenied(unittest.TestCase):
         with patch("sima_cli.utils.docker._current_user", return_value="alice"), \
              patch("sima_cli.utils.docker._user_in_docker_group", return_value=False), \
              patch("sima_cli.utils.docker.confirm", return_value=True), \
-             patch("sima_cli.utils.docker.subprocess.run", return_value=usermod_result) as run, \
-             patch("sima_cli.utils.docker._reexec_with_docker_group") as reexec:
+             patch("sima_cli.utils.docker.subprocess.run", return_value=usermod_result) as run:
             with self.assertRaises(SystemExit) as cm:
                 docker._handle_docker_socket_permission_denied()
 
         run.assert_called_once_with(["sudo", "usermod", "-aG", "docker", "alice"])
-        reexec.assert_not_called()
         self.assertEqual(cm.exception.code, 1)
 
-    def test_not_in_group_usermod_succeeds_reexecs_then_exits_rerun_required(self):
-        # usermod succeeded but we land back here, meaning the re-exec
-        # fallback fired (no `sg`, OSError, or sentinel already set). In
-        # that case the original install/setup operation has NOT completed,
-        # so the exit code must be non-zero — exiting 0 would let parent
-        # scripts / CI treat an incomplete setup as success.
+    def test_not_in_group_usermod_succeeds_exits_with_rerun_required(self):
+        # usermod succeeded, but the original install/setup operation has NOT
+        # completed because the current shell cannot use the new group yet.
+        # Exit non-zero so parent scripts / CI do not treat setup as success.
         usermod_result = MagicMock(returncode=0)
         with patch("sima_cli.utils.docker._current_user", return_value="alice"), \
              patch("sima_cli.utils.docker._user_in_docker_group", return_value=False), \
              patch("sima_cli.utils.docker.confirm", return_value=True), \
              patch("sima_cli.utils.docker.subprocess.run", return_value=usermod_result), \
-             patch("sima_cli.utils.docker._reexec_with_docker_group") as reexec:
+             patch("sima_cli.utils.docker._try_reexec_with_docker_group") as reexec, \
+             patch("sima_cli.utils.docker._print_docker_group_refresh_instructions") as instructions:
             with self.assertRaises(SystemExit) as cm:
                 docker._handle_docker_socket_permission_denied()
 
-        reexec.assert_called_once()
+        reexec.assert_called_once_with()
+        instructions.assert_called_once_with()
         self.assertNotEqual(cm.exception.code, 0)
 
 

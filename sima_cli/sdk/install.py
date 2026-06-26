@@ -1148,6 +1148,16 @@ def setup_and_start(
                 configure_container_user(existing_container, login_name, user_uid, user_gid)
 
             if devkit_env and is_neat_sdk_image(img):
+                if not skip_insight:
+                    # Re-issue the mounted HTTPS cert for the (possibly new) host
+                    # IP before bootstrap restarts neat-insight, so the browser
+                    # doesn't hit a SAN mismatch ("connection is not private")
+                    # after a re-point.
+                    from sima_cli.sdk.neat import refresh_neat_certificates
+                    refresh_neat_certificates(
+                        workspace, existing_container, devkit_env,
+                        yes_to_all=yes_to_all, noninteractive=noninteractive,
+                    )
                 bootstrap_devkit_container(existing_container, devkit_env)
 
             if len(selected_images) == 1:

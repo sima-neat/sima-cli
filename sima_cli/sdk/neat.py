@@ -256,6 +256,28 @@ def _collect_physical_ipv4s_for_certs() -> List[str]:
     return hosts
 
 
+def _collect_all_ipv4s_for_certs() -> List[str]:
+    """Every usable IPv4 on the host, INCLUDING VPN/tunnel interfaces.
+
+    Unlike the advertised-URL selection (which deliberately prefers a physical
+    interface), a certificate SAN should be inclusive: list every address the
+    browser might connect to so HTTPS is trusted whether or not a VPN is up.
+    Without this, a cert minted while a VPN was connected covers only the VPN IP
+    (and vice versa), so toggling the VPN flips between "secure" and "not secure".
+    """
+    hosts = []
+    try:
+        import psutil
+    except Exception:
+        return hosts
+
+    for _iface, addrs in psutil.net_if_addrs().items():
+        for addr in addrs:
+            if addr.family == socket.AF_INET and _is_usable_ipv4(addr.address):
+                hosts.append(addr.address)
+    return hosts
+
+
 def _collect_cert_hosts(devkit_env: Optional[dict]) -> List[str]:
     hosts = ["localhost", "127.0.0.1"]
     if devkit_env and devkit_env.get("host_ip"):
@@ -268,6 +290,8 @@ def _collect_cert_hosts(devkit_env: Optional[dict]) -> List[str]:
     except Exception:
         pass
     hosts.extend(_collect_physical_ipv4s_for_certs())
+    # Include VPN/tunnel IPv4s too so the cert stays valid across VPN on/off.
+    hosts.extend(_collect_all_ipv4s_for_certs())
 
     seen = set()
     return [host for host in hosts if host and not (host in seen or seen.add(host))]
@@ -472,6 +496,110 @@ def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all:
     else:
         _generate_self_signed_cert(cert_file, key_file, hosts)
     return cert_file, key_file
+
+
+def _cert_covers_host(cert_file: Path, host_ip: str) -> bool:
+    """Return True if the cert's SAN already lists ``host_ip`` as an IP address.
+
+    Used to avoid needlessly re-issuing (and disrupting) the certificate on a
+    re-point when the host IP hasn't changed. On any failure to verify (no
+    openssl, parse error) returns False so the caller re-issues to be safe.
+    """
+    if not host_ip:
+        return False
+    try:
+        result = subprocess.run(
+            ["openssl", "x509", "-noout", "-ext", "subjectAltName", "-in", str(cert_file)],
+            capture_output=True, text=True, check=False,
+        )
+        text = result.stdout or ""
+        if result.returncode != 0 or "IP Address" not in text:
+            result = subprocess.run(
+                ["openssl", "x509", "-noout", "-text", "-in", str(cert_file)],
+                capture_output=True, text=True, check=False,
+            )
+            text = result.stdout or ""
+        # Parse the comma-separated "IP Address:<ip>" SAN entries and match
+        # exactly. A bare substring check would treat a routed IP that is a
+        # *prefix* of an existing entry as covered (e.g. 192.168.1.5 vs
+        # IP Address:192.168.1.50), wrongly skipping re-issue and leaving the
+        # browser with a SAN mismatch after that re-point.
+        san_ips = []
+        for token in text.replace("\n", ",").split(","):
+            token = token.strip()
+            if token.startswith("IP Address:"):
+                san_ips.append(token[len("IP Address:"):].strip())
+        return host_ip in san_ips
+    except OSError:
+        return False
+
+
+def _container_sdk_cert_dir(container_name: str) -> Optional[Path]:
+    """Return the host directory bind-mounted to ``/sdk-cert`` in the running
+    container, or ``None`` if it can't be determined.
+
+    The ``/sdk-cert`` mount is fixed at ``docker run`` time to the workspace used
+    *then*. We must re-issue into that exact directory, not one reconstructed
+    from the current invocation's workspace -- otherwise a user re-running setup
+    from a different workspace would write the new cert into an unmounted dir
+    while the container keeps serving the old mounted one.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f",
+             '{{range .Mounts}}{{if eq .Destination "/sdk-cert"}}{{.Source}}{{end}}{{end}}',
+             container_name],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    source = (result.stdout or "").strip()
+    return Path(source) if source else None
+
+
+def refresh_neat_certificates(
+    workspace: str,
+    container_name: str,
+    devkit_env: Optional[dict],
+    *,
+    yes_to_all: bool = False,
+    noninteractive: bool = False,
+) -> bool:
+    """Re-issue the mounted ``/sdk-cert`` certificate to cover the current host IP.
+
+    On a DevKit re-point (or a host network change) the routed host IP changes,
+    but the HTTPS cert mounted into the Neat container was signed once at
+    container creation with the *old* IP in its SAN -- so the browser shows
+    "Your connection is not private" on the new IP. The host owns the trusted
+    mkcert CA, so the cert must be reissued *here* (not inside the container) to
+    stay trusted; neat-insight is restarted separately (devkit.sh's refresh hook)
+    to pick up the rewritten file from the bind-mounted cert dir.
+
+    (Re)generates when the cert is **missing** (e.g. the user deleted it) or its
+    SAN doesn't cover the current host IP. No-op (returns False) only when there
+    is no host IP, or a valid cert already covers it. Returns True when a cert was
+    generated.
+    """
+    host_ip = (devkit_env or {}).get("host_ip", "")
+    if not host_ip:
+        return False
+    # Use the directory actually bind-mounted to /sdk-cert in the container, so a
+    # re-issue lands where neat-insight reads it even if the current invocation's
+    # workspace differs from the one the container was created with. Fall back to
+    # the workspace-derived path (e.g. container not running / no mount).
+    cert_dir = _container_sdk_cert_dir(container_name) \
+        or (Path(workspace) / f".{container_name}" / "sdk-cert")
+    cert_file = cert_dir / "neat-sdk.pem"
+    if cert_file.exists() and _cert_covers_host(cert_file, host_ip):
+        return False
+    action = "Re-issuing" if cert_file.exists() else "Generating"
+    print(f"🔐 {action} Neat SDK certificate for host IP {host_ip} ...")
+    _ensure_certificates(
+        cert_dir, devkit_env, yes_to_all=yes_to_all, noninteractive=noninteractive
+    )
+    return True
 
 
 def _write_port_map(config_dir: Path, port_map: Dict) -> Path:

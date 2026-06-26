@@ -1208,7 +1208,7 @@ def install_neat_playbooks(sdk_container_name: str, login_name: str) -> None:
             "-u",
             login_name,
             "-e",
-            "SIMA_CLI_CHECK_FOR_UPDATE=0",
+            "SIMA_CLI_AUTO_ACCEPT_UPDATE=1",
             "-e",
             "GITHUB_TOKEN",
             sdk_container_name,

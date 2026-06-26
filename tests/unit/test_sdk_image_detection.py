@@ -2533,7 +2533,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "container",
                 "bash",
                 "-lc",
-                "sima-cli login",
+                "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; sima-cli login",
             ]),
             unittest.mock.call([
                 "docker",

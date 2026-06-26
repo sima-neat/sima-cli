@@ -54,6 +54,7 @@ class InstallMetadataResult:
     environment: str
     base_url: str
     repository: str
+    package_path: str
     ref: str
     ref_key: str
     requested_spec: str
@@ -190,22 +191,36 @@ def read_latest_tag(client: ArtifactClient, base_url: str, repository: str, key:
     return latest_tag
 
 
-def parse_install_target(target: str) -> Tuple[str, str, str]:
+def _parse_repository_and_package_path(raw: str) -> Tuple[str, str]:
+    value = raw.strip().strip("/")
+    if not value:
+        raise VulcanArtifactError("Install target repository is empty.")
+
+    parts = [part.strip() for part in value.split("/")]
+    if any(not part for part in parts):
+        raise VulcanArtifactError("Install target must not contain empty path segments.")
+    if any(part == ".." for part in parts):
+        raise VulcanArtifactError("Install target package path must not contain '..'.")
+
+    repository = parts[0]
+    package_path = "/".join(parts[1:])
+    return repository, package_path
+
+
+def parse_install_target(target: str) -> Tuple[str, str, str, str]:
     value = target.strip()
     if not value:
         raise VulcanArtifactError("Install target is empty.")
 
-    repository, separator, ref_spec = value.partition("@")
-    repository = repository.strip()
-    if not repository:
-        raise VulcanArtifactError("Install target repository is empty.")
+    repository_spec, separator, ref_spec = value.partition("@")
+    repository, package_path = _parse_repository_and_package_path(repository_spec)
 
     if not separator or not ref_spec.strip():
-        return repository, "main", "latest"
+        return repository, package_path, "main", "latest"
 
     ref_spec = ref_spec.strip().strip("/")
     if not ref_spec:
-        return repository, "main", "latest"
+        return repository, package_path, "main", "latest"
 
     if ":" in ref_spec:
         ref, spec = ref_spec.rsplit(":", 1)
@@ -215,12 +230,12 @@ def parse_install_target(target: str) -> Tuple[str, str, str]:
             raise VulcanArtifactError(
                 "Install target must use repo@branch:spec when specifying both branch and spec."
             )
-        return repository, ref, spec
+        return repository, package_path, ref, spec
 
     if ref_spec == "latest" or _looks_like_commit_spec(ref_spec):
-        return repository, "main", ref_spec
+        return repository, package_path, "main", ref_spec
 
-    return repository, ref_spec, "latest"
+    return repository, package_path, ref_spec, "latest"
 
 
 def _looks_like_commit_spec(value: str) -> bool:
@@ -250,17 +265,25 @@ def resolve_install_metadata_url(
 ) -> InstallMetadataResult:
     client = client or ArtifactClient()
     resolved_base_url = normalize_base_url(base_url or ENV_BASE_URLS[environment])
-    repository, ref_name, requested_spec = parse_install_target(target)
+    repository, package_path, ref_name, requested_spec = parse_install_target(target)
     key = ref_key(ref_name)
     if requested_spec == "latest":
         resolved_spec = read_latest_tag(client, resolved_base_url, repository, key)
     else:
         resolved_spec = requested_spec
-    metadata_url = join_url(resolved_base_url, repository, key, resolved_spec, metadata_filename(package_type))
+    metadata_url = join_url(
+        resolved_base_url,
+        repository,
+        key,
+        resolved_spec,
+        package_path,
+        metadata_filename(package_type),
+    )
     return InstallMetadataResult(
         environment=environment,
         base_url=resolved_base_url,
         repository=repository,
+        package_path=package_path,
         ref=ref_name,
         ref_key=key,
         requested_spec=requested_spec,

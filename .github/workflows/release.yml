@@ -15,44 +15,44 @@ permissions:
   contents: write
 
 jobs:
+  release-version:
+    name: Resolve Release Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Validate release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag_name }}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([._-][0-9A-Za-z]+)*$ ]]; then
+            echo "Release tag must look like v2.1.5, got: ${tag}" >&2
+            exit 1
+          fi
+          echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
+
+  verify-maintainer:
+    name: Verify Maintainer Authorization
+    needs: release-version
+    uses: sima-neat/.github/.github/workflows/verify-maintainer.yml@main
+
+  validate-release-readiness:
+    name: Validate release readiness
+    needs: [release-version, verify-maintainer]
+    uses: sima-neat/.github/.github/workflows/release-engineering.yml@main
+    with:
+      release_version: ${{ needs.release-version.outputs.version }}
+    secrets:
+      app_id: ${{ secrets.NEAT_RELEASES_APP_ID }}
+      app_private_key: ${{ secrets.NEAT_RELEASES_APP_PRIVATE_KEY }}
+
   create-release:
     name: Create Draft Prerelease
+    needs: validate-release-readiness
     runs-on: ubuntu-latest
 
     steps:
-      - name: Verify maintainer permission
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ACTOR: ${{ github.actor }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          import sys
-          import urllib.request
-
-          actor = os.environ["ACTOR"]
-          repo = os.environ["REPO"]
-          token = os.environ["GH_TOKEN"]
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/collaborators/{actor}/permission",
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {token}",
-                  "X-GitHub-Api-Version": "2022-11-28",
-              },
-          )
-          with urllib.request.urlopen(req) as resp:
-              permission = json.loads(resp.read().decode("utf-8")).get("permission", "")
-
-          if permission not in {"admin", "maintain"}:
-              print(f"Actor {actor} has repository permission '{permission}', but release creation requires admin or maintain.", file=sys.stderr)
-              sys.exit(1)
-          print(f"Actor {actor} authorized with repository permission '{permission}'.")
-          PY
-
       - name: Check out repository
         uses: actions/checkout@v6
         with:

@@ -5,7 +5,7 @@ import unittest
 from click.testing import CliRunner
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from sima_cli.sdk.linux_shared_network import (
     _disable_nm_shared_devkit_ipv6,
@@ -29,7 +29,7 @@ from sima_cli.sdk.install import (
     setup_and_start,
 )
 from sima_cli.sdk.commands import launch_sdk_tool, sdk
-from sima_cli.sdk.cmdexec import exec_container_cmd
+from sima_cli.sdk.cmdexec import SdkContainerUnavailable, exec_container_cmd
 from sima_cli.sdk.neat import (
     _ensure_certificates,
     _generate_self_signed_cert,
@@ -1368,6 +1368,95 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         console_print.assert_not_called()
 
+    def test_neat_starts_stopped_container_when_unavailable(self):
+        stopped_container = {
+            "Names": "ghcr.io-sima-neat-sdk-v2.1.2",
+            "Image": "ghcr.io/sima/neat-sdk:v2.1.2",
+            "State": "exited",
+            "Status": "Exited (0) 1 minute ago",
+        }
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch(
+                 "sima_cli.sdk.commands.exec_container_cmd",
+                 side_effect=[SdkContainerUnavailable("missing"), None],
+             ) as exec_cmd, \
+             patch("sima_cli.sdk.commands.get_all_containers", return_value=[stopped_container]), \
+             patch("sima_cli.sdk.commands.ensure_existing_neat_container_startable") as ensure_startable, \
+             patch("sima_cli.sdk.commands.subprocess.run") as run:
+            result = CliRunner().invoke(sdk, ["neat"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        ensure_startable.assert_called_once_with("ghcr.io-sima-neat-sdk-v2.1.2")
+        self.assertIn("Starting existing Neat SDK container", result.output)
+        run.assert_called_once_with(
+            ["docker", "start", "ghcr.io-sima-neat-sdk-v2.1.2"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(exec_cmd.call_count, 2)
+        exec_cmd.assert_any_call(ANY, "neat", None, raise_on_missing=True)
+        exec_cmd.assert_any_call(ANY, "neat", None)
+
+    def test_neat_starts_only_version_matching_stopped_containers(self):
+        containers = [
+            {
+                "Names": "ghcr.io-sima-neat-sdk-v2.1.2",
+                "Image": "ghcr.io/sima/neat-sdk:v2.1.2",
+                "State": "exited",
+                "Status": "Exited (0) 1 minute ago",
+            },
+            {
+                "Names": "ghcr.io-sima-neat-sdk-v2.1.3",
+                "Image": "ghcr.io/sima/neat-sdk:v2.1.3",
+                "State": "exited",
+                "Status": "Exited (0) 1 minute ago",
+            },
+        ]
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch(
+                 "sima_cli.sdk.commands.exec_container_cmd",
+                 side_effect=[SdkContainerUnavailable("missing"), None],
+             ), \
+             patch("sima_cli.sdk.commands.get_all_containers", return_value=containers), \
+             patch("sima_cli.sdk.commands.ensure_existing_neat_container_startable"), \
+             patch("sima_cli.sdk.commands.subprocess.run") as run:
+            result = CliRunner().invoke(sdk, ["-v", "v2.1.2", "neat"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        run.assert_called_once_with(
+            ["docker", "start", "ghcr.io-sima-neat-sdk-v2.1.2"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_neat_reports_setup_when_no_stopped_container_exists(self):
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch(
+                 "sima_cli.sdk.commands.exec_container_cmd",
+                 side_effect=SdkContainerUnavailable("missing"),
+             ), \
+             patch("sima_cli.sdk.commands.get_all_containers", return_value=[]), \
+             patch("sima_cli.sdk.commands.subprocess.run") as run:
+            result = CliRunner().invoke(sdk, ["neat"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("No stopped Neat SDK containers found", result.output)
+        self.assertIn("sima-cli sdk setup", result.output)
+        run.assert_not_called()
+
+    def test_neat_preserves_passthrough_yes_flag(self):
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.launch_sdk_tool") as launch:
+            result = CliRunner().invoke(sdk, ["neat", "python", "script.py", "-y"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.args[0], "neat")
+        self.assertEqual(launch.call_args.args[1], ("python", "script.py", "-y"))
+        self.assertTrue(launch.call_args.kwargs["recover_unavailable"])
+
     def test_setup_help_includes_model_compiler_flag_and_legacy_alias(self):
         with patch("sima_cli.sdk.commands.check_and_start_docker"):
             result = CliRunner().invoke(sdk, ["setup", "--help"])
@@ -2420,6 +2509,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
         install_script = run_command.call_args_list[1].args[0][-1]
         self.assertIn("export HOME=/home/docker", install_script)
+        self.assertIn("export SIMA_CLI_AUTO_ACCEPT_UPDATE=1", install_script)
         self.assertIn("export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"", install_script)
         self.assertIn("SIMA_CLI_BIN=\"$HOME/.sima-cli/.venv/bin/sima-cli\"", install_script)
         self.assertIn("/etc/sudoers.d/sima-cli-user", install_script)
@@ -2443,7 +2533,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "container",
                 "bash",
                 "-lc",
-                "sima-cli login",
+                "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; sima-cli login",
             ]),
             unittest.mock.call([
                 "docker",
@@ -2605,7 +2695,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             "-u",
             "docker",
             "-e",
-            "SIMA_CLI_CHECK_FOR_UPDATE=0",
+            "SIMA_CLI_AUTO_ACCEPT_UPDATE=1",
             "-e",
             "GITHUB_TOKEN",
             "container",

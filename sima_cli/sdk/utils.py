@@ -873,6 +873,7 @@ def ensure_model_sdk_extension_installed(
             print("ℹ️  Skipping Model Compiler extension install.")
             return
 
+    internal_sima_cli_env = "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; "
     print("ℹ️  Logging in to sima-cli before installing the Model Compiler extension...")
     run_command(
         _docker_exec_interactive_prefix() + [
@@ -881,7 +882,7 @@ def ensure_model_sdk_extension_installed(
             sdk_container_name,
             "bash",
             "-lc",
-            "sima-cli login",
+            f"{internal_sima_cli_env}sima-cli login",
         ]
     )
 
@@ -892,6 +893,7 @@ def ensure_model_sdk_extension_installed(
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
+        f"{internal_sima_cli_env}"
         "export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"; "
         "mkdir -p \"$HOME/extension-installation\"; "
         "cd \"$HOME/extension-installation\"; "
@@ -1206,7 +1208,7 @@ def install_neat_playbooks(sdk_container_name: str, login_name: str) -> None:
             "-u",
             login_name,
             "-e",
-            "SIMA_CLI_CHECK_FOR_UPDATE=0",
+            "SIMA_CLI_AUTO_ACCEPT_UPDATE=1",
             "-e",
             "GITHUB_TOKEN",
             sdk_container_name,

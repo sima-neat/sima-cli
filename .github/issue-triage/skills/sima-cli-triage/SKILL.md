@@ -85,6 +85,59 @@ For update or DevKit issues, ask for:
 - update channel or requested version
 - full command output
 
+## Extended Analysis
+
+Most issues should be triaged from the issue text, command output, and this
+repo's local triage guidance. Do not request extended analysis just because an
+issue mentions SDK, Model Compiler, Insight, or Core. Request extended analysis
+only when the issue includes enough specific detail that checking another public
+repo can materially improve routing or the next maintainer action.
+
+Allowed cross-reference repositories:
+
+- `sima-neat/sdk`
+- `sima-neat/model-compiler`
+- `sima-neat/insight`
+- `sima-neat/core`
+
+Request `sima-neat/sdk` when:
+
+- the issue involves SDK image packaging, SDK setup behavior, DevKit pairing,
+  SDK container startup, SDK environment contents, or SDK workflow behavior that
+  likely lives outside the CLI.
+- the issue includes an SDK image tag, branch, workflow name, or setup log that
+  can be checked against SDK repo scripts/workflows/docs.
+
+Request `sima-neat/model-compiler` when:
+
+- the issue involves Model Compiler extension installation, quantization,
+  compilation, examples, BF16/INT8 behavior, model artifacts, or compiler logs.
+- the issue includes enough model/compiler output to compare with examples,
+  docs, or known compiler workflow files.
+
+Request `sima-neat/insight` when:
+
+- the issue involves insight package installation through sima-cli, media/source
+  workflow setup, insight release packaging, or sima-cli integration with
+  insight artifacts.
+
+Request `sima-neat/core` when:
+
+- the issue involves core runtime behavior surfaced through sima-cli commands,
+  tutorials/examples installed or referenced by sima-cli, or packaging flows
+  where sima-cli routes users into core artifacts.
+
+When extended analysis is useful, set:
+
+- `extended_analysis_required`: `true`
+- `extended_analysis_repos`: only the specific repo or repos needed from the
+  allowlist above
+- `extended_analysis_reason`: a concise explanation of what should be checked
+
+If the issue lacks concrete logs, command output, package refs, or file names,
+do not request extended analysis. Ask the reporter for the missing information
+instead.
+
 ## Comment Style
 
 Keep the public triage comment concise and neutral. Do not claim a root cause

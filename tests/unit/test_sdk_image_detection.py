@@ -2509,6 +2509,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
         install_script = run_command.call_args_list[1].args[0][-1]
         self.assertIn("export HOME=/home/docker", install_script)
+        self.assertIn("export SIMA_CLI_AUTO_ACCEPT_UPDATE=1", install_script)
         self.assertIn("export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"", install_script)
         self.assertIn("SIMA_CLI_BIN=\"$HOME/.sima-cli/.venv/bin/sima-cli\"", install_script)
         self.assertIn("/etc/sudoers.d/sima-cli-user", install_script)
@@ -2532,7 +2533,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "container",
                 "bash",
                 "-lc",
-                "sima-cli login",
+                "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; sima-cli login",
             ]),
             unittest.mock.call([
                 "docker",
@@ -2694,7 +2695,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             "-u",
             "docker",
             "-e",
-            "SIMA_CLI_CHECK_FOR_UPDATE=0",
+            "SIMA_CLI_AUTO_ACCEPT_UPDATE=1",
             "-e",
             "GITHUB_TOKEN",
             "container",

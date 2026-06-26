@@ -2946,7 +2946,8 @@ class TestRefreshNeatCertificates(unittest.TestCase):
             ensure.assert_not_called()
 
     def test_noop_when_cert_already_covers_host(self):
-        with patch.object(self.neat, "_cert_covers_host", return_value=True), \
+        with patch.object(self.neat, "_container_sdk_cert_dir", return_value=self.cert_dir), \
+             patch.object(self.neat, "_cert_covers_host", return_value=True), \
              patch.object(self.neat, "_ensure_certificates") as ensure:
             self.assertFalse(
                 self.neat.refresh_neat_certificates(
@@ -2956,7 +2957,8 @@ class TestRefreshNeatCertificates(unittest.TestCase):
             ensure.assert_not_called()
 
     def test_reissues_when_host_ip_not_covered(self):
-        with patch.object(self.neat, "_cert_covers_host", return_value=False), \
+        with patch.object(self.neat, "_container_sdk_cert_dir", return_value=self.cert_dir), \
+             patch.object(self.neat, "_cert_covers_host", return_value=False), \
              patch.object(self.neat, "_ensure_certificates") as ensure:
             self.assertTrue(
                 self.neat.refresh_neat_certificates(
@@ -2969,7 +2971,8 @@ class TestRefreshNeatCertificates(unittest.TestCase):
 
     def test_generates_when_cert_absent(self):
         self.cert_file.unlink()
-        with patch.object(self.neat, "_cert_covers_host") as covers, \
+        with patch.object(self.neat, "_container_sdk_cert_dir", return_value=self.cert_dir), \
+             patch.object(self.neat, "_cert_covers_host") as covers, \
              patch.object(self.neat, "_ensure_certificates") as ensure:
             self.assertTrue(
                 self.neat.refresh_neat_certificates(
@@ -2979,11 +2982,50 @@ class TestRefreshNeatCertificates(unittest.TestCase):
             ensure.assert_called_once()
             covers.assert_not_called()  # no cert to inspect
 
+    def test_uses_container_mount_source_not_invocation_workspace(self):
+        # The container's /sdk-cert is mounted from the workspace used at
+        # `docker run`; re-issuing must target THAT dir, not one rebuilt from a
+        # different workspace passed on this invocation.
+        mounted = Path(self.tmp.name) / "orig-ws" / f".{self.container}" / "sdk-cert"
+        mounted.mkdir(parents=True)
+        other_workspace = str(Path(self.tmp.name) / "different-ws")
+        with patch.object(self.neat, "_container_sdk_cert_dir", return_value=mounted), \
+             patch.object(self.neat, "_cert_covers_host", return_value=False), \
+             patch.object(self.neat, "_ensure_certificates") as ensure:
+            self.assertTrue(
+                self.neat.refresh_neat_certificates(
+                    other_workspace, self.container, {"host_ip": "10.0.0.88"}
+                )
+            )
+            ensure.assert_called_once()
+            self.assertEqual(ensure.call_args.args[0], mounted)  # mounted dir, not other_workspace
+
+    def test_container_sdk_cert_dir_reads_mount_source(self):
+        with patch("sima_cli.sdk.neat.subprocess.run",
+                   return_value=_fake_proc(stdout="/home/u/ws/.neat-sdk-latest/sdk-cert\n")):
+            self.assertEqual(
+                self.neat._container_sdk_cert_dir("neat-sdk-latest"),
+                Path("/home/u/ws/.neat-sdk-latest/sdk-cert"),
+            )
+
+    def test_container_sdk_cert_dir_none_when_no_mount(self):
+        with patch("sima_cli.sdk.neat.subprocess.run", return_value=_fake_proc(stdout="")):
+            self.assertIsNone(self.neat._container_sdk_cert_dir("neat-sdk-latest"))
+
     def test_cert_covers_host_parses_openssl_san(self):
         san = "X509v3 Subject Alternative Name:\n    IP Address:10.0.0.88, DNS:localhost\n"
         with patch("sima_cli.sdk.neat.subprocess.run", return_value=_fake_proc(stdout=san)):
             self.assertTrue(self.neat._cert_covers_host(self.cert_file, "10.0.0.88"))
             self.assertFalse(self.neat._cert_covers_host(self.cert_file, "10.0.0.99"))
+
+    def test_cert_covers_host_requires_exact_ip_not_prefix(self):
+        # A routed IP that is a prefix of an existing SAN entry must NOT count as
+        # covered (192.168.1.5 vs IP Address:192.168.1.50), or a stale cert would
+        # wrongly skip re-issue and leave a SAN mismatch.
+        san = "X509v3 Subject Alternative Name:\n    IP Address:192.168.1.50, DNS:localhost\n"
+        with patch("sima_cli.sdk.neat.subprocess.run", return_value=_fake_proc(stdout=san)):
+            self.assertFalse(self.neat._cert_covers_host(self.cert_file, "192.168.1.5"))
+            self.assertTrue(self.neat._cert_covers_host(self.cert_file, "192.168.1.50"))
 
     def test_cert_covers_host_false_when_openssl_missing(self):
         with patch("sima_cli.sdk.neat.subprocess.run", side_effect=OSError):

@@ -519,9 +519,44 @@ def _cert_covers_host(cert_file: Path, host_ip: str) -> bool:
                 capture_output=True, text=True, check=False,
             )
             text = result.stdout or ""
-        return f"IP Address:{host_ip}" in text
+        # Parse the comma-separated "IP Address:<ip>" SAN entries and match
+        # exactly. A bare substring check would treat a routed IP that is a
+        # *prefix* of an existing entry as covered (e.g. 192.168.1.5 vs
+        # IP Address:192.168.1.50), wrongly skipping re-issue and leaving the
+        # browser with a SAN mismatch after that re-point.
+        san_ips = []
+        for token in text.replace("\n", ",").split(","):
+            token = token.strip()
+            if token.startswith("IP Address:"):
+                san_ips.append(token[len("IP Address:"):].strip())
+        return host_ip in san_ips
     except OSError:
         return False
+
+
+def _container_sdk_cert_dir(container_name: str) -> Optional[Path]:
+    """Return the host directory bind-mounted to ``/sdk-cert`` in the running
+    container, or ``None`` if it can't be determined.
+
+    The ``/sdk-cert`` mount is fixed at ``docker run`` time to the workspace used
+    *then*. We must re-issue into that exact directory, not one reconstructed
+    from the current invocation's workspace -- otherwise a user re-running setup
+    from a different workspace would write the new cert into an unmounted dir
+    while the container keeps serving the old mounted one.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f",
+             '{{range .Mounts}}{{if eq .Destination "/sdk-cert"}}{{.Source}}{{end}}{{end}}',
+             container_name],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    source = (result.stdout or "").strip()
+    return Path(source) if source else None
 
 
 def refresh_neat_certificates(
@@ -550,7 +585,12 @@ def refresh_neat_certificates(
     host_ip = (devkit_env or {}).get("host_ip", "")
     if not host_ip:
         return False
-    cert_dir = Path(workspace) / f".{container_name}" / "sdk-cert"
+    # Use the directory actually bind-mounted to /sdk-cert in the container, so a
+    # re-issue lands where neat-insight reads it even if the current invocation's
+    # workspace differs from the one the container was created with. Fall back to
+    # the workspace-derived path (e.g. container not running / no mount).
+    cert_dir = _container_sdk_cert_dir(container_name) \
+        or (Path(workspace) / f".{container_name}" / "sdk-cert")
     cert_file = cert_dir / "neat-sdk.pem"
     if cert_file.exists() and _cert_covers_host(cert_file, host_ip):
         return False

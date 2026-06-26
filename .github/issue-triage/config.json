@@ -1,0 +1,16 @@
+{
+  "labels": {
+    "allowed": [
+      "bug",
+      "documentation",
+      "enhancement",
+      "question",
+      "help wanted"
+    ]
+  },
+  "automation": {
+    "apply_labels": true,
+    "post_comment": true
+  },
+  "max_comment_chars": 1200
+}

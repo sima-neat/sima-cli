@@ -1,0 +1,38 @@
+{
+  "labels": {
+    "allowed": [
+      "bug",
+      "documentation",
+      "enhancement",
+      "question",
+      "help wanted"
+    ]
+  },
+  "automation": {
+    "apply_labels": true,
+    "post_comment": true
+  },
+  "cross_reference_repos": [
+    {
+      "repository": "sima-neat/sdk",
+      "ref": "develop",
+      "path": "sdk"
+    },
+    {
+      "repository": "sima-neat/model-compiler",
+      "ref": "develop",
+      "path": "model-compiler"
+    },
+    {
+      "repository": "sima-neat/insight",
+      "ref": "develop",
+      "path": "insight"
+    },
+    {
+      "repository": "sima-neat/core",
+      "ref": "develop",
+      "path": "core"
+    }
+  ],
+  "max_comment_chars": 1200
+}

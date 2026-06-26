@@ -1345,9 +1345,10 @@ def _is_platform_compatible(metadata: dict, force: bool = False) -> bool:
     )
     _print_compatible_platforms(platforms)
     if not force:
-        exit(1)
+        # Modify the built-in exit to sys.exit, this allows for consistent exit
+        # handling which can be implemented inside the click handlers
+        sys.exit(1)
     return False
-
 
 def _print_post_install_message(metadata: Dict):
     """
@@ -1544,7 +1545,9 @@ def install_from_metadata(
 
     except Exception as e:
         click.echo(f"❌ Failed to install from metadata URL {metadata_url}: {e}")
-        exit(1)
+        # sys.exit (not builtin exit()) so we don't close stdin out from under
+        # the interactive shell. See note at the platform-compat check above.
+        sys.exit(1)
 
     return False
 

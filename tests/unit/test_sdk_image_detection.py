@@ -2914,5 +2914,162 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
 
 
+def _fake_proc(returncode=0, stdout="", stderr=""):
+    proc = Mock()
+    proc.returncode = returncode
+    proc.stdout = stdout
+    proc.stderr = stderr
+    return proc
+
+
+class TestRefreshNeatCertificates(unittest.TestCase):
+    """Re-issue the mounted /sdk-cert cert on re-point when missing or SAN-stale."""
+
+    def setUp(self):
+        from sima_cli.sdk import neat as neat_module
+        self.neat = neat_module
+        self.tmp = TemporaryDirectory()
+        self.workspace = self.tmp.name
+        self.container = "neat-sdk-latest"
+        self.cert_dir = Path(self.workspace) / f".{self.container}" / "sdk-cert"
+        self.cert_dir.mkdir(parents=True)
+        self.cert_file = self.cert_dir / "neat-sdk.pem"
+        self.cert_file.write_text("dummy-cert")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_noop_when_no_host_ip(self):
+        with patch.object(self.neat, "_ensure_certificates") as ensure:
+            self.assertFalse(
+                self.neat.refresh_neat_certificates(self.workspace, self.container, {})
+            )
+            ensure.assert_not_called()
+
+    def test_noop_when_cert_already_covers_host(self):
+        with patch.object(self.neat, "_container_sdk_cert_dir", return_value=self.cert_dir), \
+             patch.object(self.neat, "_cert_covers_host", return_value=True), \
+             patch.object(self.neat, "_ensure_certificates") as ensure:
+            self.assertFalse(
+                self.neat.refresh_neat_certificates(
+                    self.workspace, self.container, {"host_ip": "10.0.0.88"}
+                )
+            )
+            ensure.assert_not_called()
+
+    def test_reissues_when_host_ip_not_covered(self):
+        with patch.object(self.neat, "_container_sdk_cert_dir", return_value=self.cert_dir), \
+             patch.object(self.neat, "_cert_covers_host", return_value=False), \
+             patch.object(self.neat, "_ensure_certificates") as ensure:
+            self.assertTrue(
+                self.neat.refresh_neat_certificates(
+                    self.workspace, self.container, {"host_ip": "10.0.0.88"},
+                    yes_to_all=True, noninteractive=True,
+                )
+            )
+            ensure.assert_called_once()
+            self.assertEqual(ensure.call_args.args[0], self.cert_dir)
+
+    def test_generates_when_cert_absent(self):
+        self.cert_file.unlink()
+        with patch.object(self.neat, "_container_sdk_cert_dir", return_value=self.cert_dir), \
+             patch.object(self.neat, "_cert_covers_host") as covers, \
+             patch.object(self.neat, "_ensure_certificates") as ensure:
+            self.assertTrue(
+                self.neat.refresh_neat_certificates(
+                    self.workspace, self.container, {"host_ip": "10.0.0.88"}
+                )
+            )
+            ensure.assert_called_once()
+            covers.assert_not_called()  # no cert to inspect
+
+    def test_uses_container_mount_source_not_invocation_workspace(self):
+        # The container's /sdk-cert is mounted from the workspace used at
+        # `docker run`; re-issuing must target THAT dir, not one rebuilt from a
+        # different workspace passed on this invocation.
+        mounted = Path(self.tmp.name) / "orig-ws" / f".{self.container}" / "sdk-cert"
+        mounted.mkdir(parents=True)
+        other_workspace = str(Path(self.tmp.name) / "different-ws")
+        with patch.object(self.neat, "_container_sdk_cert_dir", return_value=mounted), \
+             patch.object(self.neat, "_cert_covers_host", return_value=False), \
+             patch.object(self.neat, "_ensure_certificates") as ensure:
+            self.assertTrue(
+                self.neat.refresh_neat_certificates(
+                    other_workspace, self.container, {"host_ip": "10.0.0.88"}
+                )
+            )
+            ensure.assert_called_once()
+            self.assertEqual(ensure.call_args.args[0], mounted)  # mounted dir, not other_workspace
+
+    def test_container_sdk_cert_dir_reads_mount_source(self):
+        with patch("sima_cli.sdk.neat.subprocess.run",
+                   return_value=_fake_proc(stdout="/home/u/ws/.neat-sdk-latest/sdk-cert\n")):
+            self.assertEqual(
+                self.neat._container_sdk_cert_dir("neat-sdk-latest"),
+                Path("/home/u/ws/.neat-sdk-latest/sdk-cert"),
+            )
+
+    def test_container_sdk_cert_dir_none_when_no_mount(self):
+        with patch("sima_cli.sdk.neat.subprocess.run", return_value=_fake_proc(stdout="")):
+            self.assertIsNone(self.neat._container_sdk_cert_dir("neat-sdk-latest"))
+
+    def test_cert_covers_host_parses_openssl_san(self):
+        san = "X509v3 Subject Alternative Name:\n    IP Address:10.0.0.88, DNS:localhost\n"
+        with patch("sima_cli.sdk.neat.subprocess.run", return_value=_fake_proc(stdout=san)):
+            self.assertTrue(self.neat._cert_covers_host(self.cert_file, "10.0.0.88"))
+            self.assertFalse(self.neat._cert_covers_host(self.cert_file, "10.0.0.99"))
+
+    def test_cert_covers_host_requires_exact_ip_not_prefix(self):
+        # A routed IP that is a prefix of an existing SAN entry must NOT count as
+        # covered (192.168.1.5 vs IP Address:192.168.1.50), or a stale cert would
+        # wrongly skip re-issue and leave a SAN mismatch.
+        san = "X509v3 Subject Alternative Name:\n    IP Address:192.168.1.50, DNS:localhost\n"
+        with patch("sima_cli.sdk.neat.subprocess.run", return_value=_fake_proc(stdout=san)):
+            self.assertFalse(self.neat._cert_covers_host(self.cert_file, "192.168.1.5"))
+            self.assertTrue(self.neat._cert_covers_host(self.cert_file, "192.168.1.50"))
+
+    def test_cert_covers_host_false_when_openssl_missing(self):
+        with patch("sima_cli.sdk.neat.subprocess.run", side_effect=OSError):
+            self.assertFalse(self.neat._cert_covers_host(self.cert_file, "10.0.0.88"))
+
+
+class TestCertHostCollection(unittest.TestCase):
+    """The cert SAN must cover both LAN and VPN/tunnel IPs (valid VPN on/off)."""
+
+    def setUp(self):
+        from sima_cli.sdk import neat as neat_module
+        self.neat = neat_module
+
+    def test_san_includes_vpn_and_lan_ips(self):
+        with patch.object(self.neat, "get_local_ip_candidates",
+                          return_value=[("en0", "192.168.1.50")]), \
+             patch.object(self.neat, "_collect_physical_ipv4s_for_certs",
+                          return_value=["192.168.1.50"]), \
+             patch.object(self.neat, "_collect_all_ipv4s_for_certs",
+                          return_value=["192.168.1.50", "10.8.0.6"]):  # 10.8.0.6 = VPN
+            hosts = self.neat._collect_cert_hosts({"host_ip": "10.8.0.6"})
+        self.assertIn("192.168.1.50", hosts)
+        self.assertIn("10.8.0.6", hosts)
+        self.assertEqual(len(hosts), len(set(hosts)))  # deduped
+
+    def test_all_collector_includes_vpn_excludes_loopback(self):
+        if __import__("importlib").util.find_spec("psutil") is None:
+            self.skipTest("psutil not installed")
+
+        class _Addr:
+            def __init__(self, family, address):
+                self.family = family
+                self.address = address
+        fake = {
+            "lo": [_Addr(socket.AF_INET, "127.0.0.1")],
+            "en0": [_Addr(socket.AF_INET, "192.168.1.50")],
+            "utun3": [_Addr(socket.AF_INET, "10.8.0.6")],   # VPN — included
+        }
+        with patch("psutil.net_if_addrs", return_value=fake):
+            ips = self.neat._collect_all_ipv4s_for_certs()
+        self.assertIn("192.168.1.50", ips)
+        self.assertIn("10.8.0.6", ips)
+        self.assertNotIn("127.0.0.1", ips)
+
 if __name__ == "__main__":
     unittest.main()

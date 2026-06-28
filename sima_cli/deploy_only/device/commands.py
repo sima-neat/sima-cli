@@ -16,8 +16,8 @@ if _subenv == "mac":
     _device_help = "Discover nearby SiMa.ai devices on the local network."
 else:
     _device_help = (
-        "Discover and manage device(s) for MPK deployment and app lifecycle management "
-        "purposes, compatible with both PCIe and Ethernet deployment models. Host side only."
+        "Discover and manage SiMa.ai device(s) on the local network, compatible with "
+        "both PCIe and Ethernet connections. Host side only."
     )
 
 @click.group(

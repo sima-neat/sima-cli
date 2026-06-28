@@ -103,6 +103,27 @@ class PackageBuilderTests(unittest.TestCase):
             self.assertEqual(metadata["resources"], [wheel_name])
             self.assertEqual(set(metadata["resources-checksum"]), {wheel_name})
 
+    def test_build_metadata_dot_excludes_match_path_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / ".cache").mkdir()
+            (artifacts / ".cache" / "model.bin").write_bytes(b"cache")
+            (artifacts / ".git").mkdir()
+            (artifacts / ".git" / "config").write_text("config", encoding="utf-8")
+            (artifacts / "payload.bin").write_bytes(b"payload")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                metadata = build_metadata(
+                    artifacts_folder=artifacts,
+                    name="demo",
+                    version="1.0.0",
+                    install_script=":",
+                    exclude=(".cache", ".git"),
+                )
+
+            self.assertEqual(metadata["resources"], ["payload.bin"])
+            self.assertEqual(set(metadata["resources-checksum"]), {"payload.bin"})
+
     def test_build_metadata_can_request_compatible_file_downloads_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifacts = Path(tmp)

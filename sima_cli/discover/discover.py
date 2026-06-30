@@ -125,7 +125,7 @@ def discover_multicast():
                 sock.bind((iface_ip, SRC_PORT))
             except OSError:
                 # Some systems require binding to 0.0.0.0 for multicast
-                sock.bind(("0.0.0.0", SRC_PORT))
+                sock.bind(("0.0.0.0", SRC_PORT))  # lgtm[py/bind-socket-all-network-interfaces]
 
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface_ip))
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)

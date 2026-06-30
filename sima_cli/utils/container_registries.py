@@ -214,8 +214,9 @@ def install_from_cr(resource_spec: str, internal: bool = False) -> str:
         image_name, version, separator = resource_spec, None, ":"
 
     # Normalize optional ghcr.io/ prefix if user included it.
-    if scheme == "ghcr" and image_name.startswith("ghcr.io/"):
-        image_name = image_name[len("ghcr.io/"):]
+    image_parts = image_name.split("/", 1)
+    if scheme == "ghcr" and len(image_parts) == 2 and image_parts[0].lower() == "ghcr.io":
+        image_name = image_parts[1]
 
     if scheme == "ghcr":
         if internal:

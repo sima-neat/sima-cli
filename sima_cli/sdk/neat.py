@@ -498,40 +498,66 @@ def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all:
     return cert_file, key_file
 
 
-def _cert_covers_host(cert_file: Path, host_ip: str) -> bool:
-    """Return True if the cert's SAN already lists ``host_ip`` as an IP address.
-
-    Used to avoid needlessly re-issuing (and disrupting) the certificate on a
-    re-point when the host IP hasn't changed. On any failure to verify (no
-    openssl, parse error) returns False so the caller re-issues to be safe.
+def _cert_san_hosts(cert_file: Path) -> Optional[List[str]]:
+    """Return the SAN entries of ``cert_file`` (both ``DNS:`` names and
+    ``IP Address:`` addresses), or ``None`` when the cert can't be read (no
+    openssl / parse error) so callers treat it as "unknown -> re-issue".
     """
-    if not host_ip:
-        return False
     try:
         result = subprocess.run(
             ["openssl", "x509", "-noout", "-ext", "subjectAltName", "-in", str(cert_file)],
             capture_output=True, text=True, check=False,
         )
         text = result.stdout or ""
-        if result.returncode != 0 or "IP Address" not in text:
+        if result.returncode != 0 or ("IP Address" not in text and "DNS" not in text):
             result = subprocess.run(
                 ["openssl", "x509", "-noout", "-text", "-in", str(cert_file)],
                 capture_output=True, text=True, check=False,
             )
             text = result.stdout or ""
-        # Parse the comma-separated "IP Address:<ip>" SAN entries and match
-        # exactly. A bare substring check would treat a routed IP that is a
-        # *prefix* of an existing entry as covered (e.g. 192.168.1.5 vs
-        # IP Address:192.168.1.50), wrongly skipping re-issue and leaving the
-        # browser with a SAN mismatch after that re-point.
-        san_ips = []
-        for token in text.replace("\n", ",").split(","):
-            token = token.strip()
-            if token.startswith("IP Address:"):
-                san_ips.append(token[len("IP Address:"):].strip())
-        return host_ip in san_ips
     except OSError:
+        return None
+    # Parse the comma/newline-separated SAN entries as exact tokens (not
+    # substrings) so 192.168.1.5 is not treated as covered by
+    # IP Address:192.168.1.50.
+    hosts = []
+    for token in text.replace("\n", ",").split(","):
+        token = token.strip()
+        if token.startswith("IP Address:"):
+            hosts.append(token[len("IP Address:"):].strip())
+        elif token.startswith("DNS:"):
+            hosts.append(token[len("DNS:"):].strip())
+    return hosts
+
+
+def _cert_covers_host(cert_file: Path, host_ip: str) -> bool:
+    """Return True if the cert's SAN lists ``host_ip``. False on any failure
+    (no openssl / parse error) so the caller re-issues to be safe."""
+    if not host_ip:
         return False
+    san = _cert_san_hosts(cert_file)
+    return san is not None and host_ip in san
+
+
+def _cert_covers_hosts(cert_file: Path, hosts: List[str]) -> bool:
+    """Return True only if the cert's SAN covers **every** host in ``hosts``.
+
+    On a re-point the set of host addresses can grow (e.g. a VPN/tunnel IP
+    appears) while the primary host IP is unchanged. Checking the full expected
+    list -- not just the primary IP -- ensures an older cert missing a newly
+    discovered address is re-issued rather than skipped. Returns False on any
+    failure so the caller re-issues to be safe; an empty ``hosts`` is treated as
+    "nothing to verify -> covered" (the caller's no-host-IP guard already handles
+    the do-nothing case).
+    """
+    wanted = [host for host in hosts if host]
+    if not wanted:
+        return True
+    san = _cert_san_hosts(cert_file)
+    if san is None:
+        return False
+    san_set = set(san)
+    return all(host in san_set for host in wanted)
 
 
 def _container_sdk_cert_dir(container_name: str) -> Optional[Path]:
@@ -578,9 +604,11 @@ def refresh_neat_certificates(
     to pick up the rewritten file from the bind-mounted cert dir.
 
     (Re)generates when the cert is **missing** (e.g. the user deleted it) or its
-    SAN doesn't cover the current host IP. No-op (returns False) only when there
-    is no host IP, or a valid cert already covers it. Returns True when a cert was
-    generated.
+    SAN doesn't cover **every** currently expected host -- the primary host IP
+    *and* all alternate addresses (e.g. VPN/tunnel IPs) -- so an older cert that
+    covers only the primary IP is still refreshed. No-op (returns False) only when
+    there is no usable host IP, or a valid cert already covers the full host list.
+    Returns True when a cert was generated.
     """
     host_ip = (devkit_env or {}).get("host_ip", "")
     if not host_ip:
@@ -592,7 +620,12 @@ def refresh_neat_certificates(
     cert_dir = _container_sdk_cert_dir(container_name) \
         or (Path(workspace) / f".{container_name}" / "sdk-cert")
     cert_file = cert_dir / "neat-sdk.pem"
-    if cert_file.exists() and _cert_covers_host(cert_file, host_ip):
+    # Re-issue unless the existing cert already covers the full set of hosts we
+    # would issue for now (primary host IP + all alternate IPv4s incl. VPN/tunnel),
+    # not just the primary host_ip -- otherwise a newly discovered address is
+    # silently left out on a re-run.
+    expected_hosts = _collect_cert_hosts(devkit_env)
+    if cert_file.exists() and _cert_covers_hosts(cert_file, expected_hosts):
         return False
     action = "Re-issuing" if cert_file.exists() else "Generating"
     print(f"🔐 {action} Neat SDK certificate for host IP {host_ip} ...")

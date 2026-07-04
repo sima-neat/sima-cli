@@ -1606,7 +1606,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertEqual(cached_code_ui["token"], config.code_ui_token)
             self.assertEqual(
                 cached_code_ui["url"],
-                f"http://localhost:{config.port_map['codeUI']['host']}/?tkn={config.code_ui_token}",
+                f"http://localhost:{config.port_map['codeUI']['host']}/?tkn={config.code_ui_token}&folder=/workspace",
             )
 
     def test_prepare_neat_container_run_accepts_no_insight(self):
@@ -1880,6 +1880,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
             docker_cmd,
         )
         self.assertIn("OPENVSCODE_SERVER_USER=devuser", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/devuser/.openvscode-server/extensions", docker_cmd)
+        self.assertIn("OPENVSCODE_WORKSPACE=/workspace", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_TOKEN=code-token", docker_cmd)
         self.assertIn(f"{tmpdir}/.ghcr.io-sima-neat-sdk-feature-devkit-sync-latest/logs/supervisor:/var/log/supervisor", docker_cmd)
         for mapping in (
@@ -2779,8 +2781,6 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])
         self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'openai.chatgpt-*'", install_cmd[-1])
         self.assertIn("chown -R 1000:1000 /home/docker/.openvscode-server/extensions", install_cmd[-1])
-        self.assertIn("workbench.secondarySideBar.defaultVisibility", install_cmd[-1])
-        self.assertIn("workbench.secondarySideBar.showLabels", install_cmd[-1])
 
     def test_configure_container_skips_codex_extension_for_minimal(self):
         with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \

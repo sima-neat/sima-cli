@@ -690,7 +690,7 @@ def _write_code_ui_token_cache(container_name: str, host_port: int, token: str) 
         "codeUI": {
             "host": host_port,
             "token": token,
-            "url": f"http://localhost:{host_port}/?tkn={token}",
+            "url": f"http://localhost:{host_port}/?tkn={token}&folder=/workspace",
         },
         "updated_at": int(time.time()),
     }
@@ -807,7 +807,7 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         code_url = f"http://localhost:{port_map['codeUI']['host']}"
         token = config.code_ui_token or port_map["codeUI"].get("token")
         if token:
-            code_url = f"{code_url}/?tkn={token}"
+            code_url = f"{code_url}/?tkn={token}&folder=/workspace"
         print(f"   codeUI:      {code_url}")
     if "videoUI" in port_map:
         print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")

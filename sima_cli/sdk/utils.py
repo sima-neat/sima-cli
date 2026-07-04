@@ -992,7 +992,6 @@ def ensure_codex_vscode_extension_installed(
 
     home_directory = f"/home/{login_name}"
     extensions_dir = f"{home_directory}/.openvscode-server/extensions"
-    user_settings = f"{home_directory}/.openvscode-server/data/User/settings.json"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
     install_script = (
         "set -e; "
@@ -1016,22 +1015,7 @@ def ensure_codex_vscode_extension_installed(
             "else "
             f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
             f"--install-extension {shlex.quote(extension_id)} --force --accept-server-license-terms; "
-            "fi; "
-            f"mkdir -p {shlex.quote(os.path.dirname(user_settings))}; "
-            "python3 - <<'PY'\n"
-            "import json\n"
-            f"path = {user_settings!r}\n"
-            "try:\n"
-            "    with open(path, 'r', encoding='utf-8') as handle:\n"
-            "        data = json.load(handle)\n"
-            "except Exception:\n"
-            "    data = {}\n"
-            "data['workbench.secondarySideBar.defaultVisibility'] = 'visible'\n"
-            "data['workbench.secondarySideBar.showLabels'] = True\n"
-            "with open(path, 'w', encoding='utf-8') as handle:\n"
-            "    json.dump(data, handle, indent=2)\n"
-            "    handle.write('\\n')\n"
-            "PY"
+            "fi"
         )
     )
 
@@ -1605,6 +1589,8 @@ def start_docker_container(
             f"devcontainer.metadata={_devcontainer_metadata_label(remote_user)}",
         ])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_USER={remote_user}"])
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/{remote_user}/.openvscode-server/extensions"])
+        docker_cmd.extend(["-e", "OPENVSCODE_WORKSPACE=/workspace"])
         docker_cmd.extend(["-v", f"{workspace}:/workspace"])
 
     # ─────────────────────────────────────────────

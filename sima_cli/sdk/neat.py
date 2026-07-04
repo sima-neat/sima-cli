@@ -7,6 +7,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -25,6 +26,7 @@ NEAT_WEBRTC_UDP_SEARCH_START = 40000
 NEAT_WEBRTC_UDP_SEARCH_END = 65535
 NEAT_WEBRTC_UDP_PORT_COUNT = 200
 OPENVSCODE_TOKEN_BYTES = 32
+OPENVSCODE_TOKEN_CACHE_FILE = "sdk-code-ui-tokens.json"
 
 
 @dataclass
@@ -652,6 +654,56 @@ def _generate_code_ui_token() -> str:
     return secrets.token_urlsafe(OPENVSCODE_TOKEN_BYTES)
 
 
+def _sima_cli_home() -> Path:
+    return Path(os.environ.get("SIMA_CLI_HOME", str(Path.home() / ".sima-cli"))).expanduser()
+
+
+def _code_ui_token_cache_path() -> Path:
+    return _sima_cli_home() / OPENVSCODE_TOKEN_CACHE_FILE
+
+
+def _read_code_ui_token_cache() -> Dict:
+    path = _code_ui_token_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_code_ui_token_cache(container_name: str, host_port: int, token: str) -> Path:
+    cache_dir = _sima_cli_home()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cache_dir.chmod(0o700)
+    except OSError:
+        pass
+
+    cache = _read_code_ui_token_cache()
+    entries = cache.setdefault("containers", {})
+    if not isinstance(entries, dict):
+        entries = {}
+        cache["containers"] = entries
+    entries[container_name] = {
+        "codeUI": {
+            "host": host_port,
+            "token": token,
+            "url": f"http://localhost:{host_port}/?tkn={token}",
+        },
+        "updated_at": int(time.time()),
+    }
+
+    path = _code_ui_token_cache_path()
+    path.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
+
+
 def reserved_ports_from_neat_port_map(port_map: Dict) -> set:
     reserved = set()
     for entry in port_map.values():
@@ -716,7 +768,7 @@ def prepare_neat_container_run(
     code_ui = port_map.get("codeUI")
     if isinstance(code_ui, dict):
         code_ui_token = _generate_code_ui_token()
-        code_ui["token"] = code_ui_token
+        _write_code_ui_token_cache(container_name, int(code_ui["host"]), code_ui_token)
     port_map_path = _write_port_map(config_dir, port_map)
     return NeatRunConfig(
         port_map=port_map,

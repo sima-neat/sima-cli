@@ -32,6 +32,7 @@ from sima_cli.sdk.install import (
 from sima_cli.sdk.commands import launch_sdk_tool, sdk
 from sima_cli.sdk.cmdexec import SdkContainerUnavailable, exec_container_cmd
 from sima_cli.sdk.neat import (
+    _code_ui_token_cache_path,
     _ensure_certificates,
     _generate_self_signed_cert,
     _install_mkcert,
@@ -1580,20 +1581,32 @@ table ip6 nm-shared-enx6c1ff720d573 {
             key_file = Path(tmpdir) / ".sdk-latest" / "sdk-cert" / "neat-sdk-key.pem"
             with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
                  patch("sima_cli.sdk.neat._ensure_certificates", return_value=(cert_file, key_file)), \
-                 patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="10.0.0.76"):
+                 patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="10.0.0.76"), \
+                 patch.dict(os.environ, {"SIMA_CLI_HOME": str(Path(tmpdir) / ".sima-cli")}):
                 config = prepare_neat_container_run(tmpdir, "sdk-latest", yes_to_all=True, noninteractive=True)
+                token_cache_path = _code_ui_token_cache_path()
 
             port_map_path = Path(config.port_map_host_path)
             self.assertTrue(port_map_path.exists())
+            self.assertTrue(token_cache_path.exists())
+            self.assertEqual(token_cache_path.stat().st_mode & 0o777, 0o600)
             self.assertIn("insight-config", config.config_host_dir)
             self.assertIn("sdk-cert", config.cert_host_dir)
             self.assertEqual(config.port_map["schema"], "sima.neat.port-map.v1")
             self.assertEqual(config.port_map["cert"]["certFile"], "/sdk-cert/neat-sdk.pem")
             self.assertEqual(config.webrtc_host_ip, "10.0.0.76")
             self.assertTrue(config.code_ui_token)
-            self.assertEqual(config.port_map["codeUI"]["token"], config.code_ui_token)
+            self.assertNotIn("token", config.port_map["codeUI"])
             persisted_port_map = json.loads(port_map_path.read_text(encoding="utf-8"))
-            self.assertEqual(persisted_port_map["codeUI"]["token"], config.code_ui_token)
+            self.assertNotIn("token", persisted_port_map["codeUI"])
+            token_cache = json.loads(token_cache_path.read_text(encoding="utf-8"))
+            cached_code_ui = token_cache["containers"]["sdk-latest"]["codeUI"]
+            self.assertEqual(cached_code_ui["host"], config.port_map["codeUI"]["host"])
+            self.assertEqual(cached_code_ui["token"], config.code_ui_token)
+            self.assertEqual(
+                cached_code_ui["url"],
+                f"http://localhost:{config.port_map['codeUI']['host']}/?tkn={config.code_ui_token}",
+            )
 
     def test_prepare_neat_container_run_accepts_no_insight(self):
         with TemporaryDirectory() as tmpdir:

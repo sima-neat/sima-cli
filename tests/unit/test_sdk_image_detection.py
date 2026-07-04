@@ -41,6 +41,7 @@ from sima_cli.sdk.neat import (
     allocate_neat_ports,
     is_docker_port_collision_error,
     prepare_neat_container_run,
+    print_neat_setup_summary,
     reserved_ports_from_neat_port_map,
 )
 from sima_cli.sdk.utils import (
@@ -1824,6 +1825,32 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn(("udp", 18079), reserved)
         self.assertNotIn(("udp", 17999), reserved)
         self.assertNotIn(("udp", 18080), reserved)
+
+    def test_print_neat_setup_summary_includes_remote_access_hint(self):
+        config = NeatRunConfig(
+            port_map={
+                "schema": "sima.neat.port-map.v1",
+                "mainUI": {"protocol": "tcp", "host": 24031, "container": 9900},
+                "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+            },
+            port_args=[],
+            config_host_dir="/tmp/insight-config",
+            cert_host_dir="/tmp/sdk-cert",
+            port_map_host_path="/tmp/insight-config/port-map.json",
+            cert_file_host_path="/tmp/sdk-cert/neat-sdk.pem",
+            key_file_host_path="/tmp/sdk-cert/neat-sdk-key.pem",
+            webrtc_host_ip="",
+            code_ui_token="code-token",
+        )
+
+        with patch("builtins.print") as mock_print:
+            print_neat_setup_summary(config)
+
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn("codeUI:      https://localhost:20786/?tkn=code-token&folder=/workspace", printed)
+        self.assertIn("codeUIHttp:  http://localhost:21333", printed)
+        self.assertIn("remote:      replace localhost with this machine's IP or DNS name when connecting remotely", printed)
 
     def test_start_neat_container_mounts_workspace_directly(self):
         with TemporaryDirectory() as tmpdir:

@@ -828,6 +828,7 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         print(f"   codeUI:      {code_url}")
         if "codeUIHttps" in port_map:
             print(f"   codeUIHttp:  http://localhost:{port_map['codeUI']['host']}")
+        print("   remote:      replace localhost with this machine's IP or DNS name when connecting remotely")
     if "videoUI" in port_map:
         print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")
     if "webSSH" in port_map:

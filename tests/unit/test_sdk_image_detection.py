@@ -2782,6 +2782,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'openai.chatgpt-*'", install_cmd[-1])
         self.assertIn("chown -R 1000:1000 /home/docker/.openvscode-server/extensions", install_cmd[-1])
         self.assertIn("extensions.supportNodeGlobalNavigator", install_cmd[-1])
+        self.assertIn("/home/docker/.openvscode-server/data/User/settings.json", install_cmd[-1])
+        self.assertIn("/home/docker/.openvscode-server/data/Machine/settings.json", install_cmd[-1])
         self.assertNotIn("codexViewContainer", install_cmd[-1])
         self.assertNotIn("secondarySidebar", install_cmd[-1])
         self.assertIn("supervisorctl restart openvscode-server", install_cmd[-1])

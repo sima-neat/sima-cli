@@ -995,6 +995,35 @@ def ensure_codex_vscode_extension_installed(
     user_settings = f"{home_directory}/.openvscode-server/data/User/settings.json"
     machine_settings = f"{home_directory}/.openvscode-server/data/Machine/settings.json"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
+    user_extension_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"export USER={shlex.quote(login_name)}; "
+        f"export LOGNAME={shlex.quote(login_name)}; "
+        f"mkdir -p {shlex.quote(extensions_dir)}; "
+        f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+        f"--list-extensions 2>/dev/null | grep -Fxq {shlex.quote(extension_id)}; then "
+        f"echo 'Codex extension already installed: {shlex.quote(extension_id)}'; "
+        "else "
+        f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+        f"--install-extension {shlex.quote(extension_id)} --force --accept-server-license-terms; "
+        "fi; "
+        f"mkdir -p {shlex.quote(os.path.dirname(user_settings))} {shlex.quote(os.path.dirname(machine_settings))}; "
+        "python3 - <<'PY'\n"
+        "import json\n"
+        f"paths = [{user_settings!r}, {machine_settings!r}]\n"
+        "for path in paths:\n"
+        "    try:\n"
+        "        with open(path, 'r', encoding='utf-8') as handle:\n"
+        "            data = json.load(handle)\n"
+        "    except Exception:\n"
+        "        data = {}\n"
+        "    data['extensions.supportNodeGlobalNavigator'] = True\n"
+        "    with open(path, 'w', encoding='utf-8') as handle:\n"
+        "        json.dump(data, handle, indent=2, sort_keys=True)\n"
+        "        handle.write('\\n')\n"
+        "PY\n"
+    )
     install_script = (
         "set -e; "
         f"export HOME={shlex.quote(home_directory)}; "
@@ -1004,37 +1033,7 @@ def ensure_codex_vscode_extension_installed(
         f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true; "
         f"mkdir -p {shlex.quote(extensions_dir)}; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(extensions_dir)} 2>/dev/null || true; "
-        f"su -s /bin/bash {shlex.quote(login_name)} -c "
-        + shlex.quote(
-            "set -e; "
-            f"export HOME={shlex.quote(home_directory)}; "
-            f"export USER={shlex.quote(login_name)}; "
-            f"export LOGNAME={shlex.quote(login_name)}; "
-            f"mkdir -p {shlex.quote(extensions_dir)}; "
-            f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-            f"--list-extensions 2>/dev/null | grep -Fxq {shlex.quote(extension_id)}; then "
-            f"echo 'Codex extension already installed: {shlex.quote(extension_id)}'; "
-            "else "
-            f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-            f"--install-extension {shlex.quote(extension_id)} --force --accept-server-license-terms; "
-            "fi; "
-            f"mkdir -p {shlex.quote(os.path.dirname(user_settings))} {shlex.quote(os.path.dirname(machine_settings))}; "
-            "python3 - <<'PY'\n"
-            "import json\n"
-            f"paths = [{user_settings!r}, {machine_settings!r}]\n"
-            "for path in paths:\n"
-            "    try:\n"
-            "        with open(path, 'r', encoding='utf-8') as handle:\n"
-            "            data = json.load(handle)\n"
-            "    except Exception:\n"
-            "        data = {}\n"
-            "    data['extensions.supportNodeGlobalNavigator'] = True\n"
-            "    with open(path, 'w', encoding='utf-8') as handle:\n"
-            "        json.dump(data, handle, indent=2, sort_keys=True)\n"
-            "        handle.write('\\n')\n"
-            "PY\n"
-        )
-        + "; "
+        f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_extension_script)}; "
         "if command -v supervisorctl >/dev/null 2>&1; then "
         "supervisorctl restart openvscode-server >/dev/null 2>&1 || true; "
         "fi"
@@ -1448,8 +1447,8 @@ def configure_container(
         ensure_codex_vscode_extension_installed(
             sdk_container_name,
             login_name,
-            auto_install=_env_truthy(CODEX_EXTENSION_INSTALL_ENV),
-            allow_prompt=not noninteractive,
+            auto_install=(noninteractive or yes_to_all or _env_truthy(CODEX_EXTENSION_INSTALL_ENV)),
+            allow_prompt=not (noninteractive or yes_to_all),
             uid=uid,
             gid=gid,
         )

@@ -179,6 +179,7 @@ def allocate_neat_ports(
         rtsp_tcp = _allocate_single_port(8554, "tcp", reserved)
         main_ui = _allocate_single_port(9900, "tcp", reserved)
         code_ui = _allocate_single_port(9999, "tcp", reserved)
+        code_ui_https = _allocate_single_port(10000, "tcp", reserved)
         video_ui = _allocate_single_port(8081, "tcp", reserved)
         video_udp_start, video_udp_end = _allocate_port_range(9000, 9079, "udp", reserved)
         metadata_udp_start, metadata_udp_end = _allocate_port_range(9100, 9179, "udp", reserved)
@@ -195,6 +196,7 @@ def allocate_neat_ports(
             {
                 "mainUI": {"protocol": "tcp", "host": main_ui, "container": 9900},
                 "codeUI": {"protocol": "tcp", "host": code_ui, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": code_ui_https, "container": 10000, "scheme": "https"},
                 "videoUI": {"protocol": "tcp", "host": video_ui, "container": 8081},
                 "webSSH": {"protocol": "tcp", "host": web_ssh, "container": 8022},
                 "rtsp": {
@@ -228,6 +230,7 @@ def allocate_neat_ports(
                 f"{web_ssh}:8022/tcp",
                 f"{main_ui}:9900/tcp",
                 f"{code_ui}:9999/tcp",
+                f"{code_ui_https}:10000/tcp",
                 f"{video_ui}:8081/tcp",
                 f"{rtsp_tcp}:8554/tcp",
                 f"{video_udp_start}-{video_udp_end}:9000-9079/udp",
@@ -673,7 +676,7 @@ def _read_code_ui_token_cache() -> Dict:
     return data if isinstance(data, dict) else {}
 
 
-def _write_code_ui_token_cache(container_name: str, host_port: int, token: str) -> Path:
+def _write_code_ui_token_cache(container_name: str, base_url: str, token: str) -> Path:
     cache_dir = _sima_cli_home()
     cache_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -686,11 +689,12 @@ def _write_code_ui_token_cache(container_name: str, host_port: int, token: str) 
     if not isinstance(entries, dict):
         entries = {}
         cache["containers"] = entries
+    host_port = int(base_url.rsplit(":", 1)[1])
     entries[container_name] = {
         "codeUI": {
             "host": host_port,
             "token": token,
-            "url": f"http://localhost:{host_port}/?tkn={token}&folder=/workspace",
+            "url": f"{base_url}/?tkn={token}&folder=/workspace",
         },
         "updated_at": int(time.time()),
     }
@@ -768,7 +772,11 @@ def prepare_neat_container_run(
     code_ui = port_map.get("codeUI")
     if isinstance(code_ui, dict):
         code_ui_token = _generate_code_ui_token()
-        _write_code_ui_token_cache(container_name, int(code_ui["host"]), code_ui_token)
+        code_ui_https = port_map.get("codeUIHttps")
+        code_ui_url = f"http://localhost:{int(code_ui['host'])}"
+        if isinstance(code_ui_https, dict):
+            code_ui_url = f"https://localhost:{int(code_ui_https['host'])}"
+        _write_code_ui_token_cache(container_name, code_ui_url, code_ui_token)
     port_map_path = _write_port_map(config_dir, port_map)
     return NeatRunConfig(
         port_map=port_map,
@@ -790,6 +798,11 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         docker_cmd.extend(["-e", f"CONTAINER_HOST_IP={config.webrtc_host_ip}"])
     if config.code_ui_token:
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_TOKEN={config.code_ui_token}"])
+    if config.cert_host_dir:
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT={config.port_map['cert']['certFile']}"])
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT_KEY={config.port_map['cert']['keyFile']}"])
+        if "codeUIHttps" in config.port_map:
+            docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_HTTPS_PORT={config.port_map['codeUIHttps']['container']}"])
     for mapping in config.port_args:
         docker_cmd.extend(["-p", mapping])
     if config.config_host_dir:
@@ -804,11 +817,17 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
     if "mainUI" in port_map:
         print(f"   mainUI:      http://localhost:{port_map['mainUI']['host']}")
     if "codeUI" in port_map:
-        code_url = f"http://localhost:{port_map['codeUI']['host']}"
+        display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
+        if not isinstance(display_entry, dict):
+            display_entry = port_map["codeUI"]
+        scheme = display_entry.get("scheme", "http")
+        code_url = f"{scheme}://localhost:{display_entry['host']}"
         token = config.code_ui_token or port_map["codeUI"].get("token")
         if token:
             code_url = f"{code_url}/?tkn={token}&folder=/workspace"
         print(f"   codeUI:      {code_url}")
+        if "codeUIHttps" in port_map:
+            print(f"   codeUIHttp:  http://localhost:{port_map['codeUI']['host']}")
     if "videoUI" in port_map:
         print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")
     if "webSSH" in port_map:

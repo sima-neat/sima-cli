@@ -1484,6 +1484,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         self.assertEqual(port_map["mainUI"]["host"], 9900)
         self.assertEqual(port_map["codeUI"]["host"], 9999)
+        self.assertEqual(port_map["codeUIHttps"]["host"], 10000)
         self.assertEqual(port_map["videoUI"]["host"], 8081)
         self.assertEqual(port_map["webSSH"]["host"], 8022)
         self.assertEqual(port_map["rtsp"]["tcp"]["host"], 8554)
@@ -1496,6 +1497,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["webRTC"]["hostEnd"], 40199)
         self.assertIn("8022:8022/tcp", port_args)
         self.assertIn("9999:9999/tcp", port_args)
+        self.assertIn("10000:10000/tcp", port_args)
         self.assertIn("9000-9079:9000-9079/udp", port_args)
         self.assertIn("9100-9179:9100-9179/udp", port_args)
         self.assertIn("40000-40199:40000-40199/udp", port_args)
@@ -1595,6 +1597,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertIn("sdk-cert", config.cert_host_dir)
             self.assertEqual(config.port_map["schema"], "sima.neat.port-map.v1")
             self.assertEqual(config.port_map["cert"]["certFile"], "/sdk-cert/neat-sdk.pem")
+            self.assertEqual(config.port_map["codeUIHttps"]["scheme"], "https")
             self.assertEqual(config.webrtc_host_ip, "10.0.0.76")
             self.assertTrue(config.code_ui_token)
             self.assertNotIn("token", config.port_map["codeUI"])
@@ -1602,11 +1605,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertNotIn("token", persisted_port_map["codeUI"])
             token_cache = json.loads(token_cache_path.read_text(encoding="utf-8"))
             cached_code_ui = token_cache["containers"]["sdk-latest"]["codeUI"]
-            self.assertEqual(cached_code_ui["host"], config.port_map["codeUI"]["host"])
+            self.assertEqual(cached_code_ui["host"], config.port_map["codeUIHttps"]["host"])
             self.assertEqual(cached_code_ui["token"], config.code_ui_token)
             self.assertEqual(
                 cached_code_ui["url"],
-                f"http://localhost:{config.port_map['codeUI']['host']}/?tkn={config.code_ui_token}&folder=/workspace",
+                f"https://localhost:{config.port_map['codeUIHttps']['host']}/?tkn={config.code_ui_token}&folder=/workspace",
             )
 
     def test_prepare_neat_container_run_accepts_no_insight(self):
@@ -1800,6 +1803,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             "schema": "sima.neat.port-map.v1",
             "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
             "codeUI": {"protocol": "tcp", "host": 9999, "container": 9999},
+            "codeUIHttps": {"protocol": "tcp", "host": 10000, "container": 10000, "scheme": "https"},
             "videoUDP": {
                 "protocol": "udp",
                 "containerStart": 9000,
@@ -1814,6 +1818,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         self.assertIn(("tcp", 9900), reserved)
         self.assertIn(("tcp", 9999), reserved)
+        self.assertIn(("tcp", 10000), reserved)
         self.assertIn(("tcp", 8554), reserved)
         self.assertIn(("udp", 18000), reserved)
         self.assertIn(("udp", 18079), reserved)
@@ -1827,6 +1832,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     "schema": "sima.neat.port-map.v1",
                     "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
                     "codeUI": {"protocol": "tcp", "host": 9999, "container": 9999},
+                    "codeUIHttps": {"protocol": "tcp", "host": 10000, "container": 10000, "scheme": "https"},
                     "videoUI": {"protocol": "tcp", "host": 8081, "container": 8081},
                     "webSSH": {"protocol": "tcp", "host": 8022, "container": 8022},
                     "rtsp": {"tcp": {"host": 8554, "container": 8554}},
@@ -1838,6 +1844,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 port_args=[
                     "9900:9900/tcp",
                     "9999:9999/tcp",
+                    "10000:10000/tcp",
                     "8081:8081/tcp",
                     "8022:8022/tcp",
                     "8554:8554/tcp",
@@ -1883,10 +1890,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/devuser/.openvscode-server/extensions", docker_cmd)
         self.assertIn("OPENVSCODE_WORKSPACE=/workspace", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_TOKEN=code-token", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_CERT=/sdk-cert/neat-sdk.pem", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_CERT_KEY=/sdk-cert/neat-sdk-key.pem", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_HTTPS_PORT=10000", docker_cmd)
         self.assertIn(f"{tmpdir}/.ghcr.io-sima-neat-sdk-feature-devkit-sync-latest/logs/supervisor:/var/log/supervisor", docker_cmd)
         for mapping in (
             "9900:9900/tcp",
             "9999:9999/tcp",
+            "10000:10000/tcp",
             "8081:8081/tcp",
             "8022:8022/tcp",
             "8554:8554/tcp",
@@ -2802,6 +2813,23 @@ table ip6 nm-shared-enx6c1ff720d573 {
             configure_container("container", minimal=True)
 
         codex_extension.assert_not_called()
+
+    def test_configure_container_yes_to_all_auto_installs_codex_extension(self):
+        with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
+             patch("sima_cli.sdk.utils.run_command"), \
+             patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
+             patch("sima_cli.sdk.utils.ensure_sima_cli_installed"), \
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed"), \
+             patch("sima_cli.sdk.utils._sync_codex_skills"), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks"), \
+             patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed") as codex_extension:
+            from sima_cli.sdk.utils import configure_container
+
+            configure_container("container", yes_to_all=True)
+
+        codex_extension.assert_called_once()
+        self.assertTrue(codex_extension.call_args.kwargs["auto_install"])
+        self.assertFalse(codex_extension.call_args.kwargs["allow_prompt"])
 
     def test_sudoers_drop_in_uses_sudoers_d_without_replacing_base_file(self):
         script = _sudoers_drop_in_script("ji.fan")

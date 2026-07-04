@@ -1544,6 +1544,7 @@ def start_docker_container(
         )
 
         base_docker_cmd = list(docker_cmd)
+        neat_run_config = None
         last_result = None
         reserved_ports = set()
         for attempt in range(1, NEAT_DOCKER_RETRY_LIMIT + 1):
@@ -1565,7 +1566,6 @@ def start_docker_container(
             if result.returncode == 0:
                 if result.stdout:
                     print(result.stdout.strip())
-                print_neat_setup_summary(neat_run_config)
                 break
 
             error_text = "\n".join(part for part in [result.stdout, result.stderr] if part)
@@ -1619,6 +1619,9 @@ def start_docker_container(
 
     if devkit_env and neat_sdk_image:
         bootstrap_devkit_container(container_name, devkit_env)
+
+    if neat_sdk_image and neat_run_config is not None:
+        print_neat_setup_summary(neat_run_config)
 
     return container_name
 

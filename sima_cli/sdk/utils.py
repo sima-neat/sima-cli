@@ -1471,6 +1471,7 @@ def start_docker_container(
             "--label",
             f"devcontainer.metadata={_devcontainer_metadata_label(remote_user)}",
         ])
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_USER={remote_user}"])
         docker_cmd.extend(["-v", f"{workspace}:/workspace"])
 
     # ─────────────────────────────────────────────

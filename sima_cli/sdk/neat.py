@@ -173,6 +173,7 @@ def allocate_neat_ports(
         web_ssh = _allocate_single_port(8022, "tcp", reserved)
         rtsp_tcp = _allocate_single_port(8554, "tcp", reserved)
         main_ui = _allocate_single_port(9900, "tcp", reserved)
+        code_ui = _allocate_single_port(9999, "tcp", reserved)
         video_ui = _allocate_single_port(8081, "tcp", reserved)
         video_udp_start, video_udp_end = _allocate_port_range(9000, 9079, "udp", reserved)
         metadata_udp_start, metadata_udp_end = _allocate_port_range(9100, 9179, "udp", reserved)
@@ -188,6 +189,7 @@ def allocate_neat_ports(
         port_map.update(
             {
                 "mainUI": {"protocol": "tcp", "host": main_ui, "container": 9900},
+                "codeUI": {"protocol": "tcp", "host": code_ui, "container": 9999},
                 "videoUI": {"protocol": "tcp", "host": video_ui, "container": 8081},
                 "webSSH": {"protocol": "tcp", "host": web_ssh, "container": 8022},
                 "rtsp": {
@@ -220,6 +222,7 @@ def allocate_neat_ports(
             [
                 f"{web_ssh}:8022/tcp",
                 f"{main_ui}:9900/tcp",
+                f"{code_ui}:9999/tcp",
                 f"{video_ui}:8081/tcp",
                 f"{rtsp_tcp}:8554/tcp",
                 f"{video_udp_start}-{video_udp_end}:9000-9079/udp",
@@ -733,6 +736,8 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
     print("🔌 Neat SDK port map:")
     if "mainUI" in port_map:
         print(f"   mainUI:      http://localhost:{port_map['mainUI']['host']}")
+    if "codeUI" in port_map:
+        print(f"   codeUI:      http://localhost:{port_map['codeUI']['host']}")
     if "videoUI" in port_map:
         print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")
     if "webSSH" in port_map:

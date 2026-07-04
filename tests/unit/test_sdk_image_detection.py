@@ -1480,6 +1480,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             port_map, port_args = allocate_neat_ports()
 
         self.assertEqual(port_map["mainUI"]["host"], 9900)
+        self.assertEqual(port_map["codeUI"]["host"], 9999)
         self.assertEqual(port_map["videoUI"]["host"], 8081)
         self.assertEqual(port_map["webSSH"]["host"], 8022)
         self.assertEqual(port_map["rtsp"]["tcp"]["host"], 8554)
@@ -1491,6 +1492,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["webRTC"]["hostStart"], 40000)
         self.assertEqual(port_map["webRTC"]["hostEnd"], 40199)
         self.assertIn("8022:8022/tcp", port_args)
+        self.assertIn("9999:9999/tcp", port_args)
         self.assertIn("9000-9079:9000-9079/udp", port_args)
         self.assertIn("9100-9179:9100-9179/udp", port_args)
         self.assertIn("40000-40199:40000-40199/udp", port_args)
@@ -1500,6 +1502,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             port_map, port_args = allocate_neat_ports(no_insight=True)
 
         self.assertNotIn("mainUI", port_map)
+        self.assertNotIn("codeUI", port_map)
         self.assertNotIn("videoUI", port_map)
         self.assertNotIn("videoUDP", port_map)
         self.assertNotIn("metadataUDP", port_map)
@@ -1512,6 +1515,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertNotIn("8022", mapping)
             self.assertNotIn("8554", mapping)
             self.assertNotIn("9900", mapping)
+            self.assertNotIn("9999", mapping)
             self.assertNotIn("8081", mapping)
             self.assertNotIn("9000-9079", mapping)
             self.assertNotIn("9100-9179", mapping)
@@ -1600,6 +1604,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 )
 
             self.assertNotIn("mainUI", config.port_map)
+            self.assertNotIn("codeUI", config.port_map)
             self.assertNotIn("videoUI", config.port_map)
             self.assertNotIn("rtsp", config.port_map)
             self.assertNotIn("webSSH", config.port_map)
@@ -1775,6 +1780,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         port_map = {
             "schema": "sima.neat.port-map.v1",
             "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
+            "codeUI": {"protocol": "tcp", "host": 9999, "container": 9999},
             "videoUDP": {
                 "protocol": "udp",
                 "containerStart": 9000,
@@ -1788,6 +1794,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         reserved = reserved_ports_from_neat_port_map(port_map)
 
         self.assertIn(("tcp", 9900), reserved)
+        self.assertIn(("tcp", 9999), reserved)
         self.assertIn(("tcp", 8554), reserved)
         self.assertIn(("udp", 18000), reserved)
         self.assertIn(("udp", 18079), reserved)
@@ -1800,6 +1807,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 port_map={
                     "schema": "sima.neat.port-map.v1",
                     "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
+                    "codeUI": {"protocol": "tcp", "host": 9999, "container": 9999},
                     "videoUI": {"protocol": "tcp", "host": 8081, "container": 8081},
                     "webSSH": {"protocol": "tcp", "host": 8022, "container": 8022},
                     "rtsp": {"tcp": {"host": 8554, "container": 8554}},
@@ -1810,6 +1818,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 },
                 port_args=[
                     "9900:9900/tcp",
+                    "9999:9999/tcp",
                     "8081:8081/tcp",
                     "8022:8022/tcp",
                     "8554:8554/tcp",
@@ -1850,9 +1859,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
             'devcontainer.metadata=[{"remoteUser":"devuser","workspaceFolder":"/workspace"}]',
             docker_cmd,
         )
+        self.assertIn("OPENVSCODE_SERVER_USER=devuser", docker_cmd)
         self.assertIn(f"{tmpdir}/.ghcr.io-sima-neat-sdk-feature-devkit-sync-latest/logs/supervisor:/var/log/supervisor", docker_cmd)
         for mapping in (
             "9900:9900/tcp",
+            "9999:9999/tcp",
             "8081:8081/tcp",
             "8022:8022/tcp",
             "8554:8554/tcp",
@@ -1905,6 +1916,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("8022:8022/tcp", docker_cmd)
         self.assertNotIn("8554:8554/tcp", docker_cmd)
         self.assertNotIn("9900:9900/tcp", docker_cmd)
+        self.assertNotIn("9999:9999/tcp", docker_cmd)
         self.assertNotIn("8081:8081/tcp", docker_cmd)
         self.assertNotIn("9000-9079:9000-9079/udp", docker_cmd)
         self.assertNotIn("9100-9179:9100-9179/udp", docker_cmd)
@@ -2125,6 +2137,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 port_map={
                     "schema": "sima.neat.port-map.v1",
                     "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
+                    "codeUI": {"protocol": "tcp", "host": 9999, "container": 9999},
                     "videoUI": {"protocol": "tcp", "host": 8081, "container": 8081},
                     "webSSH": {"protocol": "tcp", "host": 8022, "container": 8022},
                     "rtsp": {"tcp": {"host": 8554, "container": 8554}},

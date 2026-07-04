@@ -58,6 +58,7 @@ from sima_cli.sdk.utils import (
     _prepare_log_host_dir,
     container_matches_sdk_keyword,
     ensure_model_sdk_extension_installed,
+    ensure_codex_vscode_extension_installed,
     extract_short_name,
     get_local_sima_images,
     get_workspace,
@@ -2736,6 +2737,62 @@ table ip6 nm-shared-enx6c1ff720d573 {
             "-lc",
             "cd /home/docker && sima-cli install gh:sima-neat/playbooks",
         ])
+
+    def test_codex_vscode_extension_skips_when_openvscode_missing(self):
+        missing_server = Mock(returncode=1)
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=missing_server) as run, \
+             patch("sima_cli.sdk.utils.yes_no_prompt") as prompt:
+            ensure_codex_vscode_extension_installed("container", "docker", auto_install=True)
+
+        self.assertEqual(run.call_count, 1)
+        prompt.assert_not_called()
+
+    def test_codex_vscode_extension_skips_when_user_declines(self):
+        server_available = Mock(returncode=0)
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=server_available) as run, \
+             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False) as prompt:
+            ensure_codex_vscode_extension_installed("container", "docker")
+
+        self.assertEqual(run.call_count, 1)
+        prompt.assert_called_once()
+
+    def test_codex_vscode_extension_auto_installs_without_prompt(self):
+        server_available = Mock(returncode=0)
+        install_result = Mock(returncode=0, stdout="installed\n", stderr="")
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, install_result]) as run, \
+             patch("sima_cli.sdk.utils.yes_no_prompt") as prompt:
+            ensure_codex_vscode_extension_installed(
+                "container",
+                "docker",
+                auto_install=True,
+                uid=1000,
+                gid=1000,
+            )
+
+        prompt.assert_not_called()
+        self.assertEqual(run.call_count, 2)
+        install_cmd = run.call_args_list[-1].args[0]
+        self.assertEqual(install_cmd[:5], ["docker", "exec", "-u", "root", "container"])
+        self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])
+        self.assertIn("chown -R 1000:1000 /opt/openvscode-server/extensions", install_cmd[-1])
+
+    def test_configure_container_skips_codex_extension_for_minimal(self):
+        with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
+             patch("sima_cli.sdk.utils.run_command"), \
+             patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
+             patch("sima_cli.sdk.utils.ensure_sima_cli_installed"), \
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed"), \
+             patch("sima_cli.sdk.utils._sync_codex_skills"), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks"), \
+             patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed") as codex_extension:
+            from sima_cli.sdk.utils import configure_container
+
+            configure_container("container", minimal=True)
+
+        codex_extension.assert_not_called()
 
     def test_sudoers_drop_in_uses_sudoers_d_without_replacing_base_file(self):
         script = _sudoers_drop_in_script("ji.fan")

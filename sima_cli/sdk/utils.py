@@ -38,6 +38,11 @@ SIMA_CLI_AUTH_CACHE_FILES = (
     ".sima-cli-cookies.txt",
     ".sima-cli-csrf.json",
 )
+OPENVSCODE_SERVER_BIN = "/opt/openvscode-server/bin/openvscode-server"
+OPENVSCODE_EXTENSIONS_DIR = "/opt/openvscode-server/extensions"
+CODEX_EXTENSION_DEFAULT_ID = "openai.chatgpt"
+CODEX_EXTENSION_ID_ENV = "SIMA_CLI_CODEX_EXTENSION_ID"
+CODEX_EXTENSION_INSTALL_ENV = "SIMA_CLI_INSTALL_CODEX_EXTENSION"
 
 def _devcontainer_metadata_label(remote_user: str, workspace_folder: str = "/workspace") -> str:
     """
@@ -779,6 +784,10 @@ def _docker_exec_interactive_prefix() -> List[str]:
     return ["docker", "exec", "-i"]
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _is_x86_platform() -> bool:
     machine = platform.machine().lower()
     return machine in {"x86_64", "amd64", "i386", "i686", "x86"}
@@ -936,6 +945,103 @@ def ensure_model_sdk_extension_installed(
         ]
     )
     print(f"✅ Model Compiler extension installed for SDK base version {base_version}.")
+
+
+def ensure_codex_vscode_extension_installed(
+    sdk_container_name: str,
+    login_name: str,
+    auto_install: bool = False,
+    allow_prompt: bool = True,
+    uid: int = None,
+    gid: int = None,
+) -> None:
+    """
+    Optionally install the Codex extension into browser VS Code.
+
+    Older SDK images do not include OpenVSCode. In that case this function is a
+    no-op so SDK setup remains backward compatible.
+    """
+    image_ref = _get_container_image_ref(sdk_container_name)
+    if not image_ref or not is_neat_sdk_image(image_ref):
+        return
+
+    server_check = subprocess.run(
+        ["docker", "exec", sdk_container_name, "test", "-x", OPENVSCODE_SERVER_BIN],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if server_check.returncode != 0:
+        if auto_install:
+            print("ℹ️  Browser VS Code is not available in this SDK image; skipping Codex extension install.")
+        return
+
+    extension_id = os.environ.get(CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID).strip()
+    if not extension_id:
+        print(f"ℹ️  {CODEX_EXTENSION_ID_ENV} is empty; skipping Codex extension install.")
+        return
+
+    if auto_install:
+        print("ℹ️  Auto-installing Codex extension for browser VS Code.")
+    elif allow_prompt:
+        if not yes_no_prompt("Install the Codex extension for browser VS Code now?", default_yes=False):
+            print("ℹ️  Skipping Codex extension install.")
+            return
+    else:
+        return
+
+    home_directory = f"/home/{login_name}"
+    owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
+    install_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"export USER={shlex.quote(login_name)}; "
+        f"export LOGNAME={shlex.quote(login_name)}; "
+        f"mkdir -p {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)}; "
+        f"chown -R {shlex.quote(owner)} {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)} 2>/dev/null || true; "
+        f"su -s /bin/bash {shlex.quote(login_name)} -c "
+        + shlex.quote(
+            "set -e; "
+            f"export HOME={shlex.quote(home_directory)}; "
+            f"export USER={shlex.quote(login_name)}; "
+            f"export LOGNAME={shlex.quote(login_name)}; "
+            f"mkdir -p {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)}; "
+            f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)} "
+            f"--list-extensions 2>/dev/null | grep -Fxq {shlex.quote(extension_id)}; then "
+            f"echo 'Codex extension already installed: {shlex.quote(extension_id)}'; "
+            "else "
+            f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)} "
+            f"--install-extension {shlex.quote(extension_id)} --force --accept-server-license-terms; "
+            "fi"
+        )
+    )
+
+    print(f"ℹ️  Installing Codex extension for browser VS Code: {extension_id}")
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-u",
+            "root",
+            sdk_container_name,
+            "bash",
+            "-lc",
+            install_script,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print("⚠️  Could not install Codex extension for browser VS Code; continuing SDK setup.")
+        details = (result.stderr or result.stdout or "").strip()
+        if details:
+            print(details)
+        return
+
+    if result.stdout:
+        print(result.stdout.strip())
+    print("✅ Codex extension installed for browser VS Code.")
 
 
 def _is_skills_enabled_image(image_ref: str) -> bool:
@@ -1315,6 +1421,14 @@ def configure_container(
         print("ℹ️  Skipping Neat coding agent playbook installation because --minimal was specified.")
     else:
         install_neat_playbooks(sdk_container_name, login_name)
+        ensure_codex_vscode_extension_installed(
+            sdk_container_name,
+            login_name,
+            auto_install=_env_truthy(CODEX_EXTENSION_INSTALL_ENV),
+            allow_prompt=not noninteractive,
+            uid=uid,
+            gid=gid,
+        )
 
     # ---- Optional Network & Syslog Configuration ----
     if configure_network:

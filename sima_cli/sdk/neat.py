@@ -3,6 +3,7 @@ import json
 import os
 import platform
 import random
+import secrets
 import shutil
 import socket
 import subprocess
@@ -23,6 +24,7 @@ NEAT_MEDIAMTX_RTSP_TRANSPORTS = "tcp"
 NEAT_WEBRTC_UDP_SEARCH_START = 40000
 NEAT_WEBRTC_UDP_SEARCH_END = 65535
 NEAT_WEBRTC_UDP_PORT_COUNT = 200
+OPENVSCODE_TOKEN_BYTES = 32
 
 
 @dataclass
@@ -35,6 +37,7 @@ class NeatRunConfig:
     cert_file_host_path: str
     key_file_host_path: str
     webrtc_host_ip: str = ""
+    code_ui_token: str = ""
 
 
 def _can_bind_tcp(port: int) -> bool:
@@ -645,6 +648,10 @@ def _write_port_map(config_dir: Path, port_map: Dict) -> Path:
     return path
 
 
+def _generate_code_ui_token() -> str:
+    return secrets.token_urlsafe(OPENVSCODE_TOKEN_BYTES)
+
+
 def reserved_ports_from_neat_port_map(port_map: Dict) -> set:
     reserved = set()
     for entry in port_map.values():
@@ -705,6 +712,11 @@ def prepare_neat_container_run(
         yes_to_all=yes_to_all,
         noninteractive=noninteractive,
     )
+    code_ui_token = ""
+    code_ui = port_map.get("codeUI")
+    if isinstance(code_ui, dict):
+        code_ui_token = _generate_code_ui_token()
+        code_ui["token"] = code_ui_token
     port_map_path = _write_port_map(config_dir, port_map)
     return NeatRunConfig(
         port_map=port_map,
@@ -715,6 +727,7 @@ def prepare_neat_container_run(
         cert_file_host_path=str(cert_file),
         key_file_host_path=str(key_file),
         webrtc_host_ip=webrtc_host_ip,
+        code_ui_token=code_ui_token,
     )
 
 
@@ -723,6 +736,8 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         docker_cmd.extend(["-e", f"MTX_RTSPTRANSPORTS={NEAT_MEDIAMTX_RTSP_TRANSPORTS}"])
     if config.webrtc_host_ip:
         docker_cmd.extend(["-e", f"CONTAINER_HOST_IP={config.webrtc_host_ip}"])
+    if config.code_ui_token:
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_TOKEN={config.code_ui_token}"])
     for mapping in config.port_args:
         docker_cmd.extend(["-p", mapping])
     if config.config_host_dir:
@@ -737,7 +752,11 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
     if "mainUI" in port_map:
         print(f"   mainUI:      http://localhost:{port_map['mainUI']['host']}")
     if "codeUI" in port_map:
-        print(f"   codeUI:      http://localhost:{port_map['codeUI']['host']}")
+        code_url = f"http://localhost:{port_map['codeUI']['host']}"
+        token = config.code_ui_token or port_map["codeUI"].get("token")
+        if token:
+            code_url = f"{code_url}/?t={token}"
+        print(f"   codeUI:      {code_url}")
     if "videoUI" in port_map:
         print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")
     if "webSSH" in port_map:

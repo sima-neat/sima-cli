@@ -1,3 +1,4 @@
+import json
 import os
 import socket
 import subprocess
@@ -1589,6 +1590,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertEqual(config.port_map["schema"], "sima.neat.port-map.v1")
             self.assertEqual(config.port_map["cert"]["certFile"], "/sdk-cert/neat-sdk.pem")
             self.assertEqual(config.webrtc_host_ip, "10.0.0.76")
+            self.assertTrue(config.code_ui_token)
+            self.assertEqual(config.port_map["codeUI"]["token"], config.code_ui_token)
+            persisted_port_map = json.loads(port_map_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted_port_map["codeUI"]["token"], config.code_ui_token)
 
     def test_prepare_neat_container_run_accepts_no_insight(self):
         with TemporaryDirectory() as tmpdir:
@@ -1832,6 +1837,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 cert_file_host_path=f"{tmpdir}/.ghcr.io-sima-neat-sdk-feature-devkit-sync-latest/sdk-cert/neat-sdk.pem",
                 key_file_host_path=f"{tmpdir}/.ghcr.io-sima-neat-sdk-feature-devkit-sync-latest/sdk-cert/neat-sdk-key.pem",
                 webrtc_host_ip="10.0.0.76",
+                code_ui_token="code-token",
             )
             docker_result = Mock(returncode=0, stdout="container-id\n", stderr="")
             with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
@@ -1860,6 +1866,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             docker_cmd,
         )
         self.assertIn("OPENVSCODE_SERVER_USER=devuser", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_TOKEN=code-token", docker_cmd)
         self.assertIn(f"{tmpdir}/.ghcr.io-sima-neat-sdk-feature-devkit-sync-latest/logs/supervisor:/var/log/supervisor", docker_cmd)
         for mapping in (
             "9900:9900/tcp",

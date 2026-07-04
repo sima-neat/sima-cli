@@ -39,6 +39,7 @@ SIMA_CLI_AUTH_CACHE_FILES = (
     ".sima-cli-csrf.json",
 )
 OPENVSCODE_SERVER_BIN = "/opt/openvscode-server/bin/openvscode-server"
+OPENVSCODE_LEGACY_EXTENSIONS_DIR = "/opt/openvscode-server/extensions"
 CODEX_EXTENSION_DEFAULT_ID = "openai.chatgpt"
 CODEX_EXTENSION_ID_ENV = "SIMA_CLI_CODEX_EXTENSION_ID"
 CODEX_EXTENSION_INSTALL_ENV = "SIMA_CLI_INSTALL_CODEX_EXTENSION"
@@ -997,6 +998,8 @@ def ensure_codex_vscode_extension_installed(
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
+        f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
+        f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true; "
         f"mkdir -p {shlex.quote(extensions_dir)}; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(extensions_dir)} 2>/dev/null || true; "
         f"su -s /bin/bash {shlex.quote(login_name)} -c "

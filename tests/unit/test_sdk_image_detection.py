@@ -2777,6 +2777,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         install_cmd = run.call_args_list[-1].args[0]
         self.assertEqual(install_cmd[:5], ["docker", "exec", "-u", "root", "container"])
         self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])
+        self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'openai.chatgpt-*'", install_cmd[-1])
         self.assertIn("chown -R 1000:1000 /home/docker/.openvscode-server/extensions", install_cmd[-1])
 
     def test_configure_container_skips_codex_extension_for_minimal(self):

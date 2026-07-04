@@ -2779,6 +2779,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])
         self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'openai.chatgpt-*'", install_cmd[-1])
         self.assertIn("chown -R 1000:1000 /home/docker/.openvscode-server/extensions", install_cmd[-1])
+        self.assertIn("workbench.secondarySideBar.defaultVisibility", install_cmd[-1])
+        self.assertIn("workbench.secondarySideBar.showLabels", install_cmd[-1])
 
     def test_configure_container_skips_codex_extension_for_minimal(self):
         with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \

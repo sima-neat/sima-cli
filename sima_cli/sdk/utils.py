@@ -1026,7 +1026,7 @@ def ensure_codex_vscode_extension_installed(
             "        data = json.load(handle)\n"
             "except Exception:\n"
             "    data = {}\n"
-            "data['extensions.supportNodeGlobalNavigator'] = False\n"
+            "data['extensions.supportNodeGlobalNavigator'] = True\n"
             "with open(path, 'w', encoding='utf-8') as handle:\n"
             "    json.dump(data, handle, indent=2, sort_keys=True)\n"
             "    handle.write('\\n')\n"

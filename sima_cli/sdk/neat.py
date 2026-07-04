@@ -755,7 +755,7 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         code_url = f"http://localhost:{port_map['codeUI']['host']}"
         token = config.code_ui_token or port_map["codeUI"].get("token")
         if token:
-            code_url = f"{code_url}/?t={token}"
+            code_url = f"{code_url}/?tkn={token}"
         print(f"   codeUI:      {code_url}")
     if "videoUI" in port_map:
         print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")

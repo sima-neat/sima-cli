@@ -39,7 +39,6 @@ SIMA_CLI_AUTH_CACHE_FILES = (
     ".sima-cli-csrf.json",
 )
 OPENVSCODE_SERVER_BIN = "/opt/openvscode-server/bin/openvscode-server"
-OPENVSCODE_EXTENSIONS_DIR = "/opt/openvscode-server/extensions"
 CODEX_EXTENSION_DEFAULT_ID = "openai.chatgpt"
 CODEX_EXTENSION_ID_ENV = "SIMA_CLI_CODEX_EXTENSION_ID"
 CODEX_EXTENSION_INSTALL_ENV = "SIMA_CLI_INSTALL_CODEX_EXTENSION"
@@ -991,26 +990,27 @@ def ensure_codex_vscode_extension_installed(
         return
 
     home_directory = f"/home/{login_name}"
+    extensions_dir = f"{home_directory}/.openvscode-server/extensions"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
     install_script = (
         "set -e; "
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
-        f"mkdir -p {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)}; "
-        f"chown -R {shlex.quote(owner)} {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)} 2>/dev/null || true; "
+        f"mkdir -p {shlex.quote(extensions_dir)}; "
+        f"chown -R {shlex.quote(owner)} {shlex.quote(extensions_dir)} 2>/dev/null || true; "
         f"su -s /bin/bash {shlex.quote(login_name)} -c "
         + shlex.quote(
             "set -e; "
             f"export HOME={shlex.quote(home_directory)}; "
             f"export USER={shlex.quote(login_name)}; "
             f"export LOGNAME={shlex.quote(login_name)}; "
-            f"mkdir -p {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)}; "
-            f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)} "
+            f"mkdir -p {shlex.quote(extensions_dir)}; "
+            f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
             f"--list-extensions 2>/dev/null | grep -Fxq {shlex.quote(extension_id)}; then "
             f"echo 'Codex extension already installed: {shlex.quote(extension_id)}'; "
             "else "
-            f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(OPENVSCODE_EXTENSIONS_DIR)} "
+            f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
             f"--install-extension {shlex.quote(extension_id)} --force --accept-server-license-terms; "
             "fi"
         )

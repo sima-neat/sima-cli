@@ -1017,6 +1017,10 @@ def ensure_codex_vscode_extension_installed(
             f"--install-extension {shlex.quote(extension_id)} --force --accept-server-license-terms; "
             "fi"
         )
+        + "; "
+        "if command -v supervisorctl >/dev/null 2>&1; then "
+        "supervisorctl restart openvscode-server >/dev/null 2>&1 || true; "
+        "fi"
     )
 
     print(f"ℹ️  Installing Codex extension for browser VS Code: {extension_id}")

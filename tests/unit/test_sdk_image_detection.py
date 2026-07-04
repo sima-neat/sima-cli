@@ -1826,7 +1826,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn(("udp", 17999), reserved)
         self.assertNotIn(("udp", 18080), reserved)
 
-    def test_print_neat_setup_summary_includes_remote_access_hint(self):
+    def test_print_neat_setup_summary_uses_table_with_remote_access_note(self):
         config = NeatRunConfig(
             port_map={
                 "schema": "sima.neat.port-map.v1",
@@ -1848,9 +1848,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
             print_neat_setup_summary(config)
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
-        self.assertIn("codeUI:      https://localhost:20786/?tkn=code-token&folder=/workspace", printed)
-        self.assertIn("codeUIHttp:  http://localhost:21333", printed)
-        self.assertIn("remote:      replace localhost with this machine's IP or DNS name when connecting remotely", printed)
+        self.assertIn("Name       | Endpoint / Value", printed)
+        self.assertIn("codeUI     | https://localhost:20786/?tkn=code-token&folder=/workspace", printed)
+        self.assertIn("codeUIHttp | http://localhost:21333", printed)
+        self.assertIn("Note: For remote access, replace 'localhost' in URLs with this machine's IP address or DNS name.", printed)
 
     def test_start_neat_container_mounts_workspace_directly(self):
         with TemporaryDirectory() as tmpdir:

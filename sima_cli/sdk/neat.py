@@ -798,11 +798,13 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         docker_cmd.extend(["-e", f"CONTAINER_HOST_IP={config.webrtc_host_ip}"])
     if config.code_ui_token:
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_TOKEN={config.code_ui_token}"])
-    if config.cert_host_dir:
-        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT={config.port_map['cert']['certFile']}"])
-        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT_KEY={config.port_map['cert']['keyFile']}"])
-        if "codeUIHttps" in config.port_map:
-            docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_HTTPS_PORT={config.port_map['codeUIHttps']['container']}"])
+    cert_config = config.port_map.get("cert")
+    if config.cert_host_dir and isinstance(cert_config, dict):
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT={cert_config['certFile']}"])
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT_KEY={cert_config['keyFile']}"])
+        code_ui_https = config.port_map.get("codeUIHttps")
+        if isinstance(code_ui_https, dict):
+            docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_HTTPS_PORT={code_ui_https['container']}"])
     for mapping in config.port_args:
         docker_cmd.extend(["-p", mapping])
     if config.config_host_dir:
@@ -813,9 +815,9 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
 
 def print_neat_setup_summary(config: NeatRunConfig) -> None:
     port_map = config.port_map
-    print("🔌 Neat SDK port map:")
+    rows = []
     if "mainUI" in port_map:
-        print(f"   mainUI:      http://localhost:{port_map['mainUI']['host']}")
+        rows.append(("mainUI", f"http://localhost:{port_map['mainUI']['host']}"))
     if "codeUI" in port_map:
         display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
         if not isinstance(display_entry, dict):
@@ -825,49 +827,60 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         token = config.code_ui_token or port_map["codeUI"].get("token")
         if token:
             code_url = f"{code_url}/?tkn={token}&folder=/workspace"
-        print(f"   codeUI:      {code_url}")
+        rows.append(("codeUI", code_url))
         if "codeUIHttps" in port_map:
-            print(f"   codeUIHttp:  http://localhost:{port_map['codeUI']['host']}")
-        print("   remote:      replace localhost with this machine's IP or DNS name when connecting remotely")
+            rows.append(("codeUIHttp", f"http://localhost:{port_map['codeUI']['host']}"))
     if "videoUI" in port_map:
-        print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")
+        rows.append(("videoUI", f"http://localhost:{port_map['videoUI']['host']}"))
     if "webSSH" in port_map:
-        print(f"   webSSH:      http://localhost:{port_map['webSSH']['host']}")
+        rows.append(("webSSH", f"http://localhost:{port_map['webSSH']['host']}"))
     if "rtsp" in port_map:
-        print(f"   rtsp:        rtsp://localhost:{port_map['rtsp']['tcp']['host']}")
+        rows.append(("rtsp", f"rtsp://localhost:{port_map['rtsp']['tcp']['host']}"))
     if "videoUDP" in port_map:
-        print(
-            "   videoUDP:    {}-{}/udp -> {}-{}/udp".format(
+        rows.append(
+            ("videoUDP", "{}-{}/udp -> {}-{}/udp".format(
                 port_map["videoUDP"]["hostStart"],
                 port_map["videoUDP"]["hostEnd"],
                 port_map["videoUDP"]["containerStart"],
                 port_map["videoUDP"]["containerEnd"],
-            )
+            ))
         )
     if "metadataUDP" in port_map:
-        print(
-            "   metadataUDP: {}-{}/udp -> {}-{}/udp".format(
+        rows.append(
+            ("metadataUDP", "{}-{}/udp -> {}-{}/udp".format(
                 port_map["metadataUDP"]["hostStart"],
                 port_map["metadataUDP"]["hostEnd"],
                 port_map["metadataUDP"]["containerStart"],
                 port_map["metadataUDP"]["containerEnd"],
-            )
+            ))
         )
     if "webRTC" in port_map:
-        print(
-            "   webRTC:      {}-{}/udp -> {}-{}/udp".format(
+        rows.append(
+            ("webRTC", "{}-{}/udp -> {}-{}/udp".format(
                 port_map["webRTC"]["hostStart"],
                 port_map["webRTC"]["hostEnd"],
                 port_map["webRTC"]["containerStart"],
                 port_map["webRTC"]["containerEnd"],
-            )
+            ))
         )
     if config.webrtc_host_ip:
-        print(f"   iceHost:     {config.webrtc_host_ip}")
+        rows.append(("iceHost", config.webrtc_host_ip))
     if config.port_map_host_path:
-        print(f"   config:      {config.port_map_host_path}")
+        rows.append(("config", config.port_map_host_path))
     if config.cert_host_dir:
-        print(f"   certs:       {config.cert_host_dir}")
+        rows.append(("certs", config.cert_host_dir))
+
+    print("🔌 Neat SDK port map:")
+    if not rows:
+        print("   No Neat SDK ports are mapped.")
+        return
+
+    name_width = max(len("Name"), *(len(name) for name, _ in rows))
+    print(f"   {'Name'.ljust(name_width)} | Endpoint / Value")
+    print(f"   {'-' * name_width}-+-{'-' * len('Endpoint / Value')}")
+    for name, value in rows:
+        print(f"   {name.ljust(name_width)} | {value}")
+    print("   Note: For remote access, replace 'localhost' in URLs with this machine's IP address or DNS name.")
 
 
 def is_docker_port_collision_error(error_text: str) -> bool:

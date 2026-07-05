@@ -1026,7 +1026,6 @@ def setup_and_start(
 
     if not start_only:
         console.print(Panel("🔧 SiMa.ai SDK Setup", border_style="cyan", expand=False))
-        ensure_simasdkbridge_network()
         syscheck(force_install=yes_to_all, noninteractive=noninteractive)
 
     images = get_local_sima_images()
@@ -1101,6 +1100,8 @@ def setup_and_start(
             container_name,
             yes_to_all=(yes_to_all or noninteractive),
         )
+        bridge_probe_image = img if not start_only and not skip_model_sdk and is_neat_sdk_image(img) else ""
+        ensure_simasdkbridge_network(probe_image=bridge_probe_image)
 
         if existing_container == None:
             # Get image configuration

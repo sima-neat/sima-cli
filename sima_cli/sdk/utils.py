@@ -1,6 +1,7 @@
 # utils.py
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 import hashlib
+import ipaddress
 import locale
 import os
 import sys
@@ -37,6 +38,12 @@ SIMA_CLI_AUTH_CACHE_FILES = (
     ".tokens.json",
     ".sima-cli-cookies.txt",
     ".sima-cli-csrf.json",
+)
+SIMA_SDK_BRIDGE_NETWORK = "simasdkbridge"
+SIMA_SDK_BRIDGE_SUBNET_CANDIDATES = (
+    "172.31.0.0/16",
+    "172.30.0.0/16",
+    "172.29.0.0/16",
 )
 
 def _devcontainer_metadata_label(remote_user: str, workspace_folder: str = "/workspace") -> str:
@@ -1371,47 +1378,250 @@ print(f'✅ Hash written to {{path}}/.hash → {{h}}')
 
     print(f"✅ Container '{sdk_container_name}' configured successfully.")
 
-def ensure_simasdkbridge_network():
+def _docker_run(args: List[str], **kwargs) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(args, text=True, **kwargs)
+    except FileNotFoundError as e:
+        raise RuntimeError("❌ Docker CLI was not found. Install Docker and rerun SDK setup.") from e
+
+
+def _docker_network_inspect(network_name: str) -> Optional[Dict]:
+    result = _docker_run(
+        ["docker", "network", "inspect", network_name],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        error_text = f"{result.stdout}\n{result.stderr}".lower()
+        if "no such network" in error_text or "not found" in error_text:
+            return None
+        raise RuntimeError(f"❌ Failed to inspect Docker network '{network_name}': {(result.stderr or result.stdout).strip()}")
+
+    try:
+        networks = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"❌ Docker returned invalid JSON while inspecting '{network_name}'.") from e
+
+    return networks[0] if networks else None
+
+
+def _docker_network_names() -> List[str]:
+    result = _docker_run(
+        ["docker", "network", "ls", "--format", "{{.Name}}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"❌ Failed to list Docker networks: {(result.stderr or result.stdout).strip()}")
+    return [name for name in result.stdout.splitlines() if name]
+
+
+def _docker_networks(exclude: str = "") -> List[Dict]:
+    names = [name for name in _docker_network_names() if name != exclude]
+    if not names:
+        return []
+
+    result = _docker_run(
+        ["docker", "network", "inspect", *names],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"❌ Failed to inspect Docker networks: {(result.stderr or result.stdout).strip()}")
+
+    try:
+        networks = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as e:
+        raise RuntimeError("❌ Docker returned invalid JSON while inspecting networks.") from e
+    return networks if isinstance(networks, list) else []
+
+
+def _docker_network_subnets(network: Dict) -> List[ipaddress.IPv4Network]:
+    subnets = []
+    for config in (network.get("IPAM", {}) or {}).get("Config", []) or []:
+        subnet = config.get("Subnet")
+        if not subnet:
+            continue
+        try:
+            parsed = ipaddress.ip_network(subnet, strict=False)
+        except ValueError:
+            continue
+        if isinstance(parsed, ipaddress.IPv4Network):
+            subnets.append(parsed)
+    return subnets
+
+
+def _docker_network_has_gateway(network: Dict) -> bool:
+    return any(
+        config.get("Gateway")
+        for config in (network.get("IPAM", {}) or {}).get("Config", []) or []
+    )
+
+
+def _simasdkbridge_attached_containers(network: Dict) -> List[str]:
+    containers = network.get("Containers") or {}
+    names = []
+    for container_id, details in containers.items():
+        names.append(details.get("Name") or container_id[:12])
+    return sorted(names)
+
+
+def _choose_simasdkbridge_subnet() -> str:
+    used_subnets = [
+        subnet
+        for network in _docker_networks(exclude=SIMA_SDK_BRIDGE_NETWORK)
+        for subnet in _docker_network_subnets(network)
+    ]
+    for candidate_text in SIMA_SDK_BRIDGE_SUBNET_CANDIDATES:
+        candidate = ipaddress.ip_network(candidate_text)
+        if not any(candidate.overlaps(used) for used in used_subnets):
+            return candidate_text
+    used = ", ".join(str(subnet) for subnet in used_subnets) or "none"
+    raise RuntimeError(
+        "❌ Could not choose a non-overlapping subnet for simasdkbridge. "
+        f"Used Docker subnets: {used}"
+    )
+
+
+def _validate_simasdkbridge_shape(network: Dict) -> str:
+    if network.get("Driver") != "bridge":
+        return f"driver is '{network.get('Driver')}', expected 'bridge'"
+    if not _docker_network_subnets(network):
+        return "missing IPv4 subnet"
+    if not _docker_network_has_gateway(network):
+        return "missing gateway"
+
+    current_subnets = _docker_network_subnets(network)
+    for other in _docker_networks(exclude=SIMA_SDK_BRIDGE_NETWORK):
+        for current in current_subnets:
+            for used in _docker_network_subnets(other):
+                if current.overlaps(used):
+                    return f"subnet {current} overlaps Docker network '{other.get('Name')}' ({used})"
+    return ""
+
+
+def _create_simasdkbridge_network() -> None:
+    subnet = _choose_simasdkbridge_subnet()
+    result = _docker_run(
+        [
+            "docker",
+            "network",
+            "create",
+            "--driver",
+            "bridge",
+            "--subnet",
+            subnet,
+            SIMA_SDK_BRIDGE_NETWORK,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"❌ Failed to create {SIMA_SDK_BRIDGE_NETWORK}: {(result.stderr or result.stdout).strip()}")
+    print(f"✅ '{SIMA_SDK_BRIDGE_NETWORK}' network created with subnet {subnet}.")
+
+
+def _remove_simasdkbridge_network() -> None:
+    result = _docker_run(
+        ["docker", "network", "rm", SIMA_SDK_BRIDGE_NETWORK],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        error_text = f"{result.stdout}\n{result.stderr}".lower()
+        if "no such network" in error_text or "not found" in error_text:
+            return
+        raise RuntimeError(f"❌ Failed to remove {SIMA_SDK_BRIDGE_NETWORK}: {(result.stderr or result.stdout).strip()}")
+
+
+def _repair_simasdkbridge_network(reason: str, network: Optional[Dict]) -> None:
+    if network:
+        attached = _simasdkbridge_attached_containers(network)
+        if attached:
+            containers = ", ".join(attached)
+            raise RuntimeError(
+                f"❌ '{SIMA_SDK_BRIDGE_NETWORK}' is invalid ({reason}), but containers are attached: {containers}. "
+                "Remove/recreate the SDK container, then rerun 'sima-cli sdk setup'."
+            )
+        print(f"⚙️ '{SIMA_SDK_BRIDGE_NETWORK}' is invalid ({reason}). Recreating it...")
+        _remove_simasdkbridge_network()
+    else:
+        print(f"⚙️ '{SIMA_SDK_BRIDGE_NETWORK}' network not found. Creating it now...")
+    _create_simasdkbridge_network()
+
+
+def _probe_simasdkbridge_network(image: str) -> bool:
+    probe = (
+        "python3 - <<'PY'\n"
+        "import socket\n"
+        "import urllib.request\n"
+        "socket.getaddrinfo('github.com', 443)\n"
+        "urllib.request.urlopen('https://github.com', timeout=8).read(1)\n"
+        "PY"
+    )
+    try:
+        result = _docker_run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                SIMA_SDK_BRIDGE_NETWORK,
+                "--entrypoint",
+                "/bin/sh",
+                image,
+                "-c",
+                probe,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0
+
+
+def ensure_simasdkbridge_network(probe_image: str = ""):
     """
-    Ensure that the 'simasdkbridge' Docker network exists.
-
-    This method:
-      - Lists all available Docker networks.
-      - If the network 'simasdkbridge' exists, it prints a confirmation.
-      - If not found, it creates the network silently.
-
-    Raises:
-        RuntimeError: If Docker command fails to run.
+    Ensure that the SDK Docker bridge exists and is usable before a container
+    is attached to it.
     """
     print("🔍 Checking SiMa SDK Bridge Network...")
 
-    try:
-        # List existing Docker networks
-        result = subprocess.run(
-            ["docker", "network", "ls", "--format", "{{.Name}}"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-            text=True
-        )
+    network = _docker_network_inspect(SIMA_SDK_BRIDGE_NETWORK)
+    if network is None:
+        _repair_simasdkbridge_network("missing", None)
+        network = _docker_network_inspect(SIMA_SDK_BRIDGE_NETWORK)
+        if network is None:
+            raise RuntimeError(f"❌ Docker created '{SIMA_SDK_BRIDGE_NETWORK}', but it could not be inspected.")
 
-        networks = result.stdout.splitlines()
+    reason = _validate_simasdkbridge_shape(network)
+    if reason:
+        _repair_simasdkbridge_network(reason, network)
+        network = _docker_network_inspect(SIMA_SDK_BRIDGE_NETWORK)
+        if network is None:
+            raise RuntimeError(f"❌ Docker recreated '{SIMA_SDK_BRIDGE_NETWORK}', but it could not be inspected.")
+        reason = _validate_simasdkbridge_shape(network)
+        if reason:
+            raise RuntimeError(f"❌ Docker recreated '{SIMA_SDK_BRIDGE_NETWORK}', but it is still invalid: {reason}")
 
-        # Check for simasdkbridge
-        if "simasdkbridge" in networks:
-            print("✅ SiMa SDK Bridge Network found.")
-        else:
-            print("⚙️ 'simasdkbridge' network not found. Creating it now...")
-            subprocess.run(
-                ["docker", "network", "create", "simasdkbridge"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=True
-            )
-            print("✅ 'simasdkbridge' network created successfully.")
+    if probe_image and is_neat_sdk_image(probe_image):
+        if not _probe_simasdkbridge_network(probe_image):
+            _repair_simasdkbridge_network("container network probe failed", network)
+            if not _probe_simasdkbridge_network(probe_image):
+                raise RuntimeError(
+                    f"❌ '{SIMA_SDK_BRIDGE_NETWORK}' was recreated, but containers still cannot reach the network. "
+                    "Run 'sima-cli sdk doctor network --collect' for diagnostics."
+                )
 
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"❌ Failed to check or create Docker network: {e.stderr.strip() if e.stderr else str(e)}")
+    print("✅ SiMa SDK Bridge Network is ready.")
 
 
 def start_docker_container(

@@ -1841,6 +1841,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "mainUI": {"protocol": "tcp", "host": 24031, "container": 9900},
                 "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
                 "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+                "videoUI": {"protocol": "tcp", "host": 20907, "container": 8081},
             },
             port_args=[],
             config_host_dir="/tmp/insight-config",
@@ -1857,8 +1858,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
         self.assertIn("Name       | Endpoint / Value", printed)
+        self.assertIn("mainUI     | https://10.0.0.23:24031", printed)
         self.assertIn("codeUI     | https://10.0.0.23:20786/?tkn=code-token&folder=/workspace", printed)
         self.assertIn("codeUIHttp | http://10.0.0.23:21333", printed)
+        self.assertIn("videoUI    | https://10.0.0.23:20907", printed)
         self.assertIn("Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.", printed)
 
     def test_print_neat_setup_summary_falls_back_to_localhost(self):
@@ -1908,7 +1911,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
         self.assertIn("mainUI", printed)
-        self.assertIn("http://10.0.0.23:24031", printed)
+        self.assertIn("https://10.0.0.23:24031", printed)
         self.assertNotIn("codeUI", printed)
         self.assertNotIn("codeUIHttp", printed)
 

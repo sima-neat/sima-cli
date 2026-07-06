@@ -818,8 +818,9 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
     port_map = config.port_map
     rows = []
     display_host = config.webrtc_host_ip or "localhost"
+    web_scheme = "https" if config.cert_host_dir else "http"
     if "mainUI" in port_map:
-        rows.append(("mainUI", f"http://{display_host}:{port_map['mainUI']['host']}"))
+        rows.append(("mainUI", f"{web_scheme}://{display_host}:{port_map['mainUI']['host']}"))
     if config.code_ui_supported and "codeUI" in port_map:
         display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
         if not isinstance(display_entry, dict):
@@ -833,7 +834,7 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         if "codeUIHttps" in port_map:
             rows.append(("codeUIHttp", f"http://{display_host}:{port_map['codeUI']['host']}"))
     if "videoUI" in port_map:
-        rows.append(("videoUI", f"http://{display_host}:{port_map['videoUI']['host']}"))
+        rows.append(("videoUI", f"{web_scheme}://{display_host}:{port_map['videoUI']['host']}"))
     if "webSSH" in port_map:
         rows.append(("webSSH", f"http://{display_host}:{port_map['webSSH']['host']}"))
     if "rtsp" in port_map:

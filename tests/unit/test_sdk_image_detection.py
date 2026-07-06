@@ -1849,9 +1849,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
         self.assertIn("Name       | Endpoint / Value", printed)
-        self.assertIn("codeUI     | https://localhost:20786/?tkn=code-token&folder=/workspace", printed)
-        self.assertIn("codeUIHttp | http://localhost:21333", printed)
-        self.assertIn("Note: For remote access, replace 'localhost' in URLs with this machine's IP address or DNS name.", printed)
+        self.assertIn("codeUI     | https://{host-ip}:20786/?tkn=code-token&folder=/workspace", printed)
+        self.assertIn("codeUIHttp | http://{host-ip}:21333", printed)
+        self.assertIn("Note: Replace {host-ip} with 127.0.0.1/localhost for local access, or this machine's external IP/DNS name for remote access.", printed)
 
     def test_start_neat_container_mounts_workspace_directly(self):
         with TemporaryDirectory() as tmpdir:
@@ -2797,7 +2797,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ensure_codex_vscode_extension_installed("container", "docker")
 
         self.assertEqual(run.call_count, 1)
-        prompt.assert_called_once()
+        prompt.assert_called_once_with("Do you want to install Claude and Codex VSCode Extension?", default_yes=False)
 
     def test_codex_vscode_extension_auto_installs_without_prompt(self):
         server_available = Mock(returncode=0)
@@ -2817,7 +2817,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_count, 2)
         install_cmd = run.call_args_list[-1].args[0]
         self.assertEqual(install_cmd[:5], ["docker", "exec", "-u", "root", "container"])
+        self.assertIn("--install-extension anthropic.claude-code", install_cmd[-1])
         self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])
+        self.assertIn("Installing Claude extension: anthropic.claude-code", install_cmd[-1])
+        self.assertIn("Installing Codex extension: openai.chatgpt", install_cmd[-1])
+        self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'anthropic.claude-code-*'", install_cmd[-1])
         self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'openai.chatgpt-*'", install_cmd[-1])
         self.assertIn("chown -R 1000:1000 /home/docker/.openvscode-server/extensions", install_cmd[-1])
         self.assertIn("extensions.supportNodeGlobalNavigator", install_cmd[-1])

@@ -816,26 +816,27 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
 def print_neat_setup_summary(config: NeatRunConfig) -> None:
     port_map = config.port_map
     rows = []
+    host_label = "{host-ip}"
     if "mainUI" in port_map:
-        rows.append(("mainUI", f"http://localhost:{port_map['mainUI']['host']}"))
+        rows.append(("mainUI", f"http://{host_label}:{port_map['mainUI']['host']}"))
     if "codeUI" in port_map:
         display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
         if not isinstance(display_entry, dict):
             display_entry = port_map["codeUI"]
         scheme = display_entry.get("scheme", "http")
-        code_url = f"{scheme}://localhost:{display_entry['host']}"
+        code_url = f"{scheme}://{host_label}:{display_entry['host']}"
         token = config.code_ui_token or port_map["codeUI"].get("token")
         if token:
             code_url = f"{code_url}/?tkn={token}&folder=/workspace"
         rows.append(("codeUI", code_url))
         if "codeUIHttps" in port_map:
-            rows.append(("codeUIHttp", f"http://localhost:{port_map['codeUI']['host']}"))
+            rows.append(("codeUIHttp", f"http://{host_label}:{port_map['codeUI']['host']}"))
     if "videoUI" in port_map:
-        rows.append(("videoUI", f"http://localhost:{port_map['videoUI']['host']}"))
+        rows.append(("videoUI", f"http://{host_label}:{port_map['videoUI']['host']}"))
     if "webSSH" in port_map:
-        rows.append(("webSSH", f"http://localhost:{port_map['webSSH']['host']}"))
+        rows.append(("webSSH", f"http://{host_label}:{port_map['webSSH']['host']}"))
     if "rtsp" in port_map:
-        rows.append(("rtsp", f"rtsp://localhost:{port_map['rtsp']['tcp']['host']}"))
+        rows.append(("rtsp", f"rtsp://{host_label}:{port_map['rtsp']['tcp']['host']}"))
     if "videoUDP" in port_map:
         rows.append(
             ("videoUDP", "{}-{}/udp -> {}-{}/udp".format(
@@ -880,7 +881,7 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
     print(f"   {'-' * name_width}-+-{'-' * len('Endpoint / Value')}")
     for name, value in rows:
         print(f"   {name.ljust(name_width)} | {value}")
-    print("   Note: For remote access, replace 'localhost' in URLs with this machine's IP address or DNS name.")
+    print("   Note: Replace {host-ip} with 127.0.0.1/localhost for local access, or this machine's external IP/DNS name for remote access.")
 
 
 def is_docker_port_collision_error(error_text: str) -> bool:

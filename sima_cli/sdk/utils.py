@@ -43,6 +43,8 @@ OPENVSCODE_LEGACY_EXTENSIONS_DIR = "/opt/openvscode-server/extensions"
 CODEX_EXTENSION_DEFAULT_ID = "openai.chatgpt"
 CODEX_EXTENSION_ID_ENV = "SIMA_CLI_CODEX_EXTENSION_ID"
 CODEX_EXTENSION_INSTALL_ENV = "SIMA_CLI_INSTALL_CODEX_EXTENSION"
+CLAUDE_EXTENSION_DEFAULT_ID = "anthropic.claude-code"
+CLAUDE_EXTENSION_ID_ENV = "SIMA_CLI_CLAUDE_EXTENSION_ID"
 
 def _devcontainer_metadata_label(remote_user: str, workspace_folder: str = "/workspace") -> str:
     """
@@ -956,7 +958,7 @@ def ensure_codex_vscode_extension_installed(
     gid: int = None,
 ) -> None:
     """
-    Optionally install the Codex extension into browser VS Code.
+    Optionally install Claude and Codex extensions into browser VS Code.
 
     Older SDK images do not include OpenVSCode. In that case this function is a
     no-op so SDK setup remains backward compatible.
@@ -973,19 +975,28 @@ def ensure_codex_vscode_extension_installed(
     )
     if server_check.returncode != 0:
         if auto_install:
-            print("ℹ️  Browser VS Code is not available in this SDK image; skipping Codex extension install.")
+            print("ℹ️  Browser VS Code is not available in this SDK image; skipping Claude and Codex extension install.")
         return
 
-    extension_id = os.environ.get(CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID).strip()
-    if not extension_id:
+    extensions = []
+    claude_extension_id = os.environ.get(CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID).strip()
+    codex_extension_id = os.environ.get(CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID).strip()
+    if claude_extension_id:
+        extensions.append(("Claude", claude_extension_id))
+    else:
+        print(f"ℹ️  {CLAUDE_EXTENSION_ID_ENV} is empty; skipping Claude extension install.")
+    if codex_extension_id:
+        extensions.append(("Codex", codex_extension_id))
+    else:
         print(f"ℹ️  {CODEX_EXTENSION_ID_ENV} is empty; skipping Codex extension install.")
+    if not extensions:
         return
 
     if auto_install:
-        print("ℹ️  Auto-installing Codex extension for browser VS Code.")
+        print("ℹ️  Auto-installing Claude and Codex extensions for browser VS Code.")
     elif allow_prompt:
-        if not yes_no_prompt("Install the Codex extension for browser VS Code now?", default_yes=False):
-            print("ℹ️  Skipping Codex extension install.")
+        if not yes_no_prompt("Do you want to install Claude and Codex VSCode Extension?", default_yes=False):
+            print("ℹ️  Skipping Claude and Codex extension install.")
             return
     else:
         return
@@ -995,19 +1006,33 @@ def ensure_codex_vscode_extension_installed(
     user_settings = f"{home_directory}/.openvscode-server/data/User/settings.json"
     machine_settings = f"{home_directory}/.openvscode-server/data/Machine/settings.json"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
+    install_steps = []
+    legacy_cleanup_steps = []
+    for label, extension_id in extensions:
+        quoted_extension_id = shlex.quote(extension_id)
+        install_steps.append(
+            f"echo 'Installing {label} extension: {extension_id}'; "
+            f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+            f"--list-extensions 2>/dev/null | grep -Fxq {quoted_extension_id}; then "
+            f"echo '{label} extension already installed: {extension_id}'; "
+            "else "
+            f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+            f"--install-extension {quoted_extension_id} --force --accept-server-license-terms; "
+            "fi"
+        )
+        legacy_cleanup_steps.append(
+            f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
+            f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true"
+        )
+
     user_extension_script = (
         "set -e; "
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
         f"mkdir -p {shlex.quote(extensions_dir)}; "
-        f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-        f"--list-extensions 2>/dev/null | grep -Fxq {shlex.quote(extension_id)}; then "
-        f"echo 'Codex extension already installed: {shlex.quote(extension_id)}'; "
-        "else "
-        f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-        f"--install-extension {shlex.quote(extension_id)} --force --accept-server-license-terms; "
-        "fi; "
+        + "; ".join(install_steps)
+        + "; "
         f"mkdir -p {shlex.quote(os.path.dirname(user_settings))} {shlex.quote(os.path.dirname(machine_settings))}; "
         "python3 - <<'PY'\n"
         "import json\n"
@@ -1029,8 +1054,8 @@ def ensure_codex_vscode_extension_installed(
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
-        f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
-        f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true; "
+        + "; ".join(legacy_cleanup_steps)
+        + "; "
         f"mkdir -p {shlex.quote(extensions_dir)}; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(extensions_dir)} 2>/dev/null || true; "
         f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_extension_script)}; "
@@ -1039,7 +1064,9 @@ def ensure_codex_vscode_extension_installed(
         "fi"
     )
 
-    print(f"ℹ️  Installing Codex extension for browser VS Code: {extension_id}")
+    print("ℹ️  Installing browser VS Code extensions:")
+    for label, extension_id in extensions:
+        print(f"   - {label}: {extension_id}")
     result = subprocess.run(
         [
             "docker",
@@ -1056,7 +1083,7 @@ def ensure_codex_vscode_extension_installed(
         check=False,
     )
     if result.returncode != 0:
-        print("⚠️  Could not install Codex extension for browser VS Code; continuing SDK setup.")
+        print("⚠️  Could not install Claude and Codex extensions for browser VS Code; continuing SDK setup.")
         details = (result.stderr or result.stdout or "").strip()
         if details:
             print(details)
@@ -1064,7 +1091,7 @@ def ensure_codex_vscode_extension_installed(
 
     if result.stdout:
         print(result.stdout.strip())
-    print("✅ Codex extension installed for browser VS Code.")
+    print("✅ Claude and Codex extensions installed for browser VS Code.")
 
 
 def _is_skills_enabled_image(image_ref: str) -> bool:

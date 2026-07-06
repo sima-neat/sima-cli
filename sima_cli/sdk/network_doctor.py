@@ -324,7 +324,7 @@ def port_specs_from_port_map(port_map: Optional[dict]) -> List[PortSpec]:
         return []
 
     specs: List[PortSpec] = []
-    for name in ("mainUI", "codeUI", "videoUI", "webSSH"):
+    for name in ("mainUI", "codeUI", "codeUIHttps", "videoUI", "webSSH"):
         entry = port_map.get(name)
         if not isinstance(entry, dict):
             continue

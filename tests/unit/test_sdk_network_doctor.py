@@ -27,6 +27,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
         port_map = {
             "mainUI": {"protocol": "tcp", "host": 19900, "container": 9900},
             "codeUI": {"protocol": "tcp", "host": 19999, "container": 9999},
+            "codeUIHttps": {"protocol": "tcp", "host": 20000, "container": 10000},
             "videoUI": {"protocol": "tcp", "host": 18081, "container": 8081},
             "rtsp": {"tcp": {"host": 18554, "container": 8554}},
             "videoUDP": {
@@ -42,6 +43,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
 
         self.assertIn(net.PortSpec("mainUI", "tcp", 19900, 19900, 9900, 9900), specs)
         self.assertIn(net.PortSpec("codeUI", "tcp", 19999, 19999, 9999, 9999), specs)
+        self.assertIn(net.PortSpec("codeUIHttps", "tcp", 20000, 20000, 10000, 10000), specs)
         self.assertIn(net.PortSpec("videoUI", "tcp", 18081, 18081, 8081, 8081), specs)
         self.assertIn(net.PortSpec("rtsp.tcp", "tcp", 18554, 18554, 8554, 8554), specs)
         self.assertIn(net.PortSpec("videoUDP", "udp", 19000, 19001, 9000, 9001), specs)

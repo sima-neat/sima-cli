@@ -85,6 +85,14 @@ ghcr.io/sima-neat/sdk-feature-devkit-sync:latest
 """
 
 
+def _last_docker_run_command(run_mock):
+    return next(
+        call.args[0]
+        for call in reversed(run_mock.call_args_list)
+        if call.args[0][:3] == ["docker", "run", "-t"]
+    )
+
+
 class TestSdkImageDetection(unittest.TestCase):
     def test_windows_port_check_handles_non_utf8_netstat_output(self):
         netstat_output = (
@@ -1876,6 +1884,34 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("codeUI     | https://localhost:20786/?tkn=code-token&folder=/workspace", printed)
         self.assertIn("Note: Use localhost for local access, or replace it with this machine's external IP/DNS name for remote access.", printed)
 
+    def test_print_neat_setup_summary_omits_code_ui_when_not_supported(self):
+        config = NeatRunConfig(
+            port_map={
+                "schema": "sima.neat.port-map.v1",
+                "mainUI": {"protocol": "tcp", "host": 24031, "container": 9900},
+                "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+            },
+            port_args=[],
+            config_host_dir="/tmp/insight-config",
+            cert_host_dir="/tmp/sdk-cert",
+            port_map_host_path="/tmp/insight-config/port-map.json",
+            cert_file_host_path="/tmp/sdk-cert/neat-sdk.pem",
+            key_file_host_path="/tmp/sdk-cert/neat-sdk-key.pem",
+            webrtc_host_ip="10.0.0.23",
+            code_ui_token="code-token",
+            code_ui_supported=False,
+        )
+
+        with patch("builtins.print") as mock_print:
+            print_neat_setup_summary(config)
+
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn("mainUI", printed)
+        self.assertIn("http://10.0.0.23:24031", printed)
+        self.assertNotIn("codeUI", printed)
+        self.assertNotIn("codeUIHttp", printed)
+
     def test_start_neat_container_mounts_workspace_directly(self):
         with TemporaryDirectory() as tmpdir:
             neat_config = NeatRunConfig(
@@ -1928,7 +1964,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     image="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest",
                 )
 
-        docker_cmd = run.call_args[0][0]
+        docker_cmd = _last_docker_run_command(run)
         self.assertNotIn("--user=1000:1000", docker_cmd)
         self.assertIn(f"{tmpdir}:/home/docker/sima-cli/", docker_cmd)
         self.assertIn(f"{tmpdir}:/workspace", docker_cmd)
@@ -1997,7 +2033,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 )
 
         self.assertTrue(prepare.call_args.kwargs["no_insight"])
-        docker_cmd = run.call_args[0][0]
+        docker_cmd = _last_docker_run_command(run)
         self.assertNotIn("8022:8022/tcp", docker_cmd)
         self.assertNotIn("8554:8554/tcp", docker_cmd)
         self.assertNotIn("9900:9900/tcp", docker_cmd)
@@ -2038,7 +2074,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         self.assertTrue(prepare.call_args.kwargs["no_insight"])
         self.assertTrue(configure.call_args.kwargs["minimal"])
-        docker_cmd = run.call_args[0][0]
+        docker_cmd = _last_docker_run_command(run)
         self.assertNotIn("/home/docker/.insight-config", docker_cmd)
         self.assertNotIn("/sdk-cert", docker_cmd)
 
@@ -2256,7 +2292,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     image=image,
                 )
 
-        docker_cmd = run.call_args[0][0]
+        docker_cmd = _last_docker_run_command(run)
         hostname_index = docker_cmd.index("--hostname") + 1
         self.assertEqual(docker_cmd[hostname_index], hostname)
         self.assertLessEqual(len(docker_cmd[hostname_index]), 63)
@@ -2277,6 +2313,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.configure_container"), \
                  patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=[first_config, second_config]) as prepare, \
                  patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils._container_openvscode_available", return_value=True), \
                  patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
                 start_docker_container(
                     uid=1000,
@@ -2290,7 +2327,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_count, 4)
         self.assertEqual(run.call_args_list[1][0][0][:3], ["docker", "inspect", "-f"])
         self.assertEqual(run.call_args_list[2][0][0], ["docker", "rm", "-f", "ghcr.io-sima-neat-sdk-feature-devkit-sync-latest"])
-        self.assertIn("19900:9900/tcp", run.call_args[0][0])
+        self.assertIn("19900:9900/tcp", _last_docker_run_command(run))
 
     def test_start_neat_container_excludes_failed_port_map_on_retry(self):
         with TemporaryDirectory() as tmpdir:
@@ -2350,6 +2387,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.configure_container"), \
                  patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=prepare_side_effect), \
                  patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils._container_openvscode_available", return_value=True), \
                  patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
                 start_docker_container(
                     uid=1000,
@@ -2362,7 +2400,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(prepare_reserved_args[0], set())
         self.assertIn(("udp", 9000), prepare_reserved_args[1])
         self.assertIn(("udp", 9079), prepare_reserved_args[1])
-        self.assertIn("18000-18079:9000-9079/udp", run.call_args[0][0])
+        self.assertIn("18000-18079:9000-9079/udp", _last_docker_run_command(run))
 
     def test_non_neat_container_does_not_prepare_neat_config(self):
         with TemporaryDirectory() as tmpdir:

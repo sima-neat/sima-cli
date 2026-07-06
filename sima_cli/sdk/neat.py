@@ -40,6 +40,7 @@ class NeatRunConfig:
     key_file_host_path: str
     webrtc_host_ip: str = ""
     code_ui_token: str = ""
+    code_ui_supported: bool = True
 
 
 def _can_bind_tcp(port: int) -> bool:
@@ -819,7 +820,7 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
     display_host = config.webrtc_host_ip or "localhost"
     if "mainUI" in port_map:
         rows.append(("mainUI", f"http://{display_host}:{port_map['mainUI']['host']}"))
-    if "codeUI" in port_map:
+    if config.code_ui_supported and "codeUI" in port_map:
         display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
         if not isinstance(display_entry, dict):
             display_entry = port_map["codeUI"]

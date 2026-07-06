@@ -1094,6 +1094,16 @@ def ensure_codex_vscode_extension_installed(
     print("✅ Claude and Codex extensions installed for browser VS Code.")
 
 
+def _container_openvscode_available(sdk_container_name: str) -> bool:
+    result = subprocess.run(
+        ["docker", "exec", sdk_container_name, "test", "-x", OPENVSCODE_SERVER_BIN],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def _is_skills_enabled_image(image_ref: str) -> bool:
     return is_neat_sdk_image(image_ref)
 
@@ -1787,6 +1797,7 @@ def start_docker_container(
         bootstrap_devkit_container(container_name, devkit_env)
 
     if neat_sdk_image and neat_run_config is not None:
+        neat_run_config.code_ui_supported = _container_openvscode_available(container_name)
         print_neat_setup_summary(neat_run_config)
 
     return container_name

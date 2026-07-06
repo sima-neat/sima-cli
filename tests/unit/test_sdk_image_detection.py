@@ -1826,7 +1826,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn(("udp", 17999), reserved)
         self.assertNotIn(("udp", 18080), reserved)
 
-    def test_print_neat_setup_summary_uses_table_with_remote_access_note(self):
+    def test_print_neat_setup_summary_uses_table_with_detected_host_ip(self):
         config = NeatRunConfig(
             port_map={
                 "schema": "sima.neat.port-map.v1",
@@ -1840,7 +1840,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             port_map_host_path="/tmp/insight-config/port-map.json",
             cert_file_host_path="/tmp/sdk-cert/neat-sdk.pem",
             key_file_host_path="/tmp/sdk-cert/neat-sdk-key.pem",
-            webrtc_host_ip="",
+            webrtc_host_ip="10.0.0.23",
             code_ui_token="code-token",
         )
 
@@ -1849,9 +1849,32 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
         self.assertIn("Name       | Endpoint / Value", printed)
-        self.assertIn("codeUI     | https://{host-ip}:20786/?tkn=code-token&folder=/workspace", printed)
-        self.assertIn("codeUIHttp | http://{host-ip}:21333", printed)
-        self.assertIn("Note: Replace {host-ip} with 127.0.0.1/localhost for local access, or this machine's external IP/DNS name for remote access.", printed)
+        self.assertIn("codeUI     | https://10.0.0.23:20786/?tkn=code-token&folder=/workspace", printed)
+        self.assertIn("codeUIHttp | http://10.0.0.23:21333", printed)
+        self.assertIn("Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.", printed)
+
+    def test_print_neat_setup_summary_falls_back_to_localhost(self):
+        config = NeatRunConfig(
+            port_map={
+                "schema": "sima.neat.port-map.v1",
+                "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+            },
+            port_args=[],
+            config_host_dir="",
+            cert_host_dir="/tmp/sdk-cert",
+            port_map_host_path="",
+            cert_file_host_path="",
+            key_file_host_path="",
+            code_ui_token="code-token",
+        )
+
+        with patch("builtins.print") as mock_print:
+            print_neat_setup_summary(config)
+
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn("codeUI     | https://localhost:20786/?tkn=code-token&folder=/workspace", printed)
+        self.assertIn("Note: Use localhost for local access, or replace it with this machine's external IP/DNS name for remote access.", printed)
 
     def test_start_neat_container_mounts_workspace_directly(self):
         with TemporaryDirectory() as tmpdir:

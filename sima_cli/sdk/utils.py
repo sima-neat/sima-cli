@@ -38,6 +38,13 @@ SIMA_CLI_AUTH_CACHE_FILES = (
     ".sima-cli-cookies.txt",
     ".sima-cli-csrf.json",
 )
+OPENVSCODE_SERVER_BIN = "/opt/openvscode-server/bin/openvscode-server"
+OPENVSCODE_LEGACY_EXTENSIONS_DIR = "/opt/openvscode-server/extensions"
+CODEX_EXTENSION_DEFAULT_ID = "openai.chatgpt"
+CODEX_EXTENSION_ID_ENV = "SIMA_CLI_CODEX_EXTENSION_ID"
+CODEX_EXTENSION_INSTALL_ENV = "SIMA_CLI_INSTALL_CODEX_EXTENSION"
+CLAUDE_EXTENSION_DEFAULT_ID = "anthropic.claude-code"
+CLAUDE_EXTENSION_ID_ENV = "SIMA_CLI_CLAUDE_EXTENSION_ID"
 
 def _devcontainer_metadata_label(remote_user: str, workspace_folder: str = "/workspace") -> str:
     """
@@ -779,6 +786,10 @@ def _docker_exec_interactive_prefix() -> List[str]:
     return ["docker", "exec", "-i"]
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _is_x86_platform() -> bool:
     machine = platform.machine().lower()
     return machine in {"x86_64", "amd64", "i386", "i686", "x86"}
@@ -936,6 +947,188 @@ def ensure_model_sdk_extension_installed(
         ]
     )
     print(f"✅ Model Compiler extension installed for SDK base version {base_version}.")
+
+
+def ensure_codex_vscode_extension_installed(
+    sdk_container_name: str,
+    login_name: str,
+    auto_install: bool = False,
+    allow_prompt: bool = True,
+    uid: int = None,
+    gid: int = None,
+) -> None:
+    """
+    Optionally install Neat, Claude, and Codex extensions into browser VS Code.
+
+    Older SDK images do not include OpenVSCode. In that case this function is a
+    no-op so SDK setup remains backward compatible.
+    """
+    image_ref = _get_container_image_ref(sdk_container_name)
+    if not image_ref or not is_neat_sdk_image(image_ref):
+        return
+
+    server_check = subprocess.run(
+        ["docker", "exec", sdk_container_name, "test", "-x", OPENVSCODE_SERVER_BIN],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if server_check.returncode != 0:
+        if auto_install:
+            print("ℹ️  Browser VS Code is not available in this SDK image; skipping browser VS Code extension install.")
+        return
+
+    neat_extension_target = "sdk/vscode-extension"
+    extensions = []
+    claude_extension_id = os.environ.get(CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID).strip()
+    codex_extension_id = os.environ.get(CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID).strip()
+    if claude_extension_id:
+        extensions.append(("Claude", claude_extension_id))
+    else:
+        print(f"ℹ️  {CLAUDE_EXTENSION_ID_ENV} is empty; skipping Claude extension install.")
+    if codex_extension_id:
+        extensions.append(("Codex", codex_extension_id))
+    else:
+        print(f"ℹ️  {CODEX_EXTENSION_ID_ENV} is empty; skipping Codex extension install.")
+
+    if auto_install:
+        print("ℹ️  Auto-installing Neat, Claude, and Codex extensions for browser VS Code.")
+    elif allow_prompt:
+        if not yes_no_prompt("Do you want to install SiMa Neat, Claude, and Codex VSCode Extensions?", default_yes=False):
+            print("ℹ️  Skipping browser VS Code extension install.")
+            return
+    else:
+        return
+
+    home_directory = f"/home/{login_name}"
+    extensions_dir = f"{home_directory}/.openvscode-server/extensions"
+    neat_extension_install_dir = f"{home_directory}/vscode-extension-installation"
+    user_settings = f"{home_directory}/.openvscode-server/data/User/settings.json"
+    machine_settings = f"{home_directory}/.openvscode-server/data/Machine/settings.json"
+    owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
+    install_steps = [
+        f"echo 'Installing SiMa Neat extension: {neat_extension_target}'; "
+        "SIMA_CLI_BIN=\"$(command -v sima-cli || true)\"; "
+        "if [ -z \"$SIMA_CLI_BIN\" ] && [ -x /opt/sima-cli/venv/bin/sima-cli ]; then "
+        "SIMA_CLI_BIN=/opt/sima-cli/venv/bin/sima-cli; "
+        "fi; "
+        "if [ -z \"$SIMA_CLI_BIN\" ]; then "
+        "echo 'sima-cli not found; cannot install SiMa Neat extension.' >&2; "
+        "exit 1; "
+        "fi; "
+        f"NEAT_EXTENSION_INSTALL_DIR={shlex.quote(neat_extension_install_dir)}; "
+        "mkdir -p \"$NEAT_EXTENSION_INSTALL_DIR\"; "
+        f"if SIMA_CLI_CHECK_FOR_UPDATE=0 SIMA_INSTALL_CONTEXT=1 \"$SIMA_CLI_BIN\" neat install "
+        f"--install-dir \"$NEAT_EXTENSION_INSTALL_DIR\" {shlex.quote(neat_extension_target)}; then "
+        "true; "
+        "elif [ -f \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\" ]; then "
+        "echo 'Installing downloaded SiMa Neat VSIX with OpenVSCode Server.'; "
+        f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+        "--install-extension \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\" "
+        "--force --accept-server-license-terms; "
+        "else "
+        "exit 1; "
+        "fi"
+    ]
+    legacy_cleanup_steps = []
+    for label, extension_id in extensions:
+        quoted_extension_id = shlex.quote(extension_id)
+        install_steps.append(
+            f"echo 'Installing {label} extension: {extension_id}'; "
+            f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+            f"--list-extensions 2>/dev/null | grep -Fxq {quoted_extension_id}; then "
+            f"echo '{label} extension already installed: {extension_id}'; "
+            "else "
+            f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+            f"--install-extension {quoted_extension_id} --force --accept-server-license-terms; "
+            "fi"
+        )
+        legacy_cleanup_steps.append(
+            f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
+            f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true"
+        )
+
+    user_extension_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"export USER={shlex.quote(login_name)}; "
+        f"export LOGNAME={shlex.quote(login_name)}; "
+        f"mkdir -p {shlex.quote(neat_extension_install_dir)}; "
+        f"mkdir -p {shlex.quote(extensions_dir)}; "
+        + "; ".join(install_steps)
+        + "; "
+        f"mkdir -p {shlex.quote(os.path.dirname(user_settings))} {shlex.quote(os.path.dirname(machine_settings))}; "
+        "python3 - <<'PY'\n"
+        "import json\n"
+        f"paths = [{user_settings!r}, {machine_settings!r}]\n"
+        "for path in paths:\n"
+        "    try:\n"
+        "        with open(path, 'r', encoding='utf-8') as handle:\n"
+        "            data = json.load(handle)\n"
+        "    except Exception:\n"
+        "        data = {}\n"
+        "    data['extensions.supportNodeGlobalNavigator'] = True\n"
+        "    with open(path, 'w', encoding='utf-8') as handle:\n"
+        "        json.dump(data, handle, indent=2, sort_keys=True)\n"
+        "        handle.write('\\n')\n"
+        "PY\n"
+    )
+    install_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"export USER={shlex.quote(login_name)}; "
+        f"export LOGNAME={shlex.quote(login_name)}; "
+        + "; ".join(legacy_cleanup_steps)
+        + "; "
+        f"mkdir -p {shlex.quote(neat_extension_install_dir)}; "
+        f"mkdir -p {shlex.quote(extensions_dir)}; "
+        f"chown -R {shlex.quote(owner)} {shlex.quote(neat_extension_install_dir)} 2>/dev/null || true; "
+        f"chown -R {shlex.quote(owner)} {shlex.quote(extensions_dir)} 2>/dev/null || true; "
+        f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_extension_script)}; "
+        "if command -v supervisorctl >/dev/null 2>&1; then "
+        "supervisorctl restart openvscode-server >/dev/null 2>&1 || true; "
+        "fi"
+    )
+
+    print("ℹ️  Installing browser VS Code extensions:")
+    print(f"   - SiMa Neat: {neat_extension_target}")
+    for label, extension_id in extensions:
+        print(f"   - {label}: {extension_id}")
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-u",
+            "root",
+            sdk_container_name,
+            "bash",
+            "-lc",
+            install_script,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print("⚠️  Could not install browser VS Code extensions; continuing SDK setup.")
+        details = (result.stderr or result.stdout or "").strip()
+        if details:
+            print(details)
+        return
+
+    if result.stdout:
+        print(result.stdout.strip())
+    print("✅ Neat, Claude, and Codex extensions installed for browser VS Code.")
+
+
+def _container_openvscode_available(sdk_container_name: str) -> bool:
+    result = subprocess.run(
+        ["docker", "exec", sdk_container_name, "test", "-x", OPENVSCODE_SERVER_BIN],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def _is_skills_enabled_image(image_ref: str) -> bool:
@@ -1315,6 +1508,14 @@ def configure_container(
         print("ℹ️  Skipping Neat coding agent playbook installation because --minimal was specified.")
     else:
         install_neat_playbooks(sdk_container_name, login_name)
+        ensure_codex_vscode_extension_installed(
+            sdk_container_name,
+            login_name,
+            auto_install=(noninteractive or yes_to_all or _env_truthy(CODEX_EXTENSION_INSTALL_ENV)),
+            allow_prompt=not (noninteractive or yes_to_all),
+            uid=uid,
+            gid=gid,
+        )
 
     # ---- Optional Network & Syslog Configuration ----
     if configure_network:
@@ -1471,6 +1672,9 @@ def start_docker_container(
             "--label",
             f"devcontainer.metadata={_devcontainer_metadata_label(remote_user)}",
         ])
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_USER={remote_user}"])
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/{remote_user}/.openvscode-server/extensions"])
+        docker_cmd.extend(["-e", "OPENVSCODE_WORKSPACE=/workspace"])
         docker_cmd.extend(["-v", f"{workspace}:/workspace"])
 
     # ─────────────────────────────────────────────
@@ -1543,6 +1747,7 @@ def start_docker_container(
         )
 
         base_docker_cmd = list(docker_cmd)
+        neat_run_config = None
         last_result = None
         reserved_ports = set()
         for attempt in range(1, NEAT_DOCKER_RETRY_LIMIT + 1):
@@ -1564,7 +1769,6 @@ def start_docker_container(
             if result.returncode == 0:
                 if result.stdout:
                     print(result.stdout.strip())
-                print_neat_setup_summary(neat_run_config)
                 break
 
             error_text = "\n".join(part for part in [result.stdout, result.stderr] if part)
@@ -1618,6 +1822,10 @@ def start_docker_container(
 
     if devkit_env and neat_sdk_image:
         bootstrap_devkit_container(container_name, devkit_env)
+
+    if neat_sdk_image and neat_run_config is not None:
+        neat_run_config.code_ui_supported = _container_openvscode_available(container_name)
+        print_neat_setup_summary(neat_run_config)
 
     return container_name
 

@@ -1,3 +1,4 @@
+import json
 import os
 import socket
 import subprocess
@@ -31,6 +32,7 @@ from sima_cli.sdk.install import (
 from sima_cli.sdk.commands import launch_sdk_tool, sdk
 from sima_cli.sdk.cmdexec import SdkContainerUnavailable, exec_container_cmd
 from sima_cli.sdk.neat import (
+    _code_ui_token_cache_path,
     _ensure_certificates,
     _generate_self_signed_cert,
     _install_mkcert,
@@ -39,6 +41,7 @@ from sima_cli.sdk.neat import (
     allocate_neat_ports,
     is_docker_port_collision_error,
     prepare_neat_container_run,
+    print_neat_setup_summary,
     reserved_ports_from_neat_port_map,
 )
 from sima_cli.sdk.utils import (
@@ -56,6 +59,7 @@ from sima_cli.sdk.utils import (
     _prepare_log_host_dir,
     container_matches_sdk_keyword,
     ensure_model_sdk_extension_installed,
+    ensure_codex_vscode_extension_installed,
     extract_short_name,
     get_local_sima_images,
     get_workspace,
@@ -79,6 +83,14 @@ ghcr.io/sima-neat/elxr:latest
 ghcr.io/sima-neat/elxr-sdk:latest
 ghcr.io/sima-neat/sdk-feature-devkit-sync:latest
 """
+
+
+def _last_docker_run_command(run_mock):
+    return next(
+        call.args[0]
+        for call in reversed(run_mock.call_args_list)
+        if call.args[0][:3] == ["docker", "run", "-t"]
+    )
 
 
 class TestSdkImageDetection(unittest.TestCase):
@@ -211,6 +223,32 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(extensions_dir, str(custom_dir.resolve()))
             self.assertTrue(custom_dir.is_dir())
 
+    def test_setup_sdk_extensions_reprompts_when_folder_is_not_writable(self):
+        with TemporaryDirectory() as tmpdir:
+            bad_dir = Path(tmpdir) / "bad"
+            good_dir = Path(tmpdir) / "good"
+            original_helper = __import__("sima_cli.sdk.install", fromlist=["_ensure_writable_sdk_extensions_dir"])._ensure_writable_sdk_extensions_dir
+
+            def validate(path):
+                if Path(path) == bad_dir:
+                    raise RuntimeError(
+                        f"SDK extensions directory is not writable: {bad_dir}. "
+                        "Choose another directory where your user can create files."
+                    )
+                return original_helper(path)
+
+            with patch("sima_cli.sdk.install.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", return_value=Mock(free=30 * 1024 ** 3)), \
+                 patch("sima_cli.sdk.install._ensure_writable_sdk_extensions_dir", side_effect=validate), \
+                 patch("sima_cli.sdk.install.click.secho") as secho, \
+                 patch("builtins.input", side_effect=[str(bad_dir), str(good_dir)]):
+                extensions_dir = _setup_sdk_extensions(["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"])
+
+            self.assertEqual(extensions_dir, str(good_dir.resolve()))
+            self.assertTrue(good_dir.is_dir())
+            self.assertIn("not writable", secho.call_args.args[0])
+
     def test_setup_sdk_extensions_noninteractive_uses_default_without_prompt(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.install.platform.machine", return_value="x86_64"), \
@@ -224,6 +262,26 @@ class TestSdkImageDetection(unittest.TestCase):
 
             self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
             self.assertTrue(Path(extensions_dir).is_dir())
+
+    def test_setup_sdk_extensions_noninteractive_fails_when_default_is_not_writable(self):
+        with TemporaryDirectory() as tmpdir:
+            default_dir = Path(tmpdir) / "sima-sdk-extensions"
+            with patch("sima_cli.sdk.install.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", return_value=Mock(free=30 * 1024 ** 3)), \
+                 patch(
+                     "sima_cli.sdk.install._ensure_writable_sdk_extensions_dir",
+                     side_effect=RuntimeError(
+                         f"SDK extensions directory is not writable: {default_dir}. "
+                         "Choose another directory where your user can create files."
+                     ),
+                 ), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                with self.assertRaisesRegex(RuntimeError, "not writable"):
+                    _setup_sdk_extensions(
+                        ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                        noninteractive=True,
+                    )
 
     def test_setup_sdk_extensions_allows_arm64_when_version_unknown(self):
         with TemporaryDirectory() as tmpdir:
@@ -1480,6 +1538,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
             port_map, port_args = allocate_neat_ports()
 
         self.assertEqual(port_map["mainUI"]["host"], 9900)
+        self.assertEqual(port_map["codeUI"]["host"], 9999)
+        self.assertEqual(port_map["codeUIHttps"]["host"], 10000)
         self.assertEqual(port_map["videoUI"]["host"], 8081)
         self.assertEqual(port_map["webSSH"]["host"], 8022)
         self.assertEqual(port_map["rtsp"]["tcp"]["host"], 8554)
@@ -1491,6 +1551,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["webRTC"]["hostStart"], 40000)
         self.assertEqual(port_map["webRTC"]["hostEnd"], 40199)
         self.assertIn("8022:8022/tcp", port_args)
+        self.assertIn("9999:9999/tcp", port_args)
+        self.assertIn("10000:10000/tcp", port_args)
         self.assertIn("9000-9079:9000-9079/udp", port_args)
         self.assertIn("9100-9179:9100-9179/udp", port_args)
         self.assertIn("40000-40199:40000-40199/udp", port_args)
@@ -1500,6 +1562,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             port_map, port_args = allocate_neat_ports(no_insight=True)
 
         self.assertNotIn("mainUI", port_map)
+        self.assertNotIn("codeUI", port_map)
         self.assertNotIn("videoUI", port_map)
         self.assertNotIn("videoUDP", port_map)
         self.assertNotIn("metadataUDP", port_map)
@@ -1512,6 +1575,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertNotIn("8022", mapping)
             self.assertNotIn("8554", mapping)
             self.assertNotIn("9900", mapping)
+            self.assertNotIn("9999", mapping)
             self.assertNotIn("8081", mapping)
             self.assertNotIn("9000-9079", mapping)
             self.assertNotIn("9100-9179", mapping)
@@ -1575,16 +1639,33 @@ table ip6 nm-shared-enx6c1ff720d573 {
             key_file = Path(tmpdir) / ".sdk-latest" / "sdk-cert" / "neat-sdk-key.pem"
             with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
                  patch("sima_cli.sdk.neat._ensure_certificates", return_value=(cert_file, key_file)), \
-                 patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="10.0.0.76"):
+                 patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="10.0.0.76"), \
+                 patch.dict(os.environ, {"SIMA_CLI_HOME": str(Path(tmpdir) / ".sima-cli")}):
                 config = prepare_neat_container_run(tmpdir, "sdk-latest", yes_to_all=True, noninteractive=True)
+                token_cache_path = _code_ui_token_cache_path()
 
             port_map_path = Path(config.port_map_host_path)
             self.assertTrue(port_map_path.exists())
+            self.assertTrue(token_cache_path.exists())
+            self.assertEqual(token_cache_path.stat().st_mode & 0o777, 0o600)
             self.assertIn("insight-config", config.config_host_dir)
             self.assertIn("sdk-cert", config.cert_host_dir)
             self.assertEqual(config.port_map["schema"], "sima.neat.port-map.v1")
             self.assertEqual(config.port_map["cert"]["certFile"], "/sdk-cert/neat-sdk.pem")
+            self.assertEqual(config.port_map["codeUIHttps"]["scheme"], "https")
             self.assertEqual(config.webrtc_host_ip, "10.0.0.76")
+            self.assertTrue(config.code_ui_token)
+            self.assertNotIn("token", config.port_map["codeUI"])
+            persisted_port_map = json.loads(port_map_path.read_text(encoding="utf-8"))
+            self.assertNotIn("token", persisted_port_map["codeUI"])
+            token_cache = json.loads(token_cache_path.read_text(encoding="utf-8"))
+            cached_code_ui = token_cache["containers"]["sdk-latest"]["codeUI"]
+            self.assertEqual(cached_code_ui["host"], config.port_map["codeUIHttps"]["host"])
+            self.assertEqual(cached_code_ui["token"], config.code_ui_token)
+            self.assertEqual(
+                cached_code_ui["url"],
+                f"https://localhost:{config.port_map['codeUIHttps']['host']}/?tkn={config.code_ui_token}&folder=/workspace",
+            )
 
     def test_prepare_neat_container_run_accepts_no_insight(self):
         with TemporaryDirectory() as tmpdir:
@@ -1600,6 +1681,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 )
 
             self.assertNotIn("mainUI", config.port_map)
+            self.assertNotIn("codeUI", config.port_map)
             self.assertNotIn("videoUI", config.port_map)
             self.assertNotIn("rtsp", config.port_map)
             self.assertNotIn("webSSH", config.port_map)
@@ -1756,6 +1838,28 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(openssl_cmd[:6], ["/usr/bin/openssl", "req", "-x509", "-nodes", "-newkey", "rsa:2048"])
         self.assertIn("subjectAltName=DNS:localhost,IP:127.0.0.1", openssl_cmd)
 
+    def test_ensure_certificates_falls_back_when_mkcert_auto_install_requires_sudo(self):
+        with TemporaryDirectory() as tmpdir:
+            cert_dir = Path(tmpdir)
+            with patch("sima_cli.sdk.neat._ensure_mkcert", side_effect=subprocess.CalledProcessError(1, ["sudo", "apt-get", "update"])), \
+                 patch("sima_cli.sdk.neat._collect_cert_hosts", return_value=["localhost", "127.0.0.1"]), \
+                 patch("sima_cli.sdk.neat.shutil.which", return_value="/usr/bin/openssl"), \
+                 patch("sima_cli.sdk.neat.subprocess.run", return_value=Mock(returncode=0)) as run, \
+                 patch("sima_cli.sdk.neat.click.secho") as secho:
+                cert_file, key_file = _ensure_certificates(
+                    cert_dir,
+                    devkit_env=None,
+                    yes_to_all=True,
+                    noninteractive=False,
+                )
+
+        self.assertEqual(cert_file, cert_dir / "neat-sdk.pem")
+        self.assertEqual(key_file, cert_dir / "neat-sdk-key.pem")
+        openssl_cmd = run.call_args.args[0]
+        self.assertEqual(openssl_cmd[:6], ["/usr/bin/openssl", "req", "-x509", "-nodes", "-newkey", "rsa:2048"])
+        self.assertIn("subjectAltName=DNS:localhost,IP:127.0.0.1", openssl_cmd)
+        self.assertIn("Falling back to a self-signed certificate", secho.call_args.args[0])
+
     def test_generate_self_signed_cert_requires_openssl(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.neat.shutil.which", return_value=None):
@@ -1775,6 +1879,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         port_map = {
             "schema": "sima.neat.port-map.v1",
             "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
+            "codeUI": {"protocol": "tcp", "host": 9999, "container": 9999},
+            "codeUIHttps": {"protocol": "tcp", "host": 10000, "container": 10000, "scheme": "https"},
             "videoUDP": {
                 "protocol": "udp",
                 "containerStart": 9000,
@@ -1788,11 +1894,115 @@ table ip6 nm-shared-enx6c1ff720d573 {
         reserved = reserved_ports_from_neat_port_map(port_map)
 
         self.assertIn(("tcp", 9900), reserved)
+        self.assertIn(("tcp", 9999), reserved)
+        self.assertIn(("tcp", 10000), reserved)
         self.assertIn(("tcp", 8554), reserved)
         self.assertIn(("udp", 18000), reserved)
         self.assertIn(("udp", 18079), reserved)
         self.assertNotIn(("udp", 17999), reserved)
         self.assertNotIn(("udp", 18080), reserved)
+
+    def test_print_neat_setup_summary_uses_table_with_detected_host_ip(self):
+        config = NeatRunConfig(
+            port_map={
+                "schema": "sima.neat.port-map.v1",
+                "mainUI": {"protocol": "tcp", "host": 24031, "container": 9900},
+                "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+                "videoUI": {"protocol": "tcp", "host": 20907, "container": 8081},
+            },
+            port_args=[],
+            config_host_dir="/tmp/insight-config",
+            cert_host_dir="/tmp/sdk-cert",
+            port_map_host_path="/tmp/insight-config/port-map.json",
+            cert_file_host_path="/tmp/sdk-cert/neat-sdk.pem",
+            key_file_host_path="/tmp/sdk-cert/neat-sdk-key.pem",
+            webrtc_host_ip="10.0.0.23",
+            code_ui_token="code-token",
+        )
+
+        with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()) as browser_get, \
+             patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser_open, \
+             patch("sima_cli.sdk.neat.console.print") as console_print:
+            print_neat_setup_summary(config)
+
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        code_url = "https://10.0.0.23:20786/?tkn=code-token&folder=/workspace"
+        self.assertIn("Name       | Endpoint / Value", printed)
+        self.assertIn("mainUI     | https://10.0.0.23:24031", printed)
+        self.assertIn(f"codeUI     | {code_url}", printed)
+        self.assertIn("codeUIHttp | http://10.0.0.23:21333", printed)
+        self.assertIn("videoUI    | https://10.0.0.23:20907", printed)
+        self.assertIn("Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.", printed)
+        browser_get.assert_called_once()
+        browser_open.assert_called_once_with(code_url)
+        console_print.assert_called_once()
+        panel_text = str(console_print.call_args.args[0].renderable)
+        self.assertIn(code_url, panel_text)
+        self.assertIn("Do not share this URL", panel_text)
+
+    def test_print_neat_setup_summary_falls_back_to_localhost(self):
+        config = NeatRunConfig(
+            port_map={
+                "schema": "sima.neat.port-map.v1",
+                "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+            },
+            port_args=[],
+            config_host_dir="",
+            cert_host_dir="/tmp/sdk-cert",
+            port_map_host_path="",
+            cert_file_host_path="",
+            key_file_host_path="",
+            code_ui_token="code-token",
+        )
+
+        with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
+             patch("sima_cli.sdk.neat.webbrowser.open", return_value=False) as browser_open, \
+             patch("sima_cli.sdk.neat.console.print") as console_print:
+            print_neat_setup_summary(config)
+
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        code_url = "https://localhost:20786/?tkn=code-token&folder=/workspace"
+        self.assertIn(f"codeUI     | {code_url}", printed)
+        self.assertIn("Note: Use localhost for local access, or replace it with this machine's external IP/DNS name for remote access.", printed)
+        browser_open.assert_called_once_with(code_url)
+        panel_text = str(console_print.call_args.args[0].renderable)
+        self.assertIn("Open this URL in your browser.", panel_text)
+
+    def test_print_neat_setup_summary_omits_code_ui_when_not_supported(self):
+        config = NeatRunConfig(
+            port_map={
+                "schema": "sima.neat.port-map.v1",
+                "mainUI": {"protocol": "tcp", "host": 24031, "container": 9900},
+                "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+            },
+            port_args=[],
+            config_host_dir="/tmp/insight-config",
+            cert_host_dir="/tmp/sdk-cert",
+            port_map_host_path="/tmp/insight-config/port-map.json",
+            cert_file_host_path="/tmp/sdk-cert/neat-sdk.pem",
+            key_file_host_path="/tmp/sdk-cert/neat-sdk-key.pem",
+            webrtc_host_ip="10.0.0.23",
+            code_ui_token="code-token",
+            code_ui_supported=False,
+        )
+
+        with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat.webbrowser.open") as browser_open, \
+             patch("sima_cli.sdk.neat.console.print") as console_print:
+            print_neat_setup_summary(config)
+
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn("mainUI", printed)
+        self.assertIn("https://10.0.0.23:24031", printed)
+        self.assertNotIn("codeUI", printed)
+        self.assertNotIn("codeUIHttp", printed)
+        browser_open.assert_not_called()
+        console_print.assert_not_called()
 
     def test_start_neat_container_mounts_workspace_directly(self):
         with TemporaryDirectory() as tmpdir:
@@ -1800,6 +2010,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 port_map={
                     "schema": "sima.neat.port-map.v1",
                     "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
+                    "codeUI": {"protocol": "tcp", "host": 9999, "container": 9999},
+                    "codeUIHttps": {"protocol": "tcp", "host": 10000, "container": 10000, "scheme": "https"},
                     "videoUI": {"protocol": "tcp", "host": 8081, "container": 8081},
                     "webSSH": {"protocol": "tcp", "host": 8022, "container": 8022},
                     "rtsp": {"tcp": {"host": 8554, "container": 8554}},
@@ -1810,6 +2022,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 },
                 port_args=[
                     "9900:9900/tcp",
+                    "9999:9999/tcp",
+                    "10000:10000/tcp",
                     "8081:8081/tcp",
                     "8022:8022/tcp",
                     "8554:8554/tcp",
@@ -1823,6 +2037,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 cert_file_host_path=f"{tmpdir}/.ghcr.io-sima-neat-sdk-feature-devkit-sync-latest/sdk-cert/neat-sdk.pem",
                 key_file_host_path=f"{tmpdir}/.ghcr.io-sima-neat-sdk-feature-devkit-sync-latest/sdk-cert/neat-sdk-key.pem",
                 webrtc_host_ip="10.0.0.76",
+                code_ui_token="code-token",
             )
             docker_result = Mock(returncode=0, stdout="container-id\n", stderr="")
             with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
@@ -1841,7 +2056,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     image="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest",
                 )
 
-        docker_cmd = run.call_args[0][0]
+        docker_cmd = _last_docker_run_command(run)
         self.assertNotIn("--user=1000:1000", docker_cmd)
         self.assertIn(f"{tmpdir}:/home/docker/sima-cli/", docker_cmd)
         self.assertIn(f"{tmpdir}:/workspace", docker_cmd)
@@ -1850,9 +2065,18 @@ table ip6 nm-shared-enx6c1ff720d573 {
             'devcontainer.metadata=[{"remoteUser":"devuser","workspaceFolder":"/workspace"}]',
             docker_cmd,
         )
+        self.assertIn("OPENVSCODE_SERVER_USER=devuser", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/devuser/.openvscode-server/extensions", docker_cmd)
+        self.assertIn("OPENVSCODE_WORKSPACE=/workspace", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_TOKEN=code-token", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_CERT=/sdk-cert/neat-sdk.pem", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_CERT_KEY=/sdk-cert/neat-sdk-key.pem", docker_cmd)
+        self.assertIn("OPENVSCODE_SERVER_HTTPS_PORT=10000", docker_cmd)
         self.assertIn(f"{tmpdir}/.ghcr.io-sima-neat-sdk-feature-devkit-sync-latest/logs/supervisor:/var/log/supervisor", docker_cmd)
         for mapping in (
             "9900:9900/tcp",
+            "9999:9999/tcp",
+            "10000:10000/tcp",
             "8081:8081/tcp",
             "8022:8022/tcp",
             "8554:8554/tcp",
@@ -1901,10 +2125,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 )
 
         self.assertTrue(prepare.call_args.kwargs["no_insight"])
-        docker_cmd = run.call_args[0][0]
+        docker_cmd = _last_docker_run_command(run)
         self.assertNotIn("8022:8022/tcp", docker_cmd)
         self.assertNotIn("8554:8554/tcp", docker_cmd)
         self.assertNotIn("9900:9900/tcp", docker_cmd)
+        self.assertNotIn("9999:9999/tcp", docker_cmd)
         self.assertNotIn("8081:8081/tcp", docker_cmd)
         self.assertNotIn("9000-9079:9000-9079/udp", docker_cmd)
         self.assertNotIn("9100-9179:9100-9179/udp", docker_cmd)
@@ -1941,7 +2166,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         self.assertTrue(prepare.call_args.kwargs["no_insight"])
         self.assertTrue(configure.call_args.kwargs["minimal"])
-        docker_cmd = run.call_args[0][0]
+        docker_cmd = _last_docker_run_command(run)
         self.assertNotIn("/home/docker/.insight-config", docker_cmd)
         self.assertNotIn("/sdk-cert", docker_cmd)
 
@@ -2125,6 +2350,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 port_map={
                     "schema": "sima.neat.port-map.v1",
                     "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
+                    "codeUI": {"protocol": "tcp", "host": 9999, "container": 9999},
                     "videoUI": {"protocol": "tcp", "host": 8081, "container": 8081},
                     "webSSH": {"protocol": "tcp", "host": 8022, "container": 8022},
                     "rtsp": {"tcp": {"host": 8554, "container": 8554}},
@@ -2158,7 +2384,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     image=image,
                 )
 
-        docker_cmd = run.call_args[0][0]
+        docker_cmd = _last_docker_run_command(run)
         hostname_index = docker_cmd.index("--hostname") + 1
         self.assertEqual(docker_cmd[hostname_index], hostname)
         self.assertLessEqual(len(docker_cmd[hostname_index]), 63)
@@ -2179,6 +2405,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.configure_container"), \
                  patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=[first_config, second_config]) as prepare, \
                  patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils._container_openvscode_available", return_value=True), \
                  patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
                 start_docker_container(
                     uid=1000,
@@ -2192,7 +2419,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_count, 4)
         self.assertEqual(run.call_args_list[1][0][0][:3], ["docker", "inspect", "-f"])
         self.assertEqual(run.call_args_list[2][0][0], ["docker", "rm", "-f", "ghcr.io-sima-neat-sdk-feature-devkit-sync-latest"])
-        self.assertIn("19900:9900/tcp", run.call_args[0][0])
+        self.assertIn("19900:9900/tcp", _last_docker_run_command(run))
 
     def test_start_neat_container_excludes_failed_port_map_on_retry(self):
         with TemporaryDirectory() as tmpdir:
@@ -2252,6 +2479,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.configure_container"), \
                  patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=prepare_side_effect), \
                  patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils._container_openvscode_available", return_value=True), \
                  patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
                 start_docker_container(
                     uid=1000,
@@ -2264,7 +2492,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(prepare_reserved_args[0], set())
         self.assertIn(("udp", 9000), prepare_reserved_args[1])
         self.assertIn(("udp", 9079), prepare_reserved_args[1])
-        self.assertIn("18000-18079:9000-9079/udp", run.call_args[0][0])
+        self.assertIn("18000-18079:9000-9079/udp", _last_docker_run_command(run))
 
     def test_non_neat_container_does_not_prepare_neat_config(self):
         with TemporaryDirectory() as tmpdir:
@@ -2703,6 +2931,100 @@ table ip6 nm-shared-enx6c1ff720d573 {
             "-lc",
             "cd /home/docker && sima-cli install gh:sima-neat/playbooks",
         ])
+
+    def test_codex_vscode_extension_skips_when_openvscode_missing(self):
+        missing_server = Mock(returncode=1)
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=missing_server) as run, \
+             patch("sima_cli.sdk.utils.yes_no_prompt") as prompt:
+            ensure_codex_vscode_extension_installed("container", "docker", auto_install=True)
+
+        self.assertEqual(run.call_count, 1)
+        prompt.assert_not_called()
+
+    def test_codex_vscode_extension_skips_when_user_declines(self):
+        server_available = Mock(returncode=0)
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=server_available) as run, \
+             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False) as prompt:
+            ensure_codex_vscode_extension_installed("container", "docker")
+
+        self.assertEqual(run.call_count, 1)
+        prompt.assert_called_once_with(
+            "Do you want to install SiMa Neat, Claude, and Codex VSCode Extensions?",
+            default_yes=False,
+        )
+
+    def test_codex_vscode_extension_auto_installs_without_prompt(self):
+        server_available = Mock(returncode=0)
+        install_result = Mock(returncode=0, stdout="installed\n", stderr="")
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, install_result]) as run, \
+             patch("sima_cli.sdk.utils.yes_no_prompt") as prompt:
+            ensure_codex_vscode_extension_installed(
+                "container",
+                "docker",
+                auto_install=True,
+                uid=1000,
+                gid=1000,
+            )
+
+        prompt.assert_not_called()
+        self.assertEqual(run.call_count, 2)
+        install_cmd = run.call_args_list[-1].args[0]
+        self.assertEqual(install_cmd[:5], ["docker", "exec", "-u", "root", "container"])
+        self.assertIn("Installing SiMa Neat extension: sdk/vscode-extension", install_cmd[-1])
+        self.assertIn("neat install --install-dir \"$NEAT_EXTENSION_INSTALL_DIR\" sdk/vscode-extension", install_cmd[-1])
+        self.assertIn("/home/docker/vscode-extension-installation", install_cmd[-1])
+        self.assertIn("SIMA_INSTALL_CONTEXT=1", install_cmd[-1])
+        self.assertIn("Installing downloaded SiMa Neat VSIX with OpenVSCode Server.", install_cmd[-1])
+        self.assertIn("--install-extension \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\"", install_cmd[-1])
+        self.assertIn("/opt/sima-cli/venv/bin/sima-cli", install_cmd[-1])
+        self.assertIn("--install-extension anthropic.claude-code", install_cmd[-1])
+        self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])
+        self.assertIn("Installing Claude extension: anthropic.claude-code", install_cmd[-1])
+        self.assertIn("Installing Codex extension: openai.chatgpt", install_cmd[-1])
+        self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'anthropic.claude-code-*'", install_cmd[-1])
+        self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'openai.chatgpt-*'", install_cmd[-1])
+        self.assertIn("chown -R 1000:1000 /home/docker/.openvscode-server/extensions", install_cmd[-1])
+        self.assertIn("extensions.supportNodeGlobalNavigator", install_cmd[-1])
+        self.assertIn("/home/docker/.openvscode-server/data/User/settings.json", install_cmd[-1])
+        self.assertIn("/home/docker/.openvscode-server/data/Machine/settings.json", install_cmd[-1])
+        self.assertNotIn("codexViewContainer", install_cmd[-1])
+        self.assertNotIn("secondarySidebar", install_cmd[-1])
+        self.assertIn("supervisorctl restart openvscode-server", install_cmd[-1])
+
+    def test_configure_container_skips_codex_extension_for_minimal(self):
+        with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
+             patch("sima_cli.sdk.utils.run_command"), \
+             patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
+             patch("sima_cli.sdk.utils.ensure_sima_cli_installed"), \
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed"), \
+             patch("sima_cli.sdk.utils._sync_codex_skills"), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks"), \
+             patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed") as codex_extension:
+            from sima_cli.sdk.utils import configure_container
+
+            configure_container("container", minimal=True)
+
+        codex_extension.assert_not_called()
+
+    def test_configure_container_yes_to_all_auto_installs_codex_extension(self):
+        with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
+             patch("sima_cli.sdk.utils.run_command"), \
+             patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
+             patch("sima_cli.sdk.utils.ensure_sima_cli_installed"), \
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed"), \
+             patch("sima_cli.sdk.utils._sync_codex_skills"), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks"), \
+             patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed") as codex_extension:
+            from sima_cli.sdk.utils import configure_container
+
+            configure_container("container", yes_to_all=True)
+
+        codex_extension.assert_called_once()
+        self.assertTrue(codex_extension.call_args.kwargs["auto_install"])
+        self.assertFalse(codex_extension.call_args.kwargs["allow_prompt"])
 
     def test_sudoers_drop_in_uses_sudoers_d_without_replacing_base_file(self):
         script = _sudoers_drop_in_script("ji.fan")

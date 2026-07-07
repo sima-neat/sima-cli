@@ -37,8 +37,9 @@ Usage: sima-cli neat install [OPTIONS] TARGET
 
   Install a Neat artifact package from TARGET.
 
-  TARGET supports REPO, REPO@branch, REPO@branch:spec, REPO@latest, or
-  REPO@githash. If no branch or spec is provided, latest main is used.
+  TARGET supports REPO, REPO/folder, REPO@branch, REPO/folder@branch:spec,
+  REPO@latest, or REPO@githash. If no branch or spec is provided, latest main
+  is used.
 
 Options:
   --dev                           Use dev artifacts.

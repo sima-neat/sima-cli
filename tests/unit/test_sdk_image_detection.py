@@ -223,6 +223,32 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(extensions_dir, str(custom_dir.resolve()))
             self.assertTrue(custom_dir.is_dir())
 
+    def test_setup_sdk_extensions_reprompts_when_folder_is_not_writable(self):
+        with TemporaryDirectory() as tmpdir:
+            bad_dir = Path(tmpdir) / "bad"
+            good_dir = Path(tmpdir) / "good"
+            original_helper = __import__("sima_cli.sdk.install", fromlist=["_ensure_writable_sdk_extensions_dir"])._ensure_writable_sdk_extensions_dir
+
+            def validate(path):
+                if Path(path) == bad_dir:
+                    raise RuntimeError(
+                        f"SDK extensions directory is not writable: {bad_dir}. "
+                        "Choose another directory where your user can create files."
+                    )
+                return original_helper(path)
+
+            with patch("sima_cli.sdk.install.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", return_value=Mock(free=30 * 1024 ** 3)), \
+                 patch("sima_cli.sdk.install._ensure_writable_sdk_extensions_dir", side_effect=validate), \
+                 patch("sima_cli.sdk.install.click.secho") as secho, \
+                 patch("builtins.input", side_effect=[str(bad_dir), str(good_dir)]):
+                extensions_dir = _setup_sdk_extensions(["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"])
+
+            self.assertEqual(extensions_dir, str(good_dir.resolve()))
+            self.assertTrue(good_dir.is_dir())
+            self.assertIn("not writable", secho.call_args.args[0])
+
     def test_setup_sdk_extensions_noninteractive_uses_default_without_prompt(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.install.platform.machine", return_value="x86_64"), \
@@ -236,6 +262,26 @@ class TestSdkImageDetection(unittest.TestCase):
 
             self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
             self.assertTrue(Path(extensions_dir).is_dir())
+
+    def test_setup_sdk_extensions_noninteractive_fails_when_default_is_not_writable(self):
+        with TemporaryDirectory() as tmpdir:
+            default_dir = Path(tmpdir) / "sima-sdk-extensions"
+            with patch("sima_cli.sdk.install.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", return_value=Mock(free=30 * 1024 ** 3)), \
+                 patch(
+                     "sima_cli.sdk.install._ensure_writable_sdk_extensions_dir",
+                     side_effect=RuntimeError(
+                         f"SDK extensions directory is not writable: {default_dir}. "
+                         "Choose another directory where your user can create files."
+                     ),
+                 ), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                with self.assertRaisesRegex(RuntimeError, "not writable"):
+                    _setup_sdk_extensions(
+                        ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                        noninteractive=True,
+                    )
 
     def test_setup_sdk_extensions_allows_arm64_when_version_unknown(self):
         with TemporaryDirectory() as tmpdir:

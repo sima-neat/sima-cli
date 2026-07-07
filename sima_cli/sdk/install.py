@@ -765,6 +765,22 @@ def _format_gb(byte_count: int) -> str:
     return f"{byte_count / (1024 ** 3):.1f} GB"
 
 
+def _ensure_writable_sdk_extensions_dir(path: Path) -> Path:
+    resolved = Path(os.path.realpath(str(path)))
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+        probe = resolved / ".sima-cli-write-test"
+        with open(probe, "w", encoding="utf-8") as handle:
+            handle.write("ok\n")
+        probe.unlink()
+    except OSError as e:
+        raise RuntimeError(
+            f"SDK extensions directory is not writable: {resolved}. "
+            "Choose another directory where your user can create files."
+        ) from e
+    return resolved
+
+
 def _setup_sdk_extensions(
     selected_images: List[str],
     noninteractive: bool = False,
@@ -791,12 +807,16 @@ def _setup_sdk_extensions(
     if noninteractive or yes_to_all:
         extensions_dir = default_extensions_dir
         click.echo(f"ℹ️  Using default SDK extensions directory: {extensions_dir}")
+        extensions_dir = _ensure_writable_sdk_extensions_dir(extensions_dir)
     else:
-        response = input(f"Enter SDK extensions directory [{default_extensions_dir}]: ").strip()
-        extensions_dir = Path(response).expanduser() if response else default_extensions_dir
-
-    extensions_dir = Path(os.path.realpath(str(extensions_dir)))
-    extensions_dir.mkdir(parents=True, exist_ok=True)
+        while True:
+            response = input(f"Enter SDK extensions directory [{default_extensions_dir}]: ").strip()
+            extensions_dir = Path(response).expanduser() if response else default_extensions_dir
+            try:
+                extensions_dir = _ensure_writable_sdk_extensions_dir(extensions_dir)
+                break
+            except RuntimeError as e:
+                click.secho(f"⚠️  {e}", fg="yellow")
     print(f"✅ SDK extensions directory configured: {extensions_dir}")
     return str(extensions_dir)
 

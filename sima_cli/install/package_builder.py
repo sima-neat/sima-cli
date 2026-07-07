@@ -136,7 +136,17 @@ def _format_size(total_bytes: int) -> str:
 
 def _matches_exclude_pattern(resource: str, patterns: Sequence[str]) -> bool:
     filename = Path(resource).name
-    return any(pattern and (pattern in resource or pattern in filename) for pattern in patterns)
+    path_parts = resource.split("/")
+    for pattern in patterns:
+        if not pattern:
+            continue
+        if pattern.startswith(".") and "/" not in pattern and "\\" not in pattern:
+            if filename.endswith(pattern) or pattern in path_parts:
+                return True
+            continue
+        if pattern in resource or pattern in filename:
+            return True
+    return False
 
 
 def collect_artifact_resources(

@@ -1853,16 +1853,26 @@ table ip6 nm-shared-enx6c1ff720d573 {
             code_ui_token="code-token",
         )
 
-        with patch("builtins.print") as mock_print:
+        with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()) as browser_get, \
+             patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser_open, \
+             patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        code_url = "https://10.0.0.23:20786/?tkn=code-token&folder=/workspace"
         self.assertIn("Name       | Endpoint / Value", printed)
         self.assertIn("mainUI     | https://10.0.0.23:24031", printed)
-        self.assertIn("codeUI     | https://10.0.0.23:20786/?tkn=code-token&folder=/workspace", printed)
+        self.assertIn(f"codeUI     | {code_url}", printed)
         self.assertIn("codeUIHttp | http://10.0.0.23:21333", printed)
         self.assertIn("videoUI    | https://10.0.0.23:20907", printed)
         self.assertIn("Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.", printed)
+        browser_get.assert_called_once()
+        browser_open.assert_called_once_with(code_url)
+        console_print.assert_called_once()
+        panel_text = str(console_print.call_args.args[0].renderable)
+        self.assertIn(code_url, panel_text)
+        self.assertIn("Do not share this URL", panel_text)
 
     def test_print_neat_setup_summary_falls_back_to_localhost(self):
         config = NeatRunConfig(
@@ -1880,12 +1890,19 @@ table ip6 nm-shared-enx6c1ff720d573 {
             code_ui_token="code-token",
         )
 
-        with patch("builtins.print") as mock_print:
+        with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
+             patch("sima_cli.sdk.neat.webbrowser.open", return_value=False) as browser_open, \
+             patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
-        self.assertIn("codeUI     | https://localhost:20786/?tkn=code-token&folder=/workspace", printed)
+        code_url = "https://localhost:20786/?tkn=code-token&folder=/workspace"
+        self.assertIn(f"codeUI     | {code_url}", printed)
         self.assertIn("Note: Use localhost for local access, or replace it with this machine's external IP/DNS name for remote access.", printed)
+        browser_open.assert_called_once_with(code_url)
+        panel_text = str(console_print.call_args.args[0].renderable)
+        self.assertIn("Open this URL in your browser.", panel_text)
 
     def test_print_neat_setup_summary_omits_code_ui_when_not_supported(self):
         config = NeatRunConfig(
@@ -1906,7 +1923,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
             code_ui_supported=False,
         )
 
-        with patch("builtins.print") as mock_print:
+        with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat.webbrowser.open") as browser_open, \
+             patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
@@ -1914,6 +1933,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("https://10.0.0.23:24031", printed)
         self.assertNotIn("codeUI", printed)
         self.assertNotIn("codeUIHttp", printed)
+        browser_open.assert_not_called()
+        console_print.assert_not_called()
 
     def test_start_neat_container_mounts_workspace_directly(self):
         with TemporaryDirectory() as tmpdir:

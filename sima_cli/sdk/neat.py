@@ -8,11 +8,14 @@ import shutil
 import socket
 import subprocess
 import time
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import click
+from rich.console import Console
+from rich.panel import Panel
 
 from sima_cli.utils.net import get_local_ip_candidates
 
@@ -27,6 +30,7 @@ NEAT_WEBRTC_UDP_SEARCH_END = 65535
 NEAT_WEBRTC_UDP_PORT_COUNT = 200
 OPENVSCODE_TOKEN_BYTES = 32
 OPENVSCODE_TOKEN_CACHE_FILE = "sdk-code-ui-tokens.json"
+console = Console()
 
 
 @dataclass
@@ -814,22 +818,65 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         docker_cmd.extend(["-v", f"{config.cert_host_dir}:/sdk-cert"])
 
 
+def _code_ui_url(config: NeatRunConfig, display_host: str) -> str:
+    port_map = config.port_map
+    if not config.code_ui_supported or "codeUI" not in port_map:
+        return ""
+
+    display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
+    if not isinstance(display_entry, dict):
+        display_entry = port_map["codeUI"]
+    scheme = display_entry.get("scheme", "http")
+    code_url = f"{scheme}://{display_host}:{display_entry['host']}"
+    token = config.code_ui_token or port_map["codeUI"].get("token")
+    if token:
+        code_url = f"{code_url}/?tkn={token}&folder=/workspace"
+    return code_url
+
+
+def _open_code_ui_if_browser_available(code_url: str) -> bool:
+    if not code_url:
+        return False
+    try:
+        webbrowser.get()
+    except webbrowser.Error:
+        return False
+    try:
+        return bool(webbrowser.open(code_url))
+    except Exception:
+        return False
+
+
+def _print_code_ui_panel(code_url: str, opened: bool) -> None:
+    if not code_url:
+        return
+    status = "Opened in your browser." if opened else "Open this URL in your browser."
+    console.print(
+        Panel(
+            "\n".join(
+                [
+                    f"[bold]{status}[/bold]",
+                    f"[cyan]{code_url}[/cyan]",
+                    "",
+                    "[yellow]Security:[/yellow] Do not share this URL. It contains a Code UI access token.",
+                ]
+            ),
+            title="VS Code Browser Access",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+
 def print_neat_setup_summary(config: NeatRunConfig) -> None:
     port_map = config.port_map
     rows = []
     display_host = config.webrtc_host_ip or "localhost"
     web_scheme = "https" if config.cert_host_dir else "http"
+    code_url = _code_ui_url(config, display_host)
     if "mainUI" in port_map:
         rows.append(("mainUI", f"{web_scheme}://{display_host}:{port_map['mainUI']['host']}"))
-    if config.code_ui_supported and "codeUI" in port_map:
-        display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
-        if not isinstance(display_entry, dict):
-            display_entry = port_map["codeUI"]
-        scheme = display_entry.get("scheme", "http")
-        code_url = f"{scheme}://{display_host}:{display_entry['host']}"
-        token = config.code_ui_token or port_map["codeUI"].get("token")
-        if token:
-            code_url = f"{code_url}/?tkn={token}&folder=/workspace"
+    if code_url:
         rows.append(("codeUI", code_url))
         if "codeUIHttps" in port_map:
             rows.append(("codeUIHttp", f"http://{display_host}:{port_map['codeUI']['host']}"))
@@ -887,6 +934,8 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         print("   Note: Use localhost for local access, or replace it with this machine's external IP/DNS name for remote access.")
     else:
         print("   Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.")
+    opened = _open_code_ui_if_browser_available(code_url)
+    _print_code_ui_panel(code_url, opened)
 
 
 def is_docker_port_collision_error(error_text: str) -> bool:

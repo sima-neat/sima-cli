@@ -328,6 +328,30 @@ def _detect_webrtc_host_ip(devkit_env: Optional[dict]) -> str:
     return physical_ips[0] if physical_ips else ""
 
 
+def _detect_browser_host_ip() -> str:
+    """Return the host IP to advertise/open for local browser access.
+
+    DevKit sync may legitimately use a VPN/tunnel IP as the WebRTC/ICE host.
+    Browser access to Docker-published SDK ports should prefer a physical host
+    address so local setup output is not broken by VPN routing.
+    """
+    physical_ips = _collect_physical_ipv4s_for_certs()
+    if physical_ips:
+        return physical_ips[0]
+
+    try:
+        for iface, ip in get_local_ip_candidates():
+            name = (iface or "").lower()
+            if name.startswith(("lo", "docker", "br-", "veth", "virbr", "tun", "tap", "utun", "wg", "tailscale", "zt", "vmnet", "vboxnet")):
+                continue
+            if _is_usable_ipv4(ip):
+                return ip
+    except Exception:
+        pass
+
+    return "localhost"
+
+
 def _is_wsl() -> bool:
     if os.getenv("WSL_DISTRO_NAME"):
         return True
@@ -880,7 +904,7 @@ def _print_code_ui_panel(code_url: str, opened: bool) -> None:
 def print_neat_setup_summary(config: NeatRunConfig) -> None:
     port_map = config.port_map
     rows = []
-    display_host = config.webrtc_host_ip or "localhost"
+    display_host = _detect_browser_host_ip()
     web_scheme = "https" if config.cert_host_dir else "http"
     code_url = _code_ui_url(config, display_host)
     if "mainUI" in port_map:

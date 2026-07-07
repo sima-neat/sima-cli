@@ -1792,6 +1792,28 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(openssl_cmd[:6], ["/usr/bin/openssl", "req", "-x509", "-nodes", "-newkey", "rsa:2048"])
         self.assertIn("subjectAltName=DNS:localhost,IP:127.0.0.1", openssl_cmd)
 
+    def test_ensure_certificates_falls_back_when_mkcert_auto_install_requires_sudo(self):
+        with TemporaryDirectory() as tmpdir:
+            cert_dir = Path(tmpdir)
+            with patch("sima_cli.sdk.neat._ensure_mkcert", side_effect=subprocess.CalledProcessError(1, ["sudo", "apt-get", "update"])), \
+                 patch("sima_cli.sdk.neat._collect_cert_hosts", return_value=["localhost", "127.0.0.1"]), \
+                 patch("sima_cli.sdk.neat.shutil.which", return_value="/usr/bin/openssl"), \
+                 patch("sima_cli.sdk.neat.subprocess.run", return_value=Mock(returncode=0)) as run, \
+                 patch("sima_cli.sdk.neat.click.secho") as secho:
+                cert_file, key_file = _ensure_certificates(
+                    cert_dir,
+                    devkit_env=None,
+                    yes_to_all=True,
+                    noninteractive=False,
+                )
+
+        self.assertEqual(cert_file, cert_dir / "neat-sdk.pem")
+        self.assertEqual(key_file, cert_dir / "neat-sdk-key.pem")
+        openssl_cmd = run.call_args.args[0]
+        self.assertEqual(openssl_cmd[:6], ["/usr/bin/openssl", "req", "-x509", "-nodes", "-newkey", "rsa:2048"])
+        self.assertIn("subjectAltName=DNS:localhost,IP:127.0.0.1", openssl_cmd)
+        self.assertIn("Falling back to a self-signed certificate", secho.call_args.args[0])
+
     def test_generate_self_signed_cert_requires_openssl(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.neat.shutil.which", return_value=None):

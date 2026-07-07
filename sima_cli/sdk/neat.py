@@ -502,8 +502,17 @@ def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all:
     cert_dir.mkdir(parents=True, exist_ok=True)
     cert_file = cert_dir / "neat-sdk.pem"
     key_file = cert_dir / "neat-sdk-key.pem"
-    mkcert = _ensure_mkcert(yes_to_all=yes_to_all, noninteractive=noninteractive)
     hosts = _collect_cert_hosts(devkit_env)
+    try:
+        mkcert = _ensure_mkcert(yes_to_all=yes_to_all, noninteractive=noninteractive)
+    except (RuntimeError, subprocess.CalledProcessError) as e:
+        click.secho(
+            f"⚠️  mkcert could not be installed: {e}. Falling back to a self-signed certificate.",
+            fg="yellow",
+        )
+        _generate_self_signed_cert(cert_file, key_file, hosts)
+        return cert_file, key_file
+
     if _run_mkcert_with_fallback([mkcert, "-install"], "install the local CA into the trust store"):
         subprocess.run(
             [mkcert, "-cert-file", str(cert_file), "-key-file", str(key_file), *hosts],

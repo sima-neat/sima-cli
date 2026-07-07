@@ -1002,6 +1002,7 @@ def ensure_codex_vscode_extension_installed(
 
     home_directory = f"/home/{login_name}"
     extensions_dir = f"{home_directory}/.openvscode-server/extensions"
+    neat_extension_install_dir = f"{home_directory}/vscode-extension-installation"
     user_settings = f"{home_directory}/.openvscode-server/data/User/settings.json"
     machine_settings = f"{home_directory}/.openvscode-server/data/Machine/settings.json"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
@@ -1015,7 +1016,19 @@ def ensure_codex_vscode_extension_installed(
         "echo 'sima-cli not found; cannot install SiMa Neat extension.' >&2; "
         "exit 1; "
         "fi; "
-        f"SIMA_CLI_CHECK_FOR_UPDATE=0 \"$SIMA_CLI_BIN\" neat install {shlex.quote(neat_extension_target)}"
+        f"NEAT_EXTENSION_INSTALL_DIR={shlex.quote(neat_extension_install_dir)}; "
+        "mkdir -p \"$NEAT_EXTENSION_INSTALL_DIR\"; "
+        f"if SIMA_CLI_CHECK_FOR_UPDATE=0 SIMA_INSTALL_CONTEXT=1 \"$SIMA_CLI_BIN\" neat install "
+        f"--install-dir \"$NEAT_EXTENSION_INSTALL_DIR\" {shlex.quote(neat_extension_target)}; then "
+        "true; "
+        "elif [ -f \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\" ]; then "
+        "echo 'Installing downloaded SiMa Neat VSIX with OpenVSCode Server.'; "
+        f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+        "--install-extension \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\" "
+        "--force --accept-server-license-terms; "
+        "else "
+        "exit 1; "
+        "fi"
     ]
     legacy_cleanup_steps = []
     for label, extension_id in extensions:
@@ -1040,6 +1053,7 @@ def ensure_codex_vscode_extension_installed(
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
+        f"mkdir -p {shlex.quote(neat_extension_install_dir)}; "
         f"mkdir -p {shlex.quote(extensions_dir)}; "
         + "; ".join(install_steps)
         + "; "
@@ -1066,7 +1080,9 @@ def ensure_codex_vscode_extension_installed(
         f"export LOGNAME={shlex.quote(login_name)}; "
         + "; ".join(legacy_cleanup_steps)
         + "; "
+        f"mkdir -p {shlex.quote(neat_extension_install_dir)}; "
         f"mkdir -p {shlex.quote(extensions_dir)}; "
+        f"chown -R {shlex.quote(owner)} {shlex.quote(neat_extension_install_dir)} 2>/dev/null || true; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(extensions_dir)} 2>/dev/null || true; "
         f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_extension_script)}; "
         "if command -v supervisorctl >/dev/null 2>&1; then "

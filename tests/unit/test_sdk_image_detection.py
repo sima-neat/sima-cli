@@ -2974,7 +2974,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
         install_cmd = run.call_args_list[-1].args[0]
         self.assertEqual(install_cmd[:5], ["docker", "exec", "-u", "root", "container"])
         self.assertIn("Installing SiMa Neat extension: sdk/vscode-extension", install_cmd[-1])
-        self.assertIn("neat install sdk/vscode-extension", install_cmd[-1])
+        self.assertIn("neat install --install-dir \"$NEAT_EXTENSION_INSTALL_DIR\" sdk/vscode-extension", install_cmd[-1])
+        self.assertIn("/home/docker/vscode-extension-installation", install_cmd[-1])
+        self.assertIn("SIMA_INSTALL_CONTEXT=1", install_cmd[-1])
+        self.assertIn("Installing downloaded SiMa Neat VSIX with OpenVSCode Server.", install_cmd[-1])
+        self.assertIn("--install-extension \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\"", install_cmd[-1])
         self.assertIn("/opt/sima-cli/venv/bin/sima-cli", install_cmd[-1])
         self.assertIn("--install-extension anthropic.claude-code", install_cmd[-1])
         self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])

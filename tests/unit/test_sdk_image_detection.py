@@ -32,6 +32,7 @@ from sima_cli.sdk.install import (
 from sima_cli.sdk.commands import launch_sdk_tool, sdk
 from sima_cli.sdk.cmdexec import SdkContainerUnavailable, exec_container_cmd
 from sima_cli.sdk.neat import (
+    _detect_browser_host_ip,
     _code_ui_token_cache_path,
     _ensure_certificates,
     _generate_self_signed_cert,
@@ -1922,18 +1923,20 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
 
         with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="192.168.76.4"), \
              patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()) as browser_get, \
              patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser_open, \
              patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
-        code_url = "https://10.0.0.23:20786/?tkn=code-token&folder=/workspace"
+        code_url = "https://192.168.76.4:20786/?tkn=code-token&folder=/workspace"
         self.assertIn("Name       | Endpoint / Value", printed)
-        self.assertIn("mainUI     | https://10.0.0.23:24031", printed)
+        self.assertIn("mainUI     | https://192.168.76.4:24031", printed)
         self.assertIn(f"codeUI     | {code_url}", printed)
-        self.assertIn("codeUIHttp | http://10.0.0.23:21333", printed)
-        self.assertIn("videoUI    | https://10.0.0.23:20907", printed)
+        self.assertIn("codeUIHttp | http://192.168.76.4:21333", printed)
+        self.assertIn("videoUI    | https://192.168.76.4:20907", printed)
+        self.assertIn("iceHost    | 10.0.0.23", printed)
         self.assertIn("Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.", printed)
         browser_get.assert_called_once()
         browser_open.assert_called_once_with(code_url)
@@ -1959,6 +1962,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
 
         with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="localhost"), \
              patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
              patch("sima_cli.sdk.neat.webbrowser.open", return_value=False) as browser_open, \
              patch("sima_cli.sdk.neat.console.print") as console_print:
@@ -1971,6 +1975,24 @@ table ip6 nm-shared-enx6c1ff720d573 {
         browser_open.assert_called_once_with(code_url)
         panel_text = str(console_print.call_args.args[0].renderable)
         self.assertIn("Open this URL in your browser.", panel_text)
+
+    def test_detect_browser_host_prefers_physical_ip_over_vpn(self):
+        with patch("sima_cli.sdk.neat._collect_physical_ipv4s_for_certs", return_value=["192.168.76.4"]), \
+             patch("sima_cli.sdk.neat.get_local_ip_candidates", return_value=[("utun4", "172.16.1.254")]):
+            self.assertEqual(_detect_browser_host_ip(), "192.168.76.4")
+
+    def test_detect_browser_host_filters_tunnel_candidates(self):
+        with patch("sima_cli.sdk.neat._collect_physical_ipv4s_for_certs", return_value=[]), \
+             patch(
+                 "sima_cli.sdk.neat.get_local_ip_candidates",
+                 return_value=[("utun4", "172.16.1.254"), ("en0", "192.168.76.4")],
+             ):
+            self.assertEqual(_detect_browser_host_ip(), "192.168.76.4")
+
+    def test_detect_browser_host_falls_back_to_localhost_without_physical_ip(self):
+        with patch("sima_cli.sdk.neat._collect_physical_ipv4s_for_certs", return_value=[]), \
+             patch("sima_cli.sdk.neat.get_local_ip_candidates", return_value=[("utun4", "172.16.1.254")]):
+            self.assertEqual(_detect_browser_host_ip(), "localhost")
 
     def test_print_neat_setup_summary_omits_code_ui_when_not_supported(self):
         config = NeatRunConfig(
@@ -1992,13 +2014,15 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
 
         with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="192.168.76.4"), \
              patch("sima_cli.sdk.neat.webbrowser.open") as browser_open, \
              patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)
 
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
         self.assertIn("mainUI", printed)
-        self.assertIn("https://10.0.0.23:24031", printed)
+        self.assertIn("https://192.168.76.4:24031", printed)
+        self.assertIn("iceHost | 10.0.0.23", printed)
         self.assertNotIn("codeUI", printed)
         self.assertNotIn("codeUIHttp", printed)
         browser_open.assert_not_called()

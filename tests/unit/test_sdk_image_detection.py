@@ -2950,7 +2950,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ensure_codex_vscode_extension_installed("container", "docker")
 
         self.assertEqual(run.call_count, 1)
-        prompt.assert_called_once_with("Do you want to install Claude and Codex VSCode Extension?", default_yes=False)
+        prompt.assert_called_once_with(
+            "Do you want to install SiMa Neat, Claude, and Codex VSCode Extensions?",
+            default_yes=False,
+        )
 
     def test_codex_vscode_extension_auto_installs_without_prompt(self):
         server_available = Mock(returncode=0)
@@ -2970,6 +2973,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_count, 2)
         install_cmd = run.call_args_list[-1].args[0]
         self.assertEqual(install_cmd[:5], ["docker", "exec", "-u", "root", "container"])
+        self.assertIn("Installing SiMa Neat extension: sdk/vscode-extension", install_cmd[-1])
+        self.assertIn("neat install sdk/vscode-extension", install_cmd[-1])
+        self.assertIn("/opt/sima-cli/venv/bin/sima-cli", install_cmd[-1])
         self.assertIn("--install-extension anthropic.claude-code", install_cmd[-1])
         self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])
         self.assertIn("Installing Claude extension: anthropic.claude-code", install_cmd[-1])

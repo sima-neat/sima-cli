@@ -958,7 +958,7 @@ def ensure_codex_vscode_extension_installed(
     gid: int = None,
 ) -> None:
     """
-    Optionally install Claude and Codex extensions into browser VS Code.
+    Optionally install Neat, Claude, and Codex extensions into browser VS Code.
 
     Older SDK images do not include OpenVSCode. In that case this function is a
     no-op so SDK setup remains backward compatible.
@@ -975,9 +975,10 @@ def ensure_codex_vscode_extension_installed(
     )
     if server_check.returncode != 0:
         if auto_install:
-            print("ℹ️  Browser VS Code is not available in this SDK image; skipping Claude and Codex extension install.")
+            print("ℹ️  Browser VS Code is not available in this SDK image; skipping browser VS Code extension install.")
         return
 
+    neat_extension_target = "sdk/vscode-extension"
     extensions = []
     claude_extension_id = os.environ.get(CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID).strip()
     codex_extension_id = os.environ.get(CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID).strip()
@@ -989,14 +990,12 @@ def ensure_codex_vscode_extension_installed(
         extensions.append(("Codex", codex_extension_id))
     else:
         print(f"ℹ️  {CODEX_EXTENSION_ID_ENV} is empty; skipping Codex extension install.")
-    if not extensions:
-        return
 
     if auto_install:
-        print("ℹ️  Auto-installing Claude and Codex extensions for browser VS Code.")
+        print("ℹ️  Auto-installing Neat, Claude, and Codex extensions for browser VS Code.")
     elif allow_prompt:
-        if not yes_no_prompt("Do you want to install Claude and Codex VSCode Extension?", default_yes=False):
-            print("ℹ️  Skipping Claude and Codex extension install.")
+        if not yes_no_prompt("Do you want to install SiMa Neat, Claude, and Codex VSCode Extensions?", default_yes=False):
+            print("ℹ️  Skipping browser VS Code extension install.")
             return
     else:
         return
@@ -1006,7 +1005,18 @@ def ensure_codex_vscode_extension_installed(
     user_settings = f"{home_directory}/.openvscode-server/data/User/settings.json"
     machine_settings = f"{home_directory}/.openvscode-server/data/Machine/settings.json"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
-    install_steps = []
+    install_steps = [
+        f"echo 'Installing SiMa Neat extension: {neat_extension_target}'; "
+        "SIMA_CLI_BIN=\"$(command -v sima-cli || true)\"; "
+        "if [ -z \"$SIMA_CLI_BIN\" ] && [ -x /opt/sima-cli/venv/bin/sima-cli ]; then "
+        "SIMA_CLI_BIN=/opt/sima-cli/venv/bin/sima-cli; "
+        "fi; "
+        "if [ -z \"$SIMA_CLI_BIN\" ]; then "
+        "echo 'sima-cli not found; cannot install SiMa Neat extension.' >&2; "
+        "exit 1; "
+        "fi; "
+        f"SIMA_CLI_CHECK_FOR_UPDATE=0 \"$SIMA_CLI_BIN\" neat install {shlex.quote(neat_extension_target)}"
+    ]
     legacy_cleanup_steps = []
     for label, extension_id in extensions:
         quoted_extension_id = shlex.quote(extension_id)
@@ -1065,6 +1075,7 @@ def ensure_codex_vscode_extension_installed(
     )
 
     print("ℹ️  Installing browser VS Code extensions:")
+    print(f"   - SiMa Neat: {neat_extension_target}")
     for label, extension_id in extensions:
         print(f"   - {label}: {extension_id}")
     result = subprocess.run(
@@ -1083,7 +1094,7 @@ def ensure_codex_vscode_extension_installed(
         check=False,
     )
     if result.returncode != 0:
-        print("⚠️  Could not install Claude and Codex extensions for browser VS Code; continuing SDK setup.")
+        print("⚠️  Could not install browser VS Code extensions; continuing SDK setup.")
         details = (result.stderr or result.stdout or "").strip()
         if details:
             print(details)
@@ -1091,7 +1102,7 @@ def ensure_codex_vscode_extension_installed(
 
     if result.stdout:
         print(result.stdout.strip())
-    print("✅ Claude and Codex extensions installed for browser VS Code.")
+    print("✅ Neat, Claude, and Codex extensions installed for browser VS Code.")
 
 
 def _container_openvscode_available(sdk_container_name: str) -> bool:

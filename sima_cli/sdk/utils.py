@@ -2557,6 +2557,45 @@ def prompt_image_selection(images, noninteractive=False):
 
     return [s for s in selected if s not in {"__all__", "__cancel__"}]
 
+
+def _match_image_selector(images, selector):
+    """Match one selector against local images: exact ref, then tag, then substring."""
+    exact = [img for img in images if img == selector]
+    if exact:
+        return exact
+    by_tag = [img for img in images if img.rsplit(":", 1)[-1] == selector]
+    if by_tag:
+        return by_tag
+    return [img for img in images if selector in img]
+
+
+def filter_images_by_selector(images, selectors):
+    """Resolve explicit --image selectors to local SDK images without prompting."""
+    if not images:
+        console.print("[red]❌ No SiMa.ai SDK images found locally.[/red]")
+        sys.exit(1)
+
+    selected = []
+    for selector in selectors:
+        matches = _match_image_selector(images, selector)
+        if not matches:
+            available = "\n".join(f"   • {img}" for img in images)
+            console.print(
+                f"[red]❌ No local SDK image matches '--image {selector}'.[/red]\n"
+                f"[dim]Available SDK images:[/dim]\n{available}"
+            )
+            sys.exit(1)
+        selected.extend(matches)
+
+    result = []
+    for img in selected:
+        if img not in result:
+            result.append(img)
+
+    console.print(f"[dim]Explicit image selection: starting {', '.join(result)}.[/dim]")
+    return result
+
+
 def confirm_to_remove_exiting_container(image, yes_to_all=False):
     """Start a container for the given SDK image."""
     container_name = image.split("/")[-1].replace(":", "_")

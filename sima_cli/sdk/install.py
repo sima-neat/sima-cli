@@ -37,6 +37,7 @@ from sima_cli.sdk.utils import (
     get_workspace,
     get_local_sima_images,
     prompt_image_selection,
+    filter_images_by_selector,
     confirm_to_remove_exiting_container,
     sanitize_container_name,
     ensure_simasdkbridge_network,
@@ -1039,6 +1040,7 @@ def setup_and_start(
     minimal: bool = False,
     workspace: Optional[str] = None,
     persistent_network_profile: bool = False,
+    image_selectors=(),
 ):
     """Main entry for SDK setup and container start."""
 
@@ -1050,7 +1052,10 @@ def setup_and_start(
         syscheck(force_install=yes_to_all, noninteractive=noninteractive)
 
     images = get_local_sima_images()
-    selected_images = prompt_image_selection(images, noninteractive)
+    if image_selectors:
+        selected_images = filter_images_by_selector(images, image_selectors)
+    else:
+        selected_images = prompt_image_selection(images, noninteractive)
 
     if not start_only:
         _reject_if_windows_native_neat_sdk(selected_images, console)

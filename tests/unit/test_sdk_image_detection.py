@@ -2288,6 +2288,62 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertTrue(start_container.call_args.kwargs["minimal"])
         self.assertTrue(start_container.call_args.kwargs["no_insight"])
 
+    def test_filter_images_by_selector_matches_ref_tag_and_substring(self):
+        from sima_cli.sdk.utils import filter_images_by_selector
+        images = ["ghcr.io/sima-neat/sdk:latest", "ghcr.io/sima-neat/sdk:v2.1.2"]
+        self.assertEqual(
+            filter_images_by_selector(images, ("ghcr.io/sima-neat/sdk:latest",)),
+            ["ghcr.io/sima-neat/sdk:latest"],
+        )
+        self.assertEqual(
+            filter_images_by_selector(images, ("v2.1.2",)),
+            ["ghcr.io/sima-neat/sdk:v2.1.2"],
+        )
+        self.assertEqual(
+            filter_images_by_selector(images, ("latest",)),
+            ["ghcr.io/sima-neat/sdk:latest"],
+        )
+
+    def test_filter_images_by_selector_exits_on_no_match(self):
+        from sima_cli.sdk.utils import filter_images_by_selector
+        with self.assertRaises(SystemExit):
+            filter_images_by_selector(["ghcr.io/sima-neat/sdk:latest"], ("nope",))
+
+    def test_setup_image_selector_bypasses_prompt_and_starts_only_that_image(self):
+        images = ["ghcr.io/sima-neat/sdk:latest", "ghcr.io/sima-neat/sdk:v2.1.2"]
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=images), \
+             patch("sima_cli.sdk.install.prompt_image_selection") as prompt, \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container:
+            setup_and_start(
+                no_model_sdk=True,
+                yes_to_all=True,
+                noninteractive=True,
+                image_selectors=("ghcr.io/sima-neat/sdk:latest",),
+            )
+
+        prompt.assert_not_called()
+        start_container.assert_called_once()
+        self.assertEqual(start_container.call_args.kwargs["image"], "ghcr.io/sima-neat/sdk:latest")
+
+    def test_sdk_setup_image_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "--image", "ghcr.io/sima-neat/sdk:latest", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            setup_start.call_args.kwargs["image_selectors"],
+            ("ghcr.io/sima-neat/sdk:latest",),
+        )
+
     def test_setup_warns_for_snap_docker_with_neat_sdk(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \

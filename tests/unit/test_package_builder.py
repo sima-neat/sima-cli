@@ -80,6 +80,50 @@ class PackageBuilderTests(unittest.TestCase):
             self.assertEqual(set(metadata["resources-checksum"]), {"install.sh", "neat-runtime.deb"})
             self.assertEqual(metadata["size"]["download"], metadata["size"]["install"])
 
+    def test_build_metadata_extension_excludes_match_file_suffix_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            wheel_name = (
+                "pyneat-0.2.0+codex.fix.tutorial.simaaimem.link.shim.62050c570715"
+                "-cp311-cp311-linux_aarch64.whl"
+            )
+            (artifacts / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "notes.txt").write_text("notes", encoding="utf-8")
+            (artifacts / wheel_name).write_bytes(b"wheel")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                metadata = build_metadata(
+                    artifacts_folder=artifacts,
+                    name="demo",
+                    version="1.0.0",
+                    install_script=":",
+                    exclude=(".sh", ".txt"),
+                )
+
+            self.assertEqual(metadata["resources"], [wheel_name])
+            self.assertEqual(set(metadata["resources-checksum"]), {wheel_name})
+
+    def test_build_metadata_dot_excludes_match_path_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / ".cache").mkdir()
+            (artifacts / ".cache" / "model.bin").write_bytes(b"cache")
+            (artifacts / ".git").mkdir()
+            (artifacts / ".git" / "config").write_text("config", encoding="utf-8")
+            (artifacts / "payload.bin").write_bytes(b"payload")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                metadata = build_metadata(
+                    artifacts_folder=artifacts,
+                    name="demo",
+                    version="1.0.0",
+                    install_script=":",
+                    exclude=(".cache", ".git"),
+                )
+
+            self.assertEqual(metadata["resources"], ["payload.bin"])
+            self.assertEqual(set(metadata["resources-checksum"]), {"payload.bin"})
+
     def test_build_metadata_can_request_compatible_file_downloads_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifacts = Path(tmp)
@@ -459,6 +503,53 @@ class PackageBuilderTests(unittest.TestCase):
             metadata = json.loads((artifacts / "metadata-minimum.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["resources"], ["install.sh", "neat-runtime.deb"])
             self.assertEqual(set(metadata["resources-checksum"]), {"install.sh", "neat-runtime.deb"})
+
+    def test_packages_build_command_extension_excludes_match_file_suffix_only(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            wheel_name = (
+                "pyneat-0.2.0+codex.fix.tutorial.simaaimem.link.shim.62050c570715"
+                "-cp311-cp311-linux_aarch64.whl"
+            )
+            (artifacts / "install_neat_framework.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (artifacts / "neat-runtime.deb").write_text("runtime", encoding="utf-8")
+            (artifacts / "sima-neat-extras.tar.gz").write_text("extras", encoding="utf-8")
+            (artifacts / "manifest.json").write_text("{}", encoding="utf-8")
+            (artifacts / wheel_name).write_bytes(b"wheel")
+
+            with patch("sima_cli.install.package_builder.resolve_git_context", return_value=(None, None)):
+                result = runner.invoke(
+                    main,
+                    [
+                        "packages",
+                        "build",
+                        str(artifacts),
+                        "--name",
+                        "demo",
+                        "--version",
+                        "1.0.0",
+                        "--install-script",
+                        ":",
+                        "--exclude",
+                        ".deb",
+                        "--exclude",
+                        ".tar.gz",
+                        "--exclude",
+                        ".sh",
+                        "--exclude",
+                        ".txt",
+                        "--exclude",
+                        ".json",
+                        "--variant",
+                        "pyneat",
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            metadata = json.loads((artifacts / "metadata-pyneat.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["resources"], [wheel_name])
+            self.assertEqual(set(metadata["resources-checksum"]), {wheel_name})
 
     def test_packages_build_command_rejects_unsafe_variant(self):
         runner = CliRunner()

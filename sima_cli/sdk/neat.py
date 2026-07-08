@@ -3,14 +3,19 @@ import json
 import os
 import platform
 import random
+import secrets
 import shutil
 import socket
 import subprocess
+import time
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import click
+from rich.console import Console
+from rich.panel import Panel
 
 from sima_cli.utils.net import get_local_ip_candidates
 
@@ -23,6 +28,9 @@ NEAT_MEDIAMTX_RTSP_TRANSPORTS = "tcp"
 NEAT_WEBRTC_UDP_SEARCH_START = 40000
 NEAT_WEBRTC_UDP_SEARCH_END = 65535
 NEAT_WEBRTC_UDP_PORT_COUNT = 200
+OPENVSCODE_TOKEN_BYTES = 32
+OPENVSCODE_TOKEN_CACHE_FILE = "sdk-code-ui-tokens.json"
+console = Console()
 
 
 @dataclass
@@ -35,6 +43,8 @@ class NeatRunConfig:
     cert_file_host_path: str
     key_file_host_path: str
     webrtc_host_ip: str = ""
+    code_ui_token: str = ""
+    code_ui_supported: bool = True
 
 
 def _can_bind_tcp(port: int) -> bool:
@@ -173,6 +183,8 @@ def allocate_neat_ports(
         web_ssh = _allocate_single_port(8022, "tcp", reserved)
         rtsp_tcp = _allocate_single_port(8554, "tcp", reserved)
         main_ui = _allocate_single_port(9900, "tcp", reserved)
+        code_ui = _allocate_single_port(9999, "tcp", reserved)
+        code_ui_https = _allocate_single_port(10000, "tcp", reserved)
         video_ui = _allocate_single_port(8081, "tcp", reserved)
         video_udp_start, video_udp_end = _allocate_port_range(9000, 9079, "udp", reserved)
         metadata_udp_start, metadata_udp_end = _allocate_port_range(9100, 9179, "udp", reserved)
@@ -188,6 +200,8 @@ def allocate_neat_ports(
         port_map.update(
             {
                 "mainUI": {"protocol": "tcp", "host": main_ui, "container": 9900},
+                "codeUI": {"protocol": "tcp", "host": code_ui, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": code_ui_https, "container": 10000, "scheme": "https"},
                 "videoUI": {"protocol": "tcp", "host": video_ui, "container": 8081},
                 "webSSH": {"protocol": "tcp", "host": web_ssh, "container": 8022},
                 "rtsp": {
@@ -220,6 +234,8 @@ def allocate_neat_ports(
             [
                 f"{web_ssh}:8022/tcp",
                 f"{main_ui}:9900/tcp",
+                f"{code_ui}:9999/tcp",
+                f"{code_ui_https}:10000/tcp",
                 f"{video_ui}:8081/tcp",
                 f"{rtsp_tcp}:8554/tcp",
                 f"{video_udp_start}-{video_udp_end}:9000-9079/udp",
@@ -310,6 +326,30 @@ def _detect_webrtc_host_ip(devkit_env: Optional[dict]) -> str:
 
     physical_ips = _collect_physical_ipv4s_for_certs()
     return physical_ips[0] if physical_ips else ""
+
+
+def _detect_browser_host_ip() -> str:
+    """Return the host IP to advertise/open for local browser access.
+
+    DevKit sync may legitimately use a VPN/tunnel IP as the WebRTC/ICE host.
+    Browser access to Docker-published SDK ports should prefer a physical host
+    address so local setup output is not broken by VPN routing.
+    """
+    physical_ips = _collect_physical_ipv4s_for_certs()
+    if physical_ips:
+        return physical_ips[0]
+
+    try:
+        for iface, ip in get_local_ip_candidates():
+            name = (iface or "").lower()
+            if name.startswith(("lo", "docker", "br-", "veth", "virbr", "tun", "tap", "utun", "wg", "tailscale", "zt", "vmnet", "vboxnet")):
+                continue
+            if _is_usable_ipv4(ip):
+                return ip
+    except Exception:
+        pass
+
+    return "localhost"
 
 
 def _is_wsl() -> bool:
@@ -486,8 +526,17 @@ def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all:
     cert_dir.mkdir(parents=True, exist_ok=True)
     cert_file = cert_dir / "neat-sdk.pem"
     key_file = cert_dir / "neat-sdk-key.pem"
-    mkcert = _ensure_mkcert(yes_to_all=yes_to_all, noninteractive=noninteractive)
     hosts = _collect_cert_hosts(devkit_env)
+    try:
+        mkcert = _ensure_mkcert(yes_to_all=yes_to_all, noninteractive=noninteractive)
+    except (RuntimeError, subprocess.CalledProcessError) as e:
+        click.secho(
+            f"⚠️  mkcert could not be installed: {e}. Falling back to a self-signed certificate.",
+            fg="yellow",
+        )
+        _generate_self_signed_cert(cert_file, key_file, hosts)
+        return cert_file, key_file
+
     if _run_mkcert_with_fallback([mkcert, "-install"], "install the local CA into the trust store"):
         subprocess.run(
             [mkcert, "-cert-file", str(cert_file), "-key-file", str(key_file), *hosts],
@@ -498,40 +547,66 @@ def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all:
     return cert_file, key_file
 
 
-def _cert_covers_host(cert_file: Path, host_ip: str) -> bool:
-    """Return True if the cert's SAN already lists ``host_ip`` as an IP address.
-
-    Used to avoid needlessly re-issuing (and disrupting) the certificate on a
-    re-point when the host IP hasn't changed. On any failure to verify (no
-    openssl, parse error) returns False so the caller re-issues to be safe.
+def _cert_san_hosts(cert_file: Path) -> Optional[List[str]]:
+    """Return the SAN entries of ``cert_file`` (both ``DNS:`` names and
+    ``IP Address:`` addresses), or ``None`` when the cert can't be read (no
+    openssl / parse error) so callers treat it as "unknown -> re-issue".
     """
-    if not host_ip:
-        return False
     try:
         result = subprocess.run(
             ["openssl", "x509", "-noout", "-ext", "subjectAltName", "-in", str(cert_file)],
             capture_output=True, text=True, check=False,
         )
         text = result.stdout or ""
-        if result.returncode != 0 or "IP Address" not in text:
+        if result.returncode != 0 or ("IP Address" not in text and "DNS" not in text):
             result = subprocess.run(
                 ["openssl", "x509", "-noout", "-text", "-in", str(cert_file)],
                 capture_output=True, text=True, check=False,
             )
             text = result.stdout or ""
-        # Parse the comma-separated "IP Address:<ip>" SAN entries and match
-        # exactly. A bare substring check would treat a routed IP that is a
-        # *prefix* of an existing entry as covered (e.g. 192.168.1.5 vs
-        # IP Address:192.168.1.50), wrongly skipping re-issue and leaving the
-        # browser with a SAN mismatch after that re-point.
-        san_ips = []
-        for token in text.replace("\n", ",").split(","):
-            token = token.strip()
-            if token.startswith("IP Address:"):
-                san_ips.append(token[len("IP Address:"):].strip())
-        return host_ip in san_ips
     except OSError:
+        return None
+    # Parse the comma/newline-separated SAN entries as exact tokens (not
+    # substrings) so 192.168.1.5 is not treated as covered by
+    # IP Address:192.168.1.50.
+    hosts = []
+    for token in text.replace("\n", ",").split(","):
+        token = token.strip()
+        if token.startswith("IP Address:"):
+            hosts.append(token[len("IP Address:"):].strip())
+        elif token.startswith("DNS:"):
+            hosts.append(token[len("DNS:"):].strip())
+    return hosts
+
+
+def _cert_covers_host(cert_file: Path, host_ip: str) -> bool:
+    """Return True if the cert's SAN lists ``host_ip``. False on any failure
+    (no openssl / parse error) so the caller re-issues to be safe."""
+    if not host_ip:
         return False
+    san = _cert_san_hosts(cert_file)
+    return san is not None and host_ip in san
+
+
+def _cert_covers_hosts(cert_file: Path, hosts: List[str]) -> bool:
+    """Return True only if the cert's SAN covers **every** host in ``hosts``.
+
+    On a re-point the set of host addresses can grow (e.g. a VPN/tunnel IP
+    appears) while the primary host IP is unchanged. Checking the full expected
+    list -- not just the primary IP -- ensures an older cert missing a newly
+    discovered address is re-issued rather than skipped. Returns False on any
+    failure so the caller re-issues to be safe; an empty ``hosts`` is treated as
+    "nothing to verify -> covered" (the caller's no-host-IP guard already handles
+    the do-nothing case).
+    """
+    wanted = [host for host in hosts if host]
+    if not wanted:
+        return True
+    san = _cert_san_hosts(cert_file)
+    if san is None:
+        return False
+    san_set = set(san)
+    return all(host in san_set for host in wanted)
 
 
 def _container_sdk_cert_dir(container_name: str) -> Optional[Path]:
@@ -578,9 +653,11 @@ def refresh_neat_certificates(
     to pick up the rewritten file from the bind-mounted cert dir.
 
     (Re)generates when the cert is **missing** (e.g. the user deleted it) or its
-    SAN doesn't cover the current host IP. No-op (returns False) only when there
-    is no host IP, or a valid cert already covers it. Returns True when a cert was
-    generated.
+    SAN doesn't cover **every** currently expected host -- the primary host IP
+    *and* all alternate addresses (e.g. VPN/tunnel IPs) -- so an older cert that
+    covers only the primary IP is still refreshed. No-op (returns False) only when
+    there is no usable host IP, or a valid cert already covers the full host list.
+    Returns True when a cert was generated.
     """
     host_ip = (devkit_env or {}).get("host_ip", "")
     if not host_ip:
@@ -592,7 +669,12 @@ def refresh_neat_certificates(
     cert_dir = _container_sdk_cert_dir(container_name) \
         or (Path(workspace) / f".{container_name}" / "sdk-cert")
     cert_file = cert_dir / "neat-sdk.pem"
-    if cert_file.exists() and _cert_covers_host(cert_file, host_ip):
+    # Re-issue unless the existing cert already covers the full set of hosts we
+    # would issue for now (primary host IP + all alternate IPv4s incl. VPN/tunnel),
+    # not just the primary host_ip -- otherwise a newly discovered address is
+    # silently left out on a re-run.
+    expected_hosts = _collect_cert_hosts(devkit_env)
+    if cert_file.exists() and _cert_covers_hosts(cert_file, expected_hosts):
         return False
     action = "Re-issuing" if cert_file.exists() else "Generating"
     print(f"🔐 {action} Neat SDK certificate for host IP {host_ip} ...")
@@ -606,6 +688,61 @@ def _write_port_map(config_dir: Path, port_map: Dict) -> Path:
     config_dir.mkdir(parents=True, exist_ok=True)
     path = config_dir / "neat-port-map.json"
     path.write_text(json.dumps(port_map, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _generate_code_ui_token() -> str:
+    return secrets.token_urlsafe(OPENVSCODE_TOKEN_BYTES)
+
+
+def _sima_cli_home() -> Path:
+    return Path(os.environ.get("SIMA_CLI_HOME", str(Path.home() / ".sima-cli"))).expanduser()
+
+
+def _code_ui_token_cache_path() -> Path:
+    return _sima_cli_home() / OPENVSCODE_TOKEN_CACHE_FILE
+
+
+def _read_code_ui_token_cache() -> Dict:
+    path = _code_ui_token_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_code_ui_token_cache(container_name: str, base_url: str, token: str) -> Path:
+    cache_dir = _sima_cli_home()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cache_dir.chmod(0o700)
+    except OSError:
+        pass
+
+    cache = _read_code_ui_token_cache()
+    entries = cache.setdefault("containers", {})
+    if not isinstance(entries, dict):
+        entries = {}
+        cache["containers"] = entries
+    host_port = int(base_url.rsplit(":", 1)[1])
+    entries[container_name] = {
+        "codeUI": {
+            "host": host_port,
+            "token": token,
+            "url": f"{base_url}/?tkn={token}&folder=/workspace",
+        },
+        "updated_at": int(time.time()),
+    }
+
+    path = _code_ui_token_cache_path()
+    path.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
     return path
 
 
@@ -669,6 +806,15 @@ def prepare_neat_container_run(
         yes_to_all=yes_to_all,
         noninteractive=noninteractive,
     )
+    code_ui_token = ""
+    code_ui = port_map.get("codeUI")
+    if isinstance(code_ui, dict):
+        code_ui_token = _generate_code_ui_token()
+        code_ui_https = port_map.get("codeUIHttps")
+        code_ui_url = f"http://localhost:{int(code_ui['host'])}"
+        if isinstance(code_ui_https, dict):
+            code_ui_url = f"https://localhost:{int(code_ui_https['host'])}"
+        _write_code_ui_token_cache(container_name, code_ui_url, code_ui_token)
     port_map_path = _write_port_map(config_dir, port_map)
     return NeatRunConfig(
         port_map=port_map,
@@ -679,6 +825,7 @@ def prepare_neat_container_run(
         cert_file_host_path=str(cert_file),
         key_file_host_path=str(key_file),
         webrtc_host_ip=webrtc_host_ip,
+        code_ui_token=code_ui_token,
     )
 
 
@@ -687,6 +834,15 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         docker_cmd.extend(["-e", f"MTX_RTSPTRANSPORTS={NEAT_MEDIAMTX_RTSP_TRANSPORTS}"])
     if config.webrtc_host_ip:
         docker_cmd.extend(["-e", f"CONTAINER_HOST_IP={config.webrtc_host_ip}"])
+    if config.code_ui_token:
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_TOKEN={config.code_ui_token}"])
+    cert_config = config.port_map.get("cert")
+    if config.cert_host_dir and isinstance(cert_config, dict):
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT={cert_config['certFile']}"])
+        docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT_KEY={cert_config['keyFile']}"])
+        code_ui_https = config.port_map.get("codeUIHttps")
+        if isinstance(code_ui_https, dict):
+            docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_HTTPS_PORT={code_ui_https['container']}"])
     for mapping in config.port_args:
         docker_cmd.extend(["-p", mapping])
     if config.config_host_dir:
@@ -695,50 +851,124 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         docker_cmd.extend(["-v", f"{config.cert_host_dir}:/sdk-cert"])
 
 
+def _code_ui_url(config: NeatRunConfig, display_host: str) -> str:
+    port_map = config.port_map
+    if not config.code_ui_supported or "codeUI" not in port_map:
+        return ""
+
+    display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
+    if not isinstance(display_entry, dict):
+        display_entry = port_map["codeUI"]
+    scheme = display_entry.get("scheme", "http")
+    code_url = f"{scheme}://{display_host}:{display_entry['host']}"
+    token = config.code_ui_token or port_map["codeUI"].get("token")
+    if token:
+        code_url = f"{code_url}/?tkn={token}&folder=/workspace"
+    return code_url
+
+
+def _open_code_ui_if_browser_available(code_url: str) -> bool:
+    if not code_url:
+        return False
+    try:
+        webbrowser.get()
+    except webbrowser.Error:
+        return False
+    try:
+        return bool(webbrowser.open(code_url))
+    except Exception:
+        return False
+
+
+def _print_code_ui_panel(code_url: str, opened: bool) -> None:
+    if not code_url:
+        return
+    status = "Opened in your browser." if opened else "Open this URL in your browser."
+    console.print(
+        Panel(
+            "\n".join(
+                [
+                    f"[bold]{status}[/bold]",
+                    f"[cyan]{code_url}[/cyan]",
+                    "",
+                    "[yellow]Security:[/yellow] Do not share this URL. It contains a Code UI access token.",
+                ]
+            ),
+            title="VS Code Browser Access",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+
 def print_neat_setup_summary(config: NeatRunConfig) -> None:
     port_map = config.port_map
-    print("🔌 Neat SDK port map:")
+    rows = []
+    display_host = _detect_browser_host_ip()
+    web_scheme = "https" if config.cert_host_dir else "http"
+    code_url = _code_ui_url(config, display_host)
     if "mainUI" in port_map:
-        print(f"   mainUI:      http://localhost:{port_map['mainUI']['host']}")
+        rows.append(("mainUI", f"{web_scheme}://{display_host}:{port_map['mainUI']['host']}"))
+    if code_url:
+        rows.append(("codeUI", code_url))
+        if "codeUIHttps" in port_map:
+            rows.append(("codeUIHttp", f"http://{display_host}:{port_map['codeUI']['host']}"))
     if "videoUI" in port_map:
-        print(f"   videoUI:     http://localhost:{port_map['videoUI']['host']}")
+        rows.append(("videoUI", f"{web_scheme}://{display_host}:{port_map['videoUI']['host']}"))
     if "webSSH" in port_map:
-        print(f"   webSSH:      http://localhost:{port_map['webSSH']['host']}")
+        rows.append(("webSSH", f"http://{display_host}:{port_map['webSSH']['host']}"))
     if "rtsp" in port_map:
-        print(f"   rtsp:        rtsp://localhost:{port_map['rtsp']['tcp']['host']}")
+        rows.append(("rtsp", f"rtsp://{display_host}:{port_map['rtsp']['tcp']['host']}"))
     if "videoUDP" in port_map:
-        print(
-            "   videoUDP:    {}-{}/udp -> {}-{}/udp".format(
+        rows.append(
+            ("videoUDP", "{}-{}/udp -> {}-{}/udp".format(
                 port_map["videoUDP"]["hostStart"],
                 port_map["videoUDP"]["hostEnd"],
                 port_map["videoUDP"]["containerStart"],
                 port_map["videoUDP"]["containerEnd"],
-            )
+            ))
         )
     if "metadataUDP" in port_map:
-        print(
-            "   metadataUDP: {}-{}/udp -> {}-{}/udp".format(
+        rows.append(
+            ("metadataUDP", "{}-{}/udp -> {}-{}/udp".format(
                 port_map["metadataUDP"]["hostStart"],
                 port_map["metadataUDP"]["hostEnd"],
                 port_map["metadataUDP"]["containerStart"],
                 port_map["metadataUDP"]["containerEnd"],
-            )
+            ))
         )
     if "webRTC" in port_map:
-        print(
-            "   webRTC:      {}-{}/udp -> {}-{}/udp".format(
+        rows.append(
+            ("webRTC", "{}-{}/udp -> {}-{}/udp".format(
                 port_map["webRTC"]["hostStart"],
                 port_map["webRTC"]["hostEnd"],
                 port_map["webRTC"]["containerStart"],
                 port_map["webRTC"]["containerEnd"],
-            )
+            ))
         )
     if config.webrtc_host_ip:
-        print(f"   iceHost:     {config.webrtc_host_ip}")
+        rows.append(("iceHost", config.webrtc_host_ip))
     if config.port_map_host_path:
-        print(f"   config:      {config.port_map_host_path}")
+        rows.append(("config", config.port_map_host_path))
     if config.cert_host_dir:
-        print(f"   certs:       {config.cert_host_dir}")
+        rows.append(("certs", config.cert_host_dir))
+
+    print("🔌 Neat SDK port map:")
+    if not rows:
+        print("   No Neat SDK ports are mapped.")
+        return
+
+    name_width = max(len("Name"), *(len(name) for name, _ in rows))
+    print(f"   {'Name'.ljust(name_width)} | Endpoint / Value")
+    print(f"   {'-' * name_width}-+-{'-' * len('Endpoint / Value')}")
+    for name, value in rows:
+        print(f"   {name.ljust(name_width)} | {value}")
+    if display_host == "localhost":
+        print("   Note: Use localhost for local access, or replace it with this machine's external IP/DNS name for remote access.")
+    else:
+        print("   Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.")
+    opened = _open_code_ui_if_browser_available(code_url)
+    _print_code_ui_panel(code_url, opened)
 
 
 def is_docker_port_collision_error(error_text: str) -> bool:

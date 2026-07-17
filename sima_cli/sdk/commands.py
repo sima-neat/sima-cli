@@ -304,8 +304,15 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     is_flag=True,
     help="Allow setup to install a persistent NetworkManager shared-network repair profile without prompting.",
 )
+@click.option(
+    "--image",
+    "image_selectors",
+    multiple=True,
+    default=(),
+    help="Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt.",
+)
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, workspace, persistent_network_profile):
+def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, workspace, persistent_network_profile, image_selectors):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
@@ -318,6 +325,7 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, w
             minimal=minimal,
             workspace=workspace,
             persistent_network_profile=persistent_network_profile,
+            image_selectors=image_selectors,
         )
     except subprocess.CalledProcessError as e:
         raise click.ClickException(f"SDK setup failed while running: {' '.join(e.cmd)}") from e
@@ -335,11 +343,18 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, w
     is_flag=True,
     help="Skip confirmation before starting the container."
 )
+@click.option(
+    "--image",
+    "image_selectors",
+    multiple=True,
+    default=(),
+    help="Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt.",
+)
 @click.pass_context
-def start(ctx, yes, noninteractive):
+def start(ctx, yes, noninteractive, image_selectors):
     """Select and start one or more SDK containers."""
     try:
-        setup_and_start(noninteractive=noninteractive,start_only=True, yes_to_all=yes)
+        setup_and_start(noninteractive=noninteractive, start_only=True, yes_to_all=yes, image_selectors=image_selectors)
     except subprocess.CalledProcessError as e:
         raise click.ClickException(f"SDK start failed while running: {' '.join(e.cmd)}") from e
     except RuntimeError as e:

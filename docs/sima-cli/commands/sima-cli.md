@@ -23,11 +23,12 @@ None.
 
 - [`sima-cli appzoo`](./sima-cli-appzoo.md): Access sample apps from the App Zoo.
 - [`sima-cli bootimg`](./sima-cli-bootimg.md): Prepare a bootable image for the SiMa DevKit.
-- [`sima-cli device`](./sima-cli-device.md): Discover nearby SiMa.ai devices on the local network.
+- [`sima-cli device`](./sima-cli-device.md): Discover and manage SiMa.ai device(s) on the local network, compatible with both PCIe and Ethernet connections. Host side only.
 - [`sima-cli download`](./sima-cli-download.md): Download a file or a whole folder from a given URL.
 - [`sima-cli install`](./sima-cli-install.md): Install SiMa packages.
 - [`sima-cli login`](./sima-cli-login.md): Authenticate with the SiMa Developer Portal.
 - [`sima-cli logout`](./sima-cli-logout.md): Log out by deleting cached credentials and config files.
+- [`sima-cli mcp`](./sima-cli-mcp.md): Run sima-cli as an MCP server so coding agents can drive the DevKit.
 - [`sima-cli mla`](./sima-cli-mla.md): Machine Learning Accelerator Utilities.
 - [`sima-cli modelzoo`](./sima-cli-modelzoo.md): Access models from the Model Zoo.
 - [`sima-cli neat`](./sima-cli-neat.md): Discover, download, and install Neat build artifacts.
@@ -60,11 +61,12 @@ Options:
 Commands:
   appzoo      Access sample apps from the App Zoo.
   bootimg     Prepare a bootable image for the SiMa DevKit.
-  device      Discover nearby SiMa.ai devices on the local network.
+  device      Discover and manage SiMa.ai device(s) on the local network,...
   download    Download a file or a whole folder from a given URL.
   install     Install SiMa packages.
   login       Authenticate with the SiMa Developer Portal.
   logout      Log out by deleting cached credentials and config files.
+  mcp         Run sima-cli as an MCP server so coding agents can drive...
   mla         Machine Learning Accelerator Utilities.
   modelzoo    Access models from the Model Zoo.
   neat        Discover, download, and install Neat build artifacts.

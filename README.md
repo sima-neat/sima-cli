@@ -149,6 +149,24 @@ sima-cli modelzoo list
 sima-cli appzoo list
 ```
 
+Let a coding agent drive a DevKit over MCP:
+
+```bash
+# Requires Python 3.10+: pip install 'sima-cli[mcp]'
+sima-cli mcp install --agent all   # register the MCP server with Claude and/or Codex
+sima-cli mcp status                # show availability and per-agent registration
+```
+
+The agent then connects to the `sima-devkit` MCP server (`sima-cli mcp serve`, stdio) and
+gets tools to discover boards, query board info, and run commands on the DevKit over SSH.
+Commands run as the unprivileged `sima` user (a privileged override such as
+`SIMA_DEVKIT_USER=root` is refused), and a best-effort client-side gate rejects common
+destructive patterns (`sudo` — including absolute-path forms, recursive/wildcard `rm`,
+writes to `/sys`). This gate is a guardrail, **not** a security boundary: regex screening
+cannot reliably stop interpreter payloads, variable indirection, or other shell bypasses.
+Real enforcement must come from the DevKit account, filesystem permissions, and runtime
+environment. See [`sima-cli mcp`](docs/sima-cli/commands/sima-cli-mcp.md).
+
 ## Top-Level Commands
 
 | Command | Description | Docs |
@@ -162,6 +180,7 @@ sima-cli appzoo list
 | `sima-cli logout` | Remove cached credentials and config files. | [docs](docs/sima-cli/commands/sima-cli-logout.md) |
 | `sima-cli mla` | Machine Learning Accelerator utilities. | [docs](docs/sima-cli/commands/sima-cli-mla.md) |
 | `sima-cli modelzoo` | Access models from the Model Zoo. | [docs](docs/sima-cli/commands/sima-cli-modelzoo.md) |
+| `sima-cli mcp` | Run sima-cli as an MCP server for coding agents. | [docs](docs/sima-cli/commands/sima-cli-mcp.md) |
 | `sima-cli neat` | Discover, download, and install Neat build artifacts. | [docs](docs/sima-cli/commands/sima-cli-neat.md) |
 | `sima-cli network` | Configure DevKit network settings. | [docs](docs/sima-cli/commands/sima-cli-network.md) |
 | `sima-cli nvme` | Perform NVMe operations on the Modalix DevKit. | [docs](docs/sima-cli/commands/sima-cli-nvme.md) |

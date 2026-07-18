@@ -171,7 +171,24 @@ sima-cli appzoo list
 | `sima-cli sdk` | Manage and launch SDK container environments. | [docs](docs/sima-cli/commands/sima-cli-sdk.md) |
 | `sima-cli selfupdate` | Update sima-cli manually. | [docs](docs/sima-cli/commands/sima-cli-selfupdate.md) |
 | `sima-cli serial` | Connect to the UART serial console of a DevKit. | [docs](docs/sima-cli/commands/sima-cli-serial.md) |
+| `sima-cli shell` | Start an interactive shell with a live command menu. | [docs](docs/sima-cli/commands/sima-cli-shell.md) |
 | `sima-cli update` | Update a SiMa DevKit or remote device. | [docs](docs/sima-cli/commands/sima-cli-update.md) |
+
+## Interactive Shell
+
+`sima-cli shell` opens an interactive REPL with a live, filterable command menu so
+you can run commands without memorizing them. Type to filter, ↑/↓ to pick, Enter
+to run, and `exit` (or Ctrl-D) to leave. See the [interactive shell guide](docs/sima-cli/interactive-shell.md)
+for details.
+
+Almost every command runs inside the shell. The following take over the terminal
+or re-exec the process and must be run directly instead:
+
+| Command | Why it cannot run in the shell | Run instead |
+| --- | --- | --- |
+| `serial` | Hijacks the TTY for the UART console. | `sima-cli serial` |
+| `network` | Hijacks the TTY for interactive configuration. | `sima-cli network` |
+| `selfupdate` | Re-execs the `sima-cli` process to update itself. | `sima-cli selfupdate` |
 
 ## Development
 

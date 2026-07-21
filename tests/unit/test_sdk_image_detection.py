@@ -326,6 +326,21 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
             self.assertTrue(Path(extensions_dir).is_dir())
 
+    def test_setup_sdk_extensions_without_model_compiler_skips_disk_check(self):
+        with TemporaryDirectory() as tmpdir:
+            with patch("sima_cli.sdk.install.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", side_effect=AssertionError("should not check disk")), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                extensions_dir = _setup_sdk_extensions(
+                    ["ghcr.io/sima-neat/sdk:latest"],
+                    noninteractive=True,
+                    for_model_compiler=False,
+                )
+
+            self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
+            self.assertTrue(Path(extensions_dir).is_dir())
+
     def test_get_workspace_noninteractive_uses_default_and_creates_it(self):
         with TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
@@ -2220,7 +2235,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("/sdk-cert", docker_cmd)
         self.assertNotIn("CONTAINER_HOST_IP=", docker_cmd)
 
-    def test_setup_no_model_sdk_skips_extension_directory_and_passes_flag(self):
+    def test_setup_no_model_sdk_still_provisions_extension_mount(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
              patch("sima_cli.sdk.install.syscheck"), \
@@ -2230,13 +2245,16 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.get_container_status", return_value={}), \
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
-             patch("sima_cli.sdk.install._setup_sdk_extensions") as setup_extensions, \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/home/u/sima-sdk-extensions") as setup_extensions, \
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
              patch("sima_cli.sdk.install.start_docker_container") as start_container:
             setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
 
-        setup_extensions.assert_not_called()
-        self.assertEqual(start_container.call_args.kwargs["sdk_extensions_dir"], "")
+        self.assertFalse(setup_extensions.call_args.kwargs["for_model_compiler"])
+        self.assertEqual(
+            start_container.call_args.kwargs["sdk_extensions_dir"],
+            "/home/u/sima-sdk-extensions",
+        )
         self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
 
     def test_setup_passes_yes_to_all_to_colima_devkit_network_warning(self):
@@ -2260,7 +2278,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 devkit_ip="10.0.0.244",
             )
 
-        setup_extensions.assert_not_called()
+        setup_extensions.assert_called_once()
         warn_colima.assert_called_once_with(
             "10.0.0.244",
             noninteractive=False,
@@ -2319,6 +2337,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.get_container_status", return_value={}), \
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/ext"), \
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
              patch("sima_cli.sdk.install.start_docker_container") as start_container:
             setup_and_start(
@@ -2361,7 +2380,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.Console.print") as console_print:
             setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
 
-        setup_extensions.assert_not_called()
+        setup_extensions.assert_called_once()
         start_container.assert_called_once()
         snap_panels = [
             call.args[0]
@@ -2406,6 +2425,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.get_container_status", return_value={container: "running"}), \
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/ext"), \
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=container), \
              patch("sima_cli.sdk.install.is_container_running", return_value=True), \
              patch("sima_cli.sdk.install.check_os", return_value="linux"), \

@@ -786,24 +786,26 @@ def _setup_sdk_extensions(
     selected_images: List[str],
     noninteractive: bool = False,
     yes_to_all: bool = False,
+    for_model_compiler: bool = True,
 ) -> str:
     if not _supports_model_sdk_extension_mount(selected_images):
         if any(is_neat_sdk_image(image) for image in selected_images):
-            click.secho("⚠️  Model Compiler extension mount is not available on ARM64 platforms before Neat SDK 2.1.1; skipping /sdk-extensions mount.", fg="yellow")
+            click.secho("⚠️  SDK extensions mount is not available on ARM64 platforms before Neat SDK 2.1.1; skipping /sdk-extensions mount.", fg="yellow")
         return ""
 
     default_extensions_dir = Path.home() / "sima-sdk-extensions"
-    home_usage = shutil.disk_usage(Path.home())
-    click.echo(
-        "ℹ️  Model Compiler extension may require about "
-        f"{MODEL_SDK_EXTENSION_REQUIRED_GB} GB of additional disk space. "
-        f"Available under {Path.home()}: {_format_gb(home_usage.free)}."
-    )
-    if home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
-        click.secho(
-            "⚠️  The default home filesystem may not have enough free space for the Model Compiler extension.",
-            fg="yellow",
+    if for_model_compiler:
+        home_usage = shutil.disk_usage(Path.home())
+        click.echo(
+            "ℹ️  Model Compiler extension may require about "
+            f"{MODEL_SDK_EXTENSION_REQUIRED_GB} GB of additional disk space. "
+            f"Available under {Path.home()}: {_format_gb(home_usage.free)}."
         )
+        if home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
+            click.secho(
+                "⚠️  The default home filesystem may not have enough free space for the Model Compiler extension.",
+                fg="yellow",
+            )
 
     if noninteractive or yes_to_all:
         extensions_dir = default_extensions_dir
@@ -1105,17 +1107,18 @@ def setup_and_start(
     )
     skip_model_sdk = no_model_sdk or minimal
     skip_insight = no_insight or minimal
-    if skip_model_sdk:
+    if minimal:
         sdk_extensions_dir = ""
-        if any(is_neat_sdk_image(img) for img in selected_images):
-            reason = "--minimal" if minimal else "--no-model-compiler"
-            click.echo(f"ℹ️  Skipping Model Compiler extension setup because {reason} was specified.")
     else:
         sdk_extensions_dir = _setup_sdk_extensions(
             selected_images,
             noninteractive=noninteractive,
             yes_to_all=yes_to_all,
+            for_model_compiler=not skip_model_sdk,
         )
+    if skip_model_sdk and any(is_neat_sdk_image(img) for img in selected_images):
+        reason = "--minimal" if minimal else "--no-model-compiler"
+        click.echo(f"ℹ️  Skipping Model Compiler extension setup because {reason} was specified.")
     if minimal and any(is_neat_sdk_image(img) for img in selected_images):
         click.echo("ℹ️  Skipping Insight setup because --minimal was specified.")
     

@@ -438,7 +438,7 @@ def find_available_ports(count=1, start_port=49152, end_port=65535):
             try:
                 # Try to bind to confirm the port is truly free
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(("", port))
+                    s.bind(("127.0.0.1", port))
                     free_ports.append(port)
                     if len(free_ports) == count:
                         return free_ports

@@ -40,6 +40,60 @@ class TestDownloader(unittest.TestCase):
         with self.assertRaises(ValueError):
             download_file_from_url("https://example.com/", "somewhere")
 
+    @patch("sima_cli.download.downloader.login")
+    @patch("sima_cli.download.downloader.requests.Session")
+    def test_check_url_available_uses_external_login_only_for_docs_hosts(self, mock_session_cls, mock_login):
+        from sima_cli.download.downloader import check_url_available
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_session_cls.return_value.head.return_value = mock_response
+
+        self.assertTrue(check_url_available("https://attacker.example/docs.sima.ai/file.tar"))
+
+        mock_login.assert_not_called()
+        mock_session_cls.return_value.head.assert_called_once()
+
+    @patch("sima_cli.download.downloader.login")
+    def test_check_url_available_uses_external_login_for_exact_docs_host(self, mock_login):
+        from sima_cli.download.downloader import check_url_available
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_login.return_value.head.return_value = mock_response
+
+        self.assertTrue(check_url_available("https://docs.sima.ai/pkg_downloads/file.tar"))
+
+        mock_login.assert_called_once_with("external")
+
+    @patch("sima_cli.download.downloader.download_github_asset")
+    @patch("sima_cli.download.downloader.requests.Session")
+    def test_download_file_uses_github_asset_only_for_exact_github_host(
+        self, mock_session_cls, mock_download_github_asset
+    ):
+        mock_head_response = MagicMock()
+        mock_head_response.headers = {'content-length': '4'}
+        mock_head_response.raise_for_status = lambda: None
+
+        mock_get_response = MagicMock()
+        mock_get_response.iter_content = lambda chunk_size: [b"data"]
+        mock_get_response.headers = {'content-length': '4'}
+        mock_get_response.raise_for_status = lambda: None
+        mock_get_response.__enter__.return_value = mock_get_response
+
+        mock_session = mock_session_cls.return_value
+        mock_session.head.return_value = mock_head_response
+        mock_session.get.return_value = mock_get_response
+
+        with TemporaryDirectory() as dest_folder:
+            downloaded_path = download_file_from_url(
+                "https://attacker.example/github.com/owner/repo/releases/download/v1/file.tar",
+                dest_folder,
+            )
+            self.assertTrue(os.path.exists(downloaded_path))
+
+        mock_download_github_asset.assert_not_called()
+
     @patch("sima_cli.download.downloader.requests.Session")
     def test_skip_already_downloaded_file(self, mock_session_cls):
         with TemporaryDirectory() as dest_folder:

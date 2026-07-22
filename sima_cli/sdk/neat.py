@@ -48,17 +48,17 @@ class NeatRunConfig:
 
 
 def _can_bind_tcp(port: int) -> bool:
-    if not _can_bind_socket(socket.AF_INET, socket.SOCK_STREAM, "0.0.0.0", port):
+    if not _can_bind_socket(socket.AF_INET, socket.SOCK_STREAM, "127.0.0.1", port):
         return False
-    if socket.has_ipv6 and not _can_bind_socket(socket.AF_INET6, socket.SOCK_STREAM, "::", port):
+    if socket.has_ipv6 and not _can_bind_socket(socket.AF_INET6, socket.SOCK_STREAM, "::1", port):
         return False
     return True
 
 
 def _can_bind_udp(port: int) -> bool:
-    if not _can_bind_socket(socket.AF_INET, socket.SOCK_DGRAM, "0.0.0.0", port):
+    if not _can_bind_socket(socket.AF_INET, socket.SOCK_DGRAM, "127.0.0.1", port):
         return False
-    if socket.has_ipv6 and not _can_bind_socket(socket.AF_INET6, socket.SOCK_DGRAM, "::", port):
+    if socket.has_ipv6 and not _can_bind_socket(socket.AF_INET6, socket.SOCK_DGRAM, "::1", port):
         return False
     return True
 

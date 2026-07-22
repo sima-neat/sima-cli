@@ -1644,7 +1644,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as listener:
             if hasattr(socket, "IPV6_V6ONLY"):
                 listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            listener.bind(("::", 0))
+            listener.bind(("::1", 0))
             port = listener.getsockname()[1]
 
             self.assertFalse(_is_port_available(port, "udp"))

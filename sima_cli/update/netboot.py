@@ -273,7 +273,8 @@ class InteractiveTftpServer(TftpServer):
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.sock.bind((listenip, listenport))
+            # TFTP netboot must be reachable by the DevKit before it has a stable host route.
+            self.sock.bind((listenip, listenport))  # lgtm[py/bind-socket-all-network-interfaces]
             self.sock.setblocking(0)
             _, self.listenport = self.sock.getsockname()
         except OSError as err:

@@ -7,6 +7,23 @@ from sima_cli.utils.config import get_auth_token
 from sima_cli.auth.login import login
 from sima_cli.install.github_assets import download_github_asset
 
+
+DOCS_HOSTS = {"docs.sima.ai", "docs-dev.sima.ai"}
+
+
+def _url_host(url: str) -> str:
+    return (urlparse(url).hostname or "").lower()
+
+
+def _is_docs_url(url: str) -> bool:
+    return _url_host(url) in DOCS_HOSTS
+
+
+def _is_github_release_asset(url: str) -> bool:
+    parsed_url = urlparse(url)
+    return parsed_url.hostname == "github.com" and "/releases/download/" in parsed_url.path
+
+
 def _list_directory_files(url: str, internal: bool = False) -> List[str]:
     """
     Attempt to list files in a server-hosted directory with index browsing enabled.
@@ -88,11 +105,11 @@ def download_file_from_url(url: str, dest_folder: str = ".", internal: bool = Fa
             session.trust_env = False
             request_fn = session.get
             head_fn = session.head
-        elif 'https://docs.sima.ai' in url or 'https://docs-dev.sima.ai' in url:
+        elif _is_docs_url(url):
             session = login('external')
             request_fn = session.get
             head_fn = session.head
-        elif 'https://github.com' in url and "/releases/download/" in url:
+        elif _is_github_release_asset(url):
             token = os.getenv("GITHUB_TOKEN", None)
             return download_github_asset(url, token=token)
         else:
@@ -166,7 +183,7 @@ def check_url_available(url: str, internal: bool = False) -> bool:
             session = requests.Session()
             session.trust_env = False  # Ignore .netrc and other env-based config
             head_fn = session.head
-        elif 'https://docs.sima.ai' in url or 'https://docs-dev.sima.ai':
+        elif _is_docs_url(url):
             session = login('external')
             head_fn = session.head
         else:

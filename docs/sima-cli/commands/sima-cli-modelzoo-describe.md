@@ -1,6 +1,6 @@
 # `sima-cli modelzoo describe`
 
-Download a specific model.
+Provide information about a specific model.
 
 Parent command: [`sima-cli modelzoo`](./sima-cli-modelzoo.md)
 
@@ -25,7 +25,7 @@ None.
 ```text
 Usage: sima-cli modelzoo describe [OPTIONS] MODEL_NAME
 
-  Download a specific model.
+  Provide information about a specific model.
 
 Options:
   --help  Show this message and exit.

@@ -407,7 +407,7 @@ def get_model(ctx, model_name):
 @click.argument('model_name') 
 @click.pass_context
 def get_model(ctx, model_name):
-    """Download a specific model."""
+    """Provide information about a specific model."""
     ver = ctx.obj.get("ver")
     internal = ctx.obj.get("internal", False)
     boardtype = ctx.obj.get('boardtype')

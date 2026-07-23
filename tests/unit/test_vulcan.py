@@ -9,7 +9,7 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from sima_cli.cli import main
-from sima_cli.install.metadata_installer import InstallationPreflightError
+from sima_cli.install.metadata_installer import InstallationPreflightError, MetadataAccessForbidden
 from sima_cli.install import metadata_installer
 from sima_cli.vulcan.artifacts import (
     DownloadResult,
@@ -778,6 +778,46 @@ class VulcanCommandTests(unittest.TestCase):
         self.assertIn("Installation Failed", result.output)
         self.assertIn("Current directory '/' is not writable.", result.output)
         self.assertNotIn("Failed to resolve metadata", result.output)
+
+    def test_top_level_install_switches_neat_target_after_metadata_403(self):
+        runner = CliRunner()
+        with patch(
+            "sima_cli.cli.metadata_resolver",
+            return_value="https://docs.sima.ai/pkg_downloads/SDK2.1.0/core/metadata.json",
+        ), patch(
+            "sima_cli.cli.install_from_metadata",
+            side_effect=MetadataAccessForbidden("HTTP 403"),
+        ), patch("sima_cli.cli.install_vulcan_package") as neat_install_mock:
+            result = runner.invoke(main, ["install", "core/runtime", "-v", "2.1.0"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Switching to Neat Install", result.output)
+        self.assertIn("sima-cli neat install core/runtime", result.output)
+        self.assertIn("use sima-cli neat install in the future", result.output)
+        neat_install_mock.assert_called_once_with(
+            target="core/runtime",
+            environment="production",
+            package_type=None,
+            install_dir=".",
+            force=False,
+            json_output=False,
+            command_name="sima-cli neat install",
+        )
+
+    def test_top_level_install_does_not_switch_unknown_target_after_metadata_403(self):
+        runner = CliRunner()
+        with patch(
+            "sima_cli.cli.metadata_resolver",
+            return_value="https://docs.sima.ai/pkg_downloads/SDK2.1.0/other/metadata.json",
+        ), patch(
+            "sima_cli.cli.install_from_metadata",
+            side_effect=MetadataAccessForbidden("HTTP 403"),
+        ), patch("sima_cli.cli.install_vulcan_package") as neat_install_mock:
+            result = runner.invoke(main, ["install", "other", "-v", "2.1.0"])
+
+        self.assertNotEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("Switching to Neat Install", result.output)
+        neat_install_mock.assert_not_called()
 
     def test_top_level_install_vulcan_requires_target(self):
         runner = CliRunner()

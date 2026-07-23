@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from sima_cli.install.metadata_installer import (
     InstallationPreflightError,
+    _is_http_forbidden_error,
     _download_metadata_file_resource,
     _ensure_install_dir_writable,
     _filter_download_compatible_resources,
@@ -21,6 +22,18 @@ from sima_cli.install.metadata_installer import (
 
 
 class MetadataInstallerCompatibilityTests(unittest.TestCase):
+    def test_http_forbidden_detection_handles_wrapped_download_error(self):
+        try:
+            try:
+                raise RuntimeError("403 Client Error: Forbidden")
+            except RuntimeError as exc:
+                raise RuntimeError("Download failed") from exc
+        except RuntimeError as exc:
+            self.assertTrue(_is_http_forbidden_error(exc))
+
+    def test_http_forbidden_detection_rejects_other_http_errors(self):
+        self.assertFalse(_is_http_forbidden_error(RuntimeError("404 Client Error: Not Found")))
+
     @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
     @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
     @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "mac"))

@@ -49,6 +49,26 @@ class InstallationPreflightError(click.ClickException):
         )
 
 
+class MetadataAccessForbidden(click.ClickException):
+    """Raised when a metadata request is rejected with HTTP 403."""
+
+
+def _is_http_forbidden_error(exc: BaseException) -> bool:
+    current = exc
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        if getattr(response, "status_code", None) == 403:
+            return True
+        if getattr(current, "code", None) == 403:
+            return True
+        if re.search(r"\b403\b", str(current), flags=re.IGNORECASE):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _ensure_install_dir_writable(install_dir: str, command_name: str = "sima-cli install") -> None:
     target = Path(install_dir or ".").expanduser()
     display_path = Path.cwd() if str(target) == "." else target
@@ -839,6 +859,10 @@ def _download_and_validate_metadata(
         raise click.Abort()
 
     except Exception as e:
+        if _is_http_forbidden_error(e):
+            raise MetadataAccessForbidden(
+                f"Access forbidden while retrieving metadata from {metadata_url}"
+            ) from e
         click.echo(f"❌ Failed to retrieve or parse metadata from {metadata_url}: {e}")
         raise click.Abort()
     
@@ -893,6 +917,8 @@ def _check_whether_disk_is_big_enough(metadata: dict, force: bool = False):
         click.echo(click.style("✅ Enough disk space for installation and resources.", fg="green"))
         return True
 
+    except MetadataAccessForbidden:
+        raise
     except Exception as e:
         click.echo(click.style(f"❌ Failed to validate disk space {e}", fg="red"))
         raise click.Abort()

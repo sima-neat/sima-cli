@@ -917,8 +917,6 @@ def _check_whether_disk_is_big_enough(metadata: dict, force: bool = False):
         click.echo(click.style("✅ Enough disk space for installation and resources.", fg="green"))
         return True
 
-    except MetadataAccessForbidden:
-        raise
     except Exception as e:
         click.echo(click.style(f"❌ Failed to validate disk space {e}", fg="red"))
         raise click.Abort()
@@ -1583,6 +1581,8 @@ def install_from_metadata(
                         _mark_install_script_executable(metadata, install_dir)
                         _run_installation_script(metadata=metadata, extract_path=install_dir)
 
+    except MetadataAccessForbidden:
+        raise
     except Exception as e:
         click.echo(f"❌ Failed to install from metadata URL {metadata_url}: {e}")
         exit(1)

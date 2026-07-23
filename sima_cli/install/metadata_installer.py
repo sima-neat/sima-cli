@@ -767,7 +767,12 @@ def selectable_resource_handler(metadata):
     return metadata
 
 
-def _download_and_validate_metadata(metadata_url, internal=False, force=False):
+def _download_and_validate_metadata(
+    metadata_url,
+    internal=False,
+    force=False,
+    check_compatibility=True,
+):
     """
     Downloads (if remote), validates, and parses metadata from a given URL or local file path.
 
@@ -775,6 +780,7 @@ def _download_and_validate_metadata(metadata_url, internal=False, force=False):
         metadata_url (str): URL or local path to a metadata.json file
         internal (bool): Whether to use internal mirrors or logic in downloader
         force (bool): whether to ignore compatibility check result
+        check_compatibility (bool): whether to enforce platform compatibility
 
     Returns:
         tuple: (parsed metadata dict, folder containing the metadata file)
@@ -811,7 +817,7 @@ def _download_and_validate_metadata(metadata_url, internal=False, force=False):
                 with open(metadata_path, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
                 validate_metadata(metadata)
-                if _is_platform_compatible(metadata, force) or force:
+                if not check_compatibility or force or _is_platform_compatible(metadata, force):
                     click.echo("✅ Metadata validated successfully.")
                     metadata = selectable_resource_handler(metadata)
                     return metadata, os.path.dirname(metadata_path)
@@ -823,7 +829,7 @@ def _download_and_validate_metadata(metadata_url, internal=False, force=False):
             metadata = json.load(f)
 
         validate_metadata(metadata)
-        if _is_platform_compatible(metadata, force=force) or force:
+        if not check_compatibility or force or _is_platform_compatible(metadata, force=force):
             metadata = selectable_resource_handler(metadata)
             click.echo("✅ Metadata validated successfully.")
             return metadata, os.path.dirname(os.path.abspath(metadata_path))
@@ -1513,6 +1519,7 @@ def install_from_metadata(
     install_dir: str = '.',
     force: bool = False,
     command_name: str = "sima-cli install",
+    download_only: bool = False,
 ):
     _ensure_install_dir_writable(install_dir, command_name=command_name)
 
@@ -1526,15 +1533,23 @@ def install_from_metadata(
         if force:
             click.secho('⚠️  --force option was provided, skipping available space and compatibility check, package may not work properly', fg='yellow')
 
-        metadata, _ = _download_and_validate_metadata(metadata_url, internal, force=force)
-        registry.create_entry(metadata.get('name'), metadata.get('version'), metadata, '')
-
+        metadata, _ = _download_and_validate_metadata(
+            metadata_url,
+            internal,
+            force=force,
+            check_compatibility=not download_only,
+        )
         if metadata:
             print_metadata_summary(metadata=metadata)
+            if not download_only:
+                registry.create_entry(metadata.get('name'), metadata.get('version'), metadata, '')
                 
             if _check_whether_disk_is_big_enough(metadata, force) or force:
-                if _is_platform_compatible(metadata, force) or force:
+                if download_only or force or _is_platform_compatible(metadata, force):
                     local_paths = _download_assets(metadata, metadata_url, install_dir, internal, tag=tag)
+                    if download_only:
+                        click.echo(f"✅ Download complete. {len(local_paths)} resource(s) saved to: {install_dir}")
+                        return local_paths
                     if len(local_paths) > 0:
                         _mark_install_script_executable(metadata, install_dir)
                         _combine_multipart_files(install_dir, local_paths=local_paths)

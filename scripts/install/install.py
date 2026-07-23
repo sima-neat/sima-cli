@@ -340,10 +340,7 @@ def _configure_pypi_shell_path(venv_dir: Path) -> None:
     aliases = {
         "sima-cli": str(venv_dir / "bin" / "sima-cli"),
         "sdk": "sima-cli sdk",
-        "mpk": "sima-cli sdk mpk",
-        "modelsdk": "sima-cli sdk model",
-        "yocto": "sima-cli sdk yocto",
-        "elxr": "sima-cli sdk elxr",
+        "sima-neat": "sima-cli sdk neat",
     }
     for name, command in aliases.items():
         _append_line_once(rc_file, f"alias {name}='{command}'")

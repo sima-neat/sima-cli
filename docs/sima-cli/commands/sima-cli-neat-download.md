@@ -1,13 +1,13 @@
 # `sima-cli neat download`
 
-Download artifacts for REPO and branch or tag REF.
+Download a Neat package's metadata resources without installing it.
 
 Parent command: [`sima-cli neat`](./sima-cli-neat.md)
 
 ## Usage
 
 ```bash
-sima-cli neat download [OPTIONS] [REPO] [REF]
+sima-cli neat download [OPTIONS] TARGET
 ```
 
 ## Options
@@ -19,23 +19,23 @@ sima-cli neat download [OPTIONS] [REPO] [REF]
 | `--prd, --prod` | Use production artifacts. |
 | `--env` | Artifact environment. Overrides the parent --env. |
 | `--base-url` | Override the artifact base URL. Overrides the parent --base-url. |
-| `-o, --output` | Output directory. (default: neat-downloads) |
-| `--artifact` | Artifact path glob to download from manifest.json. May be repeated. |
-| `--json` | Print a machine-readable JSON summary. |
+| `-d, --install-dir` | Directory where package resources are downloaded. (default: .) |
+| `-t, --type` | Download metadata variant metadata-<type>.json instead of metadata.json. |
+| `-f, --force` | Skip available-space checks while downloading. |
+| `--json` | Print resolved metadata URL and exit. |
 
 ## Arguments
 
 | Name | Description |
 | --- | --- |
-| `REPO` |  |
-| `REF` |  |
+| `TARGET` | (required) |
 
 ## Full Help
 
 ```text
-Usage: sima-cli neat download [OPTIONS] [REPO] [REF]
+Usage: sima-cli neat download [OPTIONS] TARGET
 
-  Download artifacts for REPO and branch or tag REF.
+  Download a Neat package's metadata resources without installing it.
 
 Options:
   --dev                           Use dev artifacts.
@@ -46,9 +46,13 @@ Options:
                                   --env.
   --base-url TEXT                 Override the artifact base URL. Overrides
                                   the parent --base-url.
-  -o, --output DIRECTORY          Output directory.  [default: neat-downloads]
-  --artifact TEXT                 Artifact path glob to download from
-                                  manifest.json. May be repeated.
-  --json                          Print a machine-readable JSON summary.
+  -d, --install-dir DIRECTORY     Directory where package resources are
+                                  downloaded.  [default: .]
+  -t, --type TEXT                 Download metadata variant
+                                  metadata-<type>.json instead of
+                                  metadata.json.
+  -f, --force                     Skip available-space checks while
+                                  downloading.
+  --json                          Print resolved metadata URL and exit.
   --help                          Show this message and exit.
 ```

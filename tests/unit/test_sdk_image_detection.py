@@ -3249,14 +3249,16 @@ table ip6 nm-shared-enx6c1ff720d573 {
             installer.index("sudo apt-get install -y -o DPkg::Lock::Timeout=120"),
         )
 
-    def test_installers_preserve_modelsdk_alias(self):
+    def test_installers_use_only_supported_sdk_aliases(self):
         shell_installer = Path("scripts/install/linux-mac.sh").read_text(encoding="utf-8")
         python_installer = Path("scripts/install/install.py").read_text(encoding="utf-8")
 
-        self.assertIn("modelsdk", shell_installer)
-        self.assertIn('"modelsdk": "sima-cli sdk model"', python_installer)
-        self.assertNotIn("modelcompiler", shell_installer)
-        self.assertNotIn('"modelcompiler": "sima-cli sdk model"', python_installer)
+        self.assertIn("ALIAS_NAMES=( sima-cli sdk sima-neat )", shell_installer)
+        self.assertIn('"sima-neat": "sima-cli sdk neat"', python_installer)
+        self.assertNotIn('"modelsdk": "sima-cli sdk model"', python_installer)
+        self.assertNotIn('"mpk": "sima-cli sdk mpk"', python_installer)
+        self.assertNotIn('"yocto": "sima-cli sdk yocto"', python_installer)
+        self.assertNotIn('"elxr": "sima-cli sdk elxr"', python_installer)
 
     def test_prepare_log_host_dir_makes_directory_container_writable(self):
         with TemporaryDirectory() as tmpdir:

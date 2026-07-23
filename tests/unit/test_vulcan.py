@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from sima_cli.cli import main
 from sima_cli.install.metadata_installer import InstallationPreflightError
+from sima_cli.install import metadata_installer
 from sima_cli.vulcan.artifacts import (
     DownloadResult,
     ENV_BASE_URLS,
@@ -64,6 +65,35 @@ class FakeClient:
 
 
 class VulcanArtifactTests(unittest.TestCase):
+    def test_metadata_download_only_stops_before_install_side_effects(self):
+        metadata = {"name": "demo", "version": "1.0", "resources": ["package.tar.gz"]}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            metadata_installer, "_download_and_validate_metadata", return_value=(metadata, tmp)
+        ) as metadata_mock, patch.object(
+            metadata_installer, "_check_whether_disk_is_big_enough", return_value=True
+        ), patch.object(
+            metadata_installer, "_is_platform_compatible", return_value=True
+        ) as compatibility_mock, patch.object(
+            metadata_installer, "_download_assets", return_value=[str(Path(tmp) / "package.tar.gz")]
+        ) as download_mock, patch.object(
+            metadata_installer, "_run_installation_script"
+        ) as install_script_mock, patch.object(
+            metadata_installer.registry, "create_entry"
+        ) as registry_mock:
+            result = metadata_installer.install_from_metadata(
+                "https://example.invalid/metadata.json",
+                internal=False,
+                install_dir=tmp,
+                download_only=True,
+            )
+
+        self.assertEqual(result, [str(Path(tmp) / "package.tar.gz")])
+        self.assertFalse(metadata_mock.call_args.kwargs["check_compatibility"])
+        download_mock.assert_called_once()
+        compatibility_mock.assert_not_called()
+        install_script_mock.assert_not_called()
+        registry_mock.assert_not_called()
+
     def test_environment_urls_match_vulcan_domains(self):
         self.assertEqual(ENV_BASE_URLS["dev"], "https://artifacts.neat.paconsultings.com")
         self.assertEqual(ENV_BASE_URLS["staging"], "https://artifacts.stg.neat.sima.ai")
@@ -299,23 +329,48 @@ class VulcanCommandTests(unittest.TestCase):
         result = runner.invoke(main, ["neat", "download", "--help"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Download artifacts for REPO", result.output)
+        self.assertIn("Download a Neat package's metadata resources", result.output)
+        self.assertIn("TARGET", result.output)
         self.assertIn("--env [dev|stg|staging|prd|prod|production]", result.output)
         self.assertIn("--stg, --staging", result.output)
         self.assertIn("--prd, --prod", result.output)
 
     def test_neat_group_accepts_env_before_download(self):
         runner = CliRunner()
-        with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
-            download_mock.return_value = (
-                _fake_result(environment="dev", base_url=ENV_BASE_URLS["dev"]),
-                None,
-            )
-            result = runner.invoke(main, ["neat", "--env", "dev", "download", "core", "main"])
+        with patch("sima_cli.vulcan.commands.install_vulcan_package") as install_mock:
+            result = runner.invoke(main, ["neat", "--env", "dev", "download", "core"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(download_mock.call_args.kwargs["environment"], "dev")
-        self.assertIsNone(download_mock.call_args.kwargs["base_url"])
+        self.assertEqual(install_mock.call_args.kwargs["environment"], "dev")
+        self.assertTrue(install_mock.call_args.kwargs["download_only"])
+        self.assertIsNone(install_mock.call_args.kwargs["base_url"])
+
+    def test_neat_artifacts_preserves_manifest_downloader(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
+            download_mock.return_value = (_fake_result(), None)
+            result = runner.invoke(main, ["neat", "artifacts", "core", "main"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        download_mock.assert_called_once()
+
+    def test_neat_install_download_only_forwards_download_mode(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.install_vulcan_package") as install_mock:
+            result = runner.invoke(main, ["neat", "install", "core", "--download-only"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(install_mock.call_args.kwargs["download_only"])
+
+    def test_neat_sdk_forwards_passthrough_arguments(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.launch_sdk_tool") as launch_mock:
+            result = runner.invoke(main, ["neat", "sdk", "python", "--version"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        launch_mock.assert_called_once()
+        self.assertEqual(launch_mock.call_args.args[0], "neat")
+        self.assertEqual(launch_mock.call_args.args[1], ("python", "--version"))
 
     def test_vulcan_download_help_is_registered(self):
         runner = CliRunner()

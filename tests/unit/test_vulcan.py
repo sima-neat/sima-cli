@@ -813,7 +813,7 @@ class VulcanCommandTests(unittest.TestCase):
             "sima_cli.install.metadata_installer._download_and_validate_metadata",
             side_effect=MetadataAccessForbidden("HTTP 403"),
         ), patch("sima_cli.cli.install_vulcan_package") as neat_install_mock:
-            result = runner.invoke(main, ["install", "core"])
+            result = runner.invoke(main, ["install", "core", "-v", "2.1.2"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Switching to Neat Install", result.output)

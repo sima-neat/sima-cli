@@ -2,6 +2,9 @@ import os
 import shutil
 import sys
 import click
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 from sima_cli.utils.env import get_environment_type
 from sima_cli.update.updater import perform_update
 from sima_cli.model_zoo.model import list_models, download_model, describe_model
@@ -12,7 +15,11 @@ from sima_cli.__version__ import __version__
 from sima_cli.utils.config import CONFIG_PATH
 from sima_cli.install.optiview import install_optiview
 from sima_cli.install.hostdriver import install_hostdriver
-from sima_cli.install.metadata_installer import install_from_metadata, metadata_resolver
+from sima_cli.install.metadata_installer import (
+    MetadataAccessForbidden,
+    install_from_metadata,
+    metadata_resolver,
+)
 from sima_cli.serial.serial import connect_serial
 from sima_cli.storage.nvme import nvme_format, nvme_remount
 from sima_cli.storage.sdcard import sdcard_format
@@ -544,6 +551,36 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 SDK_DEPENDENT_COMPONENTS = {"palette", "hostdriver"}
 SDK_INDEPENDENT_COMPONENTS = {"optiview"}
 ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
+NEAT_INSTALL_REPOSITORIES = {
+    "apps",
+    "core",
+    "insight",
+    "internals",
+    "llima",
+    "sdk",
+    "sentinel",
+    "sima-cli",
+}
+
+
+def _is_neat_install_target(component: str) -> bool:
+    repository = component.lower().split("/", 1)[0].split("@", 1)[0].split(":", 1)[0]
+    return repository in NEAT_INSTALL_REPOSITORIES
+
+
+def _show_neat_install_fallback(component: str) -> None:
+    Console().print(
+        Panel(
+            Text.from_markup(
+                "The standard install source returned HTTP 403 for this Neat component.\n\n"
+                f"Switching to [bold]sima-cli neat install {component}[/bold].\n\n"
+                "For Neat organization components, use [bold]sima-cli neat install[/bold] in the future."
+            ),
+            title="Switching to Neat Install",
+            border_style="yellow",
+            expand=False,
+        )
+    )
 
 @main.command(name="install")
 @click.argument("component", required=False)
@@ -728,6 +765,20 @@ def install_cmd(
                 command_name="sima-cli install",
             ):
                 click.echo("✅ Installation complete.")
+        except MetadataAccessForbidden:
+            if not _is_neat_install_target(component):
+                raise
+            _show_neat_install_fallback(component)
+            install_vulcan_package(
+                target=component,
+                environment="production",
+                package_type=tag,
+                install_dir=install_dir,
+                force=force,
+                json_output=json_output,
+                command_name="sima-cli neat install",
+            )
+            return None
         except click.ClickException:
             raise
         except Exception as e:

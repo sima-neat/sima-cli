@@ -23,6 +23,7 @@ sima-cli neat install [OPTIONS] TARGET
 | `-t, --type` | Install metadata variant metadata-<type>.json instead of metadata.json. |
 | `-f, --force` | Force installation even if compatibility checks fail. |
 | `--json` | Print resolved metadata URL and exit. |
+| `--download-only` | Download metadata resources without running installation. |
 
 ## Arguments
 
@@ -58,5 +59,7 @@ Options:
   -f, --force                     Force installation even if compatibility
                                   checks fail.
   --json                          Print resolved metadata URL and exit.
+  --download-only                 Download metadata resources without running
+                                  installation.
   --help                          Show this message and exit.
 ```

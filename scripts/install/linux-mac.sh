@@ -186,14 +186,11 @@ if $skip_sdk_aliases; then
     ALIAS_NAMES=( sima-cli )
     ALIAS_CMDS=( "$VENV_DIR/bin/sima-cli" )
 else
-    ALIAS_NAMES=( sima-cli sdk mpk modelsdk yocto elxr )
+    ALIAS_NAMES=( sima-cli sdk sima-neat )
     ALIAS_CMDS=(
         "$VENV_DIR/bin/sima-cli"
         "sima-cli sdk"
-        "sima-cli sdk mpk"
-        "sima-cli sdk model"
-        "sima-cli sdk yocto"
-        "sima-cli sdk elxr"
+        "sima-cli sdk neat"
     )
 fi
 

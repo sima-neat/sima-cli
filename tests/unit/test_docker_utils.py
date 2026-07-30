@@ -245,6 +245,29 @@ class TestCheckAndStartDockerLinux(unittest.TestCase):
         handler.assert_called_once()
 
 
+class TestCheckAndStartDockerMac(unittest.TestCase):
+    """macOS branch of check_and_start_docker."""
+
+    def test_daemon_already_running_returns_true_without_starting(self):
+        with patch("sima_cli.utils.docker.get_environment_type", return_value=("host", "mac")), \
+             patch("sima_cli.utils.docker._docker_info_probe", return_value=(0, "")), \
+             patch("sima_cli.utils.docker.start_docker_macos") as start:
+            self.assertTrue(docker.check_and_start_docker())
+
+        start.assert_not_called()
+
+    def test_successful_start_returns_true(self):
+        # Daemon down, user accepts, start_docker_macos reports success — the
+        # result must propagate so callers don't treat it as a failure.
+        with patch("sima_cli.utils.docker.get_environment_type", return_value=("host", "mac")), \
+             patch("sima_cli.utils.docker._docker_info_probe", return_value=(1, "daemon not running")), \
+             patch("sima_cli.utils.docker.confirm", return_value=True), \
+             patch("sima_cli.utils.docker.start_docker_macos", return_value=True) as start:
+            self.assertTrue(docker.check_and_start_docker())
+
+        start.assert_called_once()
+
+
 class TestDockerInfoProbe(unittest.TestCase):
     """Verify the probe always returns a 2-tuple and never raises."""
 

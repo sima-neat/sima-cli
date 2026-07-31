@@ -292,8 +292,14 @@ def resolve_install_metadata_url(
     )
 
 
-def read_manifest(client: ArtifactClient, base_url: str, repository: str, key: str) -> Tuple[str, Dict[str, Any]]:
-    manifest_url = join_url(base_url, repository, key, "manifest.json")
+def read_manifest(
+    client: ArtifactClient,
+    base_url: str,
+    repository: str,
+    key: str,
+    latest_tag: str,
+) -> Tuple[str, Dict[str, Any]]:
+    manifest_url = join_url(base_url, repository, key, latest_tag, "manifest.json")
     payload = client.read_json(manifest_url)
     if not isinstance(payload, dict):
         raise VulcanArtifactError(f"{manifest_url} did not return a JSON object.")
@@ -423,7 +429,13 @@ def download_vulcan_artifacts(
     resolved_repository = resolve_repository(repository)
     ref_name, key = resolve_ref(client, resolved_base_url, resolved_repository, ref)
     latest_tag = read_latest_tag(client, resolved_base_url, resolved_repository, key)
-    manifest_url, manifest = read_manifest(client, resolved_base_url, resolved_repository, key)
+    manifest_url, manifest = read_manifest(
+        client,
+        resolved_base_url,
+        resolved_repository,
+        key,
+        latest_tag,
+    )
     warning = warn_manifest_mismatch(manifest, latest_tag)
 
     output_root = Path(output).expanduser()

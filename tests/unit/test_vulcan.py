@@ -34,7 +34,7 @@ def _fake_result(environment="production", base_url="https://example.invalid"):
         ref="main",
         ref_key="main",
         latest_tag="abcdef0",
-        manifest_url=f"{base_url}/core/main/manifest.json",
+        manifest_url=f"{base_url}/core/main/abcdef0/manifest.json",
         output_dir=output_dir,
         files=(output_dir / "latest.tag",),
     )
@@ -132,7 +132,7 @@ class VulcanArtifactTests(unittest.TestCase):
             "artifacts": [
                 {
                     "path": "package.tar.gz",
-                    "s3_key": "core/main/package.tar.gz",
+                    "s3_key": "core/main/abcdef0/package.tar.gz",
                     "size": len(artifact),
                     "sha256": digest,
                 }
@@ -141,8 +141,8 @@ class VulcanArtifactTests(unittest.TestCase):
         client = FakeClient(
             {
                 f"{base_url}/core/main/latest.tag": "abcdef0\n",
-                f"{base_url}/core/main/manifest.json": json.dumps(manifest),
-                f"{base_url}/core/main/package.tar.gz": artifact,
+                f"{base_url}/core/main/abcdef0/manifest.json": json.dumps(manifest),
+                f"{base_url}/core/main/abcdef0/package.tar.gz": artifact,
             }
         )
 
@@ -158,10 +158,15 @@ class VulcanArtifactTests(unittest.TestCase):
 
             self.assertIsNone(warning)
             self.assertEqual(result.latest_tag, "abcdef0")
+            self.assertEqual(
+                result.manifest_url,
+                f"{base_url}/core/main/abcdef0/manifest.json",
+            )
             self.assertEqual(result.output_dir, Path(tmp) / "production" / "core" / "main" / "abcdef0")
             self.assertEqual((result.output_dir / "package.tar.gz").read_bytes(), artifact)
             self.assertEqual((result.output_dir / "latest.tag").read_text(), "abcdef0\n")
             self.assertTrue((result.output_dir / "manifest.json").exists())
+            self.assertNotIn(f"{base_url}/core/main/manifest.json", client.urls)
 
     def test_parse_install_target_defaults_to_latest_main(self):
         self.assertEqual(parse_install_target("internals"), ("internals", "", "main", "latest"))

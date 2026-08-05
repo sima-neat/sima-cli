@@ -47,6 +47,7 @@ from sima_cli.sdk.utils import (
     print_section,
     extract_short_name,
     is_neat_sdk_image,
+    is_ros2_sdk_image,
     is_snap_docker_cli,
     check_os,
     container_user_mapping_unavailable,
@@ -1173,7 +1174,16 @@ def setup_and_start(
 
             if check_os() in ["linux", "macos"]:
                 login_name, user_uid, user_gid = detect_current_user()
-                configure_container_user(existing_container, login_name, user_uid, user_gid)
+                if is_ros2_sdk_image(img):
+                    configure_container_user(
+                        existing_container,
+                        login_name,
+                        user_uid,
+                        user_gid,
+                        install_missing_sudo=True,
+                    )
+                else:
+                    configure_container_user(existing_container, login_name, user_uid, user_gid)
 
             if devkit_env and is_neat_sdk_image(img):
                 if not skip_insight:

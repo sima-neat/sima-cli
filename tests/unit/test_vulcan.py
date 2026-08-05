@@ -277,6 +277,81 @@ class VulcanArtifactTests(unittest.TestCase):
             f"{base_url}/model-compiler/fix%252Fcompile-resnet50-docs-env/88caac51885b/examples/metadata.json",
         )
 
+    def test_models_latest_uses_per_model_build_tag_and_artifact_branch(self):
+        base_url = "https://example.invalid"
+        tag_url = f"{base_url}/models/feature%252Fcatalog/latest.tag"
+        latest_url = f"{base_url}/models/feature%252Fcatalog/latest.json"
+        client = FakeClient({tag_url: "bbbbbbbbbbbb\n", latest_url: json.dumps({
+            "schema_version": 1,
+            "repository": "sima-neat/models",
+            "branch": "feature/catalog",
+            "catalog_tag": "bbbbbbbbbbbb",
+            "models": {
+                "resnet_50": {
+                    "latest_tag": "aaaaaaaaaaaa",
+                    "artifact_branch": "main",
+                    "variants": {"modalix_bf16": {}},
+                }
+            },
+        })})
+
+        result = resolve_install_metadata_url(
+            environment="staging",
+            target="models/resnet_50@feature/catalog:latest",
+            base_url=base_url,
+            client=client,
+        )
+
+        self.assertEqual(client.urls, [tag_url, latest_url])
+        self.assertEqual(result.resolved_spec, "aaaaaaaaaaaa")
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/models/main/aaaaaaaaaaaa/resnet_50/metadata.json",
+        )
+
+    def test_models_root_latest_keeps_catalog_latest_tag_contract(self):
+        base_url = "https://example.invalid"
+        latest_url = f"{base_url}/models/develop/latest.tag"
+        client = FakeClient({latest_url: "bbbbbbbbbbbb\n"})
+
+        result = resolve_install_metadata_url(
+            environment="staging", target="models@develop:latest", base_url=base_url, client=client
+        )
+
+        self.assertEqual(client.urls, [latest_url])
+        self.assertEqual(result.metadata_url, f"{base_url}/models/develop/bbbbbbbbbbbb/metadata.json")
+
+    def test_models_latest_rejects_missing_model_entry(self):
+        base_url = "https://example.invalid"
+        tag_url = f"{base_url}/models/main/latest.tag"
+        latest_url = f"{base_url}/models/main/latest.json"
+        client = FakeClient({tag_url: "bbbbbbbbbbbb\n", latest_url: json.dumps({
+            "schema_version": 1, "repository": "sima-neat/models",
+            "catalog_tag": "bbbbbbbbbbbb", "models": {}
+        })})
+
+        with self.assertRaisesRegex(VulcanArtifactError, "does not contain model"):
+            resolve_install_metadata_url(
+                environment="staging", target="models/resnet_50@main:latest",
+                base_url=base_url, client=client,
+            )
+
+    def test_models_latest_rejects_partial_pointer_promotion(self):
+        base_url = "https://example.invalid"
+        client = FakeClient({
+            f"{base_url}/models/main/latest.tag": "bbbbbbbbbbbb\n",
+            f"{base_url}/models/main/latest.json": json.dumps({
+                "schema_version": 1, "repository": "sima-neat/models",
+                "catalog_tag": "aaaaaaaaaaaa", "models": {},
+            }),
+        })
+
+        with self.assertRaisesRegex(VulcanArtifactError, "publication may be incomplete"):
+            resolve_install_metadata_url(
+                environment="staging", target="models/resnet_50@main:latest",
+                base_url=base_url, client=client,
+            )
+
     def test_resolve_install_metadata_url_uses_metadata_type_variant(self):
         base_url = "https://example.invalid"
         client = FakeClient({f"{base_url}/internals/main/latest.tag": "50649e9aa0ba\n"})

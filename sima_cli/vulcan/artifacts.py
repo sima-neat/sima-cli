@@ -26,6 +26,7 @@ DEFAULT_REPOSITORIES = [
     "insight",
     "internals",
     "llima",
+    "models",
     "sima-cli",
 ]
 
@@ -191,6 +192,34 @@ def read_latest_tag(client: ArtifactClient, base_url: str, repository: str, key:
     return latest_tag
 
 
+def read_model_latest(
+    client: ArtifactClient, base_url: str, key: str, model_id: str, catalog_tag: str
+) -> Tuple[str, str]:
+    latest_url = join_url(base_url, "models", key, "latest.json")
+    payload = client.read_json(latest_url)
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise VulcanArtifactError(f"{latest_url} is not a schema-version 1 object.")
+    if payload.get("repository") != "sima-neat/models":
+        raise VulcanArtifactError(f"{latest_url} has an unexpected repository.")
+    if payload.get("catalog_tag") != catalog_tag:
+        raise VulcanArtifactError(
+            f"{latest_url} catalog_tag does not match latest.tag; publication may be incomplete."
+        )
+    models = payload.get("models")
+    if not isinstance(models, dict):
+        raise VulcanArtifactError(f"{latest_url} does not contain a models object.")
+    entry = models.get(model_id)
+    if not isinstance(entry, dict):
+        raise VulcanArtifactError(f"{latest_url} does not contain model {model_id!r}.")
+    latest_tag = entry.get("latest_tag")
+    artifact_branch = entry.get("artifact_branch")
+    if not isinstance(latest_tag, str) or not _looks_like_commit_spec(latest_tag):
+        raise VulcanArtifactError(f"{latest_url} has an invalid latest_tag for model {model_id!r}.")
+    if not isinstance(artifact_branch, str) or not artifact_branch.strip():
+        raise VulcanArtifactError(f"{latest_url} has an invalid artifact_branch for model {model_id!r}.")
+    return artifact_branch, latest_tag
+
+
 def _parse_repository_and_package_path(raw: str) -> Tuple[str, str]:
     value = raw.strip().strip("/")
     if not value:
@@ -268,13 +297,22 @@ def resolve_install_metadata_url(
     repository, package_path, ref_name, requested_spec = parse_install_target(target)
     key = ref_key(ref_name)
     if requested_spec == "latest":
-        resolved_spec = read_latest_tag(client, resolved_base_url, repository, key)
+        if repository == "models" and package_path:
+            catalog_tag = read_latest_tag(client, resolved_base_url, repository, key)
+            artifact_ref, resolved_spec = read_model_latest(
+                client, resolved_base_url, key, package_path.split("/", 1)[0], catalog_tag
+            )
+            metadata_key = ref_key(artifact_ref)
+        else:
+            resolved_spec = read_latest_tag(client, resolved_base_url, repository, key)
+            metadata_key = key
     else:
         resolved_spec = requested_spec
+        metadata_key = key
     metadata_url = join_url(
         resolved_base_url,
         repository,
-        key,
+        metadata_key,
         resolved_spec,
         package_path,
         metadata_filename(package_type),

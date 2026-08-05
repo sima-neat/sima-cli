@@ -13,6 +13,7 @@ Usage:
     sima-cli sdk model : go to model container
     sima-cli sdk yocto : go to Yocto container
     sima-cli sdk neat : go to Neat SDK container
+    sima-cli sdk ros2 : go to ROS 2 SDK container
     sima-cli sdk elxr : go to elxr container
 """
 
@@ -67,7 +68,7 @@ def sdk(ctx, version_filter):
 
     This group provides access to the full SDK 2.0 toolchain, including
     setup, container orchestration, tool-specific shells (MPK, model,
-    Yocto, Neat, eLxr), and hybrid `.sima` script execution. These commands are
+    Yocto, Neat, ROS 2, eLxr), and hybrid `.sima` script execution. These commands are
     intended for SDK 2.0+ users only.
 
     \\c Host platforms only.
@@ -649,6 +650,27 @@ def neat(ctx, cmd):
         sima-cli sdk neat "python app.py --config config.json"
     """
     launch_sdk_tool("neat", cmd, ctx, recover_unavailable=True)
+
+
+@sdk.command(
+    name="ros2",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True}
+)
+@click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def ros2(ctx, cmd):
+    """Launch the ROS 2 SDK workspace environment.
+
+    Use ``sima-cli sdk -v VERSION ros2`` to select among multiple installed
+    versions. CMD is executed in the container; without CMD an interactive
+    login shell is opened as the mapped host user.
+
+    \b
+    Examples:
+        sima-cli sdk ros2
+        sima-cli sdk -v latest ros2 ros2 --help
+    """
+    launch_sdk_tool("ros2", cmd, ctx)
 
 
 @sdk.command(

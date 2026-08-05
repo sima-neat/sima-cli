@@ -34,7 +34,7 @@ def _fake_result(environment="production", base_url="https://example.invalid"):
         ref="main",
         ref_key="main",
         latest_tag="abcdef0",
-        manifest_url=f"{base_url}/core/main/manifest.json",
+        manifest_url=f"{base_url}/core/main/abcdef0/manifest.json",
         output_dir=output_dir,
         files=(output_dir / "latest.tag",),
     )
@@ -132,7 +132,7 @@ class VulcanArtifactTests(unittest.TestCase):
             "artifacts": [
                 {
                     "path": "package.tar.gz",
-                    "s3_key": "core/main/package.tar.gz",
+                    "s3_key": "core/main/abcdef0/package.tar.gz",
                     "size": len(artifact),
                     "sha256": digest,
                 }
@@ -141,8 +141,8 @@ class VulcanArtifactTests(unittest.TestCase):
         client = FakeClient(
             {
                 f"{base_url}/core/main/latest.tag": "abcdef0\n",
-                f"{base_url}/core/main/manifest.json": json.dumps(manifest),
-                f"{base_url}/core/main/package.tar.gz": artifact,
+                f"{base_url}/core/main/abcdef0/manifest.json": json.dumps(manifest),
+                f"{base_url}/core/main/abcdef0/package.tar.gz": artifact,
             }
         )
 
@@ -158,10 +158,15 @@ class VulcanArtifactTests(unittest.TestCase):
 
             self.assertIsNone(warning)
             self.assertEqual(result.latest_tag, "abcdef0")
+            self.assertEqual(
+                result.manifest_url,
+                f"{base_url}/core/main/abcdef0/manifest.json",
+            )
             self.assertEqual(result.output_dir, Path(tmp) / "production" / "core" / "main" / "abcdef0")
             self.assertEqual((result.output_dir / "package.tar.gz").read_bytes(), artifact)
             self.assertEqual((result.output_dir / "latest.tag").read_text(), "abcdef0\n")
             self.assertTrue((result.output_dir / "manifest.json").exists())
+            self.assertNotIn(f"{base_url}/core/main/manifest.json", client.urls)
 
     def test_parse_install_target_defaults_to_latest_main(self):
         self.assertEqual(parse_install_target("internals"), ("internals", "", "main", "latest"))
@@ -271,6 +276,81 @@ class VulcanArtifactTests(unittest.TestCase):
             result.metadata_url,
             f"{base_url}/model-compiler/fix%252Fcompile-resnet50-docs-env/88caac51885b/examples/metadata.json",
         )
+
+    def test_models_latest_uses_per_model_build_tag_and_artifact_branch(self):
+        base_url = "https://example.invalid"
+        tag_url = f"{base_url}/models/feature%252Fcatalog/latest.tag"
+        latest_url = f"{base_url}/models/feature%252Fcatalog/latest.json"
+        client = FakeClient({tag_url: "bbbbbbbbbbbb\n", latest_url: json.dumps({
+            "schema_version": 1,
+            "repository": "sima-neat/models",
+            "branch": "feature/catalog",
+            "catalog_tag": "bbbbbbbbbbbb",
+            "models": {
+                "resnet_50": {
+                    "latest_tag": "aaaaaaaaaaaa",
+                    "artifact_branch": "main",
+                    "variants": {"modalix_bf16": {}},
+                }
+            },
+        })})
+
+        result = resolve_install_metadata_url(
+            environment="staging",
+            target="models/resnet_50@feature/catalog:latest",
+            base_url=base_url,
+            client=client,
+        )
+
+        self.assertEqual(client.urls, [tag_url, latest_url])
+        self.assertEqual(result.resolved_spec, "aaaaaaaaaaaa")
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/models/main/aaaaaaaaaaaa/resnet_50/metadata.json",
+        )
+
+    def test_models_root_latest_keeps_catalog_latest_tag_contract(self):
+        base_url = "https://example.invalid"
+        latest_url = f"{base_url}/models/develop/latest.tag"
+        client = FakeClient({latest_url: "bbbbbbbbbbbb\n"})
+
+        result = resolve_install_metadata_url(
+            environment="staging", target="models@develop:latest", base_url=base_url, client=client
+        )
+
+        self.assertEqual(client.urls, [latest_url])
+        self.assertEqual(result.metadata_url, f"{base_url}/models/develop/bbbbbbbbbbbb/metadata.json")
+
+    def test_models_latest_rejects_missing_model_entry(self):
+        base_url = "https://example.invalid"
+        tag_url = f"{base_url}/models/main/latest.tag"
+        latest_url = f"{base_url}/models/main/latest.json"
+        client = FakeClient({tag_url: "bbbbbbbbbbbb\n", latest_url: json.dumps({
+            "schema_version": 1, "repository": "sima-neat/models",
+            "catalog_tag": "bbbbbbbbbbbb", "models": {}
+        })})
+
+        with self.assertRaisesRegex(VulcanArtifactError, "does not contain model"):
+            resolve_install_metadata_url(
+                environment="staging", target="models/resnet_50@main:latest",
+                base_url=base_url, client=client,
+            )
+
+    def test_models_latest_rejects_partial_pointer_promotion(self):
+        base_url = "https://example.invalid"
+        client = FakeClient({
+            f"{base_url}/models/main/latest.tag": "bbbbbbbbbbbb\n",
+            f"{base_url}/models/main/latest.json": json.dumps({
+                "schema_version": 1, "repository": "sima-neat/models",
+                "catalog_tag": "aaaaaaaaaaaa", "models": {},
+            }),
+        })
+
+        with self.assertRaisesRegex(VulcanArtifactError, "publication may be incomplete"):
+            resolve_install_metadata_url(
+                environment="staging", target="models/resnet_50@main:latest",
+                base_url=base_url, client=client,
+            )
 
     def test_resolve_install_metadata_url_uses_metadata_type_variant(self):
         base_url = "https://example.invalid"

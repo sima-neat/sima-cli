@@ -67,6 +67,7 @@ from sima_cli.sdk.utils import (
     install_neat_playbooks,
     is_neat_elxr_image,
     is_neat_sdk_image,
+    is_ros2_sdk_image,
     is_port_in_use,
     is_snap_docker_cli,
     prompt_multi_select,
@@ -83,6 +84,7 @@ sdk:latest
 ghcr.io/sima-neat/elxr:latest
 ghcr.io/sima-neat/elxr-sdk:latest
 ghcr.io/sima-neat/sdk-feature-devkit-sync:latest
+ghcr.io/sima-vertical-solutions/ros2-sdk:latest
 """
 
 
@@ -95,6 +97,26 @@ def _last_docker_run_command(run_mock):
 
 
 class TestSdkImageDetection(unittest.TestCase):
+    def test_ros2_sdk_is_discovered_and_classified(self):
+        with patch("sima_cli.sdk.utils.subprocess.check_output", return_value=SAMPLE_DOCKER_IMAGES):
+            images = get_local_sima_images()
+
+        image = "ghcr.io/sima-vertical-solutions/ros2-sdk:latest"
+        self.assertIn(image, images)
+        self.assertTrue(is_ros2_sdk_image(image))
+        self.assertEqual(extract_short_name(image), "ros2")
+        self.assertTrue(container_matches_sdk_keyword({"Names": "anything", "Image": image}, "ros2"))
+
+    def test_ros2_command_supports_version_filter(self):
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.launch_sdk_tool") as launch:
+            result = CliRunner().invoke(sdk, ["-v", "humble", "ros2", "ros2", "node", "list"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.args[0:2], ("ros2", ("ros2", "node", "list")))
+        self.assertEqual(launch.call_args.args[2].obj["version_filter"], "humble")
+
     def test_windows_port_check_handles_non_utf8_netstat_output(self):
         netstat_output = (
             "활성 연결\n"
@@ -2129,6 +2151,34 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("CONTAINER_HOST_IP=10.0.0.76", docker_cmd)
         self.assertIn(f"{neat_config.config_host_dir}:/home/docker/.insight-config", docker_cmd)
         self.assertIn(f"{neat_config.cert_host_dir}:/sdk-cert", docker_cmd)
+
+    def test_start_ros2_container_only_maps_workspace_and_configures_user(self):
+        with TemporaryDirectory() as tmpdir, \
+             patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+             patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+             patch("sima_cli.sdk.utils.detect_current_user", return_value=("devuser", 1000, 1000)), \
+             patch("sima_cli.sdk.utils.configure_container") as configure, \
+             patch("sima_cli.sdk.utils.run_command") as run_command:
+            start_docker_container(
+                uid=1000,
+                gid=1000,
+                port=0,
+                workspace=tmpdir,
+                image="ghcr.io/sima-vertical-solutions/ros2-sdk:humble",
+                devkit_env={"devkit_ip": "10.77.77.121"},
+                sdk_extensions_dir="/tmp/extensions",
+            )
+
+        docker_cmd = run_command.call_args_list[0].args[0]
+        self.assertNotIn("--user=1000:1000", docker_cmd)
+        self.assertIn(f"{tmpdir}:/workspace", docker_cmd)
+        self.assertNotIn(f"{tmpdir}:/home/docker/sima-cli/", docker_cmd)
+        self.assertIn('devcontainer.metadata=[{"remoteUser":"devuser","workspaceFolder":"/workspace"}]', docker_cmd)
+        self.assertFalse(any("OPENVSCODE_" in arg for arg in docker_cmd))
+        self.assertNotIn("SIMA_DEVKIT_IP=10.77.77.121", docker_cmd)
+        self.assertNotIn("/tmp/extensions:/sdk-extensions", docker_cmd)
+        configure.assert_called_once()
+        self.assertTrue(configure.call_args.kwargs["user_and_workspace_only"])
 
     def test_start_neat_container_passes_no_insight_to_prepare(self):
         with TemporaryDirectory() as tmpdir:

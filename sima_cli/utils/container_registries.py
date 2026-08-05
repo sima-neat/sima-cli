@@ -1,6 +1,11 @@
 import click
 import subprocess
 import os
+import platform
+import shutil
+import sys
+
+import requests
 
 from sima_cli.utils.config import get_auth_token, get_auth_username, set_auth_username
 from sima_cli.utils.config_loader import load_resource_config, artifactory_url
@@ -83,6 +88,225 @@ def _is_dns_resolution_error(err: subprocess.CalledProcessError) -> bool:
             "lookup ",
             "name or service not known",
         )
+    )
+
+
+def _is_ghcr_auth_error(err: subprocess.CalledProcessError) -> bool:
+    text = _pull_error_text(err).lower()
+    return any(
+        marker in text
+        for marker in (
+            "unauthorized",
+            "authentication required",
+            "denied",
+            "forbidden",
+            "status code 401",
+            "status code 403",
+            "unexpected status: 401",
+            "unexpected status: 403",
+        )
+    )
+
+
+def _normalize_github_token(token: str) -> str:
+    value = (token or "").strip()
+    lowered = value.lower()
+    for prefix in ("bearer ", "token "):
+        if lowered.startswith(prefix):
+            return value[len(prefix):].strip()
+    return value
+
+
+def _github_username_for_token(token: str) -> str:
+    username = os.getenv("GITHUB_USER") or os.getenv("GITHUB_ACTOR")
+    if username:
+        return username.strip()
+
+    try:
+        response = requests.get(
+            "https://api.github.com/user",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            timeout=10,
+        )
+        if response.status_code == 200:
+            login = response.json().get("login")
+            if isinstance(login, str) and login.strip():
+                return login.strip()
+    except requests.RequestException:
+        pass
+
+    return ""
+
+
+def _run_quiet(command) -> bool:
+    proc = subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def _install_github_cli() -> bool:
+    if shutil.which("gh"):
+        return True
+
+    if not sys.stdin.isatty():
+        click.echo(
+            "❌ GitHub CLI is required for interactive authorization. "
+            "Install it from https://cli.github.com/ or provide GITHUB_TOKEN."
+        )
+        return False
+
+    if not click.confirm("🔧 GitHub CLI is not installed. Install it now?", default=True):
+        click.echo(
+            "ℹ️  Install GitHub CLI from https://cli.github.com/ and rerun the sima-cli command."
+        )
+        return False
+
+    system = platform.system().lower()
+    command = None
+    if system == "darwin" and shutil.which("brew"):
+        command = ["brew", "install", "gh"]
+    elif system == "linux" and shutil.which("apt-get") and shutil.which("sudo"):
+        click.echo("🔧 Installing GitHub CLI using the system package manager...")
+        if not _run_quiet(["sudo", "apt-get", "update"]):
+            click.echo("❌ Unable to refresh packages while installing GitHub CLI.")
+            return False
+        command = ["sudo", "apt-get", "install", "-y", "gh"]
+    elif system == "windows" and shutil.which("winget"):
+        command = ["winget", "install", "--id", "GitHub.cli", "--exact"]
+
+    if command is None:
+        click.echo(
+            "❌ Automatic GitHub CLI installation is unavailable on this host. "
+            "Install it from https://cli.github.com/ and rerun the sima-cli command."
+        )
+        return False
+
+    click.echo("🔧 Installing GitHub CLI...")
+    if not _run_quiet(command) or not shutil.which("gh"):
+        click.echo(
+            "❌ GitHub CLI installation did not complete. "
+            "Install it from https://cli.github.com/ and rerun the sima-cli command."
+        )
+        return False
+
+    click.secho("✅ GitHub CLI installed.", fg="green")
+    return True
+
+
+def _gh_output(*args) -> str:
+    proc = subprocess.run(
+        ["gh", *args],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def _github_credentials_from_gh():
+    if not _install_github_cli():
+        return "", ""
+
+    authenticated = _run_quiet(["gh", "auth", "status", "--hostname", "github.com"])
+    if not authenticated:
+        if not sys.stdin.isatty():
+            click.echo(
+                "❌ GitHub authorization is required. In a noninteractive environment, "
+                "provide GITHUB_TOKEN with private-package access."
+            )
+            return "", ""
+
+        click.echo("🌐 Starting one-time GitHub authorization...")
+        login = subprocess.run(
+            [
+                "gh",
+                "auth",
+                "login",
+                "--hostname",
+                "github.com",
+                "--web",
+                "--git-protocol",
+                "https",
+                "--scopes",
+                "read:packages",
+            ],
+            check=False,
+        )
+        if login.returncode != 0:
+            click.echo("❌ GitHub authorization was not completed.")
+            return "", ""
+    elif sys.stdin.isatty():
+        # Accounts authorized before private GHCR support may only have gh's
+        # default scopes. Since this path is reached after a rejected private
+        # image pull, explicitly add package-read access before reusing the
+        # stored credential.
+        click.echo("🔐 Confirming one-time GitHub package access...")
+        refresh = subprocess.run(
+            [
+                "gh",
+                "auth",
+                "refresh",
+                "--hostname",
+                "github.com",
+                "--scopes",
+                "read:packages",
+            ],
+            check=False,
+        )
+        if refresh.returncode != 0:
+            click.echo("❌ GitHub package authorization was not completed.")
+            return "", ""
+
+    username = _gh_output("api", "user", "--jq", ".login")
+    token = _normalize_github_token(
+        _gh_output("auth", "token", "--hostname", "github.com")
+    )
+    return username, token
+
+
+def _authorize_ghcr() -> bool:
+    click.echo("🔐 This private image requires GitHub authorization.")
+
+    token = _normalize_github_token(os.getenv("GITHUB_TOKEN", ""))
+    username = _github_username_for_token(token) if token else ""
+    if token and not username:
+        click.echo(
+            "❌ GITHUB_TOKEN is set, but its GitHub username could not be determined. "
+            "Set GITHUB_USER or GITHUB_ACTOR and rerun the sima-cli command."
+        )
+        return False
+
+    if not token:
+        username, token = _github_credentials_from_gh()
+
+    if not username or not token:
+        return False
+
+    docker_login_with_token(username, token, "ghcr.io")
+    click.secho("✅ GitHub authorization configured for private images.", fg="green")
+    return True
+
+
+def _ghcr_access_error(err: subprocess.CalledProcessError) -> click.ClickException:
+    detail = _pull_error_text(err) or str(err)
+    return click.ClickException(
+        "❌ GitHub Container Registry denied access after authorization.\n"
+        "↳ Confirm that your GitHub account can read this private package.\n"
+        "↳ PAT-based access requires read:packages, and the token may need organization SSO authorization.\n"
+        "↳ GitHub may report an inaccessible private image or missing tag using the same response.\n"
+        f"↳ Registry error: {detail}"
     )
 
 def docker_logout_from_registry(registry: str = "artifacts.eng.sima.ai"):
@@ -299,6 +523,31 @@ def install_from_cr(resource_spec: str, internal: bool = False) -> str:
                 "❌ Docker pull failed due to DNS/network resolution.\n"
                 f"↳ Docker error: {detail}"
             )
+
+        if scheme == "ghcr" and _is_ghcr_auth_error(e):
+            if not _authorize_ghcr():
+                raise click.ClickException(
+                    "❌ GitHub authorization is required to install this private image.\n"
+                    "↳ Run the sima-cli command again after completing GitHub CLI authorization, "
+                    "or provide GITHUB_TOKEN for a noninteractive environment."
+                )
+
+            click.echo("📦 Retrying container image pull after GitHub authorization...")
+            try:
+                pulled_ref = _pull_container_from_registry(
+                    registry_url, f"{image_name}{separator}{version or 'latest'}"
+                )
+                if pulled_ref:
+                    click.echo(f"✅ Successfully pulled container after GitHub authorization: {pulled_ref}")
+                    return full_image_ref
+            except subprocess.CalledProcessError as retry_error:
+                if _is_dns_resolution_error(retry_error):
+                    detail = _pull_error_text(retry_error) or str(retry_error)
+                    raise click.ClickException(
+                        "❌ Container pull failed due to DNS/network resolution after GitHub authorization.\n"
+                        f"↳ Registry error: {detail}"
+                    )
+                raise _ghcr_access_error(retry_error)
 
         # Token may have expired, or auth profile may be stale/missing.
         # Refresh auth once and retry pull.

@@ -160,6 +160,7 @@ pip install sima-cli
 - [`sima-cli sdk neat`](commands/sima-cli-sdk-neat.md)
 - [`sima-cli sdk network`](commands/sima-cli-sdk-network.md)
 - [`sima-cli sdk remove`](commands/sima-cli-sdk-remove.md)
+- [`sima-cli sdk ros2`](commands/sima-cli-sdk-ros2.md)
 - [`sima-cli sdk run`](commands/sima-cli-sdk-run.md)
 - [`sima-cli sdk setup`](commands/sima-cli-sdk-setup.md)
 - [`sima-cli sdk start`](commands/sima-cli-sdk-start.md)

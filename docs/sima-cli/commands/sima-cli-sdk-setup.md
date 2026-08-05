@@ -18,6 +18,7 @@ sima-cli sdk setup [OPTIONS]
 | `-y, --yes` | Skip confirmation before starting the container. |
 | `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>'. |
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
+| `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
@@ -45,6 +46,10 @@ Options:
                                   '--devkit <IP>'.
   --no-insight                    Start Neat SDK without Insight
                                   UI/video/WebRTC port mappings.
+  --insight-video-channels INTEGER RANGE
+                                  Number of Insight video channels to
+                                  configure (four exposed ports per channel).
+                                  [default: 4; 1<=x<=80]
   --no-model-compiler, --no-model-sdk
                                   Skip Model Compiler extension setup. --no-
                                   model-sdk is kept for compatibility.

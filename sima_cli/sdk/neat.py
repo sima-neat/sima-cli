@@ -27,7 +27,9 @@ NEAT_DOCKER_RETRY_LIMIT = 3
 NEAT_MEDIAMTX_RTSP_TRANSPORTS = "tcp"
 NEAT_WEBRTC_UDP_SEARCH_START = 40000
 NEAT_WEBRTC_UDP_SEARCH_END = 65535
-NEAT_WEBRTC_UDP_PORT_COUNT = 200
+DEFAULT_INSIGHT_VIDEO_CHANNELS = 4
+MAX_INSIGHT_VIDEO_CHANNELS = 80
+NEAT_WEBRTC_UDP_PORTS_PER_CHANNEL = 2
 OPENVSCODE_TOKEN_BYTES = 32
 OPENVSCODE_TOKEN_CACHE_FILE = "sdk-code-ui-tokens.json"
 console = Console()
@@ -165,7 +167,15 @@ def _allocate_first_available_port_range(
 def allocate_neat_ports(
     no_insight: bool = False,
     reserved_ports: Optional[set] = None,
+    insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
 ) -> Tuple[Dict, List[str]]:
+    if not isinstance(insight_video_channels, int) or isinstance(insight_video_channels, bool):
+        raise ValueError("Insight video channels must be an integer")
+    if not 1 <= insight_video_channels <= MAX_INSIGHT_VIDEO_CHANNELS:
+        raise ValueError(
+            f"Insight video channels must be between 1 and {MAX_INSIGHT_VIDEO_CHANNELS}"
+        )
+
     reserved = set(reserved_ports or set())
 
     port_map = {
@@ -175,6 +185,10 @@ def allocate_neat_ports(
     port_args = []
 
     if not no_insight:
+        video_container_end = 9000 + insight_video_channels - 1
+        metadata_container_end = 9100 + insight_video_channels - 1
+        webrtc_port_count = insight_video_channels * NEAT_WEBRTC_UDP_PORTS_PER_CHANNEL
+        port_map["insightVideoChannels"] = insight_video_channels
         port_map["cert"] = {
             "mount": "/sdk-cert",
             "certFile": "/sdk-cert/neat-sdk.pem",
@@ -186,12 +200,12 @@ def allocate_neat_ports(
         code_ui = _allocate_single_port(9999, "tcp", reserved)
         code_ui_https = _allocate_single_port(10000, "tcp", reserved)
         video_ui = _allocate_single_port(8081, "tcp", reserved)
-        video_udp_start, video_udp_end = _allocate_port_range(9000, 9079, "udp", reserved)
-        metadata_udp_start, metadata_udp_end = _allocate_port_range(9100, 9179, "udp", reserved)
+        video_udp_start, video_udp_end = _allocate_port_range(9000, video_container_end, "udp", reserved)
+        metadata_udp_start, metadata_udp_end = _allocate_port_range(9100, metadata_container_end, "udp", reserved)
         webrtc_udp_start, webrtc_udp_end = _allocate_first_available_port_range(
             NEAT_WEBRTC_UDP_SEARCH_START,
             NEAT_WEBRTC_UDP_SEARCH_END,
-            NEAT_WEBRTC_UDP_PORT_COUNT,
+            webrtc_port_count,
             "udp",
             reserved,
             "WebRTC",
@@ -210,14 +224,14 @@ def allocate_neat_ports(
                 "videoUDP": {
                     "protocol": "udp",
                     "containerStart": 9000,
-                    "containerEnd": 9079,
+                    "containerEnd": video_container_end,
                     "hostStart": video_udp_start,
                     "hostEnd": video_udp_end,
                 },
                 "metadataUDP": {
                     "protocol": "udp",
                     "containerStart": 9100,
-                    "containerEnd": 9179,
+                    "containerEnd": metadata_container_end,
                     "hostStart": metadata_udp_start,
                     "hostEnd": metadata_udp_end,
                 },
@@ -238,8 +252,8 @@ def allocate_neat_ports(
                 f"{code_ui_https}:10000/tcp",
                 f"{video_ui}:8081/tcp",
                 f"{rtsp_tcp}:8554/tcp",
-                f"{video_udp_start}-{video_udp_end}:9000-9079/udp",
-                f"{metadata_udp_start}-{metadata_udp_end}:9100-9179/udp",
+                f"{video_udp_start}-{video_udp_end}:9000-{video_container_end}/udp",
+                f"{metadata_udp_start}-{metadata_udp_end}:9100-{metadata_container_end}/udp",
                 f"{webrtc_udp_start}-{webrtc_udp_end}:{webrtc_udp_start}-{webrtc_udp_end}/udp",
             ]
         )
@@ -779,6 +793,7 @@ def prepare_neat_container_run(
     no_insight: bool = False,
     minimal: bool = False,
     reserved_ports: Optional[set] = None,
+    insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
 ) -> NeatRunConfig:
     no_insight = no_insight or minimal
     container_dir = Path(workspace) / f".{container_name}"
@@ -787,6 +802,7 @@ def prepare_neat_container_run(
     port_map, port_args = allocate_neat_ports(
         no_insight=no_insight,
         reserved_ports=reserved_ports,
+        insight_video_channels=insight_video_channels,
     )
     if no_insight:
         return NeatRunConfig(

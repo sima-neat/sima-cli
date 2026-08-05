@@ -45,12 +45,26 @@ class ContainerRegistryAuthTests(unittest.TestCase):
             "secret",
         )
 
+    def test_explicit_github_user_overrides_actions_actor(self):
+        with patch.dict(
+            os.environ,
+            {
+                "GITHUB_USER": "configured-user",
+                "GITHUB_ACTOR": "actions-actor",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                container_registries._github_username_for_token("secret"),
+                "configured-user",
+            )
+
     @patch.object(container_registries, "docker_login_with_token")
     def test_authorize_ghcr_uses_environment_token(self, login):
         with patch.dict(
             os.environ,
             {"GITHUB_TOKEN": "secret", "GITHUB_USER": "octocat"},
-            clear=False,
+            clear=True,
         ):
             self.assertTrue(container_registries._authorize_ghcr())
 

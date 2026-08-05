@@ -118,7 +118,7 @@ def _normalize_github_token(token: str) -> str:
 
 
 def _github_username_for_token(token: str) -> str:
-    username = os.getenv("GITHUB_ACTOR") or os.getenv("GITHUB_USER")
+    username = os.getenv("GITHUB_USER") or os.getenv("GITHUB_ACTOR")
     if username:
         return username.strip()
 

@@ -219,7 +219,8 @@ def _github_credentials_from_gh():
     if not _install_github_cli():
         return "", ""
 
-    if not _run_quiet(["gh", "auth", "status", "--hostname", "github.com"]):
+    authenticated = _run_quiet(["gh", "auth", "status", "--hostname", "github.com"])
+    if not authenticated:
         if not sys.stdin.isatty():
             click.echo(
                 "❌ GitHub authorization is required. In a noninteractive environment, "
@@ -245,6 +246,27 @@ def _github_credentials_from_gh():
         )
         if login.returncode != 0:
             click.echo("❌ GitHub authorization was not completed.")
+            return "", ""
+    elif sys.stdin.isatty():
+        # Accounts authorized before private GHCR support may only have gh's
+        # default scopes. Since this path is reached after a rejected private
+        # image pull, explicitly add package-read access before reusing the
+        # stored credential.
+        click.echo("🔐 Confirming one-time GitHub package access...")
+        refresh = subprocess.run(
+            [
+                "gh",
+                "auth",
+                "refresh",
+                "--hostname",
+                "github.com",
+                "--scopes",
+                "read:packages",
+            ],
+            check=False,
+        )
+        if refresh.returncode != 0:
+            click.echo("❌ GitHub package authorization was not completed.")
             return "", ""
 
     username = _gh_output("api", "user", "--jq", ".login")

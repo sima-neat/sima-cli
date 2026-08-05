@@ -86,7 +86,12 @@ class ContainerRegistryAuthTests(unittest.TestCase):
     @patch.object(container_registries, "_run_quiet", return_value=True)
     @patch.object(container_registries.shutil, "which", return_value="/usr/bin/gh")
     @patch.object(container_registries, "_gh_output")
-    def test_reuses_existing_gh_authorization(self, gh_output, which, run_quiet):
+    @patch.object(container_registries.sys.stdin, "isatty", return_value=True)
+    @patch.object(container_registries.subprocess, "run")
+    def test_refreshes_existing_gh_authorization_for_packages(
+        self, run, isatty, gh_output, which, run_quiet
+    ):
+        run.return_value = MagicMock(returncode=0)
         gh_output.side_effect = ["octocat", "secret"]
 
         self.assertEqual(
@@ -97,6 +102,33 @@ class ContainerRegistryAuthTests(unittest.TestCase):
         run_quiet.assert_called_once_with(
             ["gh", "auth", "status", "--hostname", "github.com"]
         )
+        run.assert_called_once_with(
+            [
+                "gh",
+                "auth",
+                "refresh",
+                "--hostname",
+                "github.com",
+                "--scopes",
+                "read:packages",
+            ],
+            check=False,
+        )
+
+    @patch.object(container_registries, "_run_quiet", return_value=True)
+    @patch.object(container_registries.shutil, "which", return_value="/usr/bin/gh")
+    @patch.object(container_registries, "_gh_output", side_effect=["octocat", "secret"])
+    @patch.object(container_registries.sys.stdin, "isatty", return_value=False)
+    @patch.object(container_registries.subprocess, "run")
+    def test_noninteractive_existing_gh_authorization_does_not_prompt(
+        self, run, isatty, gh_output, which, run_quiet
+    ):
+        self.assertEqual(
+            container_registries._github_credentials_from_gh(),
+            ("octocat", "secret"),
+        )
+
+        run.assert_not_called()
 
 
 class ContainerRegistryInstallTests(unittest.TestCase):

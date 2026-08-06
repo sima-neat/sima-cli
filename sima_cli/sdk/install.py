@@ -27,6 +27,7 @@ from sima_cli.sdk.linux_shared_network import (
     maybe_install_nm_shared_dispatcher_repair,
 )
 from sima_cli.sdk.network_doctor import ensure_existing_neat_container_startable
+from sima_cli.sdk.neat import DEFAULT_INSIGHT_VIDEO_CHANNELS, MAX_INSIGHT_VIDEO_CHANNELS
 from sima_cli.utils.net import get_local_ip_candidates
 
 from sima_cli.sdk.utils import (
@@ -1039,6 +1040,7 @@ def setup_and_start(
     yes_to_all: bool = False,
     devkit_ip: str = "",
     no_insight: bool = False,
+    insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
     no_model_sdk: bool = False,
     minimal: bool = False,
     workspace: Optional[str] = None,
@@ -1048,6 +1050,11 @@ def setup_and_start(
     """Main entry for SDK setup and container start."""
 
     console = Console()
+
+    if not 1 <= insight_video_channels <= MAX_INSIGHT_VIDEO_CHANNELS:
+        raise RuntimeError(
+            f"--insight-video-channels must be between 1 and {MAX_INSIGHT_VIDEO_CHANNELS}."
+        )
 
     if not start_only:
         console.print(Panel("🔧 SiMa.ai SDK Setup", border_style="cyan", expand=False))
@@ -1108,6 +1115,23 @@ def setup_and_start(
     )
     skip_model_sdk = no_model_sdk or minimal
     skip_insight = no_insight or minimal
+    if (
+        insight_video_channels > DEFAULT_INSIGHT_VIDEO_CHANNELS
+        and not skip_insight
+        and any(is_neat_sdk_image(img) for img in selected_images)
+    ):
+        console.print(
+            Panel(
+                f"[bold yellow]{insight_video_channels} Insight video channels[/bold yellow] "
+                f"will expose {insight_video_channels * 4} channel ports.\n\n"
+                "Larger port ranges have a higher risk of colliding with other services "
+                "when the host restarts. If that happens, rerun [bold]sima-cli sdk setup[/bold] "
+                "and recreate the affected container so the ports can be renegotiated.",
+                title="⚠️  Increased Port-Collision Risk",
+                border_style="yellow",
+                expand=False,
+            )
+        )
     if minimal:
         sdk_extensions_dir = ""
     else:
@@ -1155,6 +1179,7 @@ def setup_and_start(
                 noninteractive=noninteractive,
                 yes_to_all=yes_to_all,
                 no_insight=skip_insight,
+                insight_video_channels=insight_video_channels,
                 no_model_sdk=skip_model_sdk,
                 minimal=minimal,
             )

@@ -30,6 +30,7 @@ None.
 - [`sima-cli sdk neat`](./sima-cli-sdk-neat.md): Launch the Neat SDK tool environment.
 - [`sima-cli sdk network`](./sima-cli-sdk-network.md): Probe or repair SDK network configuration.
 - [`sima-cli sdk remove`](./sima-cli-sdk-remove.md): Remove SDK containers and images.
+- [`sima-cli sdk ros2`](./sima-cli-sdk-ros2.md): Launch the ROS 2 SDK workspace environment.
 - [`sima-cli sdk run`](./sima-cli-sdk-run.md): Run a .sima hybrid script with local + container commands.
 - [`sima-cli sdk setup`](./sima-cli-sdk-setup.md): Initialize SDK environment and select components to start.
 - [`sima-cli sdk start`](./sima-cli-sdk-start.md): Select and start one or more SDK containers.
@@ -44,9 +45,9 @@ Usage: sima-cli sdk [OPTIONS] COMMAND [ARGS]...
   Manage and launch SiMa SDK 2.0 container environments (Beta).
 
   This group provides access to the full SDK 2.0 toolchain, including setup,
-  container orchestration, tool-specific shells (MPK, model, Yocto, Neat,
-  eLxr), and hybrid `.sima` script execution. These commands are intended for
-  SDK 2.0+ users only.
+  container orchestration, tool-specific shells (MPK, model, Yocto, Neat, ROS
+  2, eLxr), and hybrid `.sima` script execution. These commands are intended
+  for SDK 2.0+ users only.
 
   \c Host platforms only.
 
@@ -74,6 +75,7 @@ Commands:
   neat     Launch the Neat SDK tool environment.
   network  Probe or repair SDK network configuration.
   remove   Remove SDK containers and images.
+  ros2     Launch the ROS 2 SDK workspace environment.
   run      Run a .sima hybrid script with local + container commands.
   setup    Initialize SDK environment and select components to start.
   start    Select and start one or more SDK containers.

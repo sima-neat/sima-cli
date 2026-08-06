@@ -1648,6 +1648,7 @@ def start_docker_container(
     noninteractive=False,
     yes_to_all=False,
     no_insight=False,
+    insight_video_channels=4,
     no_model_sdk=False,
     minimal=False,
 ):
@@ -1783,6 +1784,7 @@ def start_docker_container(
                 yes_to_all=yes_to_all,
                 noninteractive=noninteractive,
                 no_insight=no_insight,
+                insight_video_channels=insight_video_channels,
                 minimal=minimal,
                 reserved_ports=reserved_ports,
             )

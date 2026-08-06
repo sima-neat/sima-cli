@@ -43,6 +43,7 @@ from sima_cli.sdk.network_doctor import (
     print_network_doctor_report,
     repair_linux_devkit_network,
 )
+from sima_cli.sdk.neat import DEFAULT_INSIGHT_VIDEO_CHANNELS, MAX_INSIGHT_VIDEO_CHANNELS
 from sima_cli.sdk.linux_shared_network import (
     NM_SHARED_DISPATCHER_PATH,
     rollback_linux_shared_devkit_network,
@@ -283,6 +284,13 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Start Neat SDK without Insight UI/video/WebRTC port mappings.",
 )
 @click.option(
+    "--insight-video-channels",
+    type=click.IntRange(1, MAX_INSIGHT_VIDEO_CHANNELS),
+    default=DEFAULT_INSIGHT_VIDEO_CHANNELS,
+    show_default=True,
+    help="Number of Insight video channels to configure (four exposed ports per channel).",
+)
+@click.option(
     "--no-model-compiler",
     "--no-model-sdk",
     "no_model_sdk",
@@ -313,7 +321,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt.",
 )
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, workspace, persistent_network_profile, image_selectors):
+def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, minimal, workspace, persistent_network_profile, image_selectors):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
@@ -322,6 +330,7 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, no_model_sdk, minimal, w
             yes_to_all=yes,
             devkit_ip=devkit_ip,
             no_insight=no_insight,
+            insight_video_channels=insight_video_channels,
             no_model_sdk=no_model_sdk,
             minimal=minimal,
             workspace=workspace,

@@ -564,6 +564,7 @@ def _list_available_models_internal(version: str, boardtype: str):
 
             if action == "Download model":
                 _download_model_internal(version, boardtype, selected_model)
+                break  # return to model selection after the download attempt
             elif action == "Back":
                 break  # back to model list
             else:  # Exit

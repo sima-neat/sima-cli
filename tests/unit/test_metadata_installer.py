@@ -193,6 +193,28 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
 
             self.assertEqual(_get_palette_sdk_version(release_file), "2.0.0")
 
+    def test_get_palette_sdk_version_reads_ros2_sdk_platform_version(self):
+        with TemporaryDirectory() as tmpdir:
+            release_file = Path(tmpdir) / "sdk-release"
+            release_file.write_text(
+                "SDK Type = ros2-sdk\n"
+                "Platform Version = 2.1.2\n"
+                "ROS2 SDK Version = main:29b5a79f924e:20260806T225502Z\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_get_palette_sdk_version(release_file), "2.1.2")
+
+    def test_get_palette_sdk_version_does_not_use_platform_version_for_unknown_sdk(self):
+        with TemporaryDirectory() as tmpdir:
+            release_file = Path(tmpdir) / "sdk-release"
+            release_file.write_text(
+                "SDK Type = third-party-sdk\nPlatform Version = 2.1.2\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_get_palette_sdk_version(release_file), "")
+
     @patch("sima_cli.install.metadata_installer._get_palette_sdk_version", return_value="2.0.0")
     @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
     @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")

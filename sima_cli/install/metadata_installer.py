@@ -1209,9 +1209,17 @@ def _get_palette_sdk_version(release_file: Path = Path("/etc/sdk-release")) -> s
         return ""
 
     match = re.search(r"^SDK Version\s*=\s*(\S+)", content, flags=re.MULTILINE)
-    if not match:
+    if match:
+        return match.group(1).split("_", 1)[0].strip()
+
+    sdk_type = re.search(r"^SDK Type\s*=\s*(\S+)", content, flags=re.MULTILINE)
+    if not sdk_type or sdk_type.group(1).strip() != "ros2-sdk":
         return ""
-    return match.group(1).split("_", 1)[0].strip()
+
+    platform_version = re.search(
+        r"^Platform Version\s*=\s*(\S+)", content, flags=re.MULTILINE
+    )
+    return platform_version.group(1).strip() if platform_version else ""
 
 
 def _detected_host_platform() -> tuple:

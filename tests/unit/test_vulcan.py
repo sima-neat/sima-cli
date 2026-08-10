@@ -899,6 +899,29 @@ class VulcanCommandTests(unittest.TestCase):
         self.assertIn("Switching to Neat Install", result.output)
         neat_install_mock.assert_called_once()
 
+    def test_top_level_install_switches_model_target_after_metadata_403(self):
+        runner = CliRunner()
+        with patch(
+            "sima_cli.cli.metadata_resolver",
+            return_value="https://docs.sima.ai/pkg_downloads/SDK2.1.2/models/yolo/metadata.json",
+        ), patch(
+            "sima_cli.cli.install_from_metadata",
+            side_effect=MetadataAccessForbidden("HTTP 403"),
+        ), patch("sima_cli.cli.install_vulcan_package") as neat_install_mock:
+            result = runner.invoke(main, ["install", "models/yolo", "-v", "2.1.2"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Switching to Neat Install", result.output)
+        neat_install_mock.assert_called_once_with(
+            target="models/yolo",
+            environment="production",
+            package_type=None,
+            install_dir=".",
+            force=False,
+            json_output=False,
+            command_name="sima-cli neat install",
+        )
+
     def test_top_level_install_does_not_switch_unknown_target_after_metadata_403(self):
         runner = CliRunner()
         with patch(

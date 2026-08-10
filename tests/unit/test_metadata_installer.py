@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from sima_cli.install.metadata_installer import (
     InstallationPreflightError,
+    _download_and_validate_metadata,
     _is_http_forbidden_error,
     _download_metadata_file_resource,
     _ensure_install_dir_writable,
@@ -22,6 +23,20 @@ from sima_cli.install.metadata_installer import (
 
 
 class MetadataInstallerCompatibilityTests(unittest.TestCase):
+    def test_incompatible_local_metadata_returns_empty_result_tuple(self):
+        with TemporaryDirectory() as tmpdir:
+            metadata_path = Path(tmpdir) / "metadata.json"
+            metadata_path.write_text("{}", encoding="utf-8")
+
+            with patch("sima_cli.install.metadata_installer.validate_metadata"), \
+                 patch(
+                     "sima_cli.install.metadata_installer._is_platform_compatible",
+                     return_value=False,
+                 ):
+                result = _download_and_validate_metadata(str(metadata_path))
+
+        self.assertEqual(result, (None, None))
+
     def test_http_forbidden_detection_handles_wrapped_download_error(self):
         try:
             try:

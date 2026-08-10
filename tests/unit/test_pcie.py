@@ -74,6 +74,8 @@ def test_start_remote_iperf3_waits_for_listener():
     command = ssh_run.call_args.args[3]
     assert "nohup iperf3 -s -1 -B 10.0.0.2" in command
     assert "ss -lnt" in command
+    assert "netstat -lnt" in command
+    assert 'listener_ready() { kill -0 "$server_pid"' in command
     assert "10.0.0.2:5201" in command
     assert "kill -0" in command
 

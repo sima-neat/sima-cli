@@ -557,6 +557,7 @@ NEAT_INSTALL_REPOSITORIES = {
     "insight",
     "internals",
     "llima",
+    "models",
     "sdk",
     "sentinel",
     "sima-cli",

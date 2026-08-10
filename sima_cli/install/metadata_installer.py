@@ -854,6 +854,8 @@ def _download_and_validate_metadata(
             click.echo("✅ Metadata validated successfully.")
             return metadata, os.path.dirname(os.path.abspath(metadata_path))
 
+        return None, None
+
     except MetadataValidationError as e:
         click.echo(f"❌ Metadata validation failed: {e}")
         raise click.Abort()

@@ -67,6 +67,7 @@ from sima_cli.sdk.utils import (
     install_neat_playbooks,
     is_neat_elxr_image,
     is_neat_sdk_image,
+    is_ros2_sdk_image,
     is_port_in_use,
     is_snap_docker_cli,
     prompt_multi_select,
@@ -83,6 +84,7 @@ sdk:latest
 ghcr.io/sima-neat/elxr:latest
 ghcr.io/sima-neat/elxr-sdk:latest
 ghcr.io/sima-neat/sdk-feature-devkit-sync:latest
+ghcr.io/sima-vertical-solutions/ros2-sdk:latest
 """
 
 
@@ -95,6 +97,26 @@ def _last_docker_run_command(run_mock):
 
 
 class TestSdkImageDetection(unittest.TestCase):
+    def test_ros2_sdk_is_discovered_and_classified(self):
+        with patch("sima_cli.sdk.utils.subprocess.check_output", return_value=SAMPLE_DOCKER_IMAGES):
+            images = get_local_sima_images()
+
+        image = "ghcr.io/sima-vertical-solutions/ros2-sdk:latest"
+        self.assertIn(image, images)
+        self.assertTrue(is_ros2_sdk_image(image))
+        self.assertEqual(extract_short_name(image), "ros2")
+        self.assertTrue(container_matches_sdk_keyword({"Names": "anything", "Image": image}, "ros2"))
+
+    def test_ros2_command_supports_version_filter(self):
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.launch_sdk_tool") as launch:
+            result = CliRunner().invoke(sdk, ["-v", "humble", "ros2", "ros2", "node", "list"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.args[0:2], ("ros2", ("ros2", "node", "list")))
+        self.assertEqual(launch.call_args.args[2].obj["version_filter"], "humble")
+
     def test_windows_port_check_handles_non_utf8_netstat_output(self):
         netstat_output = (
             "활성 연결\n"
@@ -326,6 +348,21 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
             self.assertTrue(Path(extensions_dir).is_dir())
 
+    def test_setup_sdk_extensions_without_model_compiler_skips_disk_check(self):
+        with TemporaryDirectory() as tmpdir:
+            with patch("sima_cli.sdk.install.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", side_effect=AssertionError("should not check disk")), \
+                 patch("builtins.input", side_effect=AssertionError("should not prompt")):
+                extensions_dir = _setup_sdk_extensions(
+                    ["ghcr.io/sima-neat/sdk:latest"],
+                    noninteractive=True,
+                    for_model_compiler=False,
+                )
+
+            self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
+            self.assertTrue(Path(extensions_dir).is_dir())
+
     def test_get_workspace_noninteractive_uses_default_and_creates_it(self):
         with TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
@@ -405,6 +442,41 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(setup_start.call_args.kwargs["workspace"], "/tmp/aws-workspace")
         self.assertTrue(setup_start.call_args.kwargs["yes_to_all"])
         self.assertTrue(setup_start.call_args.kwargs["noninteractive"])
+
+    def test_sdk_setup_insight_video_channels_option_is_forwarded(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(
+                sdk,
+                ["setup", "--insight-video-channels", "12", "-y", "-n"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(setup_start.call_args.kwargs["insight_video_channels"], 12)
+
+    def test_sdk_setup_insight_video_channels_defaults_to_four(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(setup_start.call_args.kwargs["insight_video_channels"], 4)
+
+    def test_sdk_setup_rejects_insight_video_channels_outside_range(self):
+        runner = CliRunner()
+        for channels in ("0", "81"):
+            with self.subTest(channels=channels), \
+                 patch("sima_cli.sdk.commands.check_and_start_docker"), \
+                 patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+                result = runner.invoke(
+                    sdk,
+                    ["setup", "--insight-video-channels", channels, "-y", "-n"],
+                )
+
+            self.assertEqual(result.exit_code, 2, result.output)
+            setup_start.assert_not_called()
 
     def test_sdk_setup_minimal_option_is_forwarded(self):
         runner = CliRunner()
@@ -1546,17 +1618,33 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["rtsp"]["tcp"]["host"], 8554)
         self.assertNotIn("udp", port_map["rtsp"])
         self.assertEqual(port_map["videoUDP"]["hostStart"], 9000)
-        self.assertEqual(port_map["videoUDP"]["hostEnd"], 9079)
+        self.assertEqual(port_map["insightVideoChannels"], 4)
+        self.assertEqual(port_map["videoUDP"]["hostEnd"], 9003)
         self.assertEqual(port_map["metadataUDP"]["hostStart"], 9100)
-        self.assertEqual(port_map["metadataUDP"]["hostEnd"], 9179)
+        self.assertEqual(port_map["metadataUDP"]["hostEnd"], 9103)
         self.assertEqual(port_map["webRTC"]["hostStart"], 40000)
-        self.assertEqual(port_map["webRTC"]["hostEnd"], 40199)
+        self.assertEqual(port_map["webRTC"]["hostEnd"], 40007)
         self.assertIn("8022:8022/tcp", port_args)
         self.assertIn("9999:9999/tcp", port_args)
         self.assertIn("10000:10000/tcp", port_args)
-        self.assertIn("9000-9079:9000-9079/udp", port_args)
-        self.assertIn("9100-9179:9100-9179/udp", port_args)
-        self.assertIn("40000-40199:40000-40199/udp", port_args)
+        self.assertIn("9000-9003:9000-9003/udp", port_args)
+        self.assertIn("9100-9103:9100-9103/udp", port_args)
+        self.assertIn("40000-40007:40000-40007/udp", port_args)
+
+    def test_neat_port_allocator_scales_ranges_to_requested_channels(self):
+        with patch("sima_cli.sdk.neat._is_port_available", return_value=True):
+            port_map, port_args = allocate_neat_ports(insight_video_channels=80)
+
+        self.assertEqual(port_map["insightVideoChannels"], 80)
+        self.assertEqual(port_map["videoUDP"]["hostEnd"], 9079)
+        self.assertEqual(port_map["metadataUDP"]["hostEnd"], 9179)
+        self.assertEqual(port_map["webRTC"]["hostEnd"], 40159)
+        self.assertIn("40000-40159:40000-40159/udp", port_args)
+
+    def test_neat_port_allocator_rejects_invalid_channel_count(self):
+        for channels in (0, 81, True, 4.5):
+            with self.subTest(channels=channels), self.assertRaises(ValueError):
+                allocate_neat_ports(insight_video_channels=channels)
 
     def test_neat_port_allocator_no_insight_skips_insight_ports(self):
         with patch("sima_cli.sdk.neat._is_port_available", return_value=True):
@@ -1584,7 +1672,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_neat_port_allocator_moves_udp_range_as_contiguous_block(self):
         def is_available(port, protocol):
-            if protocol == "udp" and port == 9006:
+            if protocol == "udp" and port == 9002:
                 return False
             return True
 
@@ -1593,14 +1681,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
             port_map, port_args = allocate_neat_ports()
 
         self.assertEqual(port_map["videoUDP"]["hostStart"], 18000)
-        self.assertEqual(port_map["videoUDP"]["hostEnd"], 18079)
-        self.assertIn("18000-18079:9000-9079/udp", port_args)
+        self.assertEqual(port_map["videoUDP"]["hostEnd"], 18003)
+        self.assertIn("18000-18003:9000-9003/udp", port_args)
         self.assertEqual(port_map["webRTC"]["hostStart"], 40000)
-        self.assertIn("40000-40199:40000-40199/udp", port_args)
+        self.assertIn("40000-40007:40000-40007/udp", port_args)
 
     def test_neat_port_allocator_respects_reserved_ports_from_failed_docker_run(self):
         reserved_ports = {
-            ("udp", port) for port in range(9000, 9080)
+            ("udp", port) for port in range(9000, 9004)
         }
 
         with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
@@ -1608,21 +1696,21 @@ table ip6 nm-shared-enx6c1ff720d573 {
             port_map, port_args = allocate_neat_ports(reserved_ports=reserved_ports)
 
         self.assertEqual(port_map["videoUDP"]["hostStart"], 18000)
-        self.assertEqual(port_map["videoUDP"]["hostEnd"], 18079)
-        self.assertIn("18000-18079:9000-9079/udp", port_args)
+        self.assertEqual(port_map["videoUDP"]["hostEnd"], 18003)
+        self.assertIn("18000-18003:9000-9003/udp", port_args)
 
     def test_neat_port_allocator_moves_webrtc_range_past_busy_udp_port(self):
         def is_available(port, protocol):
-            return not (protocol == "udp" and port == 40042)
+            return not (protocol == "udp" and port == 40002)
 
         with patch("sima_cli.sdk.neat._is_port_available", side_effect=is_available):
             port_map, port_args = allocate_neat_ports()
 
-        self.assertEqual(port_map["webRTC"]["hostStart"], 40043)
-        self.assertEqual(port_map["webRTC"]["hostEnd"], 40242)
-        self.assertEqual(port_map["webRTC"]["containerStart"], 40043)
-        self.assertEqual(port_map["webRTC"]["containerEnd"], 40242)
-        self.assertIn("40043-40242:40043-40242/udp", port_args)
+        self.assertEqual(port_map["webRTC"]["hostStart"], 40003)
+        self.assertEqual(port_map["webRTC"]["hostEnd"], 40010)
+        self.assertEqual(port_map["webRTC"]["containerStart"], 40003)
+        self.assertEqual(port_map["webRTC"]["containerEnd"], 40010)
+        self.assertIn("40003-40010:40003-40010/udp", port_args)
 
     @unittest.skipUnless(socket.has_ipv6, "IPv6 is unavailable")
     def test_udp_port_unavailable_when_ipv6_wildcard_listener_exists(self):
@@ -1642,7 +1730,13 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.neat._ensure_certificates", return_value=(cert_file, key_file)), \
                  patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="10.0.0.76"), \
                  patch.dict(os.environ, {"SIMA_CLI_HOME": str(Path(tmpdir) / ".sima-cli")}):
-                config = prepare_neat_container_run(tmpdir, "sdk-latest", yes_to_all=True, noninteractive=True)
+                config = prepare_neat_container_run(
+                    tmpdir,
+                    "sdk-latest",
+                    yes_to_all=True,
+                    noninteractive=True,
+                    insight_video_channels=12,
+                )
                 token_cache_path = _code_ui_token_cache_path()
 
             port_map_path = Path(config.port_map_host_path)
@@ -1652,12 +1746,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertIn("insight-config", config.config_host_dir)
             self.assertIn("sdk-cert", config.cert_host_dir)
             self.assertEqual(config.port_map["schema"], "sima.neat.port-map.v1")
+            self.assertEqual(config.port_map["insightVideoChannels"], 12)
             self.assertEqual(config.port_map["cert"]["certFile"], "/sdk-cert/neat-sdk.pem")
             self.assertEqual(config.port_map["codeUIHttps"]["scheme"], "https")
             self.assertEqual(config.webrtc_host_ip, "10.0.0.76")
             self.assertTrue(config.code_ui_token)
             self.assertNotIn("token", config.port_map["codeUI"])
             persisted_port_map = json.loads(port_map_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted_port_map["insightVideoChannels"], 12)
             self.assertNotIn("token", persisted_port_map["codeUI"])
             token_cache = json.loads(token_cache_path.read_text(encoding="utf-8"))
             cached_code_ui = token_cache["containers"]["sdk-latest"]["codeUI"]
@@ -2115,6 +2211,34 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn(f"{neat_config.config_host_dir}:/home/docker/.insight-config", docker_cmd)
         self.assertIn(f"{neat_config.cert_host_dir}:/sdk-cert", docker_cmd)
 
+    def test_start_ros2_container_only_maps_workspace_and_configures_user(self):
+        with TemporaryDirectory() as tmpdir, \
+             patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+             patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+             patch("sima_cli.sdk.utils.detect_current_user", return_value=("devuser", 1000, 1000)), \
+             patch("sima_cli.sdk.utils.configure_container") as configure, \
+             patch("sima_cli.sdk.utils.run_command") as run_command:
+            start_docker_container(
+                uid=1000,
+                gid=1000,
+                port=0,
+                workspace=tmpdir,
+                image="ghcr.io/sima-vertical-solutions/ros2-sdk:humble",
+                devkit_env={"devkit_ip": "10.77.77.121"},
+                sdk_extensions_dir="/tmp/extensions",
+            )
+
+        docker_cmd = run_command.call_args_list[0].args[0]
+        self.assertNotIn("--user=1000:1000", docker_cmd)
+        self.assertIn(f"{tmpdir}:/workspace", docker_cmd)
+        self.assertNotIn(f"{tmpdir}:/home/docker/sima-cli/", docker_cmd)
+        self.assertIn('devcontainer.metadata=[{"remoteUser":"devuser","workspaceFolder":"/workspace"}]', docker_cmd)
+        self.assertFalse(any("OPENVSCODE_" in arg for arg in docker_cmd))
+        self.assertNotIn("SIMA_DEVKIT_IP=10.77.77.121", docker_cmd)
+        self.assertNotIn("/tmp/extensions:/sdk-extensions", docker_cmd)
+        configure.assert_called_once()
+        self.assertTrue(configure.call_args.kwargs["user_and_workspace_only"])
+
     def test_start_neat_container_passes_no_insight_to_prepare(self):
         with TemporaryDirectory() as tmpdir:
             neat_config = NeatRunConfig(
@@ -2220,7 +2344,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("/sdk-cert", docker_cmd)
         self.assertNotIn("CONTAINER_HOST_IP=", docker_cmd)
 
-    def test_setup_no_model_sdk_skips_extension_directory_and_passes_flag(self):
+    def test_setup_no_model_sdk_still_provisions_extension_mount(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
              patch("sima_cli.sdk.install.syscheck"), \
@@ -2230,14 +2354,47 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.get_container_status", return_value={}), \
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
-             patch("sima_cli.sdk.install._setup_sdk_extensions") as setup_extensions, \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/home/u/sima-sdk-extensions") as setup_extensions, \
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
              patch("sima_cli.sdk.install.start_docker_container") as start_container:
             setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
 
-        setup_extensions.assert_not_called()
-        self.assertEqual(start_container.call_args.kwargs["sdk_extensions_dir"], "")
+        self.assertFalse(setup_extensions.call_args.kwargs["for_model_compiler"])
+        self.assertEqual(
+            start_container.call_args.kwargs["sdk_extensions_dir"],
+            "/home/u/sima-sdk-extensions",
+        )
         self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
+
+    def test_setup_warns_for_larger_insight_channel_count_and_forwards_it(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        fake_console = Mock()
+        with patch("sima_cli.sdk.install.Console", return_value=fake_console), \
+             patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/extensions"), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container:
+            setup_and_start(
+                insight_video_channels=12,
+                yes_to_all=True,
+                noninteractive=True,
+            )
+
+        warning_panels = [
+            call.args[0]
+            for call in fake_console.print.call_args_list
+            if getattr(call.args[0], "title", "") == "⚠️  Increased Port-Collision Risk"
+        ]
+        self.assertEqual(len(warning_panels), 1)
+        self.assertIn("48 channel ports", str(warning_panels[0].renderable))
+        self.assertEqual(start_container.call_args.kwargs["insight_video_channels"], 12)
 
     def test_setup_passes_yes_to_all_to_colima_devkit_network_warning(self):
         image = "ghcr.io/sima-neat/sdk:latest"
@@ -2260,7 +2417,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 devkit_ip="10.0.0.244",
             )
 
-        setup_extensions.assert_not_called()
+        setup_extensions.assert_called_once()
         warn_colima.assert_called_once_with(
             "10.0.0.244",
             noninteractive=False,
@@ -2319,6 +2476,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.get_container_status", return_value={}), \
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/ext"), \
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
              patch("sima_cli.sdk.install.start_docker_container") as start_container:
             setup_and_start(
@@ -2361,7 +2519,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.Console.print") as console_print:
             setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
 
-        setup_extensions.assert_not_called()
+        setup_extensions.assert_called_once()
         start_container.assert_called_once()
         snap_panels = [
             call.args[0]
@@ -2406,6 +2564,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.get_container_status", return_value={container: "running"}), \
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/ext"), \
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=container), \
              patch("sima_cli.sdk.install.is_container_running", return_value=True), \
              patch("sima_cli.sdk.install.check_os", return_value="linux"), \
@@ -3229,14 +3388,16 @@ table ip6 nm-shared-enx6c1ff720d573 {
             installer.index("sudo apt-get install -y -o DPkg::Lock::Timeout=120"),
         )
 
-    def test_installers_preserve_modelsdk_alias(self):
+    def test_installers_use_only_supported_sdk_aliases(self):
         shell_installer = Path("scripts/install/linux-mac.sh").read_text(encoding="utf-8")
         python_installer = Path("scripts/install/install.py").read_text(encoding="utf-8")
 
-        self.assertIn("modelsdk", shell_installer)
-        self.assertIn('"modelsdk": "sima-cli sdk model"', python_installer)
-        self.assertNotIn("modelcompiler", shell_installer)
-        self.assertNotIn('"modelcompiler": "sima-cli sdk model"', python_installer)
+        self.assertIn("ALIAS_NAMES=( sima-cli sdk sima-neat )", shell_installer)
+        self.assertIn('"sima-neat": "sima-cli sdk neat"', python_installer)
+        self.assertNotIn('"modelsdk": "sima-cli sdk model"', python_installer)
+        self.assertNotIn('"mpk": "sima-cli sdk mpk"', python_installer)
+        self.assertNotIn('"yocto": "sima-cli sdk yocto"', python_installer)
+        self.assertNotIn('"elxr": "sima-cli sdk elxr"', python_installer)
 
     def test_prepare_log_host_dir_makes_directory_container_writable(self):
         with TemporaryDirectory() as tmpdir:

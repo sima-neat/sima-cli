@@ -27,6 +27,11 @@ IMAGE_CONFIG = {
         "port_mapping_required": False,
         "var-log-folders": ["sima", "supervisor"]
     },
+    "ros2": {
+        "display": "ROS 2 SDK",
+        "privileged": False,
+        "port_mapping_required": False
+    },
     "modelsdk": {
         "display": "ModelSDK",
         "privileged": False,

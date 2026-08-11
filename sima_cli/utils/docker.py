@@ -405,7 +405,7 @@ def check_and_start_docker():
         sys.exit(1)
 
     elif platform_os == "mac":
-        start_docker_macos()
+        return start_docker_macos()
 
     return False
 

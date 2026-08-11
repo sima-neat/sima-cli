@@ -27,6 +27,7 @@ from sima_cli.sdk.linux_shared_network import (
     maybe_install_nm_shared_dispatcher_repair,
 )
 from sima_cli.sdk.network_doctor import ensure_existing_neat_container_startable
+from sima_cli.sdk.neat import DEFAULT_INSIGHT_VIDEO_CHANNELS, MAX_INSIGHT_VIDEO_CHANNELS
 from sima_cli.utils.net import get_local_ip_candidates
 
 from sima_cli.sdk.utils import (
@@ -47,6 +48,7 @@ from sima_cli.sdk.utils import (
     print_section,
     extract_short_name,
     is_neat_sdk_image,
+    is_ros2_sdk_image,
     is_snap_docker_cli,
     check_os,
     container_user_mapping_unavailable,
@@ -786,24 +788,26 @@ def _setup_sdk_extensions(
     selected_images: List[str],
     noninteractive: bool = False,
     yes_to_all: bool = False,
+    for_model_compiler: bool = True,
 ) -> str:
     if not _supports_model_sdk_extension_mount(selected_images):
         if any(is_neat_sdk_image(image) for image in selected_images):
-            click.secho("⚠️  Model Compiler extension mount is not available on ARM64 platforms before Neat SDK 2.1.1; skipping /sdk-extensions mount.", fg="yellow")
+            click.secho("⚠️  SDK extensions mount is not available on ARM64 platforms before Neat SDK 2.1.1; skipping /sdk-extensions mount.", fg="yellow")
         return ""
 
     default_extensions_dir = Path.home() / "sima-sdk-extensions"
-    home_usage = shutil.disk_usage(Path.home())
-    click.echo(
-        "ℹ️  Model Compiler extension may require about "
-        f"{MODEL_SDK_EXTENSION_REQUIRED_GB} GB of additional disk space. "
-        f"Available under {Path.home()}: {_format_gb(home_usage.free)}."
-    )
-    if home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
-        click.secho(
-            "⚠️  The default home filesystem may not have enough free space for the Model Compiler extension.",
-            fg="yellow",
+    if for_model_compiler:
+        home_usage = shutil.disk_usage(Path.home())
+        click.echo(
+            "ℹ️  Model Compiler extension may require about "
+            f"{MODEL_SDK_EXTENSION_REQUIRED_GB} GB of additional disk space. "
+            f"Available under {Path.home()}: {_format_gb(home_usage.free)}."
         )
+        if home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
+            click.secho(
+                "⚠️  The default home filesystem may not have enough free space for the Model Compiler extension.",
+                fg="yellow",
+            )
 
     if noninteractive or yes_to_all:
         extensions_dir = default_extensions_dir
@@ -1036,6 +1040,7 @@ def setup_and_start(
     yes_to_all: bool = False,
     devkit_ip: str = "",
     no_insight: bool = False,
+    insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
     no_model_sdk: bool = False,
     minimal: bool = False,
     workspace: Optional[str] = None,
@@ -1045,6 +1050,11 @@ def setup_and_start(
     """Main entry for SDK setup and container start."""
 
     console = Console()
+
+    if not 1 <= insight_video_channels <= MAX_INSIGHT_VIDEO_CHANNELS:
+        raise RuntimeError(
+            f"--insight-video-channels must be between 1 and {MAX_INSIGHT_VIDEO_CHANNELS}."
+        )
 
     if not start_only:
         console.print(Panel("🔧 SiMa.ai SDK Setup", border_style="cyan", expand=False))
@@ -1105,17 +1115,35 @@ def setup_and_start(
     )
     skip_model_sdk = no_model_sdk or minimal
     skip_insight = no_insight or minimal
-    if skip_model_sdk:
+    if (
+        insight_video_channels > DEFAULT_INSIGHT_VIDEO_CHANNELS
+        and not skip_insight
+        and any(is_neat_sdk_image(img) for img in selected_images)
+    ):
+        console.print(
+            Panel(
+                f"[bold yellow]{insight_video_channels} Insight video channels[/bold yellow] "
+                f"will expose {insight_video_channels * 4} channel ports.\n\n"
+                "Larger port ranges have a higher risk of colliding with other services "
+                "when the host restarts. If that happens, rerun [bold]sima-cli sdk setup[/bold] "
+                "and recreate the affected container so the ports can be renegotiated.",
+                title="⚠️  Increased Port-Collision Risk",
+                border_style="yellow",
+                expand=False,
+            )
+        )
+    if minimal:
         sdk_extensions_dir = ""
-        if any(is_neat_sdk_image(img) for img in selected_images):
-            reason = "--minimal" if minimal else "--no-model-compiler"
-            click.echo(f"ℹ️  Skipping Model Compiler extension setup because {reason} was specified.")
     else:
         sdk_extensions_dir = _setup_sdk_extensions(
             selected_images,
             noninteractive=noninteractive,
             yes_to_all=yes_to_all,
+            for_model_compiler=not skip_model_sdk,
         )
+    if skip_model_sdk and any(is_neat_sdk_image(img) for img in selected_images):
+        reason = "--minimal" if minimal else "--no-model-compiler"
+        click.echo(f"ℹ️  Skipping Model Compiler extension setup because {reason} was specified.")
     if minimal and any(is_neat_sdk_image(img) for img in selected_images):
         click.echo("ℹ️  Skipping Insight setup because --minimal was specified.")
     
@@ -1151,6 +1179,7 @@ def setup_and_start(
                 noninteractive=noninteractive,
                 yes_to_all=yes_to_all,
                 no_insight=skip_insight,
+                insight_video_channels=insight_video_channels,
                 no_model_sdk=skip_model_sdk,
                 minimal=minimal,
             )
@@ -1170,7 +1199,16 @@ def setup_and_start(
 
             if check_os() in ["linux", "macos"]:
                 login_name, user_uid, user_gid = detect_current_user()
-                configure_container_user(existing_container, login_name, user_uid, user_gid)
+                if is_ros2_sdk_image(img):
+                    configure_container_user(
+                        existing_container,
+                        login_name,
+                        user_uid,
+                        user_gid,
+                        install_missing_sudo=True,
+                    )
+                else:
+                    configure_container_user(existing_container, login_name, user_uid, user_gid)
 
             if devkit_env and is_neat_sdk_image(img):
                 if not skip_insight:

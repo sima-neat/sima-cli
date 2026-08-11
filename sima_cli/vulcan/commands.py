@@ -73,6 +73,7 @@ def install_vulcan_package(
     force=False,
     json_output=False,
     command_name="sima-cli neat install",
+    download_only=False,
 ):
     resolved_environment = normalize_environment(environment) or "production"
     _ensure_available_environment(resolved_environment)
@@ -108,13 +109,16 @@ def install_vulcan_package(
     click.echo(f"Ref:         {result.ref}")
     click.echo(f"Spec:        {result.resolved_spec}")
     click.echo(f"Metadata:    {result.metadata_url}")
-    return install_from_metadata(
+    install_kwargs = dict(
         metadata_url=result.metadata_url,
         internal=False,
         install_dir=install_dir,
         force=force,
         command_name=command_name,
     )
+    if download_only:
+        install_kwargs["download_only"] = True
+    return install_from_metadata(**install_kwargs)
 
 
 def _set_artifact_context(ctx, environment, environment_flag, base_url):
@@ -165,7 +169,7 @@ def vulcan_group(ctx, environment, environment_flag, base_url):
     _set_artifact_context(ctx, environment, environment_flag, base_url)
 
 
-@click.command("download")
+@click.command("artifacts")
 @click.argument("repo", required=False)
 @click.argument("ref", required=False)
 @_environment_shortcut_options
@@ -199,7 +203,7 @@ def vulcan_group(ctx, environment, environment_flag, base_url):
 )
 @click.option("--json", "json_output", is_flag=True, help="Print a machine-readable JSON summary.")
 @click.pass_context
-def download(ctx, repo, ref, environment, environment_flag, base_url, output, artifact_patterns, json_output):
+def artifacts(ctx, repo, ref, environment, environment_flag, base_url, output, artifact_patterns, json_output):
     """Download artifacts for REPO and branch or tag REF."""
     resolved_environment = (
         _resolve_environment(environment, environment_flag, default=None)
@@ -278,8 +282,9 @@ def download(ctx, repo, ref, environment, environment_flag, base_url, output, ar
     help="Force installation even if compatibility checks fail.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
+@click.option("--download-only", is_flag=True, help="Download metadata resources without running installation.")
 @click.pass_context
-def install(ctx, target, environment, environment_flag, base_url, install_dir, package_type, force, json_output):
+def install(ctx, target, environment, environment_flag, base_url, install_dir, package_type, force, json_output, download_only):
     """Install a Neat artifact package from TARGET.
 
     TARGET supports REPO, REPO/folder, REPO@branch, REPO/folder@branch:spec,
@@ -300,13 +305,53 @@ def install(ctx, target, environment, environment_flag, base_url, install_dir, p
         force=force,
         json_output=json_output,
         command_name=f"sima-cli {group_name} install",
+        download_only=download_only,
+    )
+
+
+@click.command("download")
+@click.argument("target")
+@_environment_shortcut_options
+@click.option("--env", "environment", metavar=ENV_METAVAR, callback=_normalize_environment_option, default=None,
+              help="Artifact environment. Overrides the parent --env.")
+@click.option("--base-url", default=None, envvar="SIMA_NEAT_BASE_URL",
+              help="Override the artifact base URL. Overrides the parent --base-url.")
+@click.option("-d", "--install-dir", default=".", show_default=True,
+              type=click.Path(file_okay=False, dir_okay=True, path_type=str),
+              help="Directory where package resources are downloaded.")
+@click.option("-t", "--type", "package_type",
+              help="Download metadata variant metadata-<type>.json instead of metadata.json.")
+@click.option("-f", "--force", is_flag=True, default=False,
+              help="Skip available-space checks while downloading.")
+@click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
+@click.pass_context
+def download(ctx, target, environment, environment_flag, base_url, install_dir, package_type, force, json_output):
+    """Download a Neat package's metadata resources without installing it."""
+    group_name = ctx.parent.info_name if ctx.parent and ctx.parent.info_name else "neat"
+    return install_vulcan_package(
+        target=target,
+        environment=(
+            _resolve_environment(environment, environment_flag, default=None)
+            or ctx.obj.get("vulcan_environment")
+            or "production"
+        ),
+        base_url=base_url or ctx.obj.get("vulcan_base_url"),
+        package_type=package_type,
+        install_dir=install_dir,
+        force=force,
+        json_output=json_output,
+        command_name=f"sima-cli {group_name} download",
+        download_only=True,
     )
 
 
 def register_vulcan_commands(main):
     neat_group.add_command(download)
+    neat_group.add_command(artifacts)
     neat_group.add_command(install)
+    from sima_cli.sdk.commands import neat as sdk_neat
+    neat_group.add_command(sdk_neat, name="sdk")
     main.add_command(neat_group)
-    vulcan_group.add_command(download)
+    vulcan_group.add_command(artifacts, name="download")
     vulcan_group.add_command(install)
     main.add_command(vulcan_group)

@@ -1327,11 +1327,19 @@ def configure_container_user(
     uid: int,
     gid: int,
     platform_os: str = None,
+    install_missing_sudo: bool = False,
 ) -> None:
     platform_os = platform_os or check_os()
     home_directory = f"/home/{login_name}"
 
     if platform_os in ["linux", "macos"]:
+        if install_missing_sudo:
+            run_command([
+                "docker", "exec", "-u", "0", sdk_container_name, "bash", "-lc",
+                "command -v sudo >/dev/null 2>&1 || "
+                "(export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y sudo)",
+            ])
+
         with _docker_cp_staging_dir() as tmpdir:
             passwd_path = os.path.join(tmpdir, "passwd.txt")
             shadow_path = os.path.join(tmpdir, "shadow.txt")
@@ -1421,6 +1429,7 @@ def configure_container(
     yes_to_all=False,
     no_model_sdk=False,
     minimal=False,
+    user_and_workspace_only=False,
 ):
     """
     Configure container user mappings and permissions:
@@ -1442,7 +1451,18 @@ def configure_container(
     print(f"⚙️  Configuring container '{sdk_container_name}' for user '{login_name}' (UID={uid}, GID={gid})")
     home_directory = f"/home/{login_name}"
 
-    configure_container_user(sdk_container_name, login_name, uid, gid, platform_os=platform_os)
+    configure_container_user(
+        sdk_container_name,
+        login_name,
+        uid,
+        gid,
+        platform_os=platform_os,
+        install_missing_sudo=user_and_workspace_only,
+    )
+
+    if user_and_workspace_only:
+        print(f"✅ Workspace and sudo-enabled user '{login_name}' configured in '{sdk_container_name}'.")
+        return
 
     run_command(
         [
@@ -1628,6 +1648,7 @@ def start_docker_container(
     noninteractive=False,
     yes_to_all=False,
     no_insight=False,
+    insight_video_channels=4,
     no_model_sdk=False,
     minimal=False,
 ):
@@ -1646,6 +1667,10 @@ def start_docker_container(
     hostname = sanitize_container_hostname(container_name)
     print(f"🚀 Starting container '{container_name}' using image '{image}'")
     image_tag = image.rsplit(":", 1)[1] if ":" in image.rsplit("/", 1)[-1] else "latest"
+    neat_sdk_image = is_neat_sdk_image(image)
+    ros2_sdk_image = is_ros2_sdk_image(image)
+    workspace_sdk_image = neat_sdk_image or ros2_sdk_image
+    workspace_mount_target = "/workspace" if ros2_sdk_image else "/home/docker/sima-cli/"
 
     # Detect macOS with Apple Silicon
     system_name = platform.system()
@@ -1658,20 +1683,21 @@ def start_docker_container(
         "--name", container_name,
         "--hostname", hostname,
         "--network", "simasdkbridge",
-        "-v", f"{workspace}:/home/docker/sima-cli/",
+        "-v", f"{workspace}:{workspace_mount_target}",
         "-e", f"SDK_IMAGE_TAG={image_tag}",
     ]
 
-    neat_sdk_image = is_neat_sdk_image(image)
-    if not neat_sdk_image:
+    if not workspace_sdk_image:
         docker_cmd.insert(4, f"--user={uid}:{gid}")
 
-    if neat_sdk_image:
+    if workspace_sdk_image:
         remote_user = detect_current_user()[0] if check_os() in ["linux", "macos"] else "docker"
         docker_cmd.extend([
             "--label",
             f"devcontainer.metadata={_devcontainer_metadata_label(remote_user)}",
         ])
+
+    if neat_sdk_image:
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_USER={remote_user}"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/{remote_user}/.openvscode-server/extensions"])
         docker_cmd.extend(["-e", "OPENVSCODE_WORKSPACE=/workspace"])
@@ -1758,6 +1784,7 @@ def start_docker_container(
                 yes_to_all=yes_to_all,
                 noninteractive=noninteractive,
                 no_insight=no_insight,
+                insight_video_channels=insight_video_channels,
                 minimal=minimal,
                 reserved_ports=reserved_ports,
             )
@@ -1818,6 +1845,7 @@ def start_docker_container(
         yes_to_all=yes_to_all,
         no_model_sdk=no_model_sdk,
         minimal=minimal,
+        user_and_workspace_only=ros2_sdk_image,
     )
 
     if devkit_env and neat_sdk_image:
@@ -2349,9 +2377,16 @@ def is_neat_sdk_image(image: str) -> bool:
     return _is_neat_repo_name(repo_name, include_neat_sdk_alias=True)
 
 
+def is_ros2_sdk_image(image: str) -> bool:
+    """Return True for the official vertical-solutions ROS 2 SDK image."""
+    return _image_repository(image) == "ghcr.io/sima-vertical-solutions/ros2-sdk"
+
+
 def _canonical_sdk_image_name(image: str) -> str:
     if is_neat_sdk_image(image):
         return "neat"
+    if is_ros2_sdk_image(image):
+        return "ros2"
 
     repo = _image_repository(image)
     if not repo:

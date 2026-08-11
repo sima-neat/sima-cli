@@ -9,7 +9,8 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from sima_cli.cli import main
-from sima_cli.install.metadata_installer import InstallationPreflightError
+from sima_cli.install.metadata_installer import InstallationPreflightError, MetadataAccessForbidden
+from sima_cli.install import metadata_installer
 from sima_cli.vulcan.artifacts import (
     DownloadResult,
     ENV_BASE_URLS,
@@ -33,7 +34,7 @@ def _fake_result(environment="production", base_url="https://example.invalid"):
         ref="main",
         ref_key="main",
         latest_tag="abcdef0",
-        manifest_url=f"{base_url}/core/main/manifest.json",
+        manifest_url=f"{base_url}/core/main/abcdef0/manifest.json",
         output_dir=output_dir,
         files=(output_dir / "latest.tag",),
     )
@@ -64,6 +65,35 @@ class FakeClient:
 
 
 class VulcanArtifactTests(unittest.TestCase):
+    def test_metadata_download_only_stops_before_install_side_effects(self):
+        metadata = {"name": "demo", "version": "1.0", "resources": ["package.tar.gz"]}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            metadata_installer, "_download_and_validate_metadata", return_value=(metadata, tmp)
+        ) as metadata_mock, patch.object(
+            metadata_installer, "_check_whether_disk_is_big_enough", return_value=True
+        ), patch.object(
+            metadata_installer, "_is_platform_compatible", return_value=True
+        ) as compatibility_mock, patch.object(
+            metadata_installer, "_download_assets", return_value=[str(Path(tmp) / "package.tar.gz")]
+        ) as download_mock, patch.object(
+            metadata_installer, "_run_installation_script"
+        ) as install_script_mock, patch.object(
+            metadata_installer.registry, "create_entry"
+        ) as registry_mock:
+            result = metadata_installer.install_from_metadata(
+                "https://example.invalid/metadata.json",
+                internal=False,
+                install_dir=tmp,
+                download_only=True,
+            )
+
+        self.assertEqual(result, [str(Path(tmp) / "package.tar.gz")])
+        self.assertFalse(metadata_mock.call_args.kwargs["check_compatibility"])
+        download_mock.assert_called_once()
+        compatibility_mock.assert_not_called()
+        install_script_mock.assert_not_called()
+        registry_mock.assert_not_called()
+
     def test_environment_urls_match_vulcan_domains(self):
         self.assertEqual(ENV_BASE_URLS["dev"], "https://artifacts.neat.paconsultings.com")
         self.assertEqual(ENV_BASE_URLS["staging"], "https://artifacts.stg.neat.sima.ai")
@@ -102,7 +132,7 @@ class VulcanArtifactTests(unittest.TestCase):
             "artifacts": [
                 {
                     "path": "package.tar.gz",
-                    "s3_key": "core/main/package.tar.gz",
+                    "s3_key": "core/main/abcdef0/package.tar.gz",
                     "size": len(artifact),
                     "sha256": digest,
                 }
@@ -111,8 +141,8 @@ class VulcanArtifactTests(unittest.TestCase):
         client = FakeClient(
             {
                 f"{base_url}/core/main/latest.tag": "abcdef0\n",
-                f"{base_url}/core/main/manifest.json": json.dumps(manifest),
-                f"{base_url}/core/main/package.tar.gz": artifact,
+                f"{base_url}/core/main/abcdef0/manifest.json": json.dumps(manifest),
+                f"{base_url}/core/main/abcdef0/package.tar.gz": artifact,
             }
         )
 
@@ -128,10 +158,15 @@ class VulcanArtifactTests(unittest.TestCase):
 
             self.assertIsNone(warning)
             self.assertEqual(result.latest_tag, "abcdef0")
+            self.assertEqual(
+                result.manifest_url,
+                f"{base_url}/core/main/abcdef0/manifest.json",
+            )
             self.assertEqual(result.output_dir, Path(tmp) / "production" / "core" / "main" / "abcdef0")
             self.assertEqual((result.output_dir / "package.tar.gz").read_bytes(), artifact)
             self.assertEqual((result.output_dir / "latest.tag").read_text(), "abcdef0\n")
             self.assertTrue((result.output_dir / "manifest.json").exists())
+            self.assertNotIn(f"{base_url}/core/main/manifest.json", client.urls)
 
     def test_parse_install_target_defaults_to_latest_main(self):
         self.assertEqual(parse_install_target("internals"), ("internals", "", "main", "latest"))
@@ -242,6 +277,81 @@ class VulcanArtifactTests(unittest.TestCase):
             f"{base_url}/model-compiler/fix%252Fcompile-resnet50-docs-env/88caac51885b/examples/metadata.json",
         )
 
+    def test_models_latest_uses_per_model_build_tag_and_artifact_branch(self):
+        base_url = "https://example.invalid"
+        tag_url = f"{base_url}/models/feature%252Fcatalog/latest.tag"
+        latest_url = f"{base_url}/models/feature%252Fcatalog/latest.json"
+        client = FakeClient({tag_url: "bbbbbbbbbbbb\n", latest_url: json.dumps({
+            "schema_version": 1,
+            "repository": "sima-neat/models",
+            "branch": "feature/catalog",
+            "catalog_tag": "bbbbbbbbbbbb",
+            "models": {
+                "resnet_50": {
+                    "latest_tag": "aaaaaaaaaaaa",
+                    "artifact_branch": "main",
+                    "variants": {"modalix_bf16": {}},
+                }
+            },
+        })})
+
+        result = resolve_install_metadata_url(
+            environment="staging",
+            target="models/resnet_50@feature/catalog:latest",
+            base_url=base_url,
+            client=client,
+        )
+
+        self.assertEqual(client.urls, [tag_url, latest_url])
+        self.assertEqual(result.resolved_spec, "aaaaaaaaaaaa")
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/models/main/aaaaaaaaaaaa/resnet_50/metadata.json",
+        )
+
+    def test_models_root_latest_keeps_catalog_latest_tag_contract(self):
+        base_url = "https://example.invalid"
+        latest_url = f"{base_url}/models/develop/latest.tag"
+        client = FakeClient({latest_url: "bbbbbbbbbbbb\n"})
+
+        result = resolve_install_metadata_url(
+            environment="staging", target="models@develop:latest", base_url=base_url, client=client
+        )
+
+        self.assertEqual(client.urls, [latest_url])
+        self.assertEqual(result.metadata_url, f"{base_url}/models/develop/bbbbbbbbbbbb/metadata.json")
+
+    def test_models_latest_rejects_missing_model_entry(self):
+        base_url = "https://example.invalid"
+        tag_url = f"{base_url}/models/main/latest.tag"
+        latest_url = f"{base_url}/models/main/latest.json"
+        client = FakeClient({tag_url: "bbbbbbbbbbbb\n", latest_url: json.dumps({
+            "schema_version": 1, "repository": "sima-neat/models",
+            "catalog_tag": "bbbbbbbbbbbb", "models": {}
+        })})
+
+        with self.assertRaisesRegex(VulcanArtifactError, "does not contain model"):
+            resolve_install_metadata_url(
+                environment="staging", target="models/resnet_50@main:latest",
+                base_url=base_url, client=client,
+            )
+
+    def test_models_latest_rejects_partial_pointer_promotion(self):
+        base_url = "https://example.invalid"
+        client = FakeClient({
+            f"{base_url}/models/main/latest.tag": "bbbbbbbbbbbb\n",
+            f"{base_url}/models/main/latest.json": json.dumps({
+                "schema_version": 1, "repository": "sima-neat/models",
+                "catalog_tag": "aaaaaaaaaaaa", "models": {},
+            }),
+        })
+
+        with self.assertRaisesRegex(VulcanArtifactError, "publication may be incomplete"):
+            resolve_install_metadata_url(
+                environment="staging", target="models/resnet_50@main:latest",
+                base_url=base_url, client=client,
+            )
+
     def test_resolve_install_metadata_url_uses_metadata_type_variant(self):
         base_url = "https://example.invalid"
         client = FakeClient({f"{base_url}/internals/main/latest.tag": "50649e9aa0ba\n"})
@@ -299,23 +409,48 @@ class VulcanCommandTests(unittest.TestCase):
         result = runner.invoke(main, ["neat", "download", "--help"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Download artifacts for REPO", result.output)
+        self.assertIn("Download a Neat package's metadata resources", result.output)
+        self.assertIn("TARGET", result.output)
         self.assertIn("--env [dev|stg|staging|prd|prod|production]", result.output)
         self.assertIn("--stg, --staging", result.output)
         self.assertIn("--prd, --prod", result.output)
 
     def test_neat_group_accepts_env_before_download(self):
         runner = CliRunner()
-        with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
-            download_mock.return_value = (
-                _fake_result(environment="dev", base_url=ENV_BASE_URLS["dev"]),
-                None,
-            )
-            result = runner.invoke(main, ["neat", "--env", "dev", "download", "core", "main"])
+        with patch("sima_cli.vulcan.commands.install_vulcan_package") as install_mock:
+            result = runner.invoke(main, ["neat", "--env", "dev", "download", "core"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(download_mock.call_args.kwargs["environment"], "dev")
-        self.assertIsNone(download_mock.call_args.kwargs["base_url"])
+        self.assertEqual(install_mock.call_args.kwargs["environment"], "dev")
+        self.assertTrue(install_mock.call_args.kwargs["download_only"])
+        self.assertIsNone(install_mock.call_args.kwargs["base_url"])
+
+    def test_neat_artifacts_preserves_manifest_downloader(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.download_vulcan_artifacts") as download_mock:
+            download_mock.return_value = (_fake_result(), None)
+            result = runner.invoke(main, ["neat", "artifacts", "core", "main"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        download_mock.assert_called_once()
+
+    def test_neat_install_download_only_forwards_download_mode(self):
+        runner = CliRunner()
+        with patch("sima_cli.vulcan.commands.install_vulcan_package") as install_mock:
+            result = runner.invoke(main, ["neat", "install", "core", "--download-only"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(install_mock.call_args.kwargs["download_only"])
+
+    def test_neat_sdk_forwards_passthrough_arguments(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.launch_sdk_tool") as launch_mock:
+            result = runner.invoke(main, ["neat", "sdk", "python", "--version"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        launch_mock.assert_called_once()
+        self.assertEqual(launch_mock.call_args.args[0], "neat")
+        self.assertEqual(launch_mock.call_args.args[1], ("python", "--version"))
 
     def test_vulcan_download_help_is_registered(self):
         runner = CliRunner()
@@ -723,6 +858,84 @@ class VulcanCommandTests(unittest.TestCase):
         self.assertIn("Installation Failed", result.output)
         self.assertIn("Current directory '/' is not writable.", result.output)
         self.assertNotIn("Failed to resolve metadata", result.output)
+
+    def test_top_level_install_switches_neat_target_after_metadata_403(self):
+        runner = CliRunner()
+        with patch(
+            "sima_cli.cli.metadata_resolver",
+            return_value="https://docs.sima.ai/pkg_downloads/SDK2.1.0/core/metadata.json",
+        ), patch(
+            "sima_cli.cli.install_from_metadata",
+            side_effect=MetadataAccessForbidden("HTTP 403"),
+        ), patch("sima_cli.cli.install_vulcan_package") as neat_install_mock:
+            result = runner.invoke(main, ["install", "core/runtime", "-v", "2.1.0"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Switching to Neat Install", result.output)
+        self.assertIn("sima-cli neat install core/runtime", result.output)
+        self.assertIn("use sima-cli neat install in the future", result.output)
+        neat_install_mock.assert_called_once_with(
+            target="core/runtime",
+            environment="production",
+            package_type=None,
+            install_dir=".",
+            force=False,
+            json_output=False,
+            command_name="sima-cli neat install",
+        )
+
+    def test_top_level_install_switches_when_nested_metadata_download_raises_403(self):
+        runner = CliRunner()
+        with patch(
+            "sima_cli.cli.metadata_resolver",
+            return_value="https://docs.sima.ai/pkg_downloads/SDK2.1.2/core/metadata.json",
+        ), patch(
+            "sima_cli.install.metadata_installer._download_and_validate_metadata",
+            side_effect=MetadataAccessForbidden("HTTP 403"),
+        ), patch("sima_cli.cli.install_vulcan_package") as neat_install_mock:
+            result = runner.invoke(main, ["install", "core", "-v", "2.1.2"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Switching to Neat Install", result.output)
+        neat_install_mock.assert_called_once()
+
+    def test_top_level_install_switches_model_target_after_metadata_403(self):
+        runner = CliRunner()
+        with patch(
+            "sima_cli.cli.metadata_resolver",
+            return_value="https://docs.sima.ai/pkg_downloads/SDK2.1.2/models/yolo/metadata.json",
+        ), patch(
+            "sima_cli.cli.install_from_metadata",
+            side_effect=MetadataAccessForbidden("HTTP 403"),
+        ), patch("sima_cli.cli.install_vulcan_package") as neat_install_mock:
+            result = runner.invoke(main, ["install", "models/yolo", "-v", "2.1.2"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Switching to Neat Install", result.output)
+        neat_install_mock.assert_called_once_with(
+            target="models/yolo",
+            environment="production",
+            package_type=None,
+            install_dir=".",
+            force=False,
+            json_output=False,
+            command_name="sima-cli neat install",
+        )
+
+    def test_top_level_install_does_not_switch_unknown_target_after_metadata_403(self):
+        runner = CliRunner()
+        with patch(
+            "sima_cli.cli.metadata_resolver",
+            return_value="https://docs.sima.ai/pkg_downloads/SDK2.1.0/other/metadata.json",
+        ), patch(
+            "sima_cli.cli.install_from_metadata",
+            side_effect=MetadataAccessForbidden("HTTP 403"),
+        ), patch("sima_cli.cli.install_vulcan_package") as neat_install_mock:
+            result = runner.invoke(main, ["install", "other", "-v", "2.1.0"])
+
+        self.assertNotEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("Switching to Neat Install", result.output)
+        neat_install_mock.assert_not_called()
 
     def test_top_level_install_vulcan_requires_target(self):
         runner = CliRunner()

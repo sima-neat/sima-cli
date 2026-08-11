@@ -364,9 +364,11 @@ class SkillManager:
         return target
 
     def _download_repo_archive(self, source: SourceRef, url: str, workdir: Path) -> Path:
-        parsed = urlparse(url)
-        filename = Path(parsed.path).name or "skills.tar.gz"
-        target = workdir / filename
+        # SCM archive endpoints commonly end in a ref (for example ``develop``
+        # or a commit SHA), so the URL path does not carry an archive suffix.
+        # Use a known filename instead of asking archive extraction to infer the
+        # format from that ref.
+        target = workdir / "skills.tar.gz"
 
         token = self._normalize_auth_token(os.getenv("GITHUB_TOKEN", "")) if source.scheme == "gh" else ""
         bb_user = os.getenv("BITBUCKET_USERNAME", "").strip()
@@ -418,7 +420,10 @@ class SkillManager:
         repo = source.repo_name
         ref = source.ref
         if source.scheme == "gh":
-            return f"https://codeload.github.com/{owner}/{repo}/tar.gz/refs/heads/{ref}"
+            # GitHub's generic codeload endpoint resolves branches, tags, and
+            # commit SHAs.  refs/heads only works for branches and returns 404
+            # for the immutable commit refs used by published packages.
+            return f"https://codeload.github.com/{owner}/{repo}/tar.gz/{quote(ref, safe='')}"
         if source.scheme == "bb":
             return f"https://bitbucket.org/{owner}/{repo}/get/{ref}.tar.gz"
         raise SkillError(f"Unsupported repo source: {source.scheme}")

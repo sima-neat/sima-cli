@@ -10,8 +10,10 @@ Features:
 """
 
 from pathlib import Path
+import ipaddress
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import os
@@ -271,7 +273,14 @@ def _ensure_iperf3_installed() -> bool:
     return False
 
 
-def _ssh_run_command(host: str, username: str, password: str, command: str) -> Tuple[int, str, str]:
+def _ssh_run_command(
+    host: str,
+    username: str,
+    password: str,
+    command: str,
+    stdin_data: str = "",
+    get_pty: bool = False,
+) -> Tuple[int, str, str]:
     try:
         import paramiko
     except Exception as e:
@@ -281,10 +290,13 @@ def _ssh_run_command(host: str, username: str, password: str, command: str) -> T
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         client.connect(hostname=host, username=username, password=password, timeout=10)
-        stdin, stdout, stderr = client.exec_command(command)
+        stdin, stdout, stderr = client.exec_command(command, get_pty=get_pty)
+        if stdin_data:
+            stdin.write(stdin_data)
+            stdin.flush()
         out = stdout.read().decode(errors="ignore")
         err = stderr.read().decode(errors="ignore")
-        return 0, out, err
+        return stdout.channel.recv_exit_status(), out, err
     except Exception as e:
         return 1, "", str(e)
     finally:
@@ -296,22 +308,56 @@ def _ensure_remote_iperf3(host: str, username: str, password: str) -> bool:
     if code == 0 and out.strip():
         return True
 
-    install_cmd = (
-        "if command -v apt-get >/dev/null 2>&1; then sudo -S apt-get update && sudo -S apt-get install -y iperf3; "
-        "elif command -v dnf >/dev/null 2>&1; then sudo -S dnf install -y iperf3; "
-        "elif command -v yum >/dev/null 2>&1; then sudo -S yum install -y iperf3; "
-        "elif command -v zypper >/dev/null 2>&1; then sudo -S zypper install -y iperf3; "
-        "elif command -v pacman >/dev/null 2>&1; then sudo -S pacman -S --noconfirm iperf3; "
+    package_cmd = (
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "DEBIAN_FRONTEND=noninteractive apt-get update && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y iperf3; "
+        "elif command -v dnf >/dev/null 2>&1; then dnf install -y iperf3; "
+        "elif command -v yum >/dev/null 2>&1; then yum install -y iperf3; "
+        "elif command -v zypper >/dev/null 2>&1; then zypper install -y iperf3; "
+        "elif command -v pacman >/dev/null 2>&1; then pacman -S --noconfirm iperf3; "
         "else echo 'no package manager'; exit 1; fi"
     )
+    install_cmd = f"sudo -S -p '' sh -c {shlex.quote(package_cmd)}"
     code, out, err = _ssh_run_command(
-        host, username, password, f"printf '%s\\n' {password!r} | {install_cmd}"
+        host,
+        username,
+        password,
+        install_cmd,
+        stdin_data=f"{password}\n",
+        get_pty=True,
     )
-    return code == 0
+    if code != 0:
+        return False
+
+    code, out, err = _ssh_run_command(host, username, password, "command -v iperf3")
+    return code == 0 and bool(out.strip())
 
 
 def _start_remote_iperf3_server(host: str, username: str, password: str, bind_ip: str) -> bool:
-    cmd = f"nohup iperf3 -s -1 -B {bind_ip} >/tmp/iperf3_{bind_ip}.log 2>&1 &"
+    try:
+        bind_ip = str(ipaddress.ip_address(bind_ip))
+    except ValueError:
+        return False
+
+    quoted_ip = shlex.quote(bind_ip)
+    listener = shlex.quote(f"{bind_ip}:5201")
+    log_path = shlex.quote(f"/tmp/sima-cli-iperf3-{bind_ip}.log")
+    cmd = (
+        f"nohup iperf3 -s -1 -B {quoted_ip} >{log_path} 2>&1 </dev/null & "
+        "server_pid=$!; attempt=0; "
+        "if command -v ss >/dev/null 2>&1; then "
+        f"listener_ready() {{ ss -lnt 2>/dev/null | grep -Fq -- {listener}; }}; "
+        "elif command -v netstat >/dev/null 2>&1; then "
+        f"listener_ready() {{ netstat -lnt 2>/dev/null | grep -Fq -- {listener}; }}; "
+        "else listener_ready() { kill -0 \"$server_pid\" 2>/dev/null; }; fi; "
+        "while [ \"$attempt\" -lt 30 ]; do "
+        "if listener_ready; then exit 0; fi; "
+        "if ! kill -0 \"$server_pid\" 2>/dev/null; then "
+        f"cat {log_path} >&2; exit 1; fi; "
+        "attempt=$((attempt + 1)); sleep 0.1; "
+        "done; echo 'iperf3 did not listen on TCP/5201' >&2; exit 1"
+    )
     code, out, err = _ssh_run_command(host, username, password, cmd)
     return code == 0
 

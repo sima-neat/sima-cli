@@ -146,6 +146,36 @@ compatibility:
             clone_url = self.manager._repo_clone_url(src)
         self.assertIn("x-access-token:ghp_abc123@", clone_url)
 
+    def test_github_archive_url_supports_branch_and_commit_refs(self):
+        branch = self.manager.parse_source("gh:sima-neat/apps@develop")
+        self.assertEqual(
+            self.manager._repo_archive_url(branch),
+            "https://codeload.github.com/sima-neat/apps/tar.gz/develop",
+        )
+
+        sha = "296e64ce9d2b6a102d10f9b2c60c860f6fa62842"
+        commit = self.manager.parse_source(f"gh:sima-neat/sentinel/skills/use-sentinel@{sha}")
+        self.assertEqual(
+            self.manager._repo_archive_url(commit),
+            f"https://codeload.github.com/sima-neat/sentinel/tar.gz/{sha}",
+        )
+
+    @patch("sima_cli.playbooks.manager.requests.get")
+    def test_repo_archive_download_uses_archive_extension(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.iter_content.return_value = [b"archive"]
+        mock_get.return_value = response
+        source = self.manager.parse_source("gh:sima-neat/apps@develop")
+
+        archive = self.manager._download_repo_archive(
+            source,
+            self.manager._repo_archive_url(source),
+            self.root,
+        )
+
+        self.assertEqual(archive.name, "skills.tar.gz")
+        self.assertEqual(archive.read_bytes(), b"archive")
+
     @patch("sima_cli.playbooks.manager.shutil.which", return_value="/usr/bin/git")
     @patch("sima_cli.playbooks.manager.get_environment_type", return_value=("host", "mac"))
     @patch("sima_cli.playbooks.manager.subprocess.run")

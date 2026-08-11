@@ -23,7 +23,7 @@ None.
 
 ## Subcommands
 
-- [`sima-cli modelzoo describe`](./sima-cli-modelzoo-describe.md): Download a specific model.
+- [`sima-cli modelzoo describe`](./sima-cli-modelzoo-describe.md): Provide information about a specific model.
 - [`sima-cli modelzoo get`](./sima-cli-modelzoo-get.md): Download a specific model.
 - [`sima-cli modelzoo list`](./sima-cli-modelzoo-list.md): List available models.
 
@@ -41,7 +41,7 @@ Options:
   --help                       Show this message and exit.
 
 Commands:
-  describe  Download a specific model.
+  describe  Provide information about a specific model.
   get       Download a specific model.
   list      List available models.
 ```

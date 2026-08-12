@@ -15,7 +15,11 @@ APT_MAIN_SOURCE_FILE = "/etc/apt/sources.list"
 APT_SOURCE_DIR = "/etc/apt/sources.list.d"
 BUILDINFO_FILES = ["/etc/build", "/etc/buildinfo"]
 EXTERNAL_REPO_URL = "https://repo.sima.ai/elxr/deb/release"
-EXTERNAL_PRERELEASE_REPO_URL = "https://debian.neat.sima.ai/elxr/deb/pre-release"
+EXTERNAL_PRERELEASE_REPO_URL = "https://debian.neat.sima.ai/pre-release"
+LEGACY_EXTERNAL_PRERELEASE_REPO_URLS = (
+    "https://debian.neat.sima.ai",
+    "https://debian.neat.sima.ai/elxr/deb/pre-release",
+)
 INTERNAL_REPO_URL = "http://sw-web.eng.sima.ai/deb/pre-release"
 INTERNAL_REPO_PREFIX = "http://sw-web.eng.sima.ai/"
 DEFAULT_REPO_SUITE = "bookworm"
@@ -76,7 +80,14 @@ def _parse_elxr_repo_line(line: str) -> Optional[Tuple[str, str, bool]]:
     if component != REPO_COMPONENT:
         return None
 
-    if repo_url not in (EXTERNAL_REPO_URL, EXTERNAL_PRERELEASE_REPO_URL) and not repo_url.startswith(INTERNAL_REPO_PREFIX):
+    if (
+        repo_url not in (
+            EXTERNAL_REPO_URL,
+            EXTERNAL_PRERELEASE_REPO_URL,
+            *LEGACY_EXTERNAL_PRERELEASE_REPO_URLS,
+        )
+        and not repo_url.startswith(INTERNAL_REPO_PREFIX)
+    ):
         return None
 
     return repo_url, suite, active
@@ -97,7 +108,11 @@ def _detect_repo_suite(lines: List[str]) -> str:
 
 
 def _is_managed_elxr_repo(repo_url: str) -> bool:
-    return repo_url in (EXTERNAL_REPO_URL, EXTERNAL_PRERELEASE_REPO_URL) or repo_url.startswith(INTERNAL_REPO_PREFIX)
+    return repo_url in (
+        EXTERNAL_REPO_URL,
+        EXTERNAL_PRERELEASE_REPO_URL,
+        *LEGACY_EXTERNAL_PRERELEASE_REPO_URLS,
+    ) or repo_url.startswith(INTERNAL_REPO_PREFIX)
 
 
 def _is_target_elxr_repo(repo_url: str, internal: bool, target_url: Optional[str] = None) -> bool:

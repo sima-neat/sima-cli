@@ -7,6 +7,7 @@ from sima_cli.update.elxr import (
     ELXR_UPDATE_DOC_URL,
     EXTERNAL_REPO_URL,
     EXTERNAL_PRERELEASE_REPO_URL,
+    LEGACY_EXTERNAL_PRERELEASE_REPO_URLS,
     INTERNAL_REPO_PREFIX,
     INTERNAL_REPO_URL,
     SIMAAI_OTA_FALLBACK,
@@ -33,6 +34,10 @@ class TestElxrRepoChannel(unittest.TestCase):
         content = "\n".join([
             f"# {EXTERNAL_PRERELEASE_BOOKWORM_REPO_LINE}",
             INTERNAL_BOOKWORM_REPO_LINE,
+            *(
+                f"deb {repo_url} bookworm non-free"
+                for repo_url in LEGACY_EXTERNAL_PRERELEASE_REPO_URLS
+            ),
         ])
 
         updated, changed, switching = _select_elxr_repo_channel(
@@ -45,6 +50,8 @@ class TestElxrRepoChannel(unittest.TestCase):
         self.assertTrue(switching)
         self.assertIn(EXTERNAL_PRERELEASE_BOOKWORM_REPO_LINE, updated)
         self.assertIn(f"# {INTERNAL_BOOKWORM_REPO_LINE}", updated)
+        for repo_url in LEGACY_EXTERNAL_PRERELEASE_REPO_URLS:
+            self.assertIn(f"# deb {repo_url} bookworm non-free", updated)
     def test_selects_internal_channel_and_comments_external(self):
         content = "\n".join([
             "deb http://deb.debian.org/debian bookworm main non-free-firmware",

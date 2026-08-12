@@ -138,7 +138,14 @@ run_smoke() {
 
   "$python_bin" -m venv "$venv"
   py="$venv/bin/python"
-  expected_version="$("$py" -c 'import runpy, sys; print(runpy.run_path(sys.argv[1])["__version__"])' "$ROOT_DIR/sima_cli/__version__.py")"
+  expected_version="$("$py" -c '
+import runpy
+import sys
+from packaging.version import Version
+
+raw_version = runpy.run_path(sys.argv[1])["__version__"]
+print(Version(raw_version))
+' "$ROOT_DIR/sima_cli/__version__.py")"
   PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 "$py" -m pip install --quiet --upgrade pip setuptools wheel
   if [[ -n "$WHEEL_PATH" ]]; then
     wheel="$WHEEL_PATH"

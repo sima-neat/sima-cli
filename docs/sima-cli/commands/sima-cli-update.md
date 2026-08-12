@@ -19,7 +19,7 @@ sima-cli update [OPTIONS] [VERSION_OR_URL]
 | `-y, --yes` | Skip confirmation after firmware file is downloaded. |
 | `-p, --passwd` | Optional SSH password for remote board (default is 'edgeai'). (default: edgeai) |
 | `--flavor` | Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above (default: auto) |
-| `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror (ELXR only). Package signature verification is disabled only for that pre-release source. |
+| `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror without signature verification (ELXR only). |
 | `-t, --troot_only` | Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion. |
 | `--dryrun` | For ELXR updates only, validate the update path and print the simaai-ota command without running it. |
 

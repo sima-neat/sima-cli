@@ -3047,6 +3047,45 @@ table ip6 nm-shared-enx6c1ff720d573 {
             run_command.call_args_list[-1].args[0][-1],
         )
 
+    def test_model_sdk_extension_uses_vulcan_for_2_1_3_on_amd64(self):
+        sdk_release = "SDK Version = 2.1.3_Palette_SDK_neat_main_780365a\n"
+        read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
+
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
+             patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result), \
+             patch("sima_cli.sdk.utils.run_command") as run_command:
+            ensure_model_sdk_extension_installed("container", "docker")
+
+        install_script = run_command.call_args_list[-1].args[0][-1]
+        self.assertEqual(run_command.call_count, 1)
+        self.assertIn(
+            '"$SIMA_CLI_BIN" neat install model-compiler/amd64@develop',
+            install_script,
+        )
+        self.assertNotIn("sima-cli login", install_script)
+        self.assertNotIn("tools/model-compiler", install_script)
+
+    def test_model_sdk_extension_uses_vulcan_for_versions_after_2_1_3_on_arm64(self):
+        sdk_release = "SDK Version = 2.2.0_Palette_SDK_neat_main_780365a\n"
+        read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
+
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.2.0"), \
+             patch("sima_cli.sdk.utils.platform.machine", return_value="aarch64"), \
+             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result), \
+             patch("sima_cli.sdk.utils.run_command") as run_command:
+            ensure_model_sdk_extension_installed("container", "docker")
+
+        install_script = run_command.call_args_list[-1].args[0][-1]
+        self.assertEqual(run_command.call_count, 1)
+        self.assertIn(
+            '"$SIMA_CLI_BIN" neat install model-compiler/arm64@develop',
+            install_script,
+        )
+        self.assertNotIn("tools/model-compiler", install_script)
+
     def test_model_sdk_extension_auto_installs_without_prompt(self):
         sdk_release = "SDK Version = 2.0.0_Palette_SDK_neat_main_780365a\n"
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)

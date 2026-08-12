@@ -1210,6 +1210,12 @@ def _get_palette_sdk_version(release_file: Path = Path("/etc/sdk-release")) -> s
     except OSError:
         return ""
 
+    platform_base = re.search(
+        r"^Platform Base\s*=\s*(\S+)", content, flags=re.MULTILINE
+    )
+    if platform_base:
+        return platform_base.group(1).strip()
+
     match = re.search(r"^SDK Version\s*=\s*(\S+)", content, flags=re.MULTILINE)
     if not match:
         return ""

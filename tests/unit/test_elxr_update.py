@@ -6,6 +6,7 @@ from sima_cli.update.elxr import (
     APT_SOURCE_FILE,
     ELXR_UPDATE_DOC_URL,
     EXTERNAL_REPO_URL,
+    EXTERNAL_PRERELEASE_REPO_URL,
     INTERNAL_REPO_PREFIX,
     INTERNAL_REPO_URL,
     SIMAAI_OTA_FALLBACK,
@@ -19,6 +20,7 @@ from sima_cli.update.elxr import (
 )
 
 EXTERNAL_BOOKWORM_REPO_LINE = f"deb {EXTERNAL_REPO_URL} bookworm non-free"
+EXTERNAL_PRERELEASE_BOOKWORM_REPO_LINE = f"deb {EXTERNAL_PRERELEASE_REPO_URL} bookworm non-free"
 INTERNAL_BOOKWORM_REPO_LINE = f"deb {INTERNAL_REPO_URL} bookworm non-free"
 CUSTOM_BOOKWORM_REPO_LINE = f"deb {INTERNAL_REPO_PREFIX}deb/custom bookworm non-free"
 EXPERIMENT_BOOKWORM_REPO_LINE = f"deb {INTERNAL_REPO_PREFIX}deb/experiment bookworm non-free"
@@ -27,6 +29,22 @@ INTERNAL_TRIXIE_REPO_LINE = f"deb {INTERNAL_REPO_URL} trixie non-free"
 
 
 class TestElxrRepoChannel(unittest.TestCase):
+    def test_selects_external_prerelease_fallback(self):
+        content = "\n".join([
+            f"# {EXTERNAL_PRERELEASE_BOOKWORM_REPO_LINE}",
+            INTERNAL_BOOKWORM_REPO_LINE,
+        ])
+
+        updated, changed, switching = _select_elxr_repo_channel(
+            content,
+            internal=True,
+            target_url=EXTERNAL_PRERELEASE_REPO_URL,
+        )
+
+        self.assertTrue(changed)
+        self.assertTrue(switching)
+        self.assertIn(EXTERNAL_PRERELEASE_BOOKWORM_REPO_LINE, updated)
+        self.assertIn(f"# {INTERNAL_BOOKWORM_REPO_LINE}", updated)
     def test_selects_internal_channel_and_comments_external(self):
         content = "\n".join([
             "deb http://deb.debian.org/debian bookworm main non-free-firmware",

@@ -548,6 +548,7 @@ def perform_update(
     flavor: str = 'auto',
     troot_only: bool = False,
     dryrun: bool = False,
+    force_external_fallback: bool = False,
 ):
     r"""
     Update the system based on environment and input.
@@ -600,7 +601,12 @@ def perform_update(
                 return
 
             if is_devkit_running_elxr():
-                return update_elxr(version_or_url, internal=internal, dryrun=dryrun)
+                return update_elxr(
+                    version_or_url,
+                    internal=internal,
+                    dryrun=dryrun,
+                    force_external_fallback=force_external_fallback,
+                )
             
             elif fwtype.lower() == 'elxr':
                 click.echo(

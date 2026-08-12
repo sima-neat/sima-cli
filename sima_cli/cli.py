@@ -78,6 +78,12 @@ def _should_rerun_after_update(argv):
     return command_name not in (None, "selfupdate", "version")
 
 
+def _allows_external_prerelease_fallback(argv):
+    """Return whether this invocation explicitly allows update mirror fallback."""
+    args = argv[1:]
+    return "update" in args and any(arg in ("-f", "--force") for arg in args)
+
+
 def _rerun_current_command() -> None:
     env = os.environ.copy()
     env["SIMA_CLI_CHECK_FOR_UPDATE"] = "0"
@@ -114,13 +120,24 @@ def main(ctx, internal):
         click.echo("Refer to the confluence page to find out how to configure internal resource map.")
         exit(0)        
 
-    if internal and not check_artifactory_reachability():
+    internal_reachable = True
+    if internal:
+        internal_reachable = check_artifactory_reachability()
+
+    if internal and not internal_reachable and not _allows_external_prerelease_fallback(sys.argv):
         click.secho("❌ You have specified -i or --internal argument to access internal resources, but you can't connect to Artifactory.", fg='red')
         click.secho("Please make sure you are connected to VPN or are on the corporate network.", fg='red')
         exit(0)
+
+    if internal and not internal_reachable:
+        click.secho(
+            "⚠️  Internal resources are unreachable. --force allows this update to use the external pre-release mirror.",
+            fg="yellow",
+        )
         
 
     ctx.obj["internal"] = internal
+    ctx.obj["internal_reachable"] = internal_reachable
 
     env_type, env_subtype = get_environment_type()
 
@@ -246,11 +263,16 @@ def download(ctx, url, dest):
     help="Optional SSH password for remote board (default is 'edgeai')."
 )
 @click.option(
-    "-f", "--flavor",
+    "--flavor",
     type=click.Choice(["headless", "full", "auto"], case_sensitive=False),
     default="auto",
     show_default=True,
     help="Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above"
+)
+@click.option(
+    "-f", "--force",
+    is_flag=True,
+    help="If the internal mirror is unreachable, fall back to the external pre-release mirror (ELXR only)."
 )
 @click.option(
     "-t", "--troot_only",
@@ -265,7 +287,7 @@ def download(ctx, url, dest):
     help="For ELXR updates only, validate the update path and print the simaai-ota command without running it."
 )
 @click.pass_context
-def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_only, dryrun):
+def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun):
     """
     Update the software on a SiMa DevKit or remote SiMa device.
 
@@ -352,6 +374,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
 
     # Extract context and run update logic
     internal = ctx.obj.get("internal", False)
+    force_external_fallback = force and internal and not ctx.obj.get("internal_reachable", True)
     perform_update(
         version_or_url,
         ip,
@@ -361,6 +384,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
         flavor=flavor,
         troot_only=troot_only,
         dryrun=dryrun,
+        force_external_fallback=force_external_fallback,
     )
 
 # ----------------------

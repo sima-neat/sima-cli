@@ -272,7 +272,10 @@ def download(ctx, url, dest):
 @click.option(
     "-f", "--force",
     is_flag=True,
-    help="If the internal mirror is unreachable, fall back to the external pre-release mirror (ELXR only)."
+    help=(
+        "If the internal mirror is unreachable, fall back to the external pre-release mirror "
+        "without signature verification (ELXR only)."
+    )
 )
 @click.option(
     "-t", "--troot_only",

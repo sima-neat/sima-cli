@@ -29,7 +29,8 @@ ELXR_UPDATE_DOC_URL = "https://docs.sima.ai/pages/tech-notes/elxr-conversion.htm
 
 
 def _repo_line(repo_url: str, suite: str) -> str:
-    return f"deb {repo_url} {suite} {REPO_COMPONENT}"
+    options = " [trusted=yes]" if repo_url == EXTERNAL_PRERELEASE_REPO_URL else ""
+    return f"deb{options} {repo_url} {suite} {REPO_COMPONENT}"
 
 
 def _resolve_simaai_ota() -> str:
@@ -521,7 +522,8 @@ def update_elxr(
     target_url = EXTERNAL_PRERELEASE_REPO_URL if force_external_fallback else None
     if force_external_fallback:
         click.secho(
-            "⚠️  Falling back to the external ELXR pre-release mirror because the internal mirror is unreachable.",
+            "⚠️  Falling back to the external ELXR pre-release mirror because the internal mirror is unreachable.\n"
+            "   Package signature verification is disabled for this pre-release repository only.",
             fg="yellow",
         )
 

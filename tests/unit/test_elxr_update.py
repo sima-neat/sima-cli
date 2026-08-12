@@ -21,7 +21,7 @@ from sima_cli.update.elxr import (
 )
 
 EXTERNAL_BOOKWORM_REPO_LINE = f"deb {EXTERNAL_REPO_URL} bookworm non-free"
-EXTERNAL_PRERELEASE_BOOKWORM_REPO_LINE = f"deb {EXTERNAL_PRERELEASE_REPO_URL} bookworm non-free"
+EXTERNAL_PRERELEASE_BOOKWORM_REPO_LINE = f"deb [trusted=yes] {EXTERNAL_PRERELEASE_REPO_URL} bookworm non-free"
 INTERNAL_BOOKWORM_REPO_LINE = f"deb {INTERNAL_REPO_URL} bookworm non-free"
 CUSTOM_BOOKWORM_REPO_LINE = f"deb {INTERNAL_REPO_PREFIX}deb/custom bookworm non-free"
 EXPERIMENT_BOOKWORM_REPO_LINE = f"deb {INTERNAL_REPO_PREFIX}deb/experiment bookworm non-free"

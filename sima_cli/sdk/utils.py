@@ -818,12 +818,23 @@ def _version_at_least(version: str, minimum: str) -> bool:
     return current_parts >= minimum_parts
 
 
-def _model_sdk_extension_component(base_version: str) -> str:
+def _model_sdk_extension_arch(base_version: str) -> str:
     if _is_x86_platform():
-        return "tools/model-compiler/amd64"
+        return "amd64"
     if _is_arm64_platform() and _version_at_least(base_version, "2.1.1"):
-        return "tools/model-compiler/arm64"
+        return "arm64"
     return ""
+
+
+def _model_sdk_extension_install_args(base_version: str) -> List[str]:
+    arch = _model_sdk_extension_arch(base_version)
+    if not arch:
+        return []
+    if _version_at_least(base_version, "2.1.3"):
+        # Model Compiler 2.1.3+ is published through Vulcan. Use develop until
+        # the versioned 2.1.3 artifact ref is published.
+        return ["neat", "install", f"model-compiler/{arch}@develop"]
+    return ["install", "-v", base_version, f"tools/model-compiler/{arch}"]
 
 
 def ensure_model_sdk_extension_installed(
@@ -855,10 +866,11 @@ def ensure_model_sdk_extension_installed(
         print(f"⚠️  Could not determine SDK base version in '{sdk_container_name}'. Skipping Model Compiler extension install.")
         return
 
-    extension_component = _model_sdk_extension_component(base_version)
-    if not extension_component:
+    extension_install_args = _model_sdk_extension_install_args(base_version)
+    if not extension_install_args:
         print("ℹ️  Model Compiler extension install is not available on this host platform for SDK versions older than 2.1.1; skipping.")
         return
+    uses_vulcan = extension_install_args[:2] == ["neat", "install"]
 
     console.print(
         Panel(
@@ -870,7 +882,7 @@ def ensure_model_sdk_extension_installed(
             "Depending on network conditions, installation may take up to 15 minutes.\n"
             "\n\n"
             "If you decide to install it later, run this from within the SDK container shell:\n"
-            f"sima-cli install -v {base_version} {extension_component}",
+            f"sima-cli {shlex.join(extension_install_args)}",
             title="Model Compiler Extension",
             border_style="green",
             style="green",
@@ -885,17 +897,18 @@ def ensure_model_sdk_extension_installed(
             return
 
     internal_sima_cli_env = "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; "
-    print("ℹ️  Logging in to sima-cli before installing the Model Compiler extension...")
-    run_command(
-        _docker_exec_interactive_prefix() + [
-            "-u",
-            login_name,
-            sdk_container_name,
-            "bash",
-            "-lc",
-            f"{internal_sima_cli_env}sima-cli login",
-        ]
-    )
+    if not uses_vulcan:
+        print("ℹ️  Logging in to sima-cli before installing the Model Compiler extension...")
+        run_command(
+            _docker_exec_interactive_prefix() + [
+                "-u",
+                login_name,
+                sdk_container_name,
+                "bash",
+                "-lc",
+                f"{internal_sima_cli_env}sima-cli login",
+            ]
+        )
 
     home_directory = f"/home/{login_name}"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
@@ -916,7 +929,7 @@ def ensure_model_sdk_extension_installed(
         "echo \"sima-cli was not found for user $USER. Expected $HOME/.sima-cli/.venv/bin/sima-cli.\" >&2; "
         "exit 127; "
         "fi; "
-        f"\"$SIMA_CLI_BIN\" install -v {shlex.quote(base_version)} {shlex.quote(extension_component)}"
+        f"\"$SIMA_CLI_BIN\" {shlex.join(extension_install_args)}"
     )
     install_script = (
         "set -e; "

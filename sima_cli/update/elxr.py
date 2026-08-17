@@ -15,6 +15,11 @@ APT_MAIN_SOURCE_FILE = "/etc/apt/sources.list"
 APT_SOURCE_DIR = "/etc/apt/sources.list.d"
 BUILDINFO_FILES = ["/etc/build", "/etc/buildinfo"]
 EXTERNAL_REPO_URL = "https://repo.sima.ai/elxr/deb/release"
+EXTERNAL_PRERELEASE_REPO_URL = "https://debian.neat.sima.ai/pre-release"
+LEGACY_EXTERNAL_PRERELEASE_REPO_URLS = (
+    "https://debian.neat.sima.ai",
+    "https://debian.neat.sima.ai/elxr/deb/pre-release",
+)
 INTERNAL_REPO_URL = "http://sw-web.eng.sima.ai/deb/pre-release"
 INTERNAL_REPO_PREFIX = "http://sw-web.eng.sima.ai/"
 DEFAULT_REPO_SUITE = "bookworm"
@@ -24,7 +29,8 @@ ELXR_UPDATE_DOC_URL = "https://docs.sima.ai/pages/tech-notes/elxr-conversion.htm
 
 
 def _repo_line(repo_url: str, suite: str) -> str:
-    return f"deb {repo_url} {suite} {REPO_COMPONENT}"
+    options = " [trusted=yes]" if repo_url == EXTERNAL_PRERELEASE_REPO_URL else ""
+    return f"deb{options} {repo_url} {suite} {REPO_COMPONENT}"
 
 
 def _resolve_simaai_ota() -> str:
@@ -75,7 +81,14 @@ def _parse_elxr_repo_line(line: str) -> Optional[Tuple[str, str, bool]]:
     if component != REPO_COMPONENT:
         return None
 
-    if repo_url != EXTERNAL_REPO_URL and not repo_url.startswith(INTERNAL_REPO_PREFIX):
+    if (
+        repo_url not in (
+            EXTERNAL_REPO_URL,
+            EXTERNAL_PRERELEASE_REPO_URL,
+            *LEGACY_EXTERNAL_PRERELEASE_REPO_URLS,
+        )
+        and not repo_url.startswith(INTERNAL_REPO_PREFIX)
+    ):
         return None
 
     return repo_url, suite, active
@@ -96,11 +109,15 @@ def _detect_repo_suite(lines: List[str]) -> str:
 
 
 def _is_managed_elxr_repo(repo_url: str) -> bool:
-    return repo_url == EXTERNAL_REPO_URL or repo_url.startswith(INTERNAL_REPO_PREFIX)
+    return repo_url in (
+        EXTERNAL_REPO_URL,
+        EXTERNAL_PRERELEASE_REPO_URL,
+        *LEGACY_EXTERNAL_PRERELEASE_REPO_URLS,
+    ) or repo_url.startswith(INTERNAL_REPO_PREFIX)
 
 
-def _is_target_elxr_repo(repo_url: str, internal: bool) -> bool:
-    target_url = INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL
+def _is_target_elxr_repo(repo_url: str, internal: bool, target_url: Optional[str] = None) -> bool:
+    target_url = target_url or (INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL)
     return repo_url == target_url
 
 
@@ -125,6 +142,7 @@ def _select_elxr_repo_channel(
     internal: bool,
     append_missing: bool = True,
     suite: Optional[str] = None,
+    target_url: Optional[str] = None,
 ) -> Tuple[str, bool, bool]:
     """
     Return updated apt source content, whether it changed, and whether active
@@ -132,14 +150,14 @@ def _select_elxr_repo_channel(
     """
     lines = content.splitlines()
     suite = suite or _detect_repo_suite(lines)
-    target_url = INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL
+    target_url = target_url or (INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL)
     other_url = EXTERNAL_REPO_URL if internal else INTERNAL_REPO_URL
     target = _repo_line(target_url, suite)
     other = _repo_line(other_url, suite)
 
     other_active = any(
         _is_managed_elxr_repo(parsed[0])
-        and not _is_target_elxr_repo(parsed[0], internal)
+        and not _is_target_elxr_repo(parsed[0], internal, target_url)
         and parsed[2]
         for parsed in (_parse_elxr_repo_line(line) for line in lines)
         if parsed
@@ -200,12 +218,13 @@ def _read_apt_source_files(paths: List[str]) -> Optional[Dict[str, str]]:
 def _select_elxr_repo_channel_files(
     contents: Dict[str, str],
     internal: bool,
+    target_url: Optional[str] = None,
 ) -> Tuple[Dict[str, str], bool, bool]:
     all_lines: List[str] = []
     for content in contents.values():
         all_lines.extend(content.splitlines())
     suite = _detect_repo_suite(all_lines)
-    target_url = INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL
+    target_url = target_url or (INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL)
     target_seen = any(
         parsed[0] == target_url
         for parsed in (_parse_elxr_repo_line(line) for line in all_lines)
@@ -222,6 +241,7 @@ def _select_elxr_repo_channel_files(
             internal,
             append_missing=(path == APT_SOURCE_FILE and not target_seen),
             suite=suite,
+            target_url=target_url,
         )
         updated_contents[path] = updated
         changed = changed or file_changed
@@ -230,15 +250,20 @@ def _select_elxr_repo_channel_files(
     return updated_contents, changed, switching
 
 
-def _ensure_elxr_repo_channel(internal: bool) -> bool:
-    channel_name = "internal pre-release" if internal else "external release"
+def _ensure_elxr_repo_channel(internal: bool, target_url: Optional[str] = None) -> bool:
+    if target_url == EXTERNAL_PRERELEASE_REPO_URL:
+        channel_name = "external pre-release"
+    else:
+        channel_name = "internal pre-release" if internal else "external release"
 
     source_files = _list_apt_source_files()
     current_contents = _read_apt_source_files(source_files)
     if current_contents is None:
         return False
 
-    new_contents, changed, switching = _select_elxr_repo_channel_files(current_contents, internal)
+    new_contents, changed, switching = _select_elxr_repo_channel_files(
+        current_contents, internal, target_url=target_url
+    )
     if not changed:
         click.echo(f"✅ ELXR APT channel already set to {channel_name}.")
         return True
@@ -476,7 +501,12 @@ def print_current_versions():
     click.secho('Current SiMa component versions:', fg='green')
     click.secho(out)
 
-def update_elxr(version_or_url: Optional[str], internal: bool = False, dryrun: bool = False):
+def update_elxr(
+    version_or_url: Optional[str],
+    internal: bool = False,
+    dryrun: bool = False,
+    force_external_fallback: bool = False,
+):
     """
     Update packages on an ELXR-based devkit using simaai-ota.
     Enhanced:
@@ -489,7 +519,15 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False, dryrun: b
 
     print_current_versions()
 
-    if not _ensure_elxr_repo_channel(internal):
+    target_url = EXTERNAL_PRERELEASE_REPO_URL if force_external_fallback else None
+    if force_external_fallback:
+        click.secho(
+            "⚠️  Falling back to the external ELXR pre-release mirror because the internal mirror is unreachable.\n"
+            "   Package signature verification is disabled for this pre-release repository only.",
+            fg="yellow",
+        )
+
+    if not _ensure_elxr_repo_channel(internal, target_url=target_url):
         return
 
     # Check connectivity

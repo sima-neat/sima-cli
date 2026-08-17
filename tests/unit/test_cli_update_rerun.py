@@ -1,9 +1,23 @@
 import unittest
 
-from sima_cli.cli import _should_rerun_after_update
+from sima_cli.cli import _allows_external_prerelease_fallback, _should_rerun_after_update
 
 
 class TestCliUpdateRerun(unittest.TestCase):
+    def test_external_prerelease_fallback_requires_update_and_force(self):
+        self.assertTrue(
+            _allows_external_prerelease_fallback(["sima-cli", "-i", "update", "-f"])
+        )
+        self.assertTrue(
+            _allows_external_prerelease_fallback(["sima-cli", "-i", "update", "--force"])
+        )
+        self.assertFalse(
+            _allows_external_prerelease_fallback(["sima-cli", "-i", "update"])
+        )
+        self.assertFalse(
+            _allows_external_prerelease_fallback(["sima-cli", "-i", "install", "-f"])
+        )
+
     def test_reruns_regular_commands(self):
         self.assertTrue(_should_rerun_after_update(["sima-cli", "sdk", "list"]))
         self.assertTrue(_should_rerun_after_update(["sima-cli", "--internal", "sdk", "list"]))

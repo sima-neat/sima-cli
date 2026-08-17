@@ -75,7 +75,13 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
     return top_level_folders
 
 
-def _list_available_firmware_versions_external(board: str, match_keyword: str = None, flavor: str = 'headless', swtype: str = 'yocto'):
+def _list_available_firmware_versions_external(
+    board: str,
+    match_keyword: str = None,
+    flavor: str = 'headless',
+    swtype: str = 'yocto',
+    update_type: str = 'standard',
+):
     """
     Construct and return a list containing a single firmware download URL for a given board.
     
@@ -87,6 +93,9 @@ def _list_available_firmware_versions_external(board: str, match_keyword: str = 
         match_keyword (str, optional): A version string to match (e.g., '1.6' or '1.6.0').
         flavor (str, optional): A string indicating firmware flavor - headless or full.
         swtype (str, optional): A string indicating firmware type - yocto or elxr.
+        update_type (str, optional): Operation being prepared. ``bootimg``
+            selects a writable disk image for eLxr; other operations select the
+            netboot archive.
 
     Returns:
         list[str]: A list containing one formatted firmware download URL.
@@ -106,8 +115,14 @@ def _list_available_firmware_versions_external(board: str, match_keyword: str = 
             f'{download_url_base}SDK{match_keyword}/devkit/{board}/{swtype}/'
             f'simaai-devkit-fw-{board}-{swtype}-{flavor_str}{match_keyword}.tar.gz'
         )
+    elif update_type == 'bootimg':
+        firmware_download_url = (
+            f'{download_url_base}SDK{match_keyword}/devkit/{board}/{swtype}/'
+            f'elxr-palette-{board}-{match_keyword}-arm64.img.gz'
+        )
     else:
-        # For eLxr we just download the tftp minimal for netboot
+        # eLxr netboot uses the minimal TFTP archive. The palette disk image is
+        # downloaded separately for eMMC flashing.
         firmware_download_url = (
             f'{download_url_base}SDK{match_keyword}/devkit/{board}/{swtype}/'
             f'modalix-tftp-boot-minimal.tar.gz'
@@ -116,7 +131,14 @@ def _list_available_firmware_versions_external(board: str, match_keyword: str = 
     return [firmware_download_url]
 
 
-def list_available_firmware_versions(board: str, match_keyword: str = None, internal: bool = False, flavor: str = 'headless', swtype: str = 'yocto'):
+def list_available_firmware_versions(
+    board: str,
+    match_keyword: str = None,
+    internal: bool = False,
+    flavor: str = 'headless',
+    swtype: str = 'yocto',
+    update_type: str = 'standard',
+):
     """
     Public interface to list available firmware versions.
 
@@ -125,11 +147,14 @@ def list_available_firmware_versions(board: str, match_keyword: str = None, inte
     - match_keyword: str – Optional keyword to filter versions (case-insensitive)
     - internal: bool – Must be True to access internal Artifactory
     - flavor (str, optional): A string indicating firmware flavor - headless or full.
+    - update_type: str – Operation being prepared (standard, bootimg, or netboot).
 
     Returns:
     - List[str] of firmware version folder names, or None if access is not allowed
     """
     if not internal:
-        return _list_available_firmware_versions_external(board, match_keyword, flavor, swtype)
+        return _list_available_firmware_versions_external(
+            board, match_keyword, flavor, swtype, update_type
+        )
 
     return _list_available_firmware_versions_internal(board, match_keyword, flavor, swtype)

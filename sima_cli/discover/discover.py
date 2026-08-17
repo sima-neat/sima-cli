@@ -236,7 +236,7 @@ def discover_and_render_pcie_devices():
         )
 
     console.print(pcie_table)
-    maybe_run_pcie_throughput_test()
+    maybe_run_pcie_throughput_test(pcie_devices)
 
 # ─────────────────────────────────────────────────────────────
 # Unified Discovery Orchestration

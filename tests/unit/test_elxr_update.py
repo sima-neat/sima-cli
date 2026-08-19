@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import call, mock_open, patch
+from unittest.mock import ANY, call, mock_open, patch
 
 from sima_cli.update.elxr import (
     APT_SOURCE_FILE,
@@ -11,6 +11,7 @@ from sima_cli.update.elxr import (
     INTERNAL_REPO_PREFIX,
     INTERNAL_REPO_URL,
     SIMAAI_OTA_FALLBACK,
+    _prime_sudo_credentials,
     _repo_line,
     _resolve_simaai_ota,
     _get_installed_elxr_distro_version,
@@ -20,6 +21,7 @@ from sima_cli.update.elxr import (
     _show_unsupported_specific_elxr_update,
     update_elxr,
 )
+from sima_cli.update.updater import perform_update
 
 EXTERNAL_BOOKWORM_REPO_LINE = f"deb {EXTERNAL_REPO_URL} bookworm non-free"
 EXTERNAL_PRERELEASE_BOOKWORM_REPO_LINE = f"deb [trusted=yes] {EXTERNAL_PRERELEASE_REPO_URL} bookworm non-free"
@@ -206,6 +208,20 @@ class TestElxrRepoChannel(unittest.TestCase):
 
 
 class TestSimaaiOtaResolution(unittest.TestCase):
+    @patch("sima_cli.update.elxr.subprocess.run")
+    def test_primes_sudo_credentials_through_stdin(self, mock_run):
+        _prime_sudo_credentials("edgeai")
+
+        mock_run.assert_called_once_with(
+            ["sudo", "-S", "-p", "", "-v"],
+            input="edgeai\n",
+            text=True,
+            stdout=ANY,
+            stderr=ANY,
+            check=False,
+        )
+        self.assertNotIn("edgeai", mock_run.call_args.args[0])
+
     @patch("sima_cli.update.elxr.shutil.which", return_value="/opt/bin/simaai-ota")
     def test_uses_path_command_when_available(self, _mock_which):
         self.assertEqual(_resolve_simaai_ota(), "/opt/bin/simaai-ota")
@@ -234,6 +250,31 @@ class TestElxrVersionDetection(unittest.TestCase):
 
 
 class TestUnsupportedElxrSpecificVersionUpdate(unittest.TestCase):
+    @patch("sima_cli.update.updater.update_elxr")
+    @patch("sima_cli.update.updater.is_devkit_running_elxr", return_value=True)
+    @patch(
+        "sima_cli.update.updater.get_local_board_info",
+        return_value=("modalix", "2.1.0", "modalix", False, "elxr"),
+    )
+    @patch("sima_cli.update.updater.get_environment_type", return_value=("board", "elxr"))
+    def test_perform_update_passes_password_to_elxr(
+        self,
+        _mock_environment,
+        _mock_board_info,
+        _mock_is_elxr,
+        mock_update_elxr,
+    ):
+        perform_update(None, passwd="custom-password", auto_confirm=True)
+
+        mock_update_elxr.assert_called_once_with(
+            None,
+            internal=False,
+            dryrun=False,
+            force_external_fallback=False,
+            auto_confirm=True,
+            passwd="custom-password",
+        )
+
     @patch("sima_cli.update.elxr.click.confirm")
     @patch("sima_cli.update.elxr._resolve_simaai_ota", return_value="simaai-ota")
     @patch("sima_cli.update.elxr.subprocess.check_call")
@@ -251,8 +292,10 @@ class TestUnsupportedElxrSpecificVersionUpdate(unittest.TestCase):
         _mock_resolve_ota,
         mock_confirm,
     ):
-        update_elxr(None, internal=True, auto_confirm=True)
+        with patch("sima_cli.update.elxr._prime_sudo_credentials") as prime_sudo:
+            update_elxr(None, internal=True, auto_confirm=True, passwd="edgeai")
 
+        prime_sudo.assert_called_once_with("edgeai")
         mock_ensure_channel.assert_called_once_with(
             True, target_url=None, auto_confirm=True
         )

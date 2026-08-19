@@ -280,7 +280,7 @@ def download(ctx, url, dest):
     "-p", "--passwd",
     default="edgeai",
     show_default=True,
-    help="Optional SSH password for remote board (default is 'edgeai')."
+    help="Password for remote board SSH or local ELXR sudo authentication."
 )
 @click.option(
     "--flavor",

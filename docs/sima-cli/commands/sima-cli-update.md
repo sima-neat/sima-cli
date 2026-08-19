@@ -17,7 +17,7 @@ sima-cli update [OPTIONS] [VERSION_OR_URL]
 | `-v, --version` | Specify version string (e.g., '1.7.0', 'ga', 'beta', or a direct firmware URL). Default is GA if not specifiedOverrides positional argument if both are given. |
 | `--ip` | Target device IP address for remote firmware update. |
 | `-y, --yes` | Assume yes for update confirmation prompts. |
-| `-p, --passwd` | Optional SSH password for remote board (default is 'edgeai'). (default: edgeai) |
+| `-p, --passwd` | Password for remote board SSH or local ELXR sudo authentication. (default: edgeai) |
 | `--flavor` | Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above (default: auto) |
 | `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror without signature verification; without --internal, select that mirror directly (ELXR only). |
 | `-t, --troot_only` | Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion. |
@@ -121,8 +121,8 @@ Options:
   --ip TEXT                      Target device IP address for remote firmware
                                  update.
   -y, --yes                      Assume yes for update confirmation prompts.
-  -p, --passwd TEXT              Optional SSH password for remote board
-                                 (default is 'edgeai').  [default: edgeai]
+  -p, --passwd TEXT              Password for remote board SSH or local ELXR
+                                 sudo authentication.  [default: edgeai]
   --flavor [headless|full|auto]  Firmware flavor: 'full' image supports NVMe
                                  and GUI on Modalix DevKit. This option is
                                  deprecated for 2.0 and above  [default: auto]

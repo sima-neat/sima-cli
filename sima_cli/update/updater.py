@@ -640,6 +640,7 @@ def perform_update(
                     dryrun=dryrun,
                     force_external_fallback=force_external_fallback,
                     auto_confirm=auto_confirm,
+                    passwd=passwd,
                 )
             
             elif fwtype.lower() == 'elxr':

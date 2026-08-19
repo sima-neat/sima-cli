@@ -44,6 +44,21 @@ def _resolve_simaai_ota() -> str:
     )
 
 
+def _prime_sudo_credentials(passwd: str) -> None:
+    """Best-effort sudo authentication without exposing the password in argv."""
+    if not passwd:
+        return
+
+    subprocess.run(
+        ["sudo", "-S", "-p", "", "-v"],
+        input=f"{passwd}\n",
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
 def _normalize_apt_source_line(line: str) -> str:
     value = line.strip()
     if value.startswith("#"):
@@ -284,14 +299,6 @@ def _ensure_elxr_repo_channel(
             click.echo("❌ Update cancelled")
             return False
 
-    if subprocess.call(["sudo", "-n", "true"],
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL) != 0:
-        if auto_confirm:
-            click.echo("❌ Non-interactive sudo access is required with --yes")
-            return False
-        click.echo("ℹ️  sudo may prompt you for a password...")
-
     try:
         sudo = ["sudo", "-n"] if auto_confirm else ["sudo"]
         for path, new_content in new_contents.items():
@@ -517,6 +524,7 @@ def update_elxr(
     dryrun: bool = False,
     force_external_fallback: bool = False,
     auto_confirm: bool = False,
+    passwd: str = "edgeai",
 ):
     """
     Update packages on an ELXR-based devkit using simaai-ota.
@@ -527,6 +535,9 @@ def update_elxr(
     if not is_devkit_running_elxr():
         click.echo("ℹ️  Not an ELXR devkit, skipping update")
         return
+
+    if auto_confirm:
+        _prime_sudo_credentials(passwd)
 
     print_current_versions()
 
@@ -557,13 +568,6 @@ def update_elxr(
 
     click.echo("➡️  Refreshing APT package metadata...")
     sudo = ["sudo", "-n"] if auto_confirm else ["sudo"]
-    if subprocess.call(["sudo", "-n", "true"],
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL) != 0:
-        if auto_confirm:
-            click.echo("❌ Non-interactive sudo access is required with --yes")
-            return
-        click.echo("ℹ️  sudo may prompt you for a password...")
     try:
         subprocess.check_call([*sudo, "apt", "update"])
     except subprocess.CalledProcessError:
@@ -746,14 +750,6 @@ def update_elxr(
         return
 
     click.echo(f"➡️  {desc}\n   " + click.style(f"Running: {' '.join(cmd)}", fg="cyan"))
-
-    if subprocess.call(["sudo", "-n", "true"],
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL) != 0:
-        if auto_confirm:
-            click.echo("❌ Non-interactive sudo access is required with --yes")
-            return
-        click.echo("ℹ️  sudo may prompt you for a password...")
 
     subprocess.check_call(cmd)
     click.echo("✅ ELXR update completed successfully")

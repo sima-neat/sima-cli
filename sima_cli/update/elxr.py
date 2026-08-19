@@ -250,7 +250,11 @@ def _select_elxr_repo_channel_files(
     return updated_contents, changed, switching
 
 
-def _ensure_elxr_repo_channel(internal: bool, target_url: Optional[str] = None) -> bool:
+def _ensure_elxr_repo_channel(
+    internal: bool,
+    target_url: Optional[str] = None,
+    auto_confirm: bool = False,
+) -> bool:
     if target_url == EXTERNAL_PRERELEASE_REPO_URL:
         channel_name = "external pre-release"
     else:
@@ -274,21 +278,27 @@ def _ensure_elxr_repo_channel(internal: bool, target_url: Optional[str] = None) 
             "   This upgrade path has not been tested. Proceed with caution.",
             fg="yellow",
         )
-        if not click.confirm(f"Switch ELXR APT channel to {channel_name}?", default=False):
+        if not auto_confirm and not click.confirm(
+            f"Switch ELXR APT channel to {channel_name}?", default=False
+        ):
             click.echo("❌ Update cancelled")
             return False
 
     if subprocess.call(["sudo", "-n", "true"],
                        stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL) != 0:
+        if auto_confirm:
+            click.echo("❌ Non-interactive sudo access is required with --yes")
+            return False
         click.echo("ℹ️  sudo may prompt you for a password...")
 
     try:
+        sudo = ["sudo", "-n"] if auto_confirm else ["sudo"]
         for path, new_content in new_contents.items():
             if new_content == current_contents[path]:
                 continue
             subprocess.run(
-                ["sudo", "tee", path],
+                [*sudo, "tee", path],
                 input=new_content,
                 text=True,
                 stdout=subprocess.DEVNULL,
@@ -506,6 +516,7 @@ def update_elxr(
     internal: bool = False,
     dryrun: bool = False,
     force_external_fallback: bool = False,
+    auto_confirm: bool = False,
 ):
     """
     Update packages on an ELXR-based devkit using simaai-ota.
@@ -521,13 +532,20 @@ def update_elxr(
 
     target_url = EXTERNAL_PRERELEASE_REPO_URL if force_external_fallback else None
     if force_external_fallback:
+        reason = (
+            "because the internal mirror is unreachable"
+            if internal
+            else "because --force was specified"
+        )
         click.secho(
-            "⚠️  Falling back to the external ELXR pre-release mirror because the internal mirror is unreachable.\n"
+            f"⚠️  Using the external ELXR pre-release mirror {reason}.\n"
             "   Package signature verification is disabled for this pre-release repository only.",
             fg="yellow",
         )
 
-    if not _ensure_elxr_repo_channel(internal, target_url=target_url):
+    if not _ensure_elxr_repo_channel(
+        internal, target_url=target_url, auto_confirm=auto_confirm
+    ):
         return
 
     # Check connectivity
@@ -538,12 +556,16 @@ def update_elxr(
         return
 
     click.echo("➡️  Refreshing APT package metadata...")
+    sudo = ["sudo", "-n"] if auto_confirm else ["sudo"]
     if subprocess.call(["sudo", "-n", "true"],
                        stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL) != 0:
+        if auto_confirm:
+            click.echo("❌ Non-interactive sudo access is required with --yes")
+            return
         click.echo("ℹ️  sudo may prompt you for a password...")
     try:
-        subprocess.check_call(["sudo", "apt", "update"])
+        subprocess.check_call([*sudo, "apt", "update"])
     except subprocess.CalledProcessError:
         click.echo("❌ Failed to run: sudo apt update")
         return
@@ -552,13 +574,18 @@ def update_elxr(
     # Main interaction loop
     # -----------------------------
     simaai_ota = _resolve_simaai_ota()
-    if version_or_url is None:
+    if version_or_url is None and not auto_confirm:
         from InquirerPy import inquirer
 
     while True:
 
         # If user did not pass a version, show the update type menu
         if version_or_url is None:
+            if auto_confirm:
+                cmd = [simaai_ota, "-f", "-o"]
+                desc = "Update all packages to the latest"
+                break
+
             choice = inquirer.select(
                 message="How would you like to update this ELXR devkit?",
                 choices=[
@@ -702,7 +729,7 @@ def update_elxr(
     # -----------------------------
     # Execute update
     # -----------------------------
-    cmd = ["sudo"] + cmd
+    cmd = sudo + cmd
     if dryrun:
         click.echo(f"🧪 ELXR dry run complete. Would run: {' '.join(cmd)}")
         click.echo("ℹ️  No ELXR update was applied.")
@@ -714,7 +741,7 @@ def update_elxr(
         "   If you have custom u-boot environment settings, you will need to re-apply them after the update.",
         fg="yellow",
     )
-    if not click.confirm("Proceed with ELXR update?", default=False):
+    if not auto_confirm and not click.confirm("Proceed with ELXR update?", default=False):
         click.echo("❌ Update cancelled")
         return
 
@@ -723,6 +750,9 @@ def update_elxr(
     if subprocess.call(["sudo", "-n", "true"],
                        stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL) != 0:
+        if auto_confirm:
+            click.echo("❌ Non-interactive sudo access is required with --yes")
+            return
         click.echo("ℹ️  sudo may prompt you for a password...")
 
     subprocess.check_call(cmd)

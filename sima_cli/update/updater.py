@@ -639,6 +639,7 @@ def perform_update(
                     internal=internal,
                     dryrun=dryrun,
                     force_external_fallback=force_external_fallback,
+                    auto_confirm=auto_confirm,
                 )
             
             elif fwtype.lower() == 'elxr':

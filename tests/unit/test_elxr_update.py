@@ -234,6 +234,37 @@ class TestElxrVersionDetection(unittest.TestCase):
 
 
 class TestUnsupportedElxrSpecificVersionUpdate(unittest.TestCase):
+    @patch("sima_cli.update.elxr.click.confirm")
+    @patch("sima_cli.update.elxr._resolve_simaai_ota", return_value="simaai-ota")
+    @patch("sima_cli.update.elxr.subprocess.check_call")
+    @patch("sima_cli.update.elxr.subprocess.call", return_value=0)
+    @patch("sima_cli.update.elxr._ensure_elxr_repo_channel", return_value=True)
+    @patch("sima_cli.update.elxr.print_current_versions")
+    @patch("sima_cli.update.elxr.is_devkit_running_elxr", return_value=True)
+    def test_auto_confirm_updates_latest_without_prompts(
+        self,
+        _mock_is_elxr,
+        _mock_print_versions,
+        mock_ensure_channel,
+        _mock_call,
+        mock_check_call,
+        _mock_resolve_ota,
+        mock_confirm,
+    ):
+        update_elxr(None, internal=True, auto_confirm=True)
+
+        mock_ensure_channel.assert_called_once_with(
+            True, target_url=None, auto_confirm=True
+        )
+        self.assertEqual(
+            mock_check_call.call_args_list,
+            [
+                call(["sudo", "-n", "apt", "update"]),
+                call(["sudo", "-n", "simaai-ota", "-f", "-o"]),
+            ],
+        )
+        mock_confirm.assert_not_called()
+
     @patch("sima_cli.update.elxr.Console")
     def test_warning_panel_mentions_unsupported_path_versions_and_doc(self, mock_console):
         _show_unsupported_specific_elxr_update(

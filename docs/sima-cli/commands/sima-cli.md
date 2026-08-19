@@ -13,6 +13,7 @@ sima-cli [OPTIONS] COMMAND [ARGS]...
 | Name | Description |
 | --- | --- |
 | `-i, --internal` | Use internal Artifactory resources, Authorized Sima employees only |
+| `-y, --yes` | Assume yes for confirmation prompts. |
 | `--version` | Show the version and exit. |
 
 ## Arguments
@@ -54,6 +55,7 @@ Usage: sima-cli [OPTIONS] COMMAND [ARGS]...
 Options:
   -i, --internal  Use internal Artifactory resources, Authorized Sima
                   employees only
+  -y, --yes       Assume yes for confirmation prompts.
   --version       Show the version and exit.
   --help          Show this message and exit.
 

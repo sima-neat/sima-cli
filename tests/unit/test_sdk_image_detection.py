@@ -3061,7 +3061,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         install_script = run_command.call_args_list[-1].args[0][-1]
         self.assertEqual(run_command.call_count, 1)
         self.assertIn(
-            '"$SIMA_CLI_BIN" neat install model-compiler/amd64@develop',
+            '"$SIMA_CLI_BIN" neat install model-compiler/amd64@v2.1.3',
             install_script,
         )
         self.assertNotIn("sima-cli login", install_script)
@@ -3081,7 +3081,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         install_script = run_command.call_args_list[-1].args[0][-1]
         self.assertEqual(run_command.call_count, 1)
         self.assertIn(
-            '"$SIMA_CLI_BIN" neat install model-compiler/arm64@develop',
+            '"$SIMA_CLI_BIN" neat install model-compiler/arm64@v2.1.3',
             install_script,
         )
         self.assertNotIn("tools/model-compiler", install_script)

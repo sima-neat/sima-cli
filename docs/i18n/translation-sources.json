@@ -1,0 +1,26 @@
+{
+  "ja": {
+    "docs/sima-cli/index.md": "2415b26f14c97eefd80aba26572090bc0efaa9c13fe4738edc5da246a0b85189",
+    "docs/sima-cli/sdk-networking/index.md": "1dea47f95484f3c062ad3b36be755191e08e8eda14fbd186514422d5763791bf",
+    "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
+    "docs/sima-cli/sdk-networking/troubleshooting.md": "d72019c1ca29c34459093a7dd5bcf9e68679a0b4f3ee3ea677c87cd0288d0273"
+  },
+  "ko": {
+    "docs/sima-cli/index.md": "2415b26f14c97eefd80aba26572090bc0efaa9c13fe4738edc5da246a0b85189",
+    "docs/sima-cli/sdk-networking/index.md": "1dea47f95484f3c062ad3b36be755191e08e8eda14fbd186514422d5763791bf",
+    "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
+    "docs/sima-cli/sdk-networking/troubleshooting.md": "d72019c1ca29c34459093a7dd5bcf9e68679a0b4f3ee3ea677c87cd0288d0273"
+  },
+  "uk": {
+    "docs/sima-cli/index.md": "2415b26f14c97eefd80aba26572090bc0efaa9c13fe4738edc5da246a0b85189",
+    "docs/sima-cli/sdk-networking/index.md": "1dea47f95484f3c062ad3b36be755191e08e8eda14fbd186514422d5763791bf",
+    "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
+    "docs/sima-cli/sdk-networking/troubleshooting.md": "d72019c1ca29c34459093a7dd5bcf9e68679a0b4f3ee3ea677c87cd0288d0273"
+  },
+  "zh-Hant": {
+    "docs/sima-cli/index.md": "2415b26f14c97eefd80aba26572090bc0efaa9c13fe4738edc5da246a0b85189",
+    "docs/sima-cli/sdk-networking/index.md": "1dea47f95484f3c062ad3b36be755191e08e8eda14fbd186514422d5763791bf",
+    "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
+    "docs/sima-cli/sdk-networking/troubleshooting.md": "d72019c1ca29c34459093a7dd5bcf9e68679a0b4f3ee3ea677c87cd0288d0273"
+  }
+}

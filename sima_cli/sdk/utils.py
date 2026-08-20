@@ -831,9 +831,9 @@ def _model_sdk_extension_install_args(base_version: str) -> List[str]:
     if not arch:
         return []
     if _version_at_least(base_version, "2.1.3"):
-        # Model Compiler 2.1.3+ is published through Vulcan. Use develop until
-        # the versioned 2.1.3 artifact ref is published.
-        return ["neat", "install", f"model-compiler/{arch}@develop"]
+        # Model Compiler 2.1.3+ is published through Vulcan. Install the
+        # released artifact compatible with this SDK generation.
+        return ["neat", "install", f"model-compiler/{arch}@v2.1.3"]
     return ["install", "-v", base_version, f"tools/model-compiler/{arch}"]
 
 

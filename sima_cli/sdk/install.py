@@ -590,6 +590,26 @@ def _configure_nfs_export(host_dir: Path, devkit_ip: Optional[str], host_os: str
     raise RuntimeError("Host NFS setup is only implemented for macOS/Linux")
 
 
+def _configure_nfs_export_or_fallback(
+    host_dir: Path,
+    devkit_ip: Optional[str],
+    host_os: str,
+    host_ip: str,
+) -> bool:
+    try:
+        _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)
+    except subprocess.CalledProcessError as exc:
+        detail = f"privileged command exited with status {exc.returncode}"
+    except (RuntimeError, OSError) as exc:
+        detail = str(exc)
+    else:
+        return True
+
+    print(f"⚠️  Host NFS export could not be configured: {detail}")
+    print("ℹ️  Continuing DevKit setup and attempting rsync-over-SSH fallback.")
+    return False
+
+
 def _configure_devkit_shared_network_for_setup(
     devkit_ip: str,
     noninteractive: bool = False,
@@ -639,31 +659,49 @@ def _setup_devkit_share(
                     )
                 )
                 _print_devkit_nfs_banner(workspace, devkit_ip, host_os)
-                _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)
+                host_nfs_available = _configure_nfs_export_or_fallback(
+                    host_dir,
+                    devkit_ip,
+                    host_os,
+                    host_ip,
+                )
                 _configure_devkit_shared_network_for_setup(
                     devkit_ip,
                     noninteractive=noninteractive,
                     persistent_network_profile=persistent_network_profile,
                 )
-                print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
+                if host_nfs_available:
+                    print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
                 return {
                     "devkit_ip": devkit_ip,
                     "host_ip": host_ip,
                     "workspace": workspace,
                     "host_platform": host_os,
+                    "host_nfs_available": host_nfs_available,
                     "bootstrap_interactive": not noninteractive,
                     "noninteractive": noninteractive,
                 }
-            raise RuntimeError(
-                "Workspace is under an existing unmanaged NFS export, but DevKit {} is not allowed "
-                "by the export client '{}'. Ask an admin to add an export entry that covers {} for the "
-                "DevKit IP/subnet, then rerun setup. sima-cli will not try to modify this unmanaged "
-                "export without permission.".format(
-                    devkit_ip,
-                    existing_export.client,
-                    existing_export.local_export_path,
+            print(
+                "⚠️  Workspace is under an unmanaged NFS export that does not allow DevKit {} "
+                "(client '{}'). sima-cli will not modify the unmanaged export.".format(
+                    devkit_ip, existing_export.client
                 )
             )
+            print("ℹ️  Continuing DevKit setup and attempting rsync-over-SSH fallback.")
+            _configure_devkit_shared_network_for_setup(
+                devkit_ip,
+                noninteractive=noninteractive,
+                persistent_network_profile=persistent_network_profile,
+            )
+            return {
+                "devkit_ip": devkit_ip,
+                "host_ip": host_ip,
+                "workspace": workspace,
+                "host_platform": host_os,
+                "host_nfs_available": False,
+                "bootstrap_interactive": not noninteractive,
+                "noninteractive": noninteractive,
+            }
         print(
             "ℹ️  Reusing existing NFS export for DevKit sync: {}:{}.".format(
                 existing_export.server,
@@ -680,18 +718,25 @@ def _setup_devkit_share(
             "host_ip": existing_export.server,
             "workspace": existing_export.export_path,
             "host_platform": host_os,
+            "host_nfs_available": True,
             "bootstrap_interactive": not noninteractive,
             "noninteractive": noninteractive,
         }
 
     _print_devkit_nfs_banner(workspace, devkit_ip, host_os)
-    _configure_nfs_export(host_dir, devkit_ip, host_os, host_ip)
+    host_nfs_available = _configure_nfs_export_or_fallback(
+        host_dir,
+        devkit_ip,
+        host_os,
+        host_ip,
+    )
     _configure_devkit_shared_network_for_setup(
         devkit_ip,
         noninteractive=noninteractive,
         persistent_network_profile=persistent_network_profile,
     )
-    print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
+    if host_nfs_available:
+        print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
 
     if auto_iface != "auto":
         print("ℹ️  Detected host IP for DevKit sync: {} (interface: {})".format(host_ip, auto_iface))
@@ -706,6 +751,7 @@ def _setup_devkit_share(
         "host_ip": host_ip,
         "workspace": workspace,
         "host_platform": host_os,
+        "host_nfs_available": host_nfs_available,
         "bootstrap_interactive": not noninteractive,
         "noninteractive": noninteractive,
     }

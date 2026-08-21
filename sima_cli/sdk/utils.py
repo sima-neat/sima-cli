@@ -790,6 +790,14 @@ def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _value_truthy(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 def _is_x86_platform() -> bool:
     machine = platform.machine().lower()
     return machine in {"x86_64", "amd64", "i386", "i686", "x86"}
@@ -1764,12 +1772,17 @@ def start_docker_container(
         host_export = devkit_env.get("workspace", "")
         host_platform = devkit_env.get("host_platform", "")
         devkit_ip = devkit_env.get("devkit_ip", "")
+        host_nfs_available = _value_truthy(
+            devkit_env.get("host_nfs_available"),
+            default=True,
+        )
         docker_cmd.extend([
             "-e", f"SIMA_DEVKIT_IP={devkit_ip}",
             "-e", f"DEVKIT_SYNC_DEVKIT_IP={devkit_ip}",
             "-e", f"NFS_SERVER_HOST_IP={host_ip}",
             "-e", f"DEVKIT_HOST_EXPORT_PATH={host_export}",
             "-e", f"DEVKIT_HOST_PLATFORM={host_platform}",
+            "-e", f"DEVKIT_HOST_NFS_AVAILABLE={'1' if host_nfs_available else '0'}",
         ])
 
     # ─────────────────────────────────────────────
@@ -1908,14 +1921,20 @@ def bootstrap_devkit_container(container_name: str, devkit_env: dict):
     host_ip = devkit_env.get("host_ip", "")
     host_export = devkit_env.get("workspace", "")
     host_platform = devkit_env.get("host_platform", "")
+    host_nfs_available = _value_truthy(
+        devkit_env.get("host_nfs_available"),
+        default=True,
+    )
 
     script = f"""set +e
 BOOTSTRAP_STATUS=unknown
+BOOTSTRAP_RC=0
 export SIMA_DEVKIT_IP={shlex.quote(devkit_ip)}
 export DEVKIT_SYNC_DEVKIT_IP={shlex.quote(devkit_ip)}
 export NFS_SERVER_HOST_IP={shlex.quote(host_ip)}
 export DEVKIT_HOST_EXPORT_PATH={shlex.quote(host_export)}
 export DEVKIT_HOST_PLATFORM={shlex.quote(host_platform)}
+export DEVKIT_HOST_NFS_AVAILABLE={shlex.quote("1" if host_nfs_available else "0")}
 export DEVKIT_SYNC_NONINTERACTIVE={shlex.quote("1" if noninteractive else "0")}
 if [ ! -e /workspace ] && [ ! -L /workspace ]; then
   ln -s /home/docker/sima-cli /workspace 2>/dev/null || true
@@ -1927,13 +1946,21 @@ else
   SRC_RC=$?
   if [ "$SRC_RC" -ne 0 ]; then
     BOOTSTRAP_STATUS=source_failed
+    if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ]; then
+      BOOTSTRAP_RC=$SRC_RC
+    fi
   elif command -v dk >/dev/null 2>&1; then
     BOOTSTRAP_STATUS=sourced_with_dk
   else
     BOOTSTRAP_STATUS=sourced_no_dk
   fi
 fi
+if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ] && [ "$BOOTSTRAP_STATUS" != source_failed ] && [ "${{DEVKIT_SYNC_METHOD:-none}}" != rsync ]; then
+  BOOTSTRAP_STATUS=rsync_fallback_failed
+  BOOTSTRAP_RC=1
+fi
 echo "__SIMA_DEVKIT_BOOTSTRAP_STATUS=$BOOTSTRAP_STATUS"
+exit "$BOOTSTRAP_RC"
 """
 
     if bootstrap_interactive and not noninteractive and sys.stdin.isatty() and sys.stdout.isatty():
@@ -1945,6 +1972,12 @@ echo "__SIMA_DEVKIT_BOOTSTRAP_STATUS=$BOOTSTRAP_STATUS"
         if proc.returncode == 0:
             print(f"✅ DevKit bootstrap completed in container '{container_name}' (interactive).")
             return
+        if not host_nfs_available:
+            raise RuntimeError(
+                "Host NFS is unavailable and rsync fallback setup failed in SDK container "
+                f"'{container_name}'. Check DevKit SSH access, rsync availability, and remote "
+                "workspace permissions."
+            )
         print(f"⚠️ DevKit bootstrap failed in container '{container_name}' (interactive, exit={proc.returncode}).")
         return
 
@@ -2014,6 +2047,13 @@ echo "__SIMA_DEVKIT_BOOTSTRAP_STATUS=$BOOTSTRAP_STATUS"
         print(
             f"⚠️ DevKit bootstrap interactive retry failed in container '{container_name}' "
             f"(exit={interactive_proc.returncode})."
+        )
+
+    if not host_nfs_available:
+        raise RuntimeError(
+            "Host NFS is unavailable and rsync fallback setup failed in SDK container "
+            f"'{container_name}'. Check DevKit SSH access, rsync availability, and remote "
+            "workspace permissions."
         )
 
     print(f"⚠️ DevKit bootstrap failed in container '{container_name}' (exit={proc.returncode}).")

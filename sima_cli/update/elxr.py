@@ -15,6 +15,11 @@ APT_MAIN_SOURCE_FILE = "/etc/apt/sources.list"
 APT_SOURCE_DIR = "/etc/apt/sources.list.d"
 BUILDINFO_FILES = ["/etc/build", "/etc/buildinfo"]
 EXTERNAL_REPO_URL = "https://repo.sima.ai/elxr/deb/release"
+EXTERNAL_PRERELEASE_REPO_URL = "https://debian.neat.sima.ai/pre-release"
+LEGACY_EXTERNAL_PRERELEASE_REPO_URLS = (
+    "https://debian.neat.sima.ai",
+    "https://debian.neat.sima.ai/elxr/deb/pre-release",
+)
 INTERNAL_REPO_URL = "http://sw-web.eng.sima.ai/deb/pre-release"
 INTERNAL_REPO_PREFIX = "http://sw-web.eng.sima.ai/"
 DEFAULT_REPO_SUITE = "bookworm"
@@ -24,7 +29,8 @@ ELXR_UPDATE_DOC_URL = "https://docs.sima.ai/pages/tech-notes/elxr-conversion.htm
 
 
 def _repo_line(repo_url: str, suite: str) -> str:
-    return f"deb {repo_url} {suite} {REPO_COMPONENT}"
+    options = " [trusted=yes]" if repo_url == EXTERNAL_PRERELEASE_REPO_URL else ""
+    return f"deb{options} {repo_url} {suite} {REPO_COMPONENT}"
 
 
 def _resolve_simaai_ota() -> str:
@@ -35,6 +41,21 @@ def _resolve_simaai_ota() -> str:
             if os.path.isfile(SIMAAI_OTA_FALLBACK) and os.access(SIMAAI_OTA_FALLBACK, os.X_OK)
             else "simaai-ota"
         )
+    )
+
+
+def _prime_sudo_credentials(passwd: str) -> None:
+    """Best-effort sudo authentication without exposing the password in argv."""
+    if not passwd:
+        return
+
+    subprocess.run(
+        ["sudo", "-S", "-p", "", "-v"],
+        input=f"{passwd}\n",
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
     )
 
 
@@ -75,7 +96,14 @@ def _parse_elxr_repo_line(line: str) -> Optional[Tuple[str, str, bool]]:
     if component != REPO_COMPONENT:
         return None
 
-    if repo_url != EXTERNAL_REPO_URL and not repo_url.startswith(INTERNAL_REPO_PREFIX):
+    if (
+        repo_url not in (
+            EXTERNAL_REPO_URL,
+            EXTERNAL_PRERELEASE_REPO_URL,
+            *LEGACY_EXTERNAL_PRERELEASE_REPO_URLS,
+        )
+        and not repo_url.startswith(INTERNAL_REPO_PREFIX)
+    ):
         return None
 
     return repo_url, suite, active
@@ -96,11 +124,15 @@ def _detect_repo_suite(lines: List[str]) -> str:
 
 
 def _is_managed_elxr_repo(repo_url: str) -> bool:
-    return repo_url == EXTERNAL_REPO_URL or repo_url.startswith(INTERNAL_REPO_PREFIX)
+    return repo_url in (
+        EXTERNAL_REPO_URL,
+        EXTERNAL_PRERELEASE_REPO_URL,
+        *LEGACY_EXTERNAL_PRERELEASE_REPO_URLS,
+    ) or repo_url.startswith(INTERNAL_REPO_PREFIX)
 
 
-def _is_target_elxr_repo(repo_url: str, internal: bool) -> bool:
-    target_url = INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL
+def _is_target_elxr_repo(repo_url: str, internal: bool, target_url: Optional[str] = None) -> bool:
+    target_url = target_url or (INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL)
     return repo_url == target_url
 
 
@@ -125,6 +157,7 @@ def _select_elxr_repo_channel(
     internal: bool,
     append_missing: bool = True,
     suite: Optional[str] = None,
+    target_url: Optional[str] = None,
 ) -> Tuple[str, bool, bool]:
     """
     Return updated apt source content, whether it changed, and whether active
@@ -132,14 +165,14 @@ def _select_elxr_repo_channel(
     """
     lines = content.splitlines()
     suite = suite or _detect_repo_suite(lines)
-    target_url = INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL
+    target_url = target_url or (INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL)
     other_url = EXTERNAL_REPO_URL if internal else INTERNAL_REPO_URL
     target = _repo_line(target_url, suite)
     other = _repo_line(other_url, suite)
 
     other_active = any(
         _is_managed_elxr_repo(parsed[0])
-        and not _is_target_elxr_repo(parsed[0], internal)
+        and not _is_target_elxr_repo(parsed[0], internal, target_url)
         and parsed[2]
         for parsed in (_parse_elxr_repo_line(line) for line in lines)
         if parsed
@@ -200,12 +233,13 @@ def _read_apt_source_files(paths: List[str]) -> Optional[Dict[str, str]]:
 def _select_elxr_repo_channel_files(
     contents: Dict[str, str],
     internal: bool,
+    target_url: Optional[str] = None,
 ) -> Tuple[Dict[str, str], bool, bool]:
     all_lines: List[str] = []
     for content in contents.values():
         all_lines.extend(content.splitlines())
     suite = _detect_repo_suite(all_lines)
-    target_url = INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL
+    target_url = target_url or (INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL)
     target_seen = any(
         parsed[0] == target_url
         for parsed in (_parse_elxr_repo_line(line) for line in all_lines)
@@ -222,6 +256,7 @@ def _select_elxr_repo_channel_files(
             internal,
             append_missing=(path == APT_SOURCE_FILE and not target_seen),
             suite=suite,
+            target_url=target_url,
         )
         updated_contents[path] = updated
         changed = changed or file_changed
@@ -230,15 +265,24 @@ def _select_elxr_repo_channel_files(
     return updated_contents, changed, switching
 
 
-def _ensure_elxr_repo_channel(internal: bool) -> bool:
-    channel_name = "internal pre-release" if internal else "external release"
+def _ensure_elxr_repo_channel(
+    internal: bool,
+    target_url: Optional[str] = None,
+    auto_confirm: bool = False,
+) -> bool:
+    if target_url == EXTERNAL_PRERELEASE_REPO_URL:
+        channel_name = "external pre-release"
+    else:
+        channel_name = "internal pre-release" if internal else "external release"
 
     source_files = _list_apt_source_files()
     current_contents = _read_apt_source_files(source_files)
     if current_contents is None:
         return False
 
-    new_contents, changed, switching = _select_elxr_repo_channel_files(current_contents, internal)
+    new_contents, changed, switching = _select_elxr_repo_channel_files(
+        current_contents, internal, target_url=target_url
+    )
     if not changed:
         click.echo(f"✅ ELXR APT channel already set to {channel_name}.")
         return True
@@ -249,21 +293,19 @@ def _ensure_elxr_repo_channel(internal: bool) -> bool:
             "   This upgrade path has not been tested. Proceed with caution.",
             fg="yellow",
         )
-        if not click.confirm(f"Switch ELXR APT channel to {channel_name}?", default=False):
+        if not auto_confirm and not click.confirm(
+            f"Switch ELXR APT channel to {channel_name}?", default=False
+        ):
             click.echo("❌ Update cancelled")
             return False
 
-    if subprocess.call(["sudo", "-n", "true"],
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL) != 0:
-        click.echo("ℹ️  sudo may prompt you for a password...")
-
     try:
+        sudo = ["sudo", "-n"] if auto_confirm else ["sudo"]
         for path, new_content in new_contents.items():
             if new_content == current_contents[path]:
                 continue
             subprocess.run(
-                ["sudo", "tee", path],
+                [*sudo, "tee", path],
                 input=new_content,
                 text=True,
                 stdout=subprocess.DEVNULL,
@@ -476,7 +518,14 @@ def print_current_versions():
     click.secho('Current SiMa component versions:', fg='green')
     click.secho(out)
 
-def update_elxr(version_or_url: Optional[str], internal: bool = False, dryrun: bool = False):
+def update_elxr(
+    version_or_url: Optional[str],
+    internal: bool = False,
+    dryrun: bool = False,
+    force_external_fallback: bool = False,
+    auto_confirm: bool = False,
+    passwd: str = "edgeai",
+):
     """
     Update packages on an ELXR-based devkit using simaai-ota.
     Enhanced:
@@ -487,9 +536,27 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False, dryrun: b
         click.echo("ℹ️  Not an ELXR devkit, skipping update")
         return
 
+    if auto_confirm:
+        _prime_sudo_credentials(passwd)
+
     print_current_versions()
 
-    if not _ensure_elxr_repo_channel(internal):
+    target_url = EXTERNAL_PRERELEASE_REPO_URL if force_external_fallback else None
+    if force_external_fallback:
+        reason = (
+            "because the internal mirror is unreachable"
+            if internal
+            else "because --force was specified"
+        )
+        click.secho(
+            f"⚠️  Using the external ELXR pre-release mirror {reason}.\n"
+            "   Package signature verification is disabled for this pre-release repository only.",
+            fg="yellow",
+        )
+
+    if not _ensure_elxr_repo_channel(
+        internal, target_url=target_url, auto_confirm=auto_confirm
+    ):
         return
 
     # Check connectivity
@@ -500,12 +567,9 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False, dryrun: b
         return
 
     click.echo("➡️  Refreshing APT package metadata...")
-    if subprocess.call(["sudo", "-n", "true"],
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL) != 0:
-        click.echo("ℹ️  sudo may prompt you for a password...")
+    sudo = ["sudo", "-n"] if auto_confirm else ["sudo"]
     try:
-        subprocess.check_call(["sudo", "apt", "update"])
+        subprocess.check_call([*sudo, "apt", "update"])
     except subprocess.CalledProcessError:
         click.echo("❌ Failed to run: sudo apt update")
         return
@@ -514,13 +578,18 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False, dryrun: b
     # Main interaction loop
     # -----------------------------
     simaai_ota = _resolve_simaai_ota()
-    if version_or_url is None:
+    if version_or_url is None and not auto_confirm:
         from InquirerPy import inquirer
 
     while True:
 
         # If user did not pass a version, show the update type menu
         if version_or_url is None:
+            if auto_confirm:
+                cmd = [simaai_ota, "-f", "-o"]
+                desc = "Update all packages to the latest"
+                break
+
             choice = inquirer.select(
                 message="How would you like to update this ELXR devkit?",
                 choices=[
@@ -664,7 +733,7 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False, dryrun: b
     # -----------------------------
     # Execute update
     # -----------------------------
-    cmd = ["sudo"] + cmd
+    cmd = sudo + cmd
     if dryrun:
         click.echo(f"🧪 ELXR dry run complete. Would run: {' '.join(cmd)}")
         click.echo("ℹ️  No ELXR update was applied.")
@@ -676,16 +745,11 @@ def update_elxr(version_or_url: Optional[str], internal: bool = False, dryrun: b
         "   If you have custom u-boot environment settings, you will need to re-apply them after the update.",
         fg="yellow",
     )
-    if not click.confirm("Proceed with ELXR update?", default=False):
+    if not auto_confirm and not click.confirm("Proceed with ELXR update?", default=False):
         click.echo("❌ Update cancelled")
         return
 
     click.echo(f"➡️  {desc}\n   " + click.style(f"Running: {' '.join(cmd)}", fg="cyan"))
-
-    if subprocess.call(["sudo", "-n", "true"],
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL) != 0:
-        click.echo("ℹ️  sudo may prompt you for a password...")
 
     subprocess.check_call(cmd)
     click.echo("✅ ELXR update completed successfully")

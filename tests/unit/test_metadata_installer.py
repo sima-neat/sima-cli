@@ -208,6 +208,32 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
 
             self.assertEqual(_get_palette_sdk_version(release_file), "2.0.0")
 
+    def test_get_palette_sdk_version_preserves_legacy_2_1_2_release(self):
+        with TemporaryDirectory() as tmpdir:
+            release_file = Path(tmpdir) / "sdk-release"
+            release_file.write_text(
+                "SDK Version = 2.1.2.3_Palette_SDK_neat_release-2.1_3b4be39\n"
+                "eLXr Version = 2.1.2_release_neat_release-2.1_3b4be39\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_get_palette_sdk_version(release_file), "2.1.2.3")
+
+    def test_get_palette_sdk_version_prefers_platform_base_for_pre_release_sdk(self):
+        with TemporaryDirectory() as tmpdir:
+            release_file = Path(tmpdir) / "sdk-release"
+            release_file.write_text(
+                "SDK Profile = platform-cross\n"
+                "Platform Version = 2.1.3~pre4617\n"
+                "Platform Base = 2.1.3\n"
+                "Platform Channel = pre-release\n"
+                "SDK Version = "
+                "2.1.3~pre4617_Palette_SDK_neat_develop_4b9f4a1\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_get_palette_sdk_version(release_file), "2.1.3")
+
     @patch("sima_cli.install.metadata_installer._get_palette_sdk_version", return_value="2.0.0")
     @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
     @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")

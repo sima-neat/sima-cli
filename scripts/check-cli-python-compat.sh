@@ -138,7 +138,6 @@ run_smoke() {
 
   "$python_bin" -m venv "$venv"
   py="$venv/bin/python"
-  expected_version="$("$py" -c 'import runpy, sys; print(runpy.run_path(sys.argv[1])["__version__"])' "$ROOT_DIR/sima_cli/__version__.py")"
   PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 "$py" -m pip install --quiet --upgrade pip setuptools wheel
   if [[ -n "$WHEEL_PATH" ]]; then
     wheel="$WHEEL_PATH"
@@ -155,6 +154,17 @@ run_smoke() {
       return 1
     fi
   fi
+
+  expected_version="$("$py" -c '
+import email.parser
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+    metadata = email.parser.BytesParser().parsebytes(archive.read(metadata_name))
+print(metadata["Version"])
+' "$wheel")"
 
   if ! PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 "$py" -m pip install "$wheel"; then
     printf 'FAIL Python %s could not install %s\n' "$python_version" "$wheel" >&2

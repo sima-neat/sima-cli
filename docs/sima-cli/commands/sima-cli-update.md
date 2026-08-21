@@ -16,9 +16,10 @@ sima-cli update [OPTIONS] [VERSION_OR_URL]
 | --- | --- |
 | `-v, --version` | Specify version string (e.g., '1.7.0', 'ga', 'beta', or a direct firmware URL). Default is GA if not specifiedOverrides positional argument if both are given. |
 | `--ip` | Target device IP address for remote firmware update. |
-| `-y, --yes` | Skip confirmation after firmware file is downloaded. |
-| `-p, --passwd` | Optional SSH password for remote board (default is 'edgeai'). (default: edgeai) |
-| `-f, --flavor` | Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above (default: auto) |
+| `-y, --yes` | Assume yes for update confirmation prompts. |
+| `-p, --passwd` | Password for remote board SSH or local ELXR sudo authentication. (default: edgeai) |
+| `--flavor` | Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above (default: auto) |
+| `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror without signature verification; without --internal, select that mirror directly (ELXR only). |
 | `-t, --troot_only` | Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion. |
 | `--dryrun` | For ELXR updates only, validate the update path and print the simaai-ota command without running it. |
 
@@ -92,6 +93,18 @@ Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
 
       sima-cli update -v 1.7.0 -y
 
+      # Update ELXR to the latest official release without prompts
+
+      sima-cli update -y
+
+      # Update ELXR from the internal mirror without prompts
+
+      sima-cli -i update -y
+
+      # Update ELXR from the public pre-release mirror without prompts
+
+      sima-cli -y update -f -y
+
       # Validate ELXR update path without running simaai-ota
 
       sima-cli update --dryrun
@@ -101,26 +114,28 @@ Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
       sima-cli update --ip 192.168.6.5 --passwd root
 
 Options:
-  -v, --version TEXT              Specify version string (e.g., '1.7.0', 'ga',
-                                  'beta', or a direct firmware URL). Default
-                                  is GA if not specifiedOverrides positional
-                                  argument if both are given.
-  --ip TEXT                       Target device IP address for remote firmware
-                                  update.
-  -y, --yes                       Skip confirmation after firmware file is
-                                  downloaded.
-  -p, --passwd TEXT               Optional SSH password for remote board
-                                  (default is 'edgeai').  [default: edgeai]
-  -f, --flavor [headless|full|auto]
-                                  Firmware flavor: 'full' image supports NVMe
-                                  and GUI on Modalix DevKit. This option is
-                                  deprecated for 2.0 and above  [default:
-                                  auto]
-  -t, --troot_only                Only update tRoot and not the root file
-                                  system, compatible with Yocto system only,
-                                  used for Yocto to eLxr conversion.
-  --dryrun                        For ELXR updates only, validate the update
-                                  path and print the simaai-ota command
-                                  without running it.
-  --help                          Show this message and exit.
+  -v, --version TEXT             Specify version string (e.g., '1.7.0', 'ga',
+                                 'beta', or a direct firmware URL). Default is
+                                 GA if not specifiedOverrides positional
+                                 argument if both are given.
+  --ip TEXT                      Target device IP address for remote firmware
+                                 update.
+  -y, --yes                      Assume yes for update confirmation prompts.
+  -p, --passwd TEXT              Password for remote board SSH or local ELXR
+                                 sudo authentication.  [default: edgeai]
+  --flavor [headless|full|auto]  Firmware flavor: 'full' image supports NVMe
+                                 and GUI on Modalix DevKit. This option is
+                                 deprecated for 2.0 and above  [default: auto]
+  -f, --force                    If the internal mirror is unreachable, fall
+                                 back to the external pre-release mirror
+                                 without signature verification; without
+                                 --internal, select that mirror directly (ELXR
+                                 only).
+  -t, --troot_only               Only update tRoot and not the root file
+                                 system, compatible with Yocto system only,
+                                 used for Yocto to eLxr conversion.
+  --dryrun                       For ELXR updates only, validate the update
+                                 path and print the simaai-ota command without
+                                 running it.
+  --help                         Show this message and exit.
 ```

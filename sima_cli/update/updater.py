@@ -29,7 +29,14 @@ else:
 def convert_flavor(flavor: str = 'headless'):
     return 'palette' if flavor == 'headless' else 'graphics'
 
-def _resolve_firmware_url(version_or_url: str, board: str, internal: bool = False, flavor: str = 'headless', swtype: str = 'yocto') -> str:
+def _resolve_firmware_url(
+    version_or_url: str,
+    board: str,
+    internal: bool = False,
+    flavor: str = 'headless',
+    swtype: str = 'yocto',
+    update_type: str = 'standard',
+) -> str:
     """
     Resolve the final firmware download URL based on board, version, and environment.
 
@@ -39,6 +46,7 @@ def _resolve_firmware_url(version_or_url: str, board: str, internal: bool = Fals
         internal (bool): Whether to use internal config for URL construction.
         flavor (str): firmware image flavor, can be headless or full.
         swtype (str): firmware image type, can be yocto or elxr
+        update_type (str): Operation being prepared (standard, bootimg, or netboot).
 
     Returns:
         str: Full download URL.
@@ -65,6 +73,13 @@ def _resolve_firmware_url(version_or_url: str, board: str, internal: bool = Fals
     if swtype == 'yocto':
         image_file = 'release.tar.gz' if flavor == 'headless' else 'graphics.tar.gz'
         download_url = url.rstrip("/") + f"/soc-images/{board}/{version_or_url}/artifacts/{image_file}"
+    elif swtype == 'elxr' and update_type == 'bootimg':
+        base_version = version_or_url.split('_')[0]
+        image_file = f'elxr-palette-{board}-{base_version}-arm64.img.gz'
+        download_url = (
+            url.rstrip("/")
+            + f"/soc-images/elxr/{board}/{version_or_url}/artifacts/palette/{image_file}"
+        )
     elif swtype == 'elxr':
         image_file = f'{board}-tftp-boot-minimal.tar.gz' 
         download_url = url.rstrip("/") + f"/soc-images/elxr/{board}/{version_or_url}/artifacts/minimal/{image_file}"
@@ -105,7 +120,14 @@ def _confirm_flavor_switching(full_image: bool, flavor: str) -> str:
     
     return flavor
 
-def _pick_from_available_versions(board: str, version_or_url: str, internal: bool, flavor: str, swtype: str) -> str:
+def _pick_from_available_versions(
+    board: str,
+    version_or_url: str,
+    internal: bool,
+    flavor: str,
+    swtype: str,
+    update_type: str = 'standard',
+) -> str:
     """
     Presents an interactive menu (with search) for selecting a firmware version.
     """
@@ -113,7 +135,9 @@ def _pick_from_available_versions(board: str, version_or_url: str, internal: boo
     if "http" in version_or_url:
         return version_or_url
 
-    available_versions = list_available_firmware_versions(board, version_or_url, internal, flavor, swtype)
+    available_versions = list_available_firmware_versions(
+        board, version_or_url, internal, flavor, swtype, update_type
+    )
 
     try:
         if len(available_versions) > 1:
@@ -332,7 +356,14 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
             image_url = version_or_url
         else:
             # Case 3: Resolve standard version string (Artifactory/AWS)
-            image_url = _resolve_firmware_url(version_or_url, board, internal, flavor=flavor, swtype=swtype)
+            image_url = _resolve_firmware_url(
+                version_or_url,
+                board,
+                internal,
+                flavor=flavor,
+                swtype=swtype,
+                update_type=update_type,
+            )
 
         # Determine platform-safe temp directory
         temp_dir = tempfile.gettempdir()
@@ -533,7 +564,9 @@ def download_image(version_or_url: str, board: str, swtype: str, internal: bool 
     """
     
     if 'http' not in version_or_url and not os.path.exists(version_or_url): 
-        version_or_url = _pick_from_available_versions(board, version_or_url, internal, flavor, swtype)
+        version_or_url = _pick_from_available_versions(
+            board, version_or_url, internal, flavor, swtype, update_type
+        )
 
     extracted_paths = _download_image(version_or_url, board, internal, update_type, flavor=flavor, swtype=swtype) 
     return extracted_paths
@@ -548,6 +581,7 @@ def perform_update(
     flavor: str = 'auto',
     troot_only: bool = False,
     dryrun: bool = False,
+    force_external_fallback: bool = False,
 ):
     r"""
     Update the system based on environment and input.
@@ -600,7 +634,14 @@ def perform_update(
                 return
 
             if is_devkit_running_elxr():
-                return update_elxr(version_or_url, internal=internal, dryrun=dryrun)
+                return update_elxr(
+                    version_or_url,
+                    internal=internal,
+                    dryrun=dryrun,
+                    force_external_fallback=force_external_fallback,
+                    auto_confirm=auto_confirm,
+                    passwd=passwd,
+                )
             
             elif fwtype.lower() == 'elxr':
                 click.echo(

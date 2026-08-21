@@ -78,6 +78,19 @@ def _should_rerun_after_update(argv):
     return command_name not in (None, "selfupdate", "version")
 
 
+def _allows_external_prerelease_fallback(argv):
+    """Return whether this invocation explicitly allows update mirror fallback."""
+    args = argv[1:]
+    return "update" in args and any(arg in ("-f", "--force") for arg in args)
+
+
+def _update_auto_confirm_requested(argv):
+    """Return whether an update invocation requests non-interactive confirmation."""
+    return _command_name_from_argv(argv) == "update" and any(
+        arg in ("-y", "--yes") for arg in argv[1:]
+    )
+
+
 def _rerun_current_command() -> None:
     env = os.environ.copy()
     env["SIMA_CLI_CHECK_FOR_UPDATE"] = "0"
@@ -89,9 +102,10 @@ def _rerun_current_command() -> None:
 # Entry point for the CLI tool using Click's command group decorator
 @click.group(context_settings=dict(help_option_names=["-h", "--help", "-?"], max_content_width=120))
 @click.option('-i', '--internal', is_flag=True, help="Use internal Artifactory resources, Authorized Sima employees only")
+@click.option('-y', '--yes', is_flag=True, help="Assume yes for confirmation prompts.")
 @click.version_option(version=f"{__version__}", message="SiMa CLI version: %(version)s")
 @click.pass_context
-def main(ctx, internal):
+def main(ctx, internal, yes):
     """
     sima-cli – SiMa Developer Portal CLI Tool
 
@@ -99,8 +113,19 @@ def main(ctx, internal):
       --internal  Use internal Artifactory resources (can also be set via env variable SIMA_CLI_INTERNAL=1)
     """
     _configure_stdio_errors()
-    if check_for_update('sima-cli') and _should_rerun_after_update(sys.argv):
-        _rerun_current_command()
+    auto_accept_update = yes or _update_auto_confirm_requested(sys.argv)
+    previous_auto_accept = os.environ.get("SIMA_CLI_AUTO_ACCEPT_UPDATE")
+    if auto_accept_update:
+        os.environ["SIMA_CLI_AUTO_ACCEPT_UPDATE"] = "1"
+    try:
+        if check_for_update('sima-cli') and _should_rerun_after_update(sys.argv):
+            _rerun_current_command()
+    finally:
+        if auto_accept_update:
+            if previous_auto_accept is None:
+                os.environ.pop("SIMA_CLI_AUTO_ACCEPT_UPDATE", None)
+            else:
+                os.environ["SIMA_CLI_AUTO_ACCEPT_UPDATE"] = previous_auto_accept
     ctx.ensure_object(dict)
 
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
@@ -114,13 +139,25 @@ def main(ctx, internal):
         click.echo("Refer to the confluence page to find out how to configure internal resource map.")
         exit(0)        
 
-    if internal and not check_artifactory_reachability():
+    internal_reachable = True
+    if internal:
+        internal_reachable = check_artifactory_reachability()
+
+    if internal and not internal_reachable and not _allows_external_prerelease_fallback(sys.argv):
         click.secho("❌ You have specified -i or --internal argument to access internal resources, but you can't connect to Artifactory.", fg='red')
         click.secho("Please make sure you are connected to VPN or are on the corporate network.", fg='red')
         exit(0)
+
+    if internal and not internal_reachable:
+        click.secho(
+            "⚠️  Internal resources are unreachable. --force allows this update to use the external pre-release mirror.",
+            fg="yellow",
+        )
         
 
     ctx.obj["internal"] = internal
+    ctx.obj["internal_reachable"] = internal_reachable
+    ctx.obj["yes"] = yes
 
     env_type, env_subtype = get_environment_type()
 
@@ -237,20 +274,28 @@ def download(ctx, url, dest):
 @click.option(
     "-y", "--yes",
     is_flag=True,
-    help="Skip confirmation after firmware file is downloaded."
+    help="Assume yes for update confirmation prompts."
 )
 @click.option(
     "-p", "--passwd",
     default="edgeai",
     show_default=True,
-    help="Optional SSH password for remote board (default is 'edgeai')."
+    help="Password for remote board SSH or local ELXR sudo authentication."
 )
 @click.option(
-    "-f", "--flavor",
+    "--flavor",
     type=click.Choice(["headless", "full", "auto"], case_sensitive=False),
     default="auto",
     show_default=True,
     help="Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above"
+)
+@click.option(
+    "-f", "--force",
+    is_flag=True,
+    help=(
+        "If the internal mirror is unreachable, fall back to the external pre-release mirror "
+        "without signature verification; without --internal, select that mirror directly (ELXR only)."
+    )
 )
 @click.option(
     "-t", "--troot_only",
@@ -265,7 +310,7 @@ def download(ctx, url, dest):
     help="For ELXR updates only, validate the update path and print the simaai-ota command without running it."
 )
 @click.pass_context
-def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_only, dryrun):
+def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun):
     """
     Update the software on a SiMa DevKit or remote SiMa device.
 
@@ -323,6 +368,18 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
 
         sima-cli update -v 1.7.0 -y
 
+        # Update ELXR to the latest official release without prompts
+
+        sima-cli update -y
+
+        # Update ELXR from the internal mirror without prompts
+
+        sima-cli -i update -y
+
+        # Update ELXR from the public pre-release mirror without prompts
+
+        sima-cli -y update -f -y
+
         # Validate ELXR update path without running simaai-ota
 
         sima-cli update --dryrun
@@ -352,15 +409,20 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, troot_o
 
     # Extract context and run update logic
     internal = ctx.obj.get("internal", False)
+    auto_confirm = yes or ctx.obj.get("yes", False)
+    force_external_fallback = force and (
+        not internal or not ctx.obj.get("internal_reachable", True)
+    )
     perform_update(
         version_or_url,
         ip,
         internal,
         passwd=passwd,
-        auto_confirm=yes,
+        auto_confirm=auto_confirm,
         flavor=flavor,
         troot_only=troot_only,
         dryrun=dryrun,
+        force_external_fallback=force_external_fallback,
     )
 
 # ----------------------

@@ -616,6 +616,7 @@ ALL_COMPONENTS = SDK_DEPENDENT_COMPONENTS | SDK_INDEPENDENT_COMPONENTS
 NEAT_INSTALL_REPOSITORIES = {
     "apps",
     "core",
+    "edgematic-studio",
     "insight",
     "internals",
     "llima",

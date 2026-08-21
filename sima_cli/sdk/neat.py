@@ -30,6 +30,10 @@ NEAT_WEBRTC_UDP_SEARCH_END = 65535
 DEFAULT_INSIGHT_VIDEO_CHANNELS = 4
 MAX_INSIGHT_VIDEO_CHANNELS = 80
 NEAT_WEBRTC_UDP_PORTS_PER_CHANNEL = 2
+EDGEMATIC_STUDIO_CONTAINER_PORT = 8088
+# Named in the setup summary, not published: the sidecar hands the browser a
+# container-side port, so these only work identity-mapped.
+EDGEMATIC_STUDIO_TERMINAL_PORT_RANGE = "8761-8770"
 OPENVSCODE_TOKEN_BYTES = 32
 OPENVSCODE_TOKEN_CACHE_FILE = "sdk-code-ui-tokens.json"
 console = Console()
@@ -47,6 +51,7 @@ class NeatRunConfig:
     webrtc_host_ip: str = ""
     code_ui_token: str = ""
     code_ui_supported: bool = True
+    edgematic_studio_installed: bool = True
 
 
 def _can_bind_tcp(port: int) -> bool:
@@ -168,6 +173,7 @@ def allocate_neat_ports(
     no_insight: bool = False,
     reserved_ports: Optional[set] = None,
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
+    no_edgematic_studio: bool = False,
 ) -> Tuple[Dict, List[str]]:
     if not isinstance(insight_video_channels, int) or isinstance(insight_video_channels, bool):
         raise ValueError("Insight video channels must be an integer")
@@ -257,6 +263,17 @@ def allocate_neat_ports(
                 f"{webrtc_udp_start}-{webrtc_udp_end}:{webrtc_udp_start}-{webrtc_udp_end}/udp",
             ]
         )
+
+    # Published whenever Studio may be installed, not when the prompt is accepted:
+    # port maps are immutable after create and the prompt runs later.
+    if not no_insight and not no_edgematic_studio:
+        edgematic_studio = _allocate_single_port(EDGEMATIC_STUDIO_CONTAINER_PORT, "tcp", reserved)
+        port_map["edgematicStudio"] = {
+            "protocol": "tcp",
+            "host": edgematic_studio,
+            "container": EDGEMATIC_STUDIO_CONTAINER_PORT,
+        }
+        port_args.append(f"{edgematic_studio}:{EDGEMATIC_STUDIO_CONTAINER_PORT}/tcp")
     return port_map, port_args
 
 
@@ -794,6 +811,7 @@ def prepare_neat_container_run(
     minimal: bool = False,
     reserved_ports: Optional[set] = None,
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
+    no_edgematic_studio: bool = False,
 ) -> NeatRunConfig:
     no_insight = no_insight or minimal
     container_dir = Path(workspace) / f".{container_name}"
@@ -803,6 +821,7 @@ def prepare_neat_container_run(
         no_insight=no_insight,
         reserved_ports=reserved_ports,
         insight_video_channels=insight_video_channels,
+        no_edgematic_studio=no_edgematic_studio,
     )
     if no_insight:
         return NeatRunConfig(
@@ -929,6 +948,10 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         rows.append(("codeUI", code_url))
         if "codeUIHttps" in port_map:
             rows.append(("codeUIHttp", f"http://{display_host}:{port_map['codeUI']['host']}"))
+    show_edgematic_studio = "edgematicStudio" in port_map and config.edgematic_studio_installed
+    if show_edgematic_studio:
+        # Studio serves plain HTTP; web_scheme tracks the Insight/OpenVSCode certs.
+        rows.append(("edgematicStudio", f"http://{display_host}:{port_map['edgematicStudio']['host']}"))
     if "videoUI" in port_map:
         rows.append(("videoUI", f"{web_scheme}://{display_host}:{port_map['videoUI']['host']}"))
     if "webSSH" in port_map:
@@ -979,6 +1002,11 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
     print(f"   {'-' * name_width}-+-{'-' * len('Endpoint / Value')}")
     for name, value in rows:
         print(f"   {name.ljust(name_width)} | {value}")
+    if show_edgematic_studio:
+        print(
+            "   Note: Edgematic Studio's device terminal is unavailable here — the browser connects "
+            f"straight to a sidecar on container ports {EDGEMATIC_STUDIO_TERMINAL_PORT_RANGE}, which are not published."
+        )
     if display_host == "localhost":
         print("   Note: Use localhost for local access, or replace it with this machine's external IP/DNS name for remote access.")
     else:

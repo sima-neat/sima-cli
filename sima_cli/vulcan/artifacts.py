@@ -23,6 +23,7 @@ ENV_BASE_URLS = {
 DEFAULT_REPOSITORIES = [
     "apps",
     "core",
+    "edgematic-studio",
     "insight",
     "internals",
     "llima",

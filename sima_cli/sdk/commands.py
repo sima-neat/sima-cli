@@ -298,6 +298,13 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility.",
 )
 @click.option(
+    "--no-edgematic-studio",
+    "--no-studio",
+    "no_edgematic_studio",
+    is_flag=True,
+    help="Skip Edgematic Studio extension setup and its port mapping.",
+)
+@click.option(
     "--minimal",
     is_flag=True,
     help="Skip optional Neat SDK container extras for CI compilation jobs.",
@@ -321,7 +328,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt.",
 )
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, minimal, workspace, persistent_network_profile, image_selectors):
+def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, no_edgematic_studio, minimal, workspace, persistent_network_profile, image_selectors):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
@@ -332,6 +339,7 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, 
             no_insight=no_insight,
             insight_video_channels=insight_video_channels,
             no_model_sdk=no_model_sdk,
+            no_edgematic_studio=no_edgematic_studio,
             minimal=minimal,
             workspace=workspace,
             persistent_network_profile=persistent_network_profile,

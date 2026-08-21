@@ -1042,6 +1042,7 @@ def setup_and_start(
     no_insight: bool = False,
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
     no_model_sdk: bool = False,
+    no_edgematic_studio: bool = False,
     minimal: bool = False,
     workspace: Optional[str] = None,
     persistent_network_profile: bool = False,
@@ -1115,6 +1116,8 @@ def setup_and_start(
     )
     skip_model_sdk = no_model_sdk or minimal
     skip_insight = no_insight or minimal
+    # Studio drives the Insight APIs, so --no-insight excludes it too.
+    skip_edgematic_studio = no_edgematic_studio or skip_insight
     if (
         insight_video_channels > DEFAULT_INSIGHT_VIDEO_CHANNELS
         and not skip_insight
@@ -1144,6 +1147,14 @@ def setup_and_start(
     if skip_model_sdk and any(is_neat_sdk_image(img) for img in selected_images):
         reason = "--minimal" if minimal else "--no-model-compiler"
         click.echo(f"ℹ️  Skipping Model Compiler extension setup because {reason} was specified.")
+    if skip_edgematic_studio and any(is_neat_sdk_image(img) for img in selected_images):
+        if minimal:
+            reason = "--minimal"
+        elif no_insight:
+            reason = "--no-insight"
+        else:
+            reason = "--no-edgematic-studio"
+        click.echo(f"ℹ️  Skipping Edgematic Studio extension setup because {reason} was specified.")
     if minimal and any(is_neat_sdk_image(img) for img in selected_images):
         click.echo("ℹ️  Skipping Insight setup because --minimal was specified.")
     
@@ -1181,6 +1192,7 @@ def setup_and_start(
                 no_insight=skip_insight,
                 insight_video_channels=insight_video_channels,
                 no_model_sdk=skip_model_sdk,
+                no_edgematic_studio=skip_edgematic_studio,
                 minimal=minimal,
             )
         else:

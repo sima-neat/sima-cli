@@ -20,6 +20,7 @@ sima-cli sdk setup [OPTIONS]
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
+| `--no-edgematic-studio, --no-studio` | Skip Edgematic Studio extension setup and its port mapping. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
 | `--persistent-network-profile` | Allow setup to install a persistent NetworkManager shared-network repair profile without prompting. |
@@ -53,6 +54,9 @@ Options:
   --no-model-compiler, --no-model-sdk
                                   Skip Model Compiler extension setup. --no-
                                   model-sdk is kept for compatibility.
+  --no-edgematic-studio, --no-studio
+                                  Skip Edgematic Studio extension setup and
+                                  its port mapping.
   --minimal                       Skip optional Neat SDK container extras for
                                   CI compilation jobs.
   --workspace DIRECTORY           Host workspace directory to mount into SDK

@@ -2016,7 +2016,6 @@ def start_docker_container(
                 insight_video_channels=insight_video_channels,
                 minimal=minimal,
                 reserved_ports=reserved_ports,
-                no_edgematic_studio=no_edgematic_studio,
             )
             launch_cmd = list(base_docker_cmd)
             append_neat_docker_args(launch_cmd, neat_run_config)

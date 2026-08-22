@@ -1708,14 +1708,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
         )
         self.assertIn("8088:8088/tcp", port_args)
 
-    def test_neat_port_allocator_skips_edgematic_studio_when_requested(self):
+    def test_neat_port_allocator_publishes_edgematic_studio_independently_of_the_install(self):
+        # Port maps are immutable after create, so skipping the install must still
+        # leave the port reachable for a hand-rolled install inside the container.
         with patch("sima_cli.sdk.neat._is_port_available", return_value=True):
-            port_map, port_args = allocate_neat_ports(no_edgematic_studio=True)
+            port_map, port_args = allocate_neat_ports()
 
-        self.assertNotIn("edgematicStudio", port_map)
-        self.assertIn("mainUI", port_map)
-        for mapping in port_args:
-            self.assertNotIn(":8088/tcp", mapping)
+        self.assertEqual(port_map["edgematicStudio"]["container"], EDGEMATIC_STUDIO_CONTAINER_PORT)
+        self.assertIn("8088:8088/tcp", port_args)
 
     def test_neat_port_allocator_no_insight_skips_edgematic_studio(self):
         with patch("sima_cli.sdk.neat._is_port_available", return_value=True):
@@ -2188,7 +2188,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         # The deferred terminal ports are stated, not silently broken.
         self.assertIn("8761-8770", output)
 
-    def test_print_neat_setup_summary_hides_edgematic_studio_when_install_declined(self):
+    def test_print_neat_setup_summary_marks_edgematic_studio_port_reserved_when_not_installed(self):
         config = NeatRunConfig(
             port_map={
                 "mainUI": {"protocol": "tcp", "host": 9900, "container": 9900},
@@ -2210,9 +2210,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
             print_neat_setup_summary(config)
 
         output = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
-        self.assertNotIn("edgematicStudio", output)
+        # The port is still reserved for a hand-rolled install, so name it — but do
+        # not promise a live URL, nor warn about a terminal nothing serves.
+        self.assertIn("http://localhost:8088 (port reserved; Studio not installed)", output)
         self.assertNotIn("8761-8770", output)
-        self.assertIn("mainUI", output)
 
     def test_print_neat_setup_summary_omits_edgematic_studio_terminal_caveat_when_absent(self):
         config = NeatRunConfig(

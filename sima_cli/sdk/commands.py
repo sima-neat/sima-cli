@@ -302,7 +302,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     "--no-studio",
     "no_edgematic_studio",
     is_flag=True,
-    help="Skip Edgematic Studio extension setup and its port mapping.",
+    help="Skip installing the Edgematic Studio extension. Its port is still published.",
 )
 @click.option(
     "--minimal",

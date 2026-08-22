@@ -860,6 +860,7 @@ def ensure_edgematic_studio_installed(
     auto_install: bool = False,
     uid: int = None,
     gid: int = None,
+    neat_playbooks_installed: bool = False,
 ) -> bool:
     """
     Install the Edgematic Studio extension for Neat SDK containers.
@@ -900,11 +901,16 @@ def ensure_edgematic_studio_installed(
 
     home_directory = f"/home/{login_name}"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
+    # Studio's installer reinstalls the upstream playbooks so its own skills can
+    # --force past them; skip that when they were just installed, or the second
+    # (unforced) install fails and reports the set as missing.
+    skip_playbooks = "export EDGEMATIC_SKIP_NEAT_PLAYBOOKS=true; " if neat_playbooks_installed else ""
     user_install_script = (
         "set -e; "
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
+        f"{skip_playbooks}"
         "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; "
         "export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"; "
         "mkdir -p \"$HOME/extension-installation\"; "
@@ -952,14 +958,40 @@ def ensure_edgematic_studio_installed(
     return True
 
 
+def _edgematic_studio_responds(sdk_container_name: str, login_name: str, attempts: int = 30) -> bool:
+    """
+    Poll Studio's /version inside the container until it answers.
+
+    The server daemonizes before it binds, so activate-edgematic-studio exits 0
+    on a fork that later fails to listen.
+    """
+    from sima_cli.sdk.neat import EDGEMATIC_STUDIO_CONTAINER_PORT
+
+    probe = (
+        f"for _ in $(seq 1 {attempts}); do "
+        f"curl -fsS -o /dev/null http://127.0.0.1:{EDGEMATIC_STUDIO_CONTAINER_PORT}/version && exit 0; "
+        "sleep 1; done; exit 1"
+    )
+    result = subprocess.run(
+        ["docker", "exec", "-u", login_name, sdk_container_name, "bash", "-lc", probe],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def _activate_edgematic_studio(sdk_container_name: str, login_name: str) -> None:
     """
     Start the freshly installed Studio server so the printed URL is live.
 
     `activate-edgematic-studio` is a shell function in the user's .bashrc, which
     only an interactive shell reads — `bash -lc` silently does not see it. `-t`
-    supplies the PTY that keeps bash quiet about absent job control.
+    supplies the PTY that keeps bash quiet about absent job control. HOME is set
+    explicitly because `docker exec -u` only falls back to the passwd entry when
+    the container itself carries no HOME.
     """
+    home_directory = f"/home/{login_name}"
     result = subprocess.run(
         [
             "docker",
@@ -967,6 +999,12 @@ def _activate_edgematic_studio(sdk_container_name: str, login_name: str) -> None
             "-t",
             "-u",
             login_name,
+            "-e",
+            f"HOME={home_directory}",
+            "-e",
+            f"USER={login_name}",
+            "-e",
+            f"LOGNAME={login_name}",
             sdk_container_name,
             "bash",
             "-ic",
@@ -976,13 +1014,17 @@ def _activate_edgematic_studio(sdk_container_name: str, login_name: str) -> None
         capture_output=True,
         check=False,
     )
-    if result.returncode == 0:
+    if result.returncode == 0 and _edgematic_studio_responds(sdk_container_name, login_name):
         print("✅ Edgematic Studio started.")
         return
-    detail = ((result.stderr or result.stdout) or "").strip().splitlines()
-    print("⚠️  Could not start Edgematic Studio automatically.")
-    if detail:
-        print(f"   {detail[-1]}")
+    if result.returncode == 0:
+        print("⚠️  Edgematic Studio was started but is not answering yet.")
+        print("   Its log is at /sdk-extensions/edgematic-studio/logs/studio.log")
+    else:
+        detail = ((result.stderr or result.stdout) or "").strip().splitlines()
+        print("⚠️  Could not start Edgematic Studio automatically.")
+        if detail:
+            print(f"   {detail[-1]}")
     print("   Start it from the SDK container shell with: activate-edgematic-studio")
 
 
@@ -1689,6 +1731,20 @@ def configure_container(
             uid=uid,
             gid=gid,
         )
+    _sync_codex_skills(sdk_container_name, login_name, uid, gid)
+    if minimal:
+        print("ℹ️  Skipping Neat coding agent playbook installation because --minimal was specified.")
+    else:
+        install_neat_playbooks(sdk_container_name, login_name)
+        ensure_codex_vscode_extension_installed(
+            sdk_container_name,
+            login_name,
+            auto_install=(noninteractive or yes_to_all or _env_truthy(CODEX_EXTENSION_INSTALL_ENV)),
+            allow_prompt=not (noninteractive or yes_to_all),
+            uid=uid,
+            gid=gid,
+        )
+
     if no_edgematic_studio:
         # The caller folds --no-insight in here too, so only --minimal is knowable.
         if minimal:
@@ -1703,19 +1759,7 @@ def configure_container(
             auto_install=(noninteractive or yes_to_all),
             uid=uid,
             gid=gid,
-        )
-    _sync_codex_skills(sdk_container_name, login_name, uid, gid)
-    if minimal:
-        print("ℹ️  Skipping Neat coding agent playbook installation because --minimal was specified.")
-    else:
-        install_neat_playbooks(sdk_container_name, login_name)
-        ensure_codex_vscode_extension_installed(
-            sdk_container_name,
-            login_name,
-            auto_install=(noninteractive or yes_to_all or _env_truthy(CODEX_EXTENSION_INSTALL_ENV)),
-            allow_prompt=not (noninteractive or yes_to_all),
-            uid=uid,
-            gid=gid,
+            neat_playbooks_installed=not minimal,
         )
 
     # ---- Optional Network & Syslog Configuration ----

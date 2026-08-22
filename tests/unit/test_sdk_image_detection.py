@@ -3404,6 +3404,37 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertTrue(run_configure(True))
         self.assertFalse(run_configure(False))
 
+    def test_edgematic_studio_skips_playbooks_the_caller_already_installed(self):
+        def install_script(**kwargs):
+            with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:latest"), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True), \
+                 patch("sima_cli.sdk.utils.run_command") as run_command, \
+                 patch("sima_cli.sdk.utils._activate_edgematic_studio"):
+                ensure_edgematic_studio_installed("container", "docker", **kwargs)
+            return run_command.call_args_list[-1].args[0][-1]
+
+        # Re-running the unforced upstream install would fail and report the
+        # playbooks as missing when they are in fact already there.
+        self.assertIn("EDGEMATIC_SKIP_NEAT_PLAYBOOKS=true", install_script(neat_playbooks_installed=True))
+        self.assertNotIn("EDGEMATIC_SKIP_NEAT_PLAYBOOKS", install_script())
+
+    def test_configure_container_tells_studio_the_playbooks_are_installed(self):
+        with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
+             patch("sima_cli.sdk.utils.run_command"), \
+             patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
+             patch("sima_cli.sdk.utils.ensure_sima_cli_installed"), \
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed"), \
+             patch("sima_cli.sdk.utils._sync_codex_skills"), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks"), \
+             patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed"), \
+             patch("sima_cli.sdk.utils.ensure_edgematic_studio_installed") as studio:
+            from sima_cli.sdk.utils import configure_container
+
+            configure_container("container", noninteractive=True)
+
+        self.assertTrue(studio.call_args.kwargs["neat_playbooks_installed"])
+
     def test_edgematic_studio_installs_arm64_target_on_arm_host(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:latest"), \
              patch("sima_cli.sdk.utils.platform.machine", return_value="aarch64"), \
@@ -3429,13 +3460,48 @@ table ip6 nm-shared-enx6c1ff720d573 {
     def test_edgematic_studio_activation_uses_interactive_shell(self):
         from sima_cli.sdk.utils import _activate_edgematic_studio
 
-        with patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run, \
+             patch("sima_cli.sdk.utils._edgematic_studio_responds", return_value=True):
             _activate_edgematic_studio("container", "devuser")
 
         self.assertEqual(
             run.call_args.args[0],
-            ["docker", "exec", "-t", "-u", "devuser", "container", "bash", "-ic", "activate-edgematic-studio"],
+            [
+                "docker", "exec", "-t", "-u", "devuser",
+                # docker exec -u only falls back to the passwd entry when the
+                # container carries no HOME of its own.
+                "-e", "HOME=/home/devuser",
+                "-e", "USER=devuser",
+                "-e", "LOGNAME=devuser",
+                "container", "bash", "-ic", "activate-edgematic-studio",
+            ],
         )
+
+    def test_edgematic_studio_not_started_when_it_never_answers(self):
+        from sima_cli.sdk.utils import _activate_edgematic_studio
+
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")), \
+             patch("sima_cli.sdk.utils._edgematic_studio_responds", return_value=False), \
+             patch("builtins.print") as printed:
+            _activate_edgematic_studio("container", "devuser")
+
+        output = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        # The server daemonizes before binding, so exit 0 does not mean listening.
+        self.assertNotIn("Edgematic Studio started.", output)
+        self.assertIn("not answering", output)
+
+    def test_edgematic_studio_readiness_probe_polls_the_version_endpoint(self):
+        from sima_cli.sdk.utils import _edgematic_studio_responds
+
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0)) as run:
+            self.assertTrue(_edgematic_studio_responds("container", "devuser"))
+
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:6], ["docker", "exec", "-u", "devuser", "container", "bash"])
+        self.assertIn(f"http://127.0.0.1:{EDGEMATIC_STUDIO_CONTAINER_PORT}/version", argv[-1])
+
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=1)):
+            self.assertFalse(_edgematic_studio_responds("container", "devuser"))
 
     def test_edgematic_studio_activation_failure_is_not_fatal(self):
         from sima_cli.sdk.utils import _activate_edgematic_studio
@@ -3464,22 +3530,28 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         studio.assert_not_called()
 
-    def test_configure_container_installs_edgematic_studio_after_model_compiler(self):
+    def test_configure_container_installs_edgematic_studio_last(self):
         calls = []
+
+        def record(name):
+            return lambda *a, **k: calls.append(name)
+
         with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
              patch("sima_cli.sdk.utils.run_command"), \
              patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
              patch("sima_cli.sdk.utils.ensure_sima_cli_installed"), \
-             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed", side_effect=lambda *a, **k: calls.append("model")), \
-             patch("sima_cli.sdk.utils.ensure_edgematic_studio_installed", side_effect=lambda *a, **k: calls.append("studio")), \
-             patch("sima_cli.sdk.utils._sync_codex_skills"), \
-             patch("sima_cli.sdk.utils.install_neat_playbooks"), \
-             patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed"):
+             patch("sima_cli.sdk.utils.ensure_model_sdk_extension_installed", side_effect=record("model")), \
+             patch("sima_cli.sdk.utils._sync_codex_skills", side_effect=record("codex-skills")), \
+             patch("sima_cli.sdk.utils.install_neat_playbooks", side_effect=record("playbooks")), \
+             patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed", side_effect=record("vscode")), \
+             patch("sima_cli.sdk.utils.ensure_edgematic_studio_installed", side_effect=record("studio")):
             from sima_cli.sdk.utils import configure_container
 
             configure_container("container", noninteractive=True)
 
-        self.assertEqual(calls, ["model", "studio"])
+        # Studio force-installs its own skills, so it must follow the generic sync.
+        self.assertEqual(calls, ["model", "codex-skills", "playbooks", "vscode", "studio"])
+        self.assertGreater(calls.index("studio"), calls.index("playbooks"))
 
     def test_edgematic_studio_skip_notice_never_names_the_wrong_flag(self):
         # --no-insight also arrives as no_edgematic_studio=True.

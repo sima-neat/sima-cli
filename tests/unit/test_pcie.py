@@ -1,7 +1,10 @@
+import socket
+from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 from sima_cli.utils.pcie import (
     _ensure_remote_iperf3,
+    _get_virtual_pcie_interfaces,
     _ssh_run_command,
     _start_remote_iperf3_server,
 )
@@ -12,6 +15,85 @@ def _ssh_stream(data: bytes, exit_status: int = 0):
     stream.read.return_value = data
     stream.channel.recv_exit_status.return_value = exit_status
     return stream
+
+
+def _ipv4(address: str):
+    return SimpleNamespace(family=socket.AF_INET, address=address)
+
+
+def _pcie_device(bdf: str):
+    return {"os": "linux", "vendor_id": "0x1f06", "bdf": bdf}
+
+
+def test_get_virtual_pcie_interfaces_resolves_predictable_names_from_sysfs(tmp_path):
+    pci_devices = tmp_path / "pci"
+    (pci_devices / "0000:2f:00.0" / "net" / "enp47s0").mkdir(parents=True)
+
+    with patch("sima_cli.utils.pcie.platform.system", return_value="Linux"), patch(
+        "sima_cli.utils.pcie.psutil.net_if_addrs",
+        return_value={"enp47s0": [_ipv4("10.0.0.1")]},
+    ):
+        interfaces = _get_virtual_pcie_interfaces(
+            [_pcie_device("0000:2f:00.0")],
+            pci_devices_path=pci_devices,
+            net_class_path=tmp_path / "net",
+        )
+
+    assert interfaces == [("enp47s0", "10.0.0.1")]
+
+
+def test_get_virtual_pcie_interfaces_handles_multiple_cards(tmp_path):
+    pci_devices = tmp_path / "pci"
+    (pci_devices / "0000:2f:00.0" / "net" / "enp47s0").mkdir(parents=True)
+    (pci_devices / "0000:30:00.0" / "net" / "enp48s0").mkdir(parents=True)
+
+    addresses = {
+        "enp47s0": [_ipv4("10.0.0.1")],
+        "enp48s0": [_ipv4("10.1.0.1")],
+    }
+    with patch("sima_cli.utils.pcie.platform.system", return_value="Linux"), patch(
+        "sima_cli.utils.pcie.psutil.net_if_addrs", return_value=addresses
+    ):
+        interfaces = _get_virtual_pcie_interfaces(
+            [_pcie_device("0000:2f:00.0"), _pcie_device("0000:30:00.0")],
+            pci_devices_path=pci_devices,
+            net_class_path=tmp_path / "net",
+        )
+
+    assert interfaces == [("enp47s0", "10.0.0.1"), ("enp48s0", "10.1.0.1")]
+
+
+def test_get_virtual_pcie_interfaces_falls_back_to_mac_pattern(tmp_path):
+    net_class = tmp_path / "net"
+    iface = net_class / "enp47s0"
+    iface.mkdir(parents=True)
+    (iface / "address").write_text("02:53:49:4d:41:30\n")
+
+    with patch("sima_cli.utils.pcie.platform.system", return_value="Linux"), patch(
+        "sima_cli.utils.pcie.psutil.net_if_addrs",
+        return_value={"enp47s0": [_ipv4("10.0.0.1")]},
+    ):
+        interfaces = _get_virtual_pcie_interfaces(
+            [_pcie_device("0000:2f:00.0")],
+            pci_devices_path=tmp_path / "missing-pci",
+            net_class_path=net_class,
+        )
+
+    assert interfaces == [("enp47s0", "10.0.0.1")]
+
+
+def test_get_virtual_pcie_interfaces_accepts_legacy_name(tmp_path):
+    addresses = {"veth-simaai0": [_ipv4("10.0.0.1")]}
+    with patch("sima_cli.utils.pcie.platform.system", return_value="Linux"), patch(
+        "sima_cli.utils.pcie.psutil.net_if_addrs", return_value=addresses
+    ):
+        interfaces = _get_virtual_pcie_interfaces(
+            [],
+            pci_devices_path=tmp_path / "pci",
+            net_class_path=tmp_path / "net",
+        )
+
+    assert interfaces == [("veth-simaai0", "10.0.0.1")]
 
 
 def test_ssh_run_command_returns_remote_exit_status_and_writes_stdin():

@@ -14,6 +14,7 @@ import ipaddress
 import platform
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import os
@@ -22,12 +23,14 @@ import json
 from typing import List, Dict, Optional, Tuple
 
 import click
+import psutil
 
 # =============================================================================
 # 1. SiMa PCI ID table (single source of truth)
 # =============================================================================
 
 SIMA_VENDOR_ID = "0x1f06"
+SIMA_VETH_MAC_SUFFIX = ":53:49:4d:41:30"
 
 SIMA_DEVICE_MAP = {
     "0xabcd": "Davinci Default",
@@ -205,29 +208,77 @@ def get_sima_pcie_device_names(auto_install_windows_deps: bool = False) -> List[
 # 6. PCIe virtual ethernet throughput test
 # =============================================================================
 
-def _get_virtual_pcie_interfaces() -> List[Tuple[str, str]]:
+def _get_virtual_pcie_interfaces(
+    pcie_devices: Optional[List[Dict]] = None,
+    pci_devices_path: Path = Path("/sys/bus/pci/devices"),
+    net_class_path: Path = Path("/sys/class/net"),
+) -> List[Tuple[str, str]]:
     """
-    Return list of (iface, ipv4) for veth-simaai* interfaces.
+    Return (interface, IPv4) pairs for detected SiMa PCIe network devices.
+
+    The PCI device's sysfs ``net`` directory is authoritative. MAC matching
+    and the legacy ``veth-simaai`` name are retained as fallbacks for systems
+    where that directory is unavailable.
     """
     if platform.system() != "Linux":
         return []
 
+    if pcie_devices is None:
+        pcie_devices = get_sima_pcie_devices()
+
+    interface_names = []
+
+    def add_interface(name: str):
+        if name and name not in interface_names:
+            interface_names.append(name)
+
+    # Resolve netdevs from the enumerated PCI functions. This handles
+    # predictable names (for example, enp47s0) and multiple installed cards.
+    for device in pcie_devices:
+        if device.get("os") != "linux" or device.get("vendor_id") != SIMA_VENDOR_ID:
+            continue
+
+        bdf = device.get("bdf")
+        if not bdf:
+            continue
+
+        try:
+            for netdev in sorted(
+                (pci_devices_path / bdf / "net").iterdir(), key=lambda path: path.name
+            ):
+                add_interface(netdev.name)
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+            continue
+
     try:
-        output = subprocess.check_output(["ip", "-o", "-4", "addr", "show"], text=True)
+        network_addresses = psutil.net_if_addrs()
     except Exception:
         return []
 
+    # Fall back to the SiMa MAC pattern when the PCI sysfs link is absent.
+    try:
+        netdevs = sorted(net_class_path.iterdir(), key=lambda path: path.name)
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        netdevs = []
+
+    for netdev in netdevs:
+        try:
+            mac = (netdev / "address").read_text().strip().lower()
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+            continue
+        if mac.endswith(SIMA_VETH_MAC_SUFFIX):
+            add_interface(netdev.name)
+
+    # Preserve compatibility with hosts that install the existing udev rule.
+    for name in network_addresses:
+        if name.startswith("veth-simaai"):
+            add_interface(name)
+
     interfaces = []
-    for line in output.splitlines():
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        iface = parts[1]
-        ip_cidr = parts[3]
-        if not iface.startswith("veth-simaai"):
-            continue
-        ip = ip_cidr.split("/")[0]
-        interfaces.append((iface, ip))
+    for name in interface_names:
+        for address in network_addresses.get(name, []):
+            if address.family == socket.AF_INET:
+                interfaces.append((name, address.address))
 
     return interfaces
 
@@ -377,17 +428,17 @@ def _run_iperf3_client(remote_ip: str, local_ip: str) -> Optional[float]:
     return None
 
 
-def maybe_run_pcie_throughput_test():
+def maybe_run_pcie_throughput_test(pcie_devices: Optional[List[Dict]] = None):
     """
-    Check for veth-simaai virtual ethernet and optionally run iperf3 throughput test.
+    Check for PCIe virtual ethernet and optionally run an iperf3 throughput test.
     """
     if platform.system() != "Linux":
         click.echo("ℹ️  PCIe virtual ethernet throughput test is only supported on Linux.")
         return
 
-    interfaces = _get_virtual_pcie_interfaces()
+    interfaces = _get_virtual_pcie_interfaces(pcie_devices)
     if not interfaces:
-        click.echo("⚠️  Virtual ethernet over PCIe is not available (veth-simaai not found).")
+        click.echo("⚠️  Virtual ethernet over PCIe is not available.")
         return
 
     if not click.confirm("Detected PCIe virtual ethernet. Run throughput test now?", default=False):

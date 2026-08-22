@@ -58,6 +58,7 @@ from sima_cli.sdk.utils import (
     is_docker_user_mapping_error,
     _sudoers_drop_in_script,
     _prepare_log_host_dir,
+    bootstrap_devkit_container,
     container_matches_sdk_keyword,
     ensure_model_sdk_extension_installed,
     ensure_codex_vscode_extension_installed,
@@ -615,8 +616,78 @@ class TestSdkImageDetection(unittest.TestCase):
                 )
 
             self.assertEqual(env["devkit_ip"], "10.0.0.20")
+            self.assertTrue(env["host_nfs_available"])
             self.assertFalse(env["bootstrap_interactive"])
             self.assertTrue(env["noninteractive"])
+
+    def test_setup_devkit_share_uses_rsync_when_host_nfs_setup_is_denied(self):
+        with TemporaryDirectory() as tmpdir:
+            permission_error = subprocess.CalledProcessError(
+                1,
+                ["sudo", "sh", "-c", "configure exports"],
+            )
+            with patch("sima_cli.sdk.install._detect_routed_host_ip", return_value=("10.0.0.76", "en0", [("en0", "10.0.0.76")])), \
+                 patch("sima_cli.sdk.install._print_devkit_nfs_banner"), \
+                 patch("sima_cli.sdk.install._configure_nfs_export", side_effect=permission_error), \
+                 patch("sima_cli.sdk.install._detect_existing_linux_nfs_export", return_value=None), \
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network, \
+                 patch("builtins.print") as print_message:
+                env = _setup_devkit_share(
+                    "10.0.0.20",
+                    tmpdir,
+                    ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                    noninteractive=True,
+                )
+
+        self.assertFalse(env["host_nfs_available"])
+        configure_network.assert_called_once_with(
+            "10.0.0.20",
+            noninteractive=True,
+            persistent_network_profile=False,
+        )
+        output = "\n".join(call.args[0] for call in print_message.call_args_list)
+        self.assertIn("Host NFS export could not be configured", output)
+        self.assertIn("attempting rsync-over-SSH fallback", output)
+
+    def test_bootstrap_marks_host_nfs_unavailable_for_sdk(self):
+        result = Mock(
+            returncode=0,
+            stdout="__SIMA_DEVKIT_BOOTSTRAP_STATUS=sourced_with_dk\n",
+            stderr="",
+        )
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result) as run:
+            bootstrap_devkit_container(
+                "sdk-container",
+                {
+                    "devkit_ip": "10.0.0.20",
+                    "host_ip": "10.0.0.76",
+                    "workspace": "/workspace",
+                    "host_platform": "linux",
+                    "host_nfs_available": "0",
+                    "noninteractive": True,
+                },
+            )
+
+        script = run.call_args.args[0][-1]
+        self.assertIn("export DEVKIT_HOST_NFS_AVAILABLE=0", script)
+        self.assertIn('DEVKIT_SYNC_METHOD:-none', script)
+
+    def test_bootstrap_fails_when_required_rsync_fallback_cannot_start(self):
+        result = Mock(
+            returncode=1,
+            stdout="__SIMA_DEVKIT_BOOTSTRAP_STATUS=rsync_fallback_failed\n",
+            stderr="rsync fallback setup failed",
+        )
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "rsync fallback setup failed"):
+                bootstrap_devkit_container(
+                    "sdk-container",
+                    {
+                        "devkit_ip": "10.0.0.20",
+                        "host_nfs_available": False,
+                        "noninteractive": True,
+                    },
+                )
 
     def test_parse_export_line_reads_clients_and_options(self):
         exports = _parse_export_line(
@@ -678,7 +749,7 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(env["workspace"], "/share/workspace")
         self.assertFalse(env["bootstrap_interactive"])
 
-    def test_setup_devkit_share_fails_when_existing_export_blocks_devkit_ip(self):
+    def test_setup_devkit_share_uses_rsync_when_existing_export_blocks_devkit_ip(self):
         with TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir) / "share" / "workspace"
             workspace.mkdir(parents=True)
@@ -691,16 +762,20 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install.platform.system", return_value="Linux"), \
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
-                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
-                with self.assertRaisesRegex(RuntimeError, "not allowed by the export client"):
-                    _setup_devkit_share(
-                        "192.168.135.40",
-                        str(workspace),
-                        ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
-                    )
+                 patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network, \
+                 patch("builtins.print") as print_message:
+                env = _setup_devkit_share(
+                    "192.168.135.40",
+                    str(workspace),
+                    ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                )
 
         configure_export.assert_not_called()
-        configure_network.assert_not_called()
+        configure_network.assert_called_once()
+        self.assertFalse(env["host_nfs_available"])
+        output = "\n".join(call.args[0] for call in print_message.call_args_list)
+        self.assertIn("will not modify the unmanaged export", output)
+        self.assertIn("attempting rsync-over-SSH fallback", output)
 
     def test_setup_devkit_share_updates_stale_managed_export_for_new_devkit_ip(self):
         with TemporaryDirectory() as tmpdir:
@@ -735,7 +810,7 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(env["workspace"], str(workspace))
         self.assertFalse(env["bootstrap_interactive"])
 
-    def test_setup_devkit_share_fails_when_mixed_managed_and_unmanaged_exports_block_devkit_ip(self):
+    def test_setup_devkit_share_uses_rsync_when_mixed_exports_block_devkit_ip(self):
         with TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir) / "share" / "workspace"
             workspace.mkdir(parents=True)
@@ -759,15 +834,15 @@ class TestSdkImageDetection(unittest.TestCase):
                  patch("sima_cli.sdk.install._read_linux_exports", return_value=exports), \
                  patch("sima_cli.sdk.install._configure_nfs_export") as configure_export, \
                  patch("sima_cli.sdk.install._configure_devkit_shared_network_for_setup") as configure_network:
-                with self.assertRaisesRegex(RuntimeError, "existing unmanaged NFS export"):
-                    _setup_devkit_share(
-                        "192.168.2.100",
-                        str(workspace),
-                        ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
-                    )
+                env = _setup_devkit_share(
+                    "192.168.2.100",
+                    str(workspace),
+                    ["ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"],
+                )
 
         configure_export.assert_not_called()
-        configure_network.assert_not_called()
+        configure_network.assert_called_once()
+        self.assertFalse(env["host_nfs_available"])
 
     def test_detect_host_ip_uses_routable_non_vpn_candidate(self):
         candidates = [("en0", "192.168.1.10"), ("feth0", "10.10.1.2")]

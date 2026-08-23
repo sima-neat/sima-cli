@@ -1,5 +1,7 @@
 # sima-cli - SiMa Developer Portal CLI Tool
 
+**Documentation:** [English](docs/sima-cli/index.md) | [한국어](docs/i18n/ko/sima-cli/index.md) | [日本語](docs/i18n/ja/sima-cli/index.md) | [繁體中文](docs/i18n/zh-Hant/sima-cli/index.md) | [Українська](docs/i18n/uk/sima-cli/index.md)
+
 [![Python 3.8](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=Compatibility%20Python%203.8&label=python%203.8)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![Python 3.9](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=Compatibility%20Python%203.9&label=python%203.9)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)
 [![Python 3.10](https://img.shields.io/github/actions/workflow/status/sima-neat/sima-cli/vulcan-ci.yml?branch=main&job=Compatibility%20Python%203.10&label=python%203.10)](https://github.com/sima-neat/sima-cli/actions/workflows/vulcan-ci.yml)

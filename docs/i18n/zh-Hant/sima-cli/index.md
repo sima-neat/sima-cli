@@ -87,85 +87,85 @@ pip install sima-cli
 
 | 指令 | 描述 |
 | --- | --- |
-| [`sima-cli appzoo`](commands/sima-cli-appzoo.md) | 從 App Zoo 取得範例應用程式。 |
-| [`sima-cli bootimg`](commands/sima-cli-bootimg.md) | 為 SiMa DevKit 準備一個可開機的映像檔。 |
-| [`sima-cli device`](commands/sima-cli-device.md) | 在區域網路中搜尋附近的 SiMa.ai 裝置。 |
-| [`sima-cli download`](commands/sima-cli-download.md) | 從指定的網址下載檔案或整個資料夾。 |
-| [`sima-cli install`](commands/sima-cli-install.md) | 安裝 SiMa 套件。 |
-| [`sima-cli login`](commands/sima-cli-login.md) | 透過 SiMa 開發者入口網站進行驗證。 |
-| [`sima-cli logout`](commands/sima-cli-logout.md) | 登出時，請刪除快取中的憑證和設定檔。 |
-| [`sima-cli mla`](commands/sima-cli-mla.md) | 機器學習加速器工具。 |
-| [`sima-cli modelzoo`](commands/sima-cli-modelzoo.md) | 從 Model Zoo 存取模型。 |
-| [`sima-cli neat`](commands/sima-cli-neat.md) | 尋找、下載並安裝 Neat 建置產生的成品。 |
-| [`sima-cli network`](commands/sima-cli-network.md) | 在 DevKit 上設定網路 IP 位址。 |
-| [`sima-cli nvme`](commands/sima-cli-nvme.md) | 在 Modalix DevKit 上執行 NVMe 作業。 |
-| [`sima-cli packages`](commands/sima-cli-packages.md) | 管理 sima-cli 套件登錄檔（列出、檢查、清理等）。 |
-| [`sima-cli playbooks`](commands/sima-cli-playbooks.md) | 安裝並管理劇本（Codex/Claude）。 |
-| [`sima-cli sdcard`](commands/sima-cli-sdcard.md) | 為 MLSoc DevKit 或 Modalix 的早期測試版本，準備好 SD 卡作為資料儲存裝置。 |
-| [`sima-cli sdk`](commands/sima-cli-sdk.md) | 管理並啟動 SiMa SDK 2.0 容器環境（測試版）。 |
-| [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md) | 手動從 PyPI 或直接的 wheel URL 更新 sima-cli。 |
-| [`sima-cli serial`](commands/sima-cli-serial.md) | 連接到 DevKit 的 UART 序列埠控制台。 |
-| [`sima-cli update`](commands/sima-cli-update.md) | 更新 SiMa DevKit 或遠端 SiMa 裝置上的軟體。 |
+| [`sima-cli appzoo`](../../../sima-cli/commands/sima-cli-appzoo.md) | 從 App Zoo 取得範例應用程式。 |
+| [`sima-cli bootimg`](../../../sima-cli/commands/sima-cli-bootimg.md) | 為 SiMa DevKit 準備一個可開機的映像檔。 |
+| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | 在區域網路中搜尋附近的 SiMa.ai 裝置。 |
+| [`sima-cli download`](../../../sima-cli/commands/sima-cli-download.md) | 從指定的網址下載檔案或整個資料夾。 |
+| [`sima-cli install`](../../../sima-cli/commands/sima-cli-install.md) | 安裝 SiMa 套件。 |
+| [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md) | 透過 SiMa 開發者入口網站進行驗證。 |
+| [`sima-cli logout`](../../../sima-cli/commands/sima-cli-logout.md) | 登出時，請刪除快取中的憑證和設定檔。 |
+| [`sima-cli mla`](../../../sima-cli/commands/sima-cli-mla.md) | 機器學習加速器工具。 |
+| [`sima-cli modelzoo`](../../../sima-cli/commands/sima-cli-modelzoo.md) | 從 Model Zoo 存取模型。 |
+| [`sima-cli neat`](../../../sima-cli/commands/sima-cli-neat.md) | 尋找、下載並安裝 Neat 建置產生的成品。 |
+| [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md) | 在 DevKit 上設定網路 IP 位址。 |
+| [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md) | 在 Modalix DevKit 上執行 NVMe 作業。 |
+| [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md) | 管理 sima-cli 套件登錄檔（列出、檢查、清理等）。 |
+| [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md) | 安裝並管理劇本（Codex/Claude）。 |
+| [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md) | 為 MLSoc DevKit 或 Modalix 的早期測試版本，準備好 SD 卡作為資料儲存裝置。 |
+| [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | 管理並啟動 SiMa SDK 2.0 容器環境（測試版）。 |
+| [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md) | 手動從 PyPI 或直接的 wheel URL 更新 sima-cli。 |
+| [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md) | 連接到 DevKit 的 UART 序列埠控制台。 |
+| [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md) | 更新 SiMa DevKit 或遠端 SiMa 裝置上的軟體。 |
 
 ## 完整指令清單
 
-- [`sima-cli`](commands/sima-cli.md)
-- [`sima-cli appzoo`](commands/sima-cli-appzoo.md)
-- [`sima-cli bootimg`](commands/sima-cli-bootimg.md)
-- [`sima-cli device`](commands/sima-cli-device.md)
-- [`sima-cli download`](commands/sima-cli-download.md)
-- [`sima-cli install`](commands/sima-cli-install.md)
-- [`sima-cli login`](commands/sima-cli-login.md)
-- [`sima-cli logout`](commands/sima-cli-logout.md)
-- [`sima-cli mla`](commands/sima-cli-mla.md)
-- [`sima-cli modelzoo`](commands/sima-cli-modelzoo.md)
-- [`sima-cli neat`](commands/sima-cli-neat.md)
-- [`sima-cli network`](commands/sima-cli-network.md)
-- [`sima-cli nvme`](commands/sima-cli-nvme.md)
-- [`sima-cli packages`](commands/sima-cli-packages.md)
-- [`sima-cli playbooks`](commands/sima-cli-playbooks.md)
-- [`sima-cli sdcard`](commands/sima-cli-sdcard.md)
-- [`sima-cli sdk`](commands/sima-cli-sdk.md)
-- [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md)
-- [`sima-cli serial`](commands/sima-cli-serial.md)
-- [`sima-cli update`](commands/sima-cli-update.md)
-- [`sima-cli appzoo clone`](commands/sima-cli-appzoo-clone.md)
-- [`sima-cli appzoo describe`](commands/sima-cli-appzoo-describe.md)
-- [`sima-cli appzoo get`](commands/sima-cli-appzoo-get.md)
-- [`sima-cli appzoo list`](commands/sima-cli-appzoo-list.md)
-- [`sima-cli device discover`](commands/sima-cli-device-discover.md)
-- [`sima-cli mla meminfo`](commands/sima-cli-mla-meminfo.md)
-- [`sima-cli modelzoo describe`](commands/sima-cli-modelzoo-describe.md)
-- [`sima-cli modelzoo get`](commands/sima-cli-modelzoo-get.md)
-- [`sima-cli modelzoo list`](commands/sima-cli-modelzoo-list.md)
-- [`sima-cli neat artifacts`](commands/sima-cli-neat-artifacts.md)
-- [`sima-cli neat download`](commands/sima-cli-neat-download.md)
-- [`sima-cli neat install`](commands/sima-cli-neat-install.md)
-- [`sima-cli neat sdk`](commands/sima-cli-neat-sdk.md)
-- [`sima-cli packages build`](commands/sima-cli-packages-build.md)
-- [`sima-cli packages list`](commands/sima-cli-packages-list.md)
-- [`sima-cli packages show`](commands/sima-cli-packages-show.md)
-- [`sima-cli playbooks apply`](commands/sima-cli-playbooks-apply.md)
-- [`sima-cli playbooks delete`](commands/sima-cli-playbooks-delete.md)
-- [`sima-cli playbooks describe`](commands/sima-cli-playbooks-describe.md)
-- [`sima-cli playbooks install`](commands/sima-cli-playbooks-install.md)
-- [`sima-cli playbooks list`](commands/sima-cli-playbooks-list.md)
-- [`sima-cli playbooks remove`](commands/sima-cli-playbooks-remove.md)
-- [`sima-cli playbooks update`](commands/sima-cli-playbooks-update.md)
-- [`sima-cli sdk doctor`](commands/sima-cli-sdk-doctor.md)
-- [`sima-cli sdk elxr`](commands/sima-cli-sdk-elxr.md)
-- [`sima-cli sdk ls`](commands/sima-cli-sdk-ls.md)
-- [`sima-cli sdk model`](commands/sima-cli-sdk-model.md)
-- [`sima-cli sdk mpk`](commands/sima-cli-sdk-mpk.md)
-- [`sima-cli sdk neat`](commands/sima-cli-sdk-neat.md)
-- [`sima-cli sdk network`](commands/sima-cli-sdk-network.md)
-- [`sima-cli sdk remove`](commands/sima-cli-sdk-remove.md)
-- [`sima-cli sdk ros2`](commands/sima-cli-sdk-ros2.md)
-- [`sima-cli sdk run`](commands/sima-cli-sdk-run.md)
-- [`sima-cli sdk setup`](commands/sima-cli-sdk-setup.md)
-- [`sima-cli sdk start`](commands/sima-cli-sdk-start.md)
-- [`sima-cli sdk stop`](commands/sima-cli-sdk-stop.md)
-- [`sima-cli sdk yocto`](commands/sima-cli-sdk-yocto.md)
-- [`sima-cli sdk doctor network`](commands/sima-cli-sdk-doctor-network.md)
-- [`sima-cli sdk network repair`](commands/sima-cli-sdk-network-repair.md)
-- [`sima-cli sdk network rollback`](commands/sima-cli-sdk-network-rollback.md)
+- [`sima-cli`](../../../sima-cli/commands/sima-cli.md)
+- [`sima-cli appzoo`](../../../sima-cli/commands/sima-cli-appzoo.md)
+- [`sima-cli bootimg`](../../../sima-cli/commands/sima-cli-bootimg.md)
+- [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md)
+- [`sima-cli download`](../../../sima-cli/commands/sima-cli-download.md)
+- [`sima-cli install`](../../../sima-cli/commands/sima-cli-install.md)
+- [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md)
+- [`sima-cli logout`](../../../sima-cli/commands/sima-cli-logout.md)
+- [`sima-cli mla`](../../../sima-cli/commands/sima-cli-mla.md)
+- [`sima-cli modelzoo`](../../../sima-cli/commands/sima-cli-modelzoo.md)
+- [`sima-cli neat`](../../../sima-cli/commands/sima-cli-neat.md)
+- [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md)
+- [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md)
+- [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md)
+- [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md)
+- [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md)
+- [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md)
+- [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md)
+- [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md)
+- [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md)
+- [`sima-cli appzoo clone`](../../../sima-cli/commands/sima-cli-appzoo-clone.md)
+- [`sima-cli appzoo describe`](../../../sima-cli/commands/sima-cli-appzoo-describe.md)
+- [`sima-cli appzoo get`](../../../sima-cli/commands/sima-cli-appzoo-get.md)
+- [`sima-cli appzoo list`](../../../sima-cli/commands/sima-cli-appzoo-list.md)
+- [`sima-cli device discover`](../../../sima-cli/commands/sima-cli-device-discover.md)
+- [`sima-cli mla meminfo`](../../../sima-cli/commands/sima-cli-mla-meminfo.md)
+- [`sima-cli modelzoo describe`](../../../sima-cli/commands/sima-cli-modelzoo-describe.md)
+- [`sima-cli modelzoo get`](../../../sima-cli/commands/sima-cli-modelzoo-get.md)
+- [`sima-cli modelzoo list`](../../../sima-cli/commands/sima-cli-modelzoo-list.md)
+- [`sima-cli neat artifacts`](../../../sima-cli/commands/sima-cli-neat-artifacts.md)
+- [`sima-cli neat download`](../../../sima-cli/commands/sima-cli-neat-download.md)
+- [`sima-cli neat install`](../../../sima-cli/commands/sima-cli-neat-install.md)
+- [`sima-cli neat sdk`](../../../sima-cli/commands/sima-cli-neat-sdk.md)
+- [`sima-cli packages build`](../../../sima-cli/commands/sima-cli-packages-build.md)
+- [`sima-cli packages list`](../../../sima-cli/commands/sima-cli-packages-list.md)
+- [`sima-cli packages show`](../../../sima-cli/commands/sima-cli-packages-show.md)
+- [`sima-cli playbooks apply`](../../../sima-cli/commands/sima-cli-playbooks-apply.md)
+- [`sima-cli playbooks delete`](../../../sima-cli/commands/sima-cli-playbooks-delete.md)
+- [`sima-cli playbooks describe`](../../../sima-cli/commands/sima-cli-playbooks-describe.md)
+- [`sima-cli playbooks install`](../../../sima-cli/commands/sima-cli-playbooks-install.md)
+- [`sima-cli playbooks list`](../../../sima-cli/commands/sima-cli-playbooks-list.md)
+- [`sima-cli playbooks remove`](../../../sima-cli/commands/sima-cli-playbooks-remove.md)
+- [`sima-cli playbooks update`](../../../sima-cli/commands/sima-cli-playbooks-update.md)
+- [`sima-cli sdk doctor`](../../../sima-cli/commands/sima-cli-sdk-doctor.md)
+- [`sima-cli sdk elxr`](../../../sima-cli/commands/sima-cli-sdk-elxr.md)
+- [`sima-cli sdk ls`](../../../sima-cli/commands/sima-cli-sdk-ls.md)
+- [`sima-cli sdk model`](../../../sima-cli/commands/sima-cli-sdk-model.md)
+- [`sima-cli sdk mpk`](../../../sima-cli/commands/sima-cli-sdk-mpk.md)
+- [`sima-cli sdk neat`](../../../sima-cli/commands/sima-cli-sdk-neat.md)
+- [`sima-cli sdk network`](../../../sima-cli/commands/sima-cli-sdk-network.md)
+- [`sima-cli sdk remove`](../../../sima-cli/commands/sima-cli-sdk-remove.md)
+- [`sima-cli sdk ros2`](../../../sima-cli/commands/sima-cli-sdk-ros2.md)
+- [`sima-cli sdk run`](../../../sima-cli/commands/sima-cli-sdk-run.md)
+- [`sima-cli sdk setup`](../../../sima-cli/commands/sima-cli-sdk-setup.md)
+- [`sima-cli sdk start`](../../../sima-cli/commands/sima-cli-sdk-start.md)
+- [`sima-cli sdk stop`](../../../sima-cli/commands/sima-cli-sdk-stop.md)
+- [`sima-cli sdk yocto`](../../../sima-cli/commands/sima-cli-sdk-yocto.md)
+- [`sima-cli sdk doctor network`](../../../sima-cli/commands/sima-cli-sdk-doctor-network.md)
+- [`sima-cli sdk network repair`](../../../sima-cli/commands/sima-cli-sdk-network-repair.md)
+- [`sima-cli sdk network rollback`](../../../sima-cli/commands/sima-cli-sdk-network-rollback.md)

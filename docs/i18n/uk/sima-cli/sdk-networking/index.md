@@ -71,7 +71,7 @@ neat --json
 
 - [Усунення несправностей у мережевому підключенні SDK](troubleshooting.md)
 - [Відміна змін мережевих налаштувань SDK](rollback.md)
-- [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
-- [`sima-cli sdk doctor network`](../commands/sima-cli-sdk-doctor-network.md)
-- [`sima-cli sdk network repair`](../commands/sima-cli-sdk-network-repair.md)
-- [`sima-cli sdk network rollback`](../commands/sima-cli-sdk-network-rollback.md)
+- [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
+- [`sima-cli sdk doctor network`](../../../../sima-cli/commands/sima-cli-sdk-doctor-network.md)
+- [`sima-cli sdk network repair`](../../../../sima-cli/commands/sima-cli-sdk-network-repair.md)
+- [`sima-cli sdk network rollback`](../../../../sima-cli/commands/sima-cli-sdk-network-rollback.md)

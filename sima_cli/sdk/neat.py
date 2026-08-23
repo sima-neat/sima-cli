@@ -51,7 +51,7 @@ class NeatRunConfig:
     webrtc_host_ip: str = ""
     code_ui_token: str = ""
     code_ui_supported: bool = True
-    edgematic_studio_installed: bool = True
+    edgematic_studio_installed: bool = False
 
 
 def _can_bind_tcp(port: int) -> bool:
@@ -173,6 +173,7 @@ def allocate_neat_ports(
     no_insight: bool = False,
     reserved_ports: Optional[set] = None,
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
+    publish_edgematic_studio_port: bool = False,
 ) -> Tuple[Dict, List[str]]:
     if not isinstance(insight_video_channels, int) or isinstance(insight_video_channels, bool):
         raise ValueError("Insight video channels must be an integer")
@@ -263,10 +264,9 @@ def allocate_neat_ports(
             ]
         )
 
-    # Published independently of whether setup installs Studio: port maps are
-    # immutable after create, so a later hand-rolled install has no other way to
-    # become reachable. --no-insight still excludes it; Studio needs those APIs.
-    if not no_insight:
+    # Opt-in, and settled before create: port maps are immutable afterwards.
+    # --no-insight excludes it either way; Studio drives the Insight APIs.
+    if publish_edgematic_studio_port and not no_insight:
         edgematic_studio = _allocate_single_port(EDGEMATIC_STUDIO_CONTAINER_PORT, "tcp", reserved)
         port_map["edgematicStudio"] = {
             "protocol": "tcp",
@@ -811,6 +811,7 @@ def prepare_neat_container_run(
     minimal: bool = False,
     reserved_ports: Optional[set] = None,
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
+    publish_edgematic_studio_port: bool = False,
 ) -> NeatRunConfig:
     no_insight = no_insight or minimal
     container_dir = Path(workspace) / f".{container_name}"
@@ -820,6 +821,7 @@ def prepare_neat_container_run(
         no_insight=no_insight,
         reserved_ports=reserved_ports,
         insight_video_channels=insight_video_channels,
+        publish_edgematic_studio_port=publish_edgematic_studio_port,
     )
     if no_insight:
         return NeatRunConfig(
@@ -951,9 +953,8 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         # Studio serves plain HTTP; web_scheme tracks the Insight/OpenVSCode certs.
         studio_url = f"http://{display_host}:{port_map['edgematicStudio']['host']}"
         if not config.edgematic_studio_installed:
-            # The port is reserved for a hand-rolled install; say so rather than
-            # advertise a URL that nothing answers yet.
-            studio_url = f"{studio_url} (port reserved; Studio not installed)"
+            # --edgematic-studio-port publishes the mapping with nothing behind it.
+            studio_url = f"{studio_url} (port published; Studio not installed)"
         rows.append(("edgematicStudio", studio_url))
     if "videoUI" in port_map:
         rows.append(("videoUI", f"{web_scheme}://{display_host}:{port_map['videoUI']['host']}"))

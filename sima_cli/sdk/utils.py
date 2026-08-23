@@ -1,5 +1,5 @@
 # utils.py
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple
 import hashlib
 import locale
 import os
@@ -854,16 +854,86 @@ def _edgematic_studio_install_args() -> List[str]:
     return ["neat", "install", f"edgematic-studio/{arch}@{EDGEMATIC_STUDIO_INSTALL_REF}"]
 
 
+def resolve_edgematic_studio_choice(
+    install_requested: bool = False,
+    port_only: bool = False,
+    interactive: bool = True,
+) -> Tuple[bool, bool]:
+    """
+    Decide whether setup installs Edgematic Studio and publishes its port.
+
+    Studio is opt-in, and both halves are settled before the container is
+    created: port maps are immutable afterwards, so a prompt at install time
+    could not govern the port.
+
+    Returns (install, publish_port).
+    """
+    from sima_cli.sdk.neat import EDGEMATIC_STUDIO_CONTAINER_PORT
+
+    extension_install_args = _edgematic_studio_install_args()
+    if not extension_install_args:
+        if install_requested or port_only:
+            print("ℹ️  Edgematic Studio is not available on this host platform; skipping.")
+        return False, False
+
+    if install_requested:
+        return True, True
+
+    if port_only:
+        print(
+            "ℹ️  Publishing Edgematic Studio's port without installing it "
+            "(--edgematic-studio-port). Install it from the SDK container shell with: "
+            f"sima-cli {shlex.join(extension_install_args)}"
+        )
+        return False, True
+
+    if not interactive:
+        print(
+            "ℹ️  Edgematic Studio is opt-in and will not be installed. Pass "
+            "--edgematic-studio to install it, or --edgematic-studio-port to publish "
+            "its port for a manual install."
+        )
+        return False, False
+
+    console.print(
+        Panel(
+            "[yellow]This SDK can install Edgematic Studio as an optional extension.[/yellow]\n\n"
+            "Edgematic Studio is a browser-based development environment for building "
+            "and running AI applications with an AI agent, an editor, and DevKit tooling "
+            "in one place.\n"
+            "It will be installed on your host in the SDK extensions directory "
+            "mounted into this container at /sdk-extensions.\n"
+            "The download is small, but it also fetches a coding-agent CLI and its skills, "
+            f"and setup publishes its HTTP port ({EDGEMATIC_STUDIO_CONTAINER_PORT}) on this host.\n"
+            "It is a preview: its documentation and support are still in progress, so it is "
+            "only installed if you ask for it here.\n\n"
+            "Answering no leaves the port unpublished. To enable it later, recreate this "
+            "container with:\n"
+            "sima-cli sdk setup --edgematic-studio",
+            title="Edgematic Studio Extension (optional)",
+            border_style="green",
+            style="green",
+            expand=False,
+        )
+    )
+    if yes_no_prompt("Install the Edgematic Studio extension now?", default_yes=False):
+        return True, True
+    print("ℹ️  Skipping Edgematic Studio; its port will not be published.")
+    print("   To enable it later, recreate this container with: sima-cli sdk setup --edgematic-studio")
+    return False, False
+
+
 def ensure_edgematic_studio_installed(
     sdk_container_name: str,
     login_name: str,
-    auto_install: bool = False,
     uid: int = None,
     gid: int = None,
     neat_playbooks_installed: bool = False,
 ) -> bool:
     """
     Install the Edgematic Studio extension for Neat SDK containers.
+
+    Whether to install is resolve_edgematic_studio_choice()'s call, not this one's.
     """
     image_ref = _get_container_image_ref(sdk_container_name)
     if not image_ref or not is_neat_sdk_image(image_ref):
@@ -873,31 +943,6 @@ def ensure_edgematic_studio_installed(
     if not extension_install_args:
         print("ℹ️  Edgematic Studio is not available on this host platform; skipping.")
         return False
-
-    console.print(
-        Panel(
-            "[yellow]This SDK supports Edgematic Studio as an extension.[/yellow]\n\n"
-            "Edgematic Studio is a browser-based development environment for building "
-            "and running AI applications with an AI agent, an editor, and DevKit tooling "
-            "in one place.\n"
-            "It will be installed on your host in the SDK extensions directory "
-            "mounted into this container at /sdk-extensions.\n"
-            "The download is small, but it also fetches a coding-agent CLI and its skills.\n"
-            "\n\n"
-            "If you decide to install it later, run this from within the SDK container shell:\n"
-            f"sima-cli {shlex.join(extension_install_args)}",
-            title="Edgematic Studio Extension",
-            border_style="green",
-            style="green",
-            expand=False,
-        )
-    )
-    if auto_install:
-        print("ℹ️  Auto-installing Edgematic Studio extension.")
-    else:
-        if not yes_no_prompt("Install the Edgematic Studio extension now?"):
-            print("ℹ️  Skipping Edgematic Studio extension install.")
-            return False
 
     home_directory = f"/home/{login_name}"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
@@ -1632,7 +1677,7 @@ def configure_container(
     noninteractive=False,
     yes_to_all=False,
     no_model_sdk=False,
-    no_edgematic_studio=False,
+    install_edgematic_studio=False,
     minimal=False,
     user_and_workspace_only=False,
 ) -> bool:
@@ -1648,7 +1693,7 @@ def configure_container(
     """
     platform_os = check_os()
     no_model_sdk = no_model_sdk or minimal
-    no_edgematic_studio = no_edgematic_studio or minimal
+    install_edgematic_studio = install_edgematic_studio and not minimal
 
     # Detect current host user
     if platform_os in ["linux", "macos"]:
@@ -1745,22 +1790,16 @@ def configure_container(
             gid=gid,
         )
 
-    if no_edgematic_studio:
-        # The caller folds --no-insight in here too, so only --minimal is knowable.
-        if minimal:
-            print("ℹ️  Skipping Edgematic Studio extension installation because --minimal was specified.")
-        else:
-            print("ℹ️  Skipping Edgematic Studio extension installation.")
-        edgematic_studio_installed = False
-    else:
+    if install_edgematic_studio:
         edgematic_studio_installed = ensure_edgematic_studio_installed(
             sdk_container_name,
             login_name,
-            auto_install=(noninteractive or yes_to_all),
             uid=uid,
             gid=gid,
             neat_playbooks_installed=not minimal,
         )
+    else:
+        edgematic_studio_installed = False
 
     # ---- Optional Network & Syslog Configuration ----
     if configure_network:
@@ -1876,7 +1915,8 @@ def start_docker_container(
     no_insight=False,
     insight_video_channels=4,
     no_model_sdk=False,
-    no_edgematic_studio=False,
+    install_edgematic_studio=False,
+    publish_edgematic_studio_port=False,
     minimal=False,
 ):
     """
@@ -1890,8 +1930,10 @@ def start_docker_container(
     # Generate container name
     # ─────────────────────────────────────────────
     no_insight = no_insight or minimal
-    # Studio drives the Insight APIs.
-    no_edgematic_studio = no_edgematic_studio or no_insight
+    if no_insight:
+        # Studio drives the Insight APIs.
+        install_edgematic_studio = False
+        publish_edgematic_studio_port = False
     container_name = sanitize_container_name(image)
     hostname = sanitize_container_hostname(container_name)
     print(f"🚀 Starting container '{container_name}' using image '{image}'")
@@ -2016,6 +2058,7 @@ def start_docker_container(
                 insight_video_channels=insight_video_channels,
                 minimal=minimal,
                 reserved_ports=reserved_ports,
+                publish_edgematic_studio_port=publish_edgematic_studio_port,
             )
             launch_cmd = list(base_docker_cmd)
             append_neat_docker_args(launch_cmd, neat_run_config)
@@ -2073,7 +2116,7 @@ def start_docker_container(
         noninteractive=noninteractive,
         yes_to_all=yes_to_all,
         no_model_sdk=no_model_sdk,
-        no_edgematic_studio=no_edgematic_studio,
+        install_edgematic_studio=install_edgematic_studio,
         minimal=minimal,
         user_and_workspace_only=ros2_sdk_image,
     )
@@ -2083,7 +2126,6 @@ def start_docker_container(
 
     if neat_sdk_image and neat_run_config is not None:
         neat_run_config.code_ui_supported = _container_openvscode_available(container_name)
-        # The mapping is published either way; a declined install has nothing behind it.
         neat_run_config.edgematic_studio_installed = bool(edgematic_studio_installed)
         print_neat_setup_summary(neat_run_config)
 
@@ -2315,13 +2357,13 @@ def is_docker_running():
 def yes_no_prompt(prompt: str, default_yes=True) -> bool:
     """
     Prompt user for a yes/no response.
-    Defaults to YES if Enter is pressed.
+    Enter takes the capitalized default the prompt shows: Y/n or y/N.
     """
     default_choice = "Y/n" if default_yes else "y/N"
     while True:
         choice = input(f"{prompt} ({default_choice}): ").strip().lower()
-        if choice == "" and default_yes:
-            return True
+        if choice == "":
+            return bool(default_yes)
         if choice in {"y", "yes"}:
             return True
         if choice in {"n", "no"}:

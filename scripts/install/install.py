@@ -37,6 +37,17 @@ def branch_key(ref: str) -> str:
     return urllib.parse.quote(ref, safe="")
 
 
+def join_url(base_url: str, *parts: str) -> str:
+    # Every part is encoded, so a branch key's "%2F" becomes "%252F" and reaches the
+    # CDN as the key CI published. Mirrors sima_cli.vulcan.artifacts.join_url.
+    encoded = [
+        urllib.parse.quote(part.strip("/"), safe="")
+        for part in parts
+        if part.strip("/")
+    ]
+    return "/".join([base_url.rstrip("/"), *encoded])
+
+
 def fetch_bytes(url: str) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "sima-cli-installer/1"})
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -168,7 +179,7 @@ def resolve_ref(
 ) -> str:
     if requested_ref:
         return requested_ref
-    payload = fetch_json(f"{base_url}/branches.json")
+    payload = fetch_json(join_url(base_url, "branches.json"))
     branches, releases = normalize_index(payload)
     try:
         releases = sorted(
@@ -183,7 +194,7 @@ def resolve_ref(
 def resolve_tag(base_url: str, ref: str, requested_tag: str) -> str:
     if requested_tag != "latest":
         return requested_tag
-    url = f"{base_url}/{branch_key(ref)}/latest.tag"
+    url = join_url(base_url, branch_key(ref), "latest.tag")
     tag = fetch_text(url).strip()
     if not tag:
         raise SystemExit(f"latest.tag is empty for {ref}")
@@ -191,9 +202,10 @@ def resolve_tag(base_url: str, ref: str, requested_tag: str) -> str:
 
 
 def resolve_metadata(base_url: str, ref: str, tag: str) -> Dict[str, Any]:
+    key = branch_key(ref)
     urls = [
-        f"{base_url}/{branch_key(ref)}/{tag}/metadata.json",
-        f"{base_url}/{branch_key(ref)}/{tag}.json",
+        join_url(base_url, key, tag, "metadata.json"),
+        join_url(base_url, key, f"{tag}.json"),
     ]
     last_http_error: Optional[urllib.error.HTTPError] = None
     for url in urls:
@@ -222,7 +234,7 @@ def iter_artifacts(metadata: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
         if filename:
             artifact = {"filename": filename}
             if resource_base_url:
-                artifact["url"] = f"{resource_base_url}/{urllib.parse.quote(filename)}"
+                artifact["url"] = join_url(resource_base_url, filename)
             yield artifact
 
 
@@ -244,7 +256,7 @@ def artifact_url(base_url: str, artifact: Dict[str, Any]) -> str:
     filename = str(artifact.get("filename", "")).strip()
     if not filename:
         raise SystemExit("Artifact entry is missing filename")
-    return f"{base_url}/{filename}"
+    return join_url(base_url, filename)
 
 
 def download_file(url: str, dest: Path) -> None:

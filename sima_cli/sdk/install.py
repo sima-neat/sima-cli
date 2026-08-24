@@ -42,6 +42,7 @@ from sima_cli.sdk.utils import (
     confirm_to_remove_exiting_container,
     sanitize_container_name,
     ensure_simasdkbridge_network,
+    resolve_edgematic_studio_choice,
     start_docker_container,
     bootstrap_devkit_container,
     configure_container_user,
@@ -1088,6 +1089,8 @@ def setup_and_start(
     no_insight: bool = False,
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
     no_model_sdk: bool = False,
+    edgematic_studio: bool = False,
+    edgematic_studio_port: bool = False,
     minimal: bool = False,
     workspace: Optional[str] = None,
     persistent_network_profile: bool = False,
@@ -1100,6 +1103,15 @@ def setup_and_start(
     if not 1 <= insight_video_channels <= MAX_INSIGHT_VIDEO_CHANNELS:
         raise RuntimeError(
             f"--insight-video-channels must be between 1 and {MAX_INSIGHT_VIDEO_CHANNELS}."
+        )
+
+    # Studio drives the Insight APIs; fail rather than drop the positive option.
+    if (edgematic_studio or edgematic_studio_port) and (no_insight or minimal):
+        requested = "--edgematic-studio" if edgematic_studio else "--edgematic-studio-port"
+        excluded = "--minimal" if minimal else "--no-insight"
+        raise RuntimeError(
+            f"{requested} cannot be combined with {excluded}: Edgematic Studio depends on "
+            "the Insight APIs and ports that option turns off."
         )
 
     if not start_only:
@@ -1192,7 +1204,10 @@ def setup_and_start(
         click.echo(f"ℹ️  Skipping Model Compiler extension setup because {reason} was specified.")
     if minimal and any(is_neat_sdk_image(img) for img in selected_images):
         click.echo("ℹ️  Skipping Insight setup because --minimal was specified.")
-    
+
+    # Asked once, on the first Neat container that is actually created.
+    studio_choice = None
+
     for img in selected_images:
         container_name = sanitize_container_name(img)
         print_section(f"🔄 CONTAINER START SEQUENCE for {container_name}")
@@ -1212,6 +1227,17 @@ def setup_and_start(
             if config["port_mapping_required"]:
                 create_config_json(file_path="config.json", selected_images=selected_images, port=port)
 
+            if skip_insight or not is_neat_sdk_image(img):
+                install_studio, publish_studio_port = False, False
+            else:
+                if studio_choice is None:
+                    studio_choice = resolve_edgematic_studio_choice(
+                        install_requested=edgematic_studio,
+                        port_only=edgematic_studio_port,
+                        interactive=not (noninteractive or yes_to_all),
+                    )
+                install_studio, publish_studio_port = studio_choice
+
             start_docker_container(
                 uid=uid,
                 gid=gid,
@@ -1227,9 +1253,18 @@ def setup_and_start(
                 no_insight=skip_insight,
                 insight_video_channels=insight_video_channels,
                 no_model_sdk=skip_model_sdk,
+                install_edgematic_studio=install_studio,
+                publish_edgematic_studio_port=publish_studio_port,
                 minimal=minimal,
             )
         else:
+            if (edgematic_studio or edgematic_studio_port) and is_neat_sdk_image(img):
+                option = "--edgematic-studio" if edgematic_studio else "--edgematic-studio-port"
+                click.echo(
+                    f"⚠️  {option} has no effect on the existing container "
+                    f"'{existing_container}': Docker port mappings are fixed at create time. "
+                    f"Remove and recreate it to apply the option, or run: docker rm -f {existing_container}"
+                )
             if skip_insight and is_neat_sdk_image(img):
                 option = "--minimal" if minimal else "--no-insight"
                 raise RuntimeError(

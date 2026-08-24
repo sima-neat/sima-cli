@@ -1,0 +1,14 @@
+{
+  "sourceDir": "docs",
+  "translationDir": "docs/i18n/{locale}",
+  "manifest": "docs/i18n/translation-sources.json",
+  "excludedPrefixes": ["docs/i18n/", "docs/sima-cli/commands/"],
+  "canonicalTerms": ["SiMa.ai", "sima-cli", "Neat SDK", "Neat", "Insight", "Modalix", "DevKit", "MLSoC", "eLxr", "Yocto", "Model Zoo", "App Zoo", "Vulcan", "Docker", "Linux", "macOS", "Windows", "PowerShell", "PyPI", "GitHub", "NVMe", "UART", "ROS 2"],
+  "locales": {
+    "ko": {"name": "Korean", "code": "ko", "terms": {"configuration": "구성", "artifact": "아티팩트", "troubleshooting": "문제 해결"}},
+    "ja": {"name": "Japanese", "code": "ja", "terms": {"configuration": "構成", "artifact": "アーティファクト", "troubleshooting": "トラブルシューティング"}},
+    "zh-Hant": {"name": "Traditional Chinese (Taiwan)", "code": "zh-Hant-TW", "terms": {"configuration": "設定", "artifact": "成品", "troubleshooting": "疑難排解"}},
+    "uk": {"name": "Ukrainian (Ukraine)", "code": "uk-UA", "terms": {"configuration": "конфігурація", "artifact": "артефакт", "troubleshooting": "усунення несправностей"}}
+  },
+  "provider": {"type": "ollama", "model": "translategemma:27b", "endpoint": "http://127.0.0.1:11434/api/chat", "timeoutMs": 300000}
+}

@@ -66,7 +66,8 @@ def normalize_index(payload: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     branch_names = []
     for item in payload.get("branches", []):
         if isinstance(item, dict):
-            item = item.get("name") or item.get("key") or ""
+            # A key-only entry carries the object key, which is the encoded name.
+            item = item.get("name") or urllib.parse.unquote(str(item.get("key") or ""))
         name = str(item).strip()
         if name:
             branch_names.append(name)

@@ -64,6 +64,28 @@ def test_normalize_index_accepts_vulcan_branch_objects():
     ) == (["develop", "main"], ["v2.1.6"])
 
 
+def test_normalize_index_decodes_key_only_branch_objects():
+    installer = load_installer()
+
+    assert installer.normalize_index(
+        {"branches": [{"key": "feature%2Ffoo"}, {"key": "main"}]}
+    ) == (["feature/foo", "main"], [])
+
+
+def test_key_only_branch_object_resolves_to_the_published_key():
+    installer = load_installer()
+    payload = {"branches": [{"key": "feature%2Ffoo"}]}
+
+    with patch.object(installer, "fetch_json", return_value=payload), \
+         patch.object(installer, "fetch_pypi_releases", return_value=[]):
+        ref = installer.resolve_ref("https://example.invalid/sima-cli", None, True)
+
+    with patch.object(installer, "fetch_text", return_value="abc1234\n") as fetch_text:
+        installer.resolve_tag("https://example.invalid/sima-cli", ref, "latest")
+
+    fetch_text.assert_called_once_with("https://example.invalid/sima-cli/feature%252Ffoo/latest.tag")
+
+
 def test_choose_ref_noninteractive_prefers_main():
     installer = load_installer()
 

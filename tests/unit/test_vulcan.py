@@ -277,6 +277,26 @@ class VulcanArtifactTests(unittest.TestCase):
             f"{base_url}/model-compiler/fix%252Fcompile-resnet50-docs-env/88caac51885b/examples/metadata.json",
         )
 
+    def test_models_utils_latest_uses_generic_package_resolution(self):
+        base_url = "https://example.invalid"
+        latest_url = f"{base_url}/models-utils/feature%252Fbenchmark/latest.tag"
+        client = FakeClient({latest_url: "88caac51885b\n"})
+
+        result = resolve_install_metadata_url(
+            environment="staging",
+            target="models-utils/benchmarker@feature/benchmark",
+            base_url=base_url,
+            client=client,
+        )
+
+        self.assertEqual(client.urls, [latest_url])
+        self.assertEqual(result.repository, "models-utils")
+        self.assertEqual(result.package_path, "benchmarker")
+        self.assertEqual(
+            result.metadata_url,
+            f"{base_url}/models-utils/feature%252Fbenchmark/88caac51885b/benchmarker/metadata.json",
+        )
+
     def test_models_latest_uses_per_model_build_tag_and_artifact_branch(self):
         base_url = "https://example.invalid"
         tag_url = f"{base_url}/models/feature%252Fcatalog/latest.tag"

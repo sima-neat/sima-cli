@@ -28,6 +28,7 @@ DEFAULT_REPOSITORIES = [
     "internals",
     "llima",
     "models",
+    "models-utils",
     "sima-cli",
 ]
 

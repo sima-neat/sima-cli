@@ -28,7 +28,11 @@ from sima_cli.sdk.install import setup_and_start
 from sima_cli.sdk.cmdexec import SdkContainerUnavailable, exec_container_cmd
 from sima_cli.sdk.uninstall import remove_containers, remove_unused_images
 from sima_cli.sdk.stop import stop_containers
-from sima_cli.sdk.utils import get_all_containers, container_matches_sdk_keyword
+from sima_cli.sdk.utils import (
+    container_matches_sdk_keyword,
+    get_all_containers,
+    select_containers,
+)
 from sima_cli.sdk.utils import extract_short_name
 from sima_cli.discover.discover import discover_and_probe
 from rich.table import Table
@@ -178,7 +182,7 @@ def _version_matches(container, version_filter: str) -> bool:
     return needle in name or needle in image
 
 
-def _start_stopped_neat_containers(ctx) -> None:
+def _start_stopped_neat_container(ctx) -> None:
     version_filter = None
     if ctx and getattr(ctx, "obj", None):
         version_filter = ctx.obj.get("version_filter")
@@ -198,24 +202,34 @@ def _start_stopped_neat_containers(ctx) -> None:
             message = f"No stopped Neat SDK containers found for version '{version_filter}'."
         raise click.ClickException(f"{message} Run: sima-cli sdk setup")
 
-    for container in matches:
-        name = _container_name(container)
-        if not name:
-            continue
+    if len(matches) > 1:
         try:
-            ensure_existing_neat_container_startable(name)
-            console.print(
-                f"[cyan]▶ Starting existing Neat SDK container:[/cyan] [bold]{name}[/bold] "
-                "[dim](this may take a moment)[/dim]"
-            )
-            subprocess.run(["docker", "start", name], check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as e:
-            raise click.ClickException(
-                f"Failed to start Neat SDK container '{name}' while running: {' '.join(e.cmd)}"
-            ) from e
-        except RuntimeError as e:
-            raise click.ClickException(str(e)) from e
-        console.print(f"[green]✅ Started Neat SDK container:[/green] [bold]{name}[/bold]")
+            name = select_containers(matches, single_select=True)
+        except (EOFError, KeyboardInterrupt):
+            name = None
+    else:
+        name = _container_name(matches[0])
+
+    if not name:
+        raise click.ClickException(
+            "No Neat SDK container selected. Use 'sima-cli sdk -v VERSION neat' "
+            "to select a version without a prompt."
+        )
+
+    try:
+        ensure_existing_neat_container_startable(name)
+        console.print(
+            f"[cyan]▶ Starting existing Neat SDK container:[/cyan] [bold]{name}[/bold] "
+            "[dim](this may take a moment)[/dim]"
+        )
+        subprocess.run(["docker", "start", name], check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        raise click.ClickException(
+            f"Failed to start Neat SDK container '{name}' while running: {' '.join(e.cmd)}"
+        ) from e
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+    console.print(f"[green]✅ Started Neat SDK container:[/green] [bold]{name}[/bold]")
 
 
 def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
@@ -253,7 +267,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     except SdkContainerUnavailable:
         if tool != "neat":
             raise
-        _start_stopped_neat_containers(ctx)
+        _start_stopped_neat_container(ctx)
         exec_container_cmd(ctx, tool, cmd_str)
 
 
@@ -665,8 +679,9 @@ def neat(ctx, cmd):
     running container with bash -lc. If CMD is omitted, sima-cli opens an
     interactive login shell.
 
-    If no matching Neat SDK container is running, existing stopped Neat SDK
-    container(s) are started automatically and the command is retried.
+    If no matching Neat SDK container is running, one stopped Neat SDK
+    container is started and the command is retried. When several stopped
+    containers match, sima-cli prompts you to select one before starting it.
 
     \b
     Examples:

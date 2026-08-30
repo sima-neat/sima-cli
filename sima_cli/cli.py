@@ -37,6 +37,7 @@ from sima_cli.install.registry import register_packages_commands
 from sima_cli.upgrade.selfupdate import register_selfupdate_command
 from sima_cli.playbooks import register_playbook_commands
 from sima_cli.vulcan import register_vulcan_commands
+from sima_cli.models import register_models_commands
 from sima_cli.vulcan.commands import (
     ENV_METAVAR,
     _environment_shortcut_options,
@@ -173,6 +174,7 @@ def main(ctx, internal, yes):
 register_sdk_commands(main)
 register_playbook_commands(main)
 register_vulcan_commands(main)
+register_models_commands(main)
 
 
 # ----------------------

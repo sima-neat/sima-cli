@@ -1577,6 +1577,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         console_print.assert_not_called()
 
+    def test_neat_uses_running_container_without_recovery(self):
+        with patch("sima_cli.sdk.commands.exec_container_cmd") as exec_cmd, \
+             patch("sima_cli.sdk.commands._start_stopped_neat_container") as start_stopped:
+            launch_sdk_tool("neat", (), ctx=None, recover_unavailable=True)
+
+        exec_cmd.assert_called_once_with(None, "neat", None, raise_on_missing=True)
+        start_stopped.assert_not_called()
+
     def test_neat_starts_stopped_container_when_unavailable(self):
         stopped_container = {
             "Names": "ghcr.io-sima-neat-sdk-v2.1.2",
@@ -1607,6 +1615,77 @@ table ip6 nm-shared-enx6c1ff720d573 {
         exec_cmd.assert_any_call(ANY, "neat", None, raise_on_missing=True)
         exec_cmd.assert_any_call(ANY, "neat", None)
 
+    def test_neat_starts_and_enters_only_selected_stopped_container(self):
+        containers = [
+            {
+                "Names": "ghcr.io-sima-neat-sdk-v2.1.2",
+                "Image": "ghcr.io/sima/neat-sdk:v2.1.2",
+                "State": "exited",
+                "Status": "Exited (0) 1 minute ago",
+            },
+            {
+                "Names": "ghcr.io-sima-neat-sdk-v2.1.3",
+                "Image": "ghcr.io/sima/neat-sdk:v2.1.3",
+                "State": "exited",
+                "Status": "Exited (0) 1 minute ago",
+            },
+        ]
+        selected_name = "ghcr.io-sima-neat-sdk-v2.1.3"
+        selected_running = {**containers[1], "State": "running", "Status": "Up 1 second"}
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch(
+                 "sima_cli.sdk.cmdexec.get_all_containers",
+                 side_effect=[[], [selected_running]],
+             ), \
+             patch("sima_cli.sdk.commands.get_all_containers", return_value=containers), \
+             patch("sima_cli.sdk.commands.select_containers", return_value=selected_name) as select, \
+             patch("sima_cli.sdk.commands.ensure_existing_neat_container_startable") as ensure_startable, \
+             patch("sima_cli.sdk.cmdexec.check_os", return_value="linux"), \
+             patch("sima_cli.sdk.cmdexec.detect_current_user", return_value=("developer", 1000, 1000)), \
+             patch("sima_cli.sdk.commands.subprocess.run", return_value=Mock(returncode=0)) as run:
+            result = CliRunner().invoke(sdk, ["neat"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        select.assert_called_once_with(containers, single_select=True)
+        ensure_startable.assert_called_once_with(selected_name)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args[0], ["docker", "start", selected_name])
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["docker", "exec", "-it", "-u", "developer", selected_name, "bash", "-l"],
+        )
+
+    def test_neat_cancelled_selection_starts_nothing(self):
+        containers = [
+            {
+                "Names": "ghcr.io-sima-neat-sdk-v2.1.2",
+                "Image": "ghcr.io/sima/neat-sdk:v2.1.2",
+                "State": "exited",
+            },
+            {
+                "Names": "ghcr.io-sima-neat-sdk-v2.1.3",
+                "Image": "ghcr.io/sima/neat-sdk:v2.1.3",
+                "State": "exited",
+            },
+        ]
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch(
+                 "sima_cli.sdk.commands.exec_container_cmd",
+                 side_effect=SdkContainerUnavailable("missing"),
+             ) as exec_cmd, \
+             patch("sima_cli.sdk.commands.get_all_containers", return_value=containers), \
+             patch("sima_cli.sdk.commands.select_containers", return_value=None), \
+             patch("sima_cli.sdk.commands.ensure_existing_neat_container_startable") as ensure_startable, \
+             patch("sima_cli.sdk.commands.subprocess.run") as run:
+            result = CliRunner().invoke(sdk, ["neat"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("No Neat SDK container selected", result.output)
+        self.assertIn("sima-cli sdk -v VERSION neat", result.output)
+        exec_cmd.assert_called_once_with(ANY, "neat", None, raise_on_missing=True)
+        ensure_startable.assert_not_called()
+        run.assert_not_called()
+
     def test_neat_starts_only_version_matching_stopped_containers(self):
         containers = [
             {
@@ -1628,6 +1707,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  side_effect=[SdkContainerUnavailable("missing"), None],
              ), \
              patch("sima_cli.sdk.commands.get_all_containers", return_value=containers), \
+             patch("sima_cli.sdk.commands.select_containers") as select, \
              patch("sima_cli.sdk.commands.ensure_existing_neat_container_startable"), \
              patch("sima_cli.sdk.commands.subprocess.run") as run:
             result = CliRunner().invoke(sdk, ["-v", "v2.1.2", "neat"])
@@ -1639,6 +1719,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             capture_output=True,
             text=True,
         )
+        select.assert_not_called()
 
     def test_neat_reports_setup_when_no_stopped_container_exists(self):
         with patch("sima_cli.sdk.commands.check_and_start_docker"), \
@@ -4205,6 +4286,24 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(
             run.call_args_list[1].args[0],
             ["docker", "exec", "-it", "sdk", "bash", "-lc", "eixt"],
+        )
+
+    def test_exec_container_cmd_selects_one_of_multiple_running_containers(self):
+        containers = [
+            {"Names": "ghcr.io-sima-neat-sdk-v2.1.2"},
+            {"Names": "ghcr.io-sima-neat-sdk-v2.1.3"},
+        ]
+        selected_name = "ghcr.io-sima-neat-sdk-v2.1.3"
+        with patch("sima_cli.sdk.cmdexec.get_all_containers", return_value=containers), \
+             patch("sima_cli.sdk.cmdexec.select_containers", return_value=selected_name) as select, \
+             patch("sima_cli.sdk.cmdexec.check_os", return_value="windows"), \
+             patch("sima_cli.sdk.cmdexec.subprocess.run", return_value=Mock(returncode=0)) as run:
+            exec_container_cmd(None, "neat")
+
+        select.assert_called_once_with(containers, single_select=True)
+        run.assert_called_once_with(
+            ["docker", "exec", "-it", selected_name, "bash", "-l"],
+            check=False,
         )
 
 

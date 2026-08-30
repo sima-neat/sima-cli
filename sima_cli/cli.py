@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+from contextlib import nullcontext, redirect_stdout
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -100,19 +101,7 @@ def _rerun_current_command() -> None:
     os.execvpe(sys.executable, cmd, env)
 
 
-# Entry point for the CLI tool using Click's command group decorator
-@click.group(context_settings=dict(help_option_names=["-h", "--help", "-?"], max_content_width=120))
-@click.option('-i', '--internal', is_flag=True, help="Use internal Artifactory resources, Authorized Sima employees only")
-@click.option('-y', '--yes', is_flag=True, help="Assume yes for confirmation prompts.")
-@click.version_option(version=f"{__version__}", message="SiMa CLI version: %(version)s")
-@click.pass_context
-def main(ctx, internal, yes):
-    """
-    sima-cli – SiMa Developer Portal CLI Tool
-
-    Global Options:
-      --internal  Use internal Artifactory resources (can also be set via env variable SIMA_CLI_INTERNAL=1)
-    """
+def _initialize_main_context(ctx, internal, yes):
     _configure_stdio_errors()
     auto_accept_update = yes or _update_auto_confirm_requested(sys.argv)
     previous_auto_accept = os.environ.get("SIMA_CLI_AUTO_ACCEPT_UPDATE")
@@ -136,9 +125,9 @@ def main(ctx, internal, yes):
         internal = os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
 
     if internal and not internal_resource_exists():
-        click.echo("❌ You have specified -i or --internal argument to access internal resources, but you do not have an internal resource map configured.")        
+        click.echo("❌ You have specified -i or --internal argument to access internal resources, but you do not have an internal resource map configured.")
         click.echo("Refer to the confluence page to find out how to configure internal resource map.")
-        exit(0)        
+        exit(0)
 
     internal_reachable = True
     if internal:
@@ -154,7 +143,6 @@ def main(ctx, internal, yes):
             "⚠️  Internal resources are unreachable. --force allows this update to use the external pre-release mirror.",
             fg="yellow",
         )
-        
 
     ctx.obj["internal"] = internal
     ctx.obj["internal_reachable"] = internal_reachable
@@ -166,6 +154,30 @@ def main(ctx, internal, yes):
         click.echo(f"🔧 Environment: {env_type} ({env_subtype}) | Internal: {internal}")
     else:
         click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
+
+
+# Entry point for the CLI tool using Click's command group decorator
+@click.group(context_settings=dict(help_option_names=["-h", "--help", "-?"], max_content_width=120))
+@click.option('-i', '--internal', is_flag=True, help="Use internal Artifactory resources, Authorized Sima employees only")
+@click.option('-y', '--yes', is_flag=True, help="Assume yes for confirmation prompts.")
+@click.version_option(version=f"{__version__}", message="SiMa CLI version: %(version)s")
+@click.pass_context
+def main(ctx, internal, yes):
+    """
+    sima-cli – SiMa Developer Portal CLI Tool
+
+    Global Options:
+      --internal  Use internal Artifactory resources (can also be set via env variable SIMA_CLI_INTERNAL=1)
+    """
+    # Model Registry JSON must remain parseable on stdout. Route root-level
+    # update and environment diagnostics to stderr for this command group.
+    output_context = (
+        redirect_stdout(sys.stderr)
+        if ctx.invoked_subcommand == "models"
+        else nullcontext()
+    )
+    with output_context:
+        _initialize_main_context(ctx, internal, yes)
 
 
 # ----------------------

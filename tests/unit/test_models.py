@@ -91,6 +91,58 @@ def test_models_group_is_hidden_but_directly_invokable(monkeypatch):
     assert "download" in direct_result.output
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["models", "--stg", "branches", "--json"],
+        ["models", "--stg", "list", "--json"],
+        [
+            "models",
+            "--stg",
+            "download",
+            "--id",
+            "resnet_50",
+            "--variant",
+            "int8",
+            "--json",
+        ],
+    ],
+)
+def test_top_level_models_json_keeps_root_diagnostics_on_stderr(arguments):
+    run = _run()
+    artifact = {
+        "name": "mpk",
+        "artifact_type": "model-pack",
+        "size_bytes": 5,
+        "sha256": hashlib.sha256(b"model").hexdigest(),
+    }
+    signed = {
+        "download_url": "https://download.example/model",
+        "s3_key": "models/run/resnet_50_int8_mpk.tar.gz",
+    }
+    fake_client = Mock()
+    fake_client.branches.return_value = [{"name": "main"}]
+    fake_client.runs.return_value = [run]
+    fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
+    fake_client.artifact_download.return_value = signed
+    fake_client.download.return_value = Path(
+        "models/resnet_50/int8/resnet_50_int8_mpk.tar.gz"
+    )
+
+    with patch(
+        "sima_cli.cli.check_for_update",
+        side_effect=lambda *_: print("update diagnostic"),
+    ), patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
+        result = CliRunner().invoke(main, arguments)
+
+    assert result.exit_code == 0, result.output
+    json.loads(result.stdout)
+    assert "update diagnostic" not in result.stdout
+    assert "Environment:" not in result.stdout
+    assert "update diagnostic" in result.stderr
+    assert "Environment:" in result.stderr
+
+
 def test_resolve_base_url_requires_configured_production(monkeypatch):
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_BASE_URL", raising=False)
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_PRODUCTION_URL", raising=False)

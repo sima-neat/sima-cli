@@ -429,7 +429,7 @@ def _download_metadata_file_resource(
         try:
             local_path = download_file_from_url(
                 url=resource_url,
-                dest_folder=dest_folder,
+                dest_folder=str(dest_path.parent),
                 internal=internal
             )
             return _normalize_downloaded_metadata_resource(local_path, dest_path)
@@ -1058,7 +1058,11 @@ def _combine_multipart_files(folder: str, local_paths=None):
         folder_resolved = folder.resolve()
         for p in local_paths:
             path = Path(p).resolve()
-            if path.exists() and path.is_file() and path.parent == folder_resolved:
+            if (
+                path.exists()
+                and path.is_file()
+                and folder_resolved in path.parents
+            ):
                 candidate_files.append(path)
 
     for file in candidate_files:
@@ -1068,12 +1072,12 @@ def _combine_multipart_files(folder: str, local_paths=None):
         match = re.match(r"(.+)-split-([a-z]{2})$", file.name)
         if match:
             base, part = match.groups()
-            parts_by_base.setdefault(base, []).append((part, file))
+            parts_by_base.setdefault((file.parent, base), []).append((part, file))
 
     # Step 2: Process each group
-    for base, parts in parts_by_base.items():
+    for (parent, base), parts in parts_by_base.items():
         parts.sort(key=lambda x: x[0])
-        output_file = folder / f"{base}.tar"
+        output_file = parent / f"{base}.tar"
         total_size = sum(part_file.stat().st_size for _, part_file in parts)
 
         print(f"\n🧩 Reassembling: {output_file.name} from {len(parts)} parts")
@@ -1102,7 +1106,7 @@ def _combine_multipart_files(folder: str, local_paths=None):
         print(f"✅ Created: {output_file.name} ({output_file.stat().st_size / 1e6:.2f} MB)")
 
         # Step 4: Auto-extract .tar
-        extract_dir = folder / base
+        extract_dir = parent / base
         print(f"📦 Extracting {output_file.name} to {extract_dir}/")
         _extract_tar_streaming(output_file, extract_dir)
 
@@ -1119,18 +1123,18 @@ def _extract_archives_in_folder(folder: str, local_paths):
         file = Path(local_path).resolve()
         if not file.exists() or not file.is_file():
             continue
-        if file.parent != folder:
+        if folder not in file.parents:
             continue
 
         # TAR, GZ, TAR.GZ → all handled by _extract_tar_streaming
         if file.suffix in [".tar", ".gz"] or file.name.endswith(".tar.gz"):
-            extract_dir = folder / file.stem.replace(".tar", "")
+            extract_dir = file.parent / file.stem.replace(".tar", "")
             print(f"📦 Extracting TAR/GZ: {file.name} to {extract_dir}/")
             _extract_tar_streaming(file, extract_dir)
 
         # ZIP
         elif file.suffix == ".zip":
-            extract_dir = folder / file.stem
+            extract_dir = file.parent / file.stem
             print(f"📦 Extracting ZIP: {file.name} to {extract_dir}/")
             _extract_zip_streaming(file, extract_dir)
 

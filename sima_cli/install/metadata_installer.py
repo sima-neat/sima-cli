@@ -383,22 +383,35 @@ def _resolve_resource_url_candidates(base_url: str, resource: str) -> List[str]:
     return [primary_url, fallback_url]
 
 def _metadata_resource_path(dest_folder: str, resource: str, resource_url: str) -> Path:
+    install_root = Path(dest_folder).resolve()
+    if re.match(r"^[A-Za-z]:[\\/]", resource) or "\\" in resource:
+        raise click.ClickException(f"❌ Resource path must be a safe relative path: '{resource}'.")
+
     parsed_resource = urlparse(resource)
     if parsed_resource.scheme or parsed_resource.netloc:
         file_name = os.path.basename(urlparse(resource_url).path)
+        relative_parts = (file_name,)
     else:
-        file_name = os.path.basename(resource)
+        relative_parts = tuple(resource.split("/"))
+        if resource.startswith("/") or any(part in {"", ".", ".."} for part in relative_parts):
+            raise click.ClickException(f"❌ Resource path must be a safe relative path: '{resource}'.")
+        file_name = relative_parts[-1]
 
     if not file_name:
         raise click.ClickException(f"❌ Cannot determine file name for resource '{resource}'.")
 
-    return Path(dest_folder) / file_name
+    destination = Path(dest_folder).joinpath(*relative_parts)
+    resolved_destination = destination.resolve()
+    if resolved_destination != install_root and install_root not in resolved_destination.parents:
+        raise click.ClickException(f"❌ Resource path escapes the installation directory: '{resource}'.")
+    return destination
 
 def _normalize_downloaded_metadata_resource(local_path: str, expected_path: Path) -> str:
     downloaded_path = Path(local_path)
     if downloaded_path == expected_path:
         return local_path
 
+    expected_path.parent.mkdir(parents=True, exist_ok=True)
     if expected_path.exists():
         expected_path.unlink()
     downloaded_path.rename(expected_path)

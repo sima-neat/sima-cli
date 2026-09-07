@@ -19,6 +19,14 @@ UPDATE_CHECK_CACHE_ENV = "SIMA_CLI_UPDATE_CHECK_CACHE"
 UPDATE_CHECK_CACHE_TTL_SECONDS = 60 * 60
 UPDATE_CHECK_FAILURE_TTL_SECONDS = 5 * 60
 
+# Snapshot at import time (before any in-process override) whether the user
+# disabled the update check via the real launch environment. This lets us warn
+# only when the *user* disabled it — not when the code disables it internally
+# (e.g. the interactive shell silences per-command checks).
+_UPDATE_CHECK_DISABLED_BY_USER = (
+    os.environ.get("SIMA_CLI_CHECK_FOR_UPDATE", "1") != "1"
+)
+
 
 def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").lower() in ("1", "true", "yes", "on")
@@ -205,7 +213,8 @@ def _compare_versions(left: str, right: str):
 def check_for_update(package_name: str, timeout: float = 2.0):
 
     if os.environ.get("SIMA_CLI_CHECK_FOR_UPDATE", "1") != "1":
-        print(f'⚠️  You have disabled update check with SIMA_CLI_CHECK_FOR_UPDATE environment variable, skipping sima-cli update check..')
+        if _UPDATE_CHECK_DISABLED_BY_USER:
+            print(f'⚠️  You have disabled update check with SIMA_CLI_CHECK_FOR_UPDATE environment variable, skipping sima-cli update check..')
         return False
     
     try:

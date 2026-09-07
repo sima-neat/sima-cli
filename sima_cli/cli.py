@@ -36,6 +36,7 @@ from sima_cli.utils.artifactory import check_artifactory_reachability
 from sima_cli.app_zoo.commands import register_appzoo_commands
 from sima_cli.install.registry import register_packages_commands
 from sima_cli.upgrade.selfupdate import register_selfupdate_command
+from sima_cli.shell import register_shell_command
 from sima_cli.playbooks import register_playbook_commands
 from sima_cli.vulcan import register_vulcan_commands
 from sima_cli.models import register_models_commands
@@ -148,12 +149,15 @@ def _initialize_main_context(ctx, internal, yes):
     ctx.obj["internal_reachable"] = internal_reachable
     ctx.obj["yes"] = yes
 
-    env_type, env_subtype = get_environment_type()
-
-    if internal:
-        click.echo(f"🔧 Environment: {env_type} ({env_subtype}) | Internal: {internal}")
-    else:
-        click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
+    # The interactive shell re-enters this callback for every typed command and
+    # sets SIMA_CLI_SUPPRESS_ENV_BANNER so the banner (and the environment probe)
+    # isn't repeated on each one. It's still printed for normal invocations.
+    if os.environ.get("SIMA_CLI_SUPPRESS_ENV_BANNER", "0") != "1":
+        env_type, env_subtype = get_environment_type()
+        if internal:
+            click.echo(f"🔧 Environment: {env_type} ({env_subtype}) | Internal: {internal}")
+        else:
+            click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
 
 
 # Entry point for the CLI tool using Click's command group decorator
@@ -982,6 +986,11 @@ register_packages_commands(main)
 # selfupdate commands
 # ------------------------------
 register_selfupdate_command(main)
+
+# ------------------------------
+# Interactive shell command
+# ------------------------------
+register_shell_command(main)
 
 # ----------------------
 # App Zoo Subcommands

@@ -205,7 +205,7 @@ def _compare_versions(left: str, right: str):
 def check_for_update(package_name: str, timeout: float = 2.0):
 
     if os.environ.get("SIMA_CLI_CHECK_FOR_UPDATE", "1") != "1":
-        print(f'⚠️  You have disabled update check with SIMA_CLI_CHECK_FOR_UPDATE environment variable, skipping sima-cli update check..')
+        print(f'⚠️  You have disabled update check with SIMA_CLI_CHECK_FOR_UPDATE environment variable, skipping sima-cli update check..', file=sys.stderr)
         return False
     
     try:

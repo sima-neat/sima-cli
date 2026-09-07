@@ -37,6 +37,7 @@ from sima_cli.app_zoo.commands import register_appzoo_commands
 from sima_cli.install.registry import register_packages_commands
 from sima_cli.upgrade.selfupdate import register_selfupdate_command
 from sima_cli.playbooks import register_playbook_commands
+from sima_cli.mcp import register_mcp_commands
 from sima_cli.vulcan import register_vulcan_commands
 from sima_cli.models import register_models_commands
 from sima_cli.vulcan.commands import (
@@ -148,12 +149,15 @@ def _initialize_main_context(ctx, internal, yes):
     ctx.obj["internal_reachable"] = internal_reachable
     ctx.obj["yes"] = yes
 
-    env_type, env_subtype = get_environment_type()
-
-    if internal:
-        click.echo(f"🔧 Environment: {env_type} ({env_subtype}) | Internal: {internal}")
-    else:
-        click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
+    # Subcommands that speak a machine protocol on stdout (e.g. `mcp serve`)
+    # set SIMA_CLI_SUPPRESS_ENV_BANNER=1 so this human-facing banner doesn't
+    # corrupt their stream.
+    if os.environ.get("SIMA_CLI_SUPPRESS_ENV_BANNER", "0") != "1":
+        env_type, env_subtype = get_environment_type()
+        if internal:
+            click.echo(f"🔧 Environment: {env_type} ({env_subtype}) | Internal: {internal}")
+        else:
+            click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
 
 
 # Entry point for the CLI tool using Click's command group decorator
@@ -185,6 +189,7 @@ def main(ctx, internal, yes):
 # ----------------------
 register_sdk_commands(main)
 register_playbook_commands(main)
+register_mcp_commands(main)
 register_vulcan_commands(main)
 register_models_commands(main)
 

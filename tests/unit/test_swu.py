@@ -196,14 +196,16 @@ def test_signature_key_argument_is_shell_quoted():
     assert shlex.split(command) == ['swupdate', '-v', '-i', '/data/bundle name.swu', '-k', key, '-e', 'update,full']
 
 
+@pytest.mark.parametrize('factory', [False, True])
 @pytest.mark.parametrize('code', [0, 23])
-def test_installer_wrapper_preserves_exit_code_and_cleans_monitor(tmp_path, code):
+def test_installer_wrapper_preserves_exit_code_and_cleans_monitor(tmp_path, code, factory):
     import os
     import subprocess
     # Exercise the actual shell wrapper with harmless stand-in executables.
     for name, body in {
         'pgrep': 'exit 1', 'flock': 'exit 0',
-        'simaai-trootctl': 'echo "upgrade_available: no"',
+        'simaai-trootctl': ('printf \'control block : blank/invalid -> factory (boots slot A)\\nrunning slot: A\\nnormal boot\\n\''
+                           if factory else 'echo "upgrade_available: no"'),
         'swupdate-progress': 'echo "[ ==== ] 1 of 2 50% (rootfs.ext4.gz)"; exec sleep 20',
         'swupdate': f'sleep 0.1; echo "installer finished"; exit {code}',
     }.items():
@@ -259,3 +261,44 @@ def test_reboot_checks_health_and_version_without_committing_it(outcome):
                 swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_new')
     assert 'reboot' in target.run.call_args.args[0]
     peer.run.assert_not_called()
+
+
+FACTORY_STATE = STATE.replace(
+    'control block: valid A, valid B, upgrade_available: no, next-boot: A',
+    'control block       : blank/invalid -> factory (boots slot A)',
+).replace('normal boot', 'boot mode: normal boot')
+
+
+def test_factory_control_block_is_explicit_without_inventing_slot_validity():
+    state = parse_state(FACTORY_STATE)
+    assert state['factory'] is True
+    assert state['next-boot'] == 'A (factory default)'
+    assert state['validity A'] == state['validity B'] == 'not recorded'
+    assert state['upgrade_available'] == 'unknown'
+    assert parse_state('control block: invalid')['factory'] is False
+
+
+def test_factory_preflight_allows_first_update_and_uses_actual_root_device():
+    target = MagicMock()
+    with patch.object(swu, 'inspect_target', return_value=parse_state(FACTORY_STATE)):
+        state = swu.preflight(target, swu.DEFAULT_KEY)
+    assert state['factory'] is True
+    command = target.run.call_args.args[0]
+    assert 'findmnt -n -o SOURCE /' in command
+    assert '/sys/class/block/$dev/dm/name' in command
+    assert 'test -b /dev/mapper/rootfs' not in command
+
+
+def test_factory_mode_does_not_override_a_pending_flag():
+    with patch.object(swu, 'inspect_target', return_value=parse_state(FACTORY_STATE + '\nupgrade_available: yes')):
+        with pytest.raises(click.ClickException, match='pending'):
+            swu.preflight(MagicMock(), swu.DEFAULT_KEY)
+
+
+def test_artifactory_daily_prefix_is_not_part_of_on_device_build_identity():
+    state = parse_state(STATE.replace('active slot : A', 'active slot : B').replace('running slot: A', 'running slot: B'))
+    state['active version'] = '3.0.0_develop_B1211'
+    target, peer = MagicMock(), MagicMock()
+    with patch.object(swu, 'Target', return_value=peer), patch.object(swu, 'inspect_target', return_value=state), \
+            patch.object(swu.time, 'sleep'), patch.object(swu.time, 'monotonic', side_effect=[0, 1]):
+        swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_daily_develop_B1211')

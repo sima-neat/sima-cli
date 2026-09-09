@@ -23,6 +23,11 @@ def parse_state(output):
     for slot in ('A', 'B'):
         match = re.search(r'\b(valid|invalid|blank)\s+' + slot + r'\b', output, re.I)
         fields['validity ' + slot] = match.group(1).lower() if match else 'unknown'
+    factory = re.fullmatch(r'blank/invalid\s*->\s*factory\s*\(boots slot A\)', fields.get('control block', ''), re.I)
+    fields['factory'] = bool(factory)
+    if factory:
+        fields['next-boot'] = 'A (factory default)'
+        fields['validity A'] = fields['validity B'] = 'not recorded'
     lower = output.lower()
     fields['rollback'] = ('normal' if 'normal boot' in lower else
                           'rollback' if re.search(r'\brollback\s+boot\b|rollback.*(?:yes|latched)', lower) else 'unknown')
@@ -34,7 +39,8 @@ def inspect_target(target, display=True):
     # These queries do not change the slot, upgrade flag, or boot counter.
     extra = target.run('simaai-trootctl bootcount', check=False)
     state = parse_state(output)
-    state['bootcount'] = extra.strip() or 'unknown'
+    count = re.search(r'boot retries[^\n]*:\s*(\d+)\s*$', extra, re.I)
+    state['bootcount'] = count.group(1) if count else (extra.strip() or 'unknown')
     if display:
         render_state(state)
     return state
@@ -54,8 +60,9 @@ def render_state(state):
     console.print(table)
     details = '\n'.join([
         'Medium: ' + state.get('medium', 'unknown'),
+        'Control block: ' + ('factory default (uninitialized)' if state.get('factory') else state.get('control block', 'unknown')),
         'Next boot: ' + state.get('next-boot', 'unknown'),
-        'Upgrade pending: ' + state.get('upgrade_available', 'unknown'),
+        'Upgrade pending: ' + ('not recorded (factory mode)' if state.get('factory') else state.get('upgrade_available', 'unknown')),
         'Boot status: ' + state.get('rollback', 'unknown'),
         'Boot attempts: ' + state.get('bootcount', 'unknown'),
     ])

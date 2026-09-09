@@ -19,16 +19,22 @@ DEFAULT_KEY = '/etc/swupdate/public.pem'
 
 def install_script(bundle, key):
     command = shlex.join(['swupdate', '-v', '-i', bundle, '-k', key, '-e', 'update,full'])
-    return '''set -eu
+    return r'''set -eu
 exec 9>/run/lock/sima-cli-swupdate.lock
 flock -n 9 || { echo 'Another sima-cli update is running'; exit 1; }
 if pgrep -x swupdate >/dev/null; then
     echo 'SWUpdate is already running; inspect it before starting another install'; exit 1
 fi
 state=$(simaai-trootctl get-active-slot)
-printf '%s\n' "$state" | grep -Eq 'upgrade_available:[[:space:]]*no([,[:space:]]|$)' || {
-    echo 'An update is pending or commit state is unknown; inspect before retrying'; exit 1
-}
+if ! printf '%s\n' "$state" | grep -Eq 'upgrade_available:[[:space:]]*no([,[:space:]]|$)'; then
+    # A factory control block is the supported initial state before the first A/B update.
+    if printf '%s\n' "$state" | grep -q 'upgrade_available:' ||
+       ! printf '%s\n' "$state" | grep -Eq '^control block[[:space:]]*:[[:space:]]*blank/invalid -> factory \(boots slot A\)$' ||
+       ! printf '%s\n' "$state" | grep -Eq '^running slot[[:space:]]*:[[:space:]]*A[[:space:]]*$' ||
+       ! simaai-trootctl rollback-status | grep -q 'normal boot'; then
+        echo 'An update is pending or commit state is unknown; inspect before retrying'; exit 1
+    fi
+fi
 monitor=
 cleanup() { if [ -n "$monitor" ]; then kill "$monitor" 2>/dev/null || true; wait "$monitor" 2>/dev/null || true; fi; }
 trap cleanup EXIT
@@ -68,18 +74,25 @@ class InstallProgress:
 
 def preflight(target, key):
     target.run('''set -eu
-for tool in swupdate simaai-ab-info simaai-trootctl findmnt sha256sum flock pgrep; do
+for tool in swupdate simaai-ab-info simaai-trootctl findmnt readlink sha256sum flock pgrep; do
     command -v "$tool" >/dev/null || { echo "Missing required tool: $tool"; exit 1; }
 done
 findmnt -n -M /data >/dev/null || { echo '/data must be mounted'; exit 1; }
-test -b /dev/mapper/rootfs || { echo 'A/B rootfs layout missing; use recovery to provision this board'; exit 1; }
+rootdev=$(findmnt -n -o SOURCE /)
+dev=$(basename "$(readlink -f "$rootdev")")
+test -b "$rootdev" && test "$(cat "/sys/class/block/$dev/dm/name")" = rootfs || {
+    echo 'A/B rootfs mapping missing; use recovery to provision this board'; exit 1
+}
 test -s /etc/hwrevision || { echo 'Hardware identity is missing'; exit 1; }
 test "$(date +%Y)" -ge 2024 || { echo 'Set the system clock before signed updates'; exit 1; }
 test -s ''' + shlex.quote(key) + " || { echo 'SWUpdate verification key is missing'; exit 1; }")
     state = inspect_target(target)
     if state.get('running slot') not in ('A', 'B') or state.get('active slot') != state.get('running slot'):
         raise click.ClickException('Cannot establish a consistent running A/B slot. Inspect the system before updating.')
-    if state.get('upgrade_available', 'unknown').lower() != 'no':
+    factory_boot = (state.get('factory') and state.get('running slot') == 'A'
+                    and state.get('rollback') == 'normal'
+                    and state.get('upgrade_available') == 'unknown')
+    if state.get('upgrade_available', 'unknown').lower() != 'no' and not factory_boot:
         raise click.ClickException('An update is pending or its commit state is unknown. Resolve it before starting another update.')
     return state
 
@@ -118,7 +131,8 @@ def _reboot_and_verify(target, before, ip, passwd, expected=None):
                 if state.get('running slot') != before.get('running slot') and state.get('running slot') in ('A', 'B'):
                     if state.get('upgrade_available', '').lower() == 'no' and state.get('rollback') == 'normal':
                         actual = state.get('active version', '').strip().strip('\"\'')
-                        if expected and actual != expected:
+                        normalized_expected = re.sub(r'^(\d+\.\d+\.\d+)_(?:daily|custom)_', r'\1_', expected or '')
+                        if expected and actual != normalized_expected:
                             raise click.ClickException(f'Updated slot reports {actual or "unknown"}, expected {expected}. Inspect before retrying.')
                         inspect_target(peer)
                         click.echo('Updated slot is running and the board health service has committed the boot.')

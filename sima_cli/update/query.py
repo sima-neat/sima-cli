@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 import re
+from urllib.parse import quote, urljoin
 import requests
 from sima_cli.utils.config_loader import load_resource_config, artifactory_url
 from sima_cli.utils.config import get_auth_token
@@ -12,6 +13,34 @@ def elxr_firmware_path(board: str, version: str) -> str:
     match = re.match(r"^(\d+)\.(\d+)(?=$|[._-])", version)
     uses_bsp = match is not None and tuple(map(int, match.groups())) >= (3, 0)
     return f"elxr/bsp/{board}" if uses_bsp else f"elxr/{board}"
+
+
+def resolve_elxr_palette_image(palette_url: str, board: str) -> str:
+    """Find the actual disk image name in an internal build's palette directory."""
+    prefix = ARTIFACTORY_BASE_URL.rstrip('/') + '/'
+    if not palette_url.startswith(prefix):
+        raise ValueError("Palette directory is outside the configured Artifactory")
+    path = palette_url[len(prefix):].rstrip('/')
+    session = requests.Session()
+    session.trust_env = False
+    response = session.get(
+        f"{prefix}api/storage/{path}",
+        headers={"Authorization": f"Bearer {get_auth_token(internal=True)}"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    candidates = []
+    for item in response.json().get('children', []):
+        name = item.get('uri', '').lstrip('/')
+        if (not item.get('folder', False) and '/' not in name
+                and name.startswith(f'elxr-palette-{board}-')
+                and name.endswith('-arm64.img.gz')):
+            candidates.append(name)
+    if len(candidates) != 1:
+        raise RuntimeError(
+            f"Expected one palette disk image in {palette_url}; found {len(candidates)}"
+        )
+    return urljoin(palette_url.rstrip('/') + '/', quote(candidates[0]))
 
 
 def _list_available_firmware_versions_internal(board: str, match_keyword: str = None, flavor: str = 'headless', swtype: str = 'yocto', with_metadata: bool = False):

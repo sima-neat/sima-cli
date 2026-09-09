@@ -27,6 +27,16 @@ sima-cli sdk setup [OPTIONS]
 | `--persistent-network-profile` | Allow setup to install a persistent NetworkManager shared-network repair profile without prompting. |
 | `--image` | Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt. |
 
+## Edgematic Studio opt-in
+
+Default setup does not display an Edgematic Studio panel, ask about installing
+it, install it, or publish its port. This applies to interactive setup as well
+as `-y` and `--noninteractive`.
+
+Use `--edgematic-studio` to install Studio and publish its port. The explicit
+`--edgematic-studio-port` option publishes only the port for a later manual
+installation.
+
 ## Arguments
 
 None.

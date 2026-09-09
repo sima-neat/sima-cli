@@ -2732,18 +2732,15 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
         self.assertFalse(start_container.call_args.kwargs["publish_edgematic_studio_port"])
 
-    def test_setup_offers_edgematic_studio_interactively_and_honours_yes(self):
-        with patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True) as prompt:
+    def test_setup_is_silent_about_edgematic_studio_by_default_interactively(self):
+        with patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True) as prompt, \
+             patch("sima_cli.sdk.utils.console.print") as panel, \
+             patch("builtins.print") as printed:
             start_container = self._run_setup_for_studio()
 
-        self.assertFalse(prompt.call_args.kwargs["default_yes"])
-        self.assertTrue(start_container.call_args.kwargs["install_edgematic_studio"])
-        self.assertTrue(start_container.call_args.kwargs["publish_edgematic_studio_port"])
-
-    def test_setup_declined_prompt_publishes_no_edgematic_studio_port(self):
-        with patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False):
-            start_container = self._run_setup_for_studio()
-
+        prompt.assert_not_called()
+        output = str(panel.call_args_list) + str(printed.call_args_list)
+        self.assertNotIn("edgematic", output.lower())
         self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
         self.assertFalse(start_container.call_args.kwargs["publish_edgematic_studio_port"])
 
@@ -3567,17 +3564,21 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         prompt.assert_not_called()
 
-    def test_edgematic_studio_choice_prompts_with_default_no(self):
-        with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False) as prompt:
-            self.assertEqual(resolve_edgematic_studio_choice(), (False, False))
-
-        self.assertFalse(prompt.call_args.kwargs["default_yes"])
-
-        with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True):
-            # A yes has to settle the port too — port maps are fixed at create.
-            self.assertEqual(resolve_edgematic_studio_choice(), (True, True))
+    def test_edgematic_studio_choice_is_silent_without_explicit_options(self):
+        for interactive in (True, False):
+            with self.subTest(interactive=interactive), \
+                 patch("sima_cli.sdk.utils._edgematic_studio_install_args") as install_args, \
+                 patch("sima_cli.sdk.utils.yes_no_prompt") as prompt, \
+                 patch("sima_cli.sdk.utils.console.print") as panel, \
+                 patch("builtins.print") as printed:
+                self.assertEqual(
+                    resolve_edgematic_studio_choice(interactive=interactive),
+                    (False, False),
+                )
+                install_args.assert_not_called()
+                prompt.assert_not_called()
+                panel.assert_not_called()
+                printed.assert_not_called()
 
     def test_edgematic_studio_choice_skips_unsupported_host_platform(self):
         with patch("sima_cli.sdk.utils.platform.machine", return_value="riscv64"), \
@@ -3847,16 +3848,6 @@ table ip6 nm-shared-enx6c1ff720d573 {
         # Studio force-installs its own skills, so it must follow the generic sync.
         self.assertEqual(calls, ["model", "codex-skills", "playbooks", "vscode", "studio"])
         self.assertGreater(calls.index("studio"), calls.index("playbooks"))
-
-    def test_edgematic_studio_skip_notice_names_the_options_that_enable_it(self):
-        # A user who never heard of Studio has to learn how to turn it on here.
-        with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("builtins.print") as printed:
-            resolve_edgematic_studio_choice(interactive=False)
-
-        output = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
-        self.assertIn("--edgematic-studio", output)
-        self.assertIn("--edgematic-studio-port", output)
 
     def test_configure_container_minimal_skips_edgematic_studio(self):
         with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \

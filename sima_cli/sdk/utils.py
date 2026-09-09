@@ -876,13 +876,14 @@ def resolve_edgematic_studio_choice(
     """
     Decide whether setup installs Edgematic Studio and publishes its port.
 
-    Studio is opt-in, and both halves are settled before the container is
-    created: port maps are immutable afterwards, so a prompt at install time
-    could not govern the port.
+    Only explicit flags enable Studio; default setup never advertises or asks
+    about it. The interactive argument is retained for caller compatibility
+    and does not change the choice.
 
     Returns (install, publish_port).
     """
-    from sima_cli.sdk.neat import EDGEMATIC_STUDIO_CONTAINER_PORT
+    if not install_requested and not port_only:
+        return False, False
 
     extension_install_args = _edgematic_studio_install_args()
     if not extension_install_args:
@@ -901,39 +902,6 @@ def resolve_edgematic_studio_choice(
         )
         return False, True
 
-    if not interactive:
-        print(
-            "ℹ️  Edgematic Studio is opt-in and will not be installed. Pass "
-            "--edgematic-studio to install it, or --edgematic-studio-port to publish "
-            "its port for a manual install."
-        )
-        return False, False
-
-    console.print(
-        Panel(
-            "[yellow]This SDK can install Edgematic Studio as an optional extension.[/yellow]\n\n"
-            "Edgematic Studio is a browser-based development environment for building "
-            "and running AI applications with an AI agent, an editor, and DevKit tooling "
-            "in one place.\n"
-            "It will be installed on your host in the SDK extensions directory "
-            "mounted into this container at /sdk-extensions.\n"
-            "The download is small, but it also fetches a coding-agent CLI and its skills, "
-            f"and setup publishes its HTTP port ({EDGEMATIC_STUDIO_CONTAINER_PORT}) on this host.\n"
-            "It is a preview: its documentation and support are still in progress, so it is "
-            "only installed if you ask for it here.\n\n"
-            "Answering no leaves the port unpublished. To enable it later, recreate this "
-            "container with:\n"
-            "sima-cli sdk setup --edgematic-studio",
-            title="Edgematic Studio Extension (optional)",
-            border_style="green",
-            style="green",
-            expand=False,
-        )
-    )
-    if yes_no_prompt("Install the Edgematic Studio extension now?", default_yes=False):
-        return True, True
-    print("ℹ️  Skipping Edgematic Studio; its port will not be published.")
-    print("   To enable it later, recreate this container with: sima-cli sdk setup --edgematic-studio")
     return False, False
 
 

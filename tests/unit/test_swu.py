@@ -122,13 +122,13 @@ def test_installer_uses_signed_full_collection_and_progress_without_reboot():
     assert script.index('swupdate-progress -w') < script.index('swupdate -v')
 
 
-def run_install(tmp_path, *, fail=False, dryrun=False):
+def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2.1'):
     bundle = tmp_path / 'bundle.swu'
     bundle.write_bytes(b'signed bundle fixture')
     target = MagicMock()
     def run(script, **kwargs):
         if 'mktemp' in script:
-            return '/data/sima-cli-update.ABC12345'
+            return root + '/sima-cli-update.ABC12345'
         if 'df -Pk' in script:
             return '999999999'
         if 'swupdate -v' in script and fail:
@@ -137,14 +137,16 @@ def run_install(tmp_path, *, fail=False, dryrun=False):
     target.run.side_effect = run
     with patch.object(swu, 'Target', return_value=target), patch.object(swu, 'preflight', return_value=parse_state(STATE)), \
             patch.object(swu, 'resolve_bundle', return_value=str(bundle)), patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
-            patch.object(swu, '_select_staging_root', return_value='/data'), \
+            patch.object(swu, '_select_staging_root', return_value=root), \
+            patch.object(swu.tempfile, 'TemporaryDirectory') as cache, \
             patch.object(swu, '_reboot_and_verify') as reboot:
+        cache.return_value.__enter__.return_value = str(tmp_path)
         if fail:
             with pytest.raises(click.ClickException, match='install failed'):
-                swu.update_system('3.0', 'modalix', ip='192.0.2.1', auto_confirm=True, reboot=True)
+                swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=True, reboot=True)
             reboot.assert_not_called()
         else:
-            swu.update_system('3.0', 'modalix', ip='192.0.2.1', auto_confirm=True, dryrun=dryrun)
+            swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=True, dryrun=dryrun)
     return target
 
 
@@ -360,10 +362,10 @@ def test_supported_legacy_updates_keep_their_dispatch(fwtype, requested):
 
 
 @pytest.mark.parametrize('available,expected', [
-    ({'/tmp': 1000, '/media/nvme': 1000, '/data': 1000}, '/tmp'),
-    ({'/tmp': 0, '/media/nvme': 1000, '/data': 1000}, '/media/nvme'),
-    ({'/tmp': 0, '/media/nvme': 0, '/data': 1000}, '/data'),
-    ({'/tmp': 0, '/media/nvme': 0, '/data': 0}, None),
+    ({'/tmp': 1000, '/media/nvme/swupdate': 1000, '/data': 1000}, '/tmp'),
+    ({'/tmp': 0, '/media/nvme/swupdate': 1000, '/data': 1000}, '/media/nvme/swupdate'),
+    ({'/tmp': 0, '/media/nvme/swupdate': 0, '/data': 1000}, '/data'),
+    ({'/tmp': 0, '/media/nvme/swupdate': 0, '/data': 0}, None),
 ])
 def test_staging_storage_order_and_exhaustion(available, expected):
     target = MagicMock()
@@ -392,5 +394,24 @@ def test_nvme_mount_failure_falls_back_to_data():
 def test_staging_dryrun_does_not_mount_nvme():
     target = MagicMock()
     with patch.object(swu, '_available_space', side_effect=[0, 1024**3]):
-        assert swu._select_staging_root(target, 1000, dryrun=True) == '/media/nvme'
+        assert swu._select_staging_root(target, 1000, dryrun=True) == '/media/nvme/swupdate'
     assert not any('mount -o' in call.args[0] or 'mkdir' in call.args[0] for call in target.run.call_args_list)
+
+
+@pytest.mark.parametrize('ip', [None, '192.0.2.1'])
+def test_nvme_staged_bundle_removed_after_success(tmp_path, ip):
+    target = run_install(tmp_path, root='/media/nvme/swupdate', ip=ip)
+    staging = '/media/nvme/swupdate/sima-cli-update.ABC12345'
+    assert target.transfer.call_args.args[1] == staging + '/bundle.swu'
+    commands = [call.args[0] for call in target.run.call_args_list]
+    install_index = next(i for i, command in enumerate(commands) if '-e update,full' in command)
+    cleanup_index = commands.index('rm -rf -- ' + staging)
+    assert cleanup_index > install_index
+
+
+def test_nvme_staging_directory_created_after_mount():
+    target = MagicMock()
+    with patch.object(swu, '_available_space', side_effect=[0, 1024**3]):
+        assert swu._select_staging_root(target, 1000) == '/media/nvme/swupdate'
+    mount_script = next(call.args[0] for call in target.run.call_args_list if 'remount,rw' in call.args[0])
+    assert mount_script.rindex('findmnt') < mount_script.index('mkdir -p /media/nvme/swupdate')

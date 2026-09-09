@@ -97,8 +97,8 @@ test -s ''' + shlex.quote(key) + " || { echo 'SWUpdate verification key is missi
     return state
 
 
-STAGING_ROOTS = ('/tmp', '/media/nvme', '/data')
-STAGING_PATTERN = r'/(?:tmp|media/nvme|data)/sima-cli-update\.[A-Za-z0-9]+'
+STAGING_ROOTS = ('/tmp', '/media/nvme/swupdate', '/data')
+STAGING_PATTERN = r'/(?:tmp|media/nvme/swupdate|data)/sima-cli-update\.[A-Za-z0-9]+'
 SPACE_MARGIN = 64 * 1024 * 1024
 
 
@@ -120,7 +120,7 @@ def _select_staging_root(target, size, dryrun=False):
     failures = []
     for root in STAGING_ROOTS:
         try:
-            if root == '/media/nvme':
+            if root == '/media/nvme/swupdate':
                 if dryrun:
                     target.run('findmnt -n -M /media/nvme >/dev/null')
                 else:
@@ -133,9 +133,12 @@ else
     mkdir -p /media/nvme
     mount /dev/nvme0n1p1 /media/nvme
 fi
-findmnt -n -M /media/nvme >/dev/null''')
-            target.run('test -w ' + shlex.quote(root))
-            _check_space(target, size, root)
+findmnt -n -M /media/nvme >/dev/null
+mkdir -p /media/nvme/swupdate''')
+            # A dry run can assess the mounted parent without creating the staging root.
+            check_root = '/media/nvme' if dryrun and root == '/media/nvme/swupdate' else root
+            target.run('test -w ' + shlex.quote(check_root))
+            _check_space(target, size, check_root)
             click.echo(f'Staging storage: {root}')
             return root
         except click.ClickException as exc:

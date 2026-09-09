@@ -154,11 +154,12 @@ sima-cli update --inspect
 sima-cli update --ip 192.168.6.5 --inspect
 ```
 
-Staging checks `/tmp`, `/media/nvme`, then `/data`, choosing the first location
+Staging checks `/tmp`, `/media/nvme/swupdate`, then `/data`, choosing the first location
 with room for the bundle plus a 64 MiB margin. NVMe is mounted or remounted
 read/write before checking it (except during `--dryrun`). If no location is
 usable, the update stops with a storage error. Local downloads use one staged
-copy.
+copy. After successful installation, the downloaded bundle and its temporary
+staging directory are removed to free space, including for remote updates.
 
 Remote updates download on the host, transfer to the selected board storage,
 verify the transfer checksum, and run SWUpdate there. Both modes verify the signed bundle

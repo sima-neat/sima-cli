@@ -13,7 +13,7 @@ from sima_cli.utils.env import get_environment_type
 from sima_cli.download import download_file_from_url
 from sima_cli.utils.config_loader import load_resource_config
 from sima_cli.update.remote import push_and_update_remote_board, get_remote_board_info, reboot_remote_board
-from sima_cli.update.query import list_available_firmware_versions
+from sima_cli.update.query import elxr_firmware_path, list_available_firmware_versions
 from sima_cli.utils.env import is_sima_board, is_devkit_running_elxr
 from sima_cli.update.elxr import update_elxr
 
@@ -78,11 +78,11 @@ def _resolve_firmware_url(
         image_file = f'elxr-palette-{board}-{base_version}-arm64.img.gz'
         download_url = (
             url.rstrip("/")
-            + f"/soc-images/elxr/{board}/{version_or_url}/artifacts/palette/{image_file}"
+            + f"/soc-images/{elxr_firmware_path(board, version_or_url)}/{version_or_url}/artifacts/palette/{image_file}"
         )
     elif swtype == 'elxr':
         image_file = f'{board}-tftp-boot-minimal.tar.gz' 
-        download_url = url.rstrip("/") + f"/soc-images/elxr/{board}/{version_or_url}/artifacts/minimal/{image_file}"
+        download_url = url.rstrip("/") + f"/soc-images/{elxr_firmware_path(board, version_or_url)}/{version_or_url}/artifacts/minimal/{image_file}"
 
     return download_url
 

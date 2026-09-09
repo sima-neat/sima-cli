@@ -1,10 +1,12 @@
 from sima_cli.update.updater import download_image
 from sima_cli.utils.net import get_local_ip_candidates
-from sima_cli.update.remote import wait_for_ssh, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session
+from sima_cli.update.remote import wait_for_ssh, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session, get_remote_board_info
 from sima_cli.utils.env import get_environment_type
 import ipaddress
 import os
 import platform
+import re
+import shlex
 import subprocess
 import threading
 import socket
@@ -123,7 +125,20 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
     click.echo(f"📡 Selected client: {selected_ip}")
     remote_dir = "/tmp"
 
+    troot_command = None
     if troot_image_path:
+        _, running_version, _, _, _ = get_remote_board_info(
+            selected_ip, passwd=DEFAULT_PASSWORD
+        )
+        match = re.match(r"^(\d+)\.(\d+)(?=$|[._-])", running_version.strip().strip('"\''))
+        if not match:
+            click.echo("❌ Cannot determine the running firmware version. Aborting before tRoot programming.")
+            return
+        if tuple(map(int, match.groups())) >= (3, 0):
+            troot_command = "sudo sh -c 'cd /tmp && exec simaai-trootctl full-flash'"
+        else:
+            remote_blob = shlex.quote(f"/tmp/{os.path.basename(troot_image_path)}")
+            troot_command = f"sudo troot_upgrade {remote_blob}"
         click.echo(f"📤 Copying tRoot image {troot_image_path} to {selected_ip}:{remote_dir}")
         success = copy_file_to_remote_board(
             selected_ip, troot_image_path, remote_dir, passwd=DEFAULT_PASSWORD
@@ -148,8 +163,7 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
 
         if troot_image_path:
             _print_troot_programming_warning()
-            troot_remote_path = f"/tmp/{os.path.basename(troot_image_path)}"
-            run_remote_command(ssh, f"sudo troot_upgrade {troot_remote_path}")
+            run_remote_command(ssh, troot_command, check=True)
 
         # Step a: Check if eMMC exists
         check_cmd = "[ -e /dev/mmcblk0 ] || (echo '❌ /dev/mmcblk0 not found'; exit 1)"

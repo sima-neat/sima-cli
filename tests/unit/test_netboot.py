@@ -13,6 +13,12 @@ class FakeClientManager:
 
 
 class NetbootFlashTests(unittest.TestCase):
+    def setUp(self):
+        board_info = patch("sima_cli.update.netboot.get_remote_board_info",
+                           return_value=("modalix", "2.1.3", "modalix", False, "elxr"))
+        self.mock_board_info = board_info.start()
+        self.addCleanup(board_info.stop)
+
     @patch("sima_cli.update.netboot._print_troot_programming_warning")
     @patch("sima_cli.update.netboot.run_remote_command")
     @patch("sima_cli.update.netboot.init_ssh_session", return_value=object())

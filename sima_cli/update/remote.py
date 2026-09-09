@@ -147,7 +147,7 @@ def _scp_file(sftp, local_path: str, remote_path: str):
 
 
 def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
-                       squelcher: Optional[LineSquelcher] = None):
+                       squelcher: Optional[LineSquelcher] = None, check: bool = False):
     """
     Run a remote command over SSH and stream its output live to the console.
     If the command starts with 'sudo', pipe in the password.
@@ -156,6 +156,7 @@ def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
         ssh (paramiko.SSHClient): Active SSH connection.
         command (str): The command to run on the remote host.
         password (str): Password to use if the command requires sudo.
+        check (bool): Raise on a nonzero or unavailable remote exit status.
     """
     squelcher = squelcher or LineSquelcher()  # use defaults unless you pass a custom one
 
@@ -206,6 +207,11 @@ def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
     # Optional: surface how much noise we hid (comment out if you want it totally silent)
     if suppressed:
         click.echo(f"🔇 suppressed {suppressed} noisy line(s)")
+
+    if check:
+        exit_code = stdout.channel.recv_exit_status()
+        if exit_code != 0:
+            raise RuntimeError(f"Remote command failed with exit status {exit_code}: {command}")
 
 
 def init_ssh_session(ip: str, password: str = DEFAULT_PASSWORD):

@@ -22,7 +22,9 @@ def test_internal_url_uses_version_layout(version, root, operation):
         'download': {'download_url': 'artifactory'},
         'artifactory': {'url': 'https://artifacts.example.com'},
     }}
-    with patch('sima_cli.update.updater.load_resource_config', return_value=config):
+    with patch('sima_cli.update.updater.load_resource_config', return_value=config), \
+            patch('sima_cli.update.updater.resolve_elxr_palette_image',
+                  side_effect=lambda url, board: url + 'elxr-palette-modalix-3.0.0-agate-arm64.img.gz'):
         url = _resolve_firmware_url(version, 'modalix', internal=True,
                                     swtype='elxr', update_type=operation)
     assert url.startswith(f'https://artifacts.example.com/artifactory/soc-images/{root}/{version}/artifacts/')

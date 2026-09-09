@@ -7,13 +7,13 @@ import tarfile
 import gzip
 import subprocess
 import shutil
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from typing import List
 from sima_cli.utils.env import get_environment_type
 from sima_cli.download import download_file_from_url
 from sima_cli.utils.config_loader import load_resource_config
 from sima_cli.update.remote import push_and_update_remote_board, get_remote_board_info, reboot_remote_board
-from sima_cli.update.query import elxr_firmware_path, list_available_firmware_versions
+from sima_cli.update.query import elxr_firmware_path, list_available_firmware_versions, resolve_elxr_palette_image
 from sima_cli.utils.env import is_sima_board, is_devkit_running_elxr
 from sima_cli.update.elxr import update_elxr
 
@@ -74,6 +74,12 @@ def _resolve_firmware_url(
         image_file = 'release.tar.gz' if flavor == 'headless' else 'graphics.tar.gz'
         download_url = url.rstrip("/") + f"/soc-images/{board}/{version_or_url}/artifacts/{image_file}"
     elif swtype == 'elxr' and update_type == 'bootimg':
+        if internal and elxr_firmware_path(board, version_or_url).startswith('elxr/bsp/'):
+            palette_url = (
+                url.rstrip('/')
+                + f"/soc-images/{elxr_firmware_path(board, version_or_url)}/{version_or_url}/artifacts/palette/"
+            )
+            return resolve_elxr_palette_image(palette_url, board)
         base_version = version_or_url.split('_')[0]
         image_file = f'elxr-palette-{board}-{base_version}-arm64.img.gz'
         download_url = (
@@ -381,17 +387,18 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
         # If internal, netboot and elxr, we need to download some additional files to prepare for eMMC flash.
         if update_type == "netboot" and swtype == "elxr":
             base_url = os.path.dirname(image_url)
-            base_version = version_or_url.split('_')[0]
 
             if internal:
-                extra_files = [f"../palette/elxr-palette-{board}-{base_version}-arm64.img.gz"]
+                extra_urls = [resolve_elxr_palette_image(
+                    urljoin(image_url, '../palette/'), board
+                )]
             else:
                 match = re.search(r"SDK(\d+\.\d+\.\d+)", image_url)
                 version = match.group(1)
-                extra_files = [f"elxr-palette-{board}-{version}-arm64.img.gz"]
+                extra_urls = [f"{base_url}/elxr-palette-{board}-{version}-arm64.img.gz"]
 
-            for fname in extra_files:
-                extra_url = f"{base_url}/{fname}"
+            for extra_url in extra_urls:
+                fname = os.path.basename(urlparse(extra_url).path)
                 try:
                     click.echo(f"📥 Downloading extra file: {fname} from {extra_url} saving into {dest_path}")
                     netboot_file_path = download_file_from_url(extra_url, dest_path, internal=internal)
@@ -399,7 +406,7 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
                     extracted_files.extend([netboot_file_path])
                     click.echo(f"✅ Saved {fname} to {dest_path}")
                 except Exception as e:
-                    click.echo(f"⚠️ Failed to download {fname}: {e}")
+                    raise RuntimeError(f"Failed to download required eMMC image {fname}: {e}") from e
 
         click.echo(f"📦 Firmware downloaded to: {firmware_path}")
         return extracted_files

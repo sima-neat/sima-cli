@@ -154,8 +154,14 @@ sima-cli update --inspect
 sima-cli update --ip 192.168.6.5 --inspect
 ```
 
-Remote updates download on the host, transfer to `/data` on the board, verify the
-transfer checksum, and run SWUpdate there. Both modes verify the signed bundle
+Staging checks `/tmp`, `/media/nvme`, then `/data`, choosing the first location
+with room for the bundle plus a 64 MiB margin. NVMe is mounted or remounted
+read/write before checking it (except during `--dryrun`). If no location is
+usable, the update stops with a storage error. Local downloads use one staged
+copy.
+
+Remote updates download on the host, transfer to the selected board storage,
+verify the transfer checksum, and run SWUpdate there. Both modes verify the signed bundle
 with `/etc/swupdate/public.pem` and select `update,full`. `--key` can select a
 verification key already installed on the target. Firmware-only/OS-only modes
 and unsigned `--force` updates are not supported in this flow.

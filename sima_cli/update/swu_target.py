@@ -68,7 +68,7 @@ class Target:
             raise click.ClickException(f'Target command failed (exit {code}). {result[-2000:]}')
         return result
 
-    def transfer(self, local, remote):
+    def transfer(self, local, remote, move=False):
         digest = hashlib.sha256()
         with open(local, 'rb') as source:
             for block in iter(lambda: source.read(1024 * 1024), b''):
@@ -79,7 +79,7 @@ class Target:
                 task = progress.add_task('Transfer SWU', total=os.path.getsize(local))
                 sftp.put(local, remote, callback=lambda done, total: progress.update(task, completed=done, total=total))
         else:
-            self.run('cp -- ' + shlex.quote(local) + ' ' + shlex.quote(remote))
+            self.run(('mv -- ' if move else 'cp -- ') + shlex.quote(local) + ' ' + shlex.quote(remote))
         actual = self.run('sha256sum -- ' + shlex.quote(remote)).split()[0]
         if actual != digest.hexdigest():
             raise click.ClickException('Transferred SWU checksum does not match the downloaded bundle.')

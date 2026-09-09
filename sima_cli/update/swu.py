@@ -97,14 +97,50 @@ test -s ''' + shlex.quote(key) + " || { echo 'SWUpdate verification key is missi
     return state
 
 
-def _check_space(target, size):
-    output = target.run("df -Pk /data | tail -1 | awk '{print $4}'")
+STAGING_ROOTS = ('/tmp', '/media/nvme', '/data')
+STAGING_PATTERN = r'/(?:tmp|media/nvme|data)/sima-cli-update\.[A-Za-z0-9]+'
+SPACE_MARGIN = 64 * 1024 * 1024
+
+
+def _available_space(target, root):
+    output = target.run("set -eu; test -d " + shlex.quote(root) +
+                        "; df -Pk " + shlex.quote(root) + " | tail -1 | awk '{print $4}'")
     try:
-        available = int(output.strip()) * 1024
+        return int(output.strip()) * 1024
     except ValueError as exc:
-        raise click.ClickException('Cannot determine free staging space on /data.') from exc
-    if available < size + 64 * 1024 * 1024:
-        raise click.ClickException('Insufficient /data space for the SWU bundle and staging margin.')
+        raise click.ClickException(f'Cannot determine free staging space on {root}.') from exc
+
+
+def _check_space(target, size, root='/data'):
+    if _available_space(target, root) < size + SPACE_MARGIN:
+        raise click.ClickException(f'Insufficient {root} space: need {(size + SPACE_MARGIN) / 1024**3:.2f} GiB for the SWU bundle and staging margin.')
+
+
+def _select_staging_root(target, size, dryrun=False):
+    failures = []
+    for root in STAGING_ROOTS:
+        try:
+            if root == '/media/nvme':
+                if dryrun:
+                    target.run('findmnt -n -M /media/nvme >/dev/null')
+                else:
+                    click.echo('Preparing NVMe staging storage...')
+                    target.run('''set -eu
+if findmnt -n -M /media/nvme >/dev/null; then
+    mount -o remount,rw /media/nvme
+else
+    test -b /dev/nvme0n1p1
+    mkdir -p /media/nvme
+    mount /dev/nvme0n1p1 /media/nvme
+fi
+findmnt -n -M /media/nvme >/dev/null''')
+            target.run('test -w ' + shlex.quote(root))
+            _check_space(target, size, root)
+            click.echo(f'Staging storage: {root}')
+            return root
+        except click.ClickException as exc:
+            failures.append(f'{root}: {exc.format_message()}')
+    raise click.ClickException('No staging storage has enough usable space. ' + ' '.join(failures))
 
 
 def _reboot_and_verify(target, before, ip, passwd, expected=None):
@@ -168,15 +204,15 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
         click.echo(f'Full-system bundle: {source}')
         local_source = urlparse(source).scheme not in ('http', 'https')
         size_hint = bundle_size(source, internal)
-        _check_space(target, size_hint * (1 if ip or local_source else 2))
+        staging_root = _select_staging_root(target, size_hint, dryrun=dryrun)
         if dryrun:
-            click.echo('Dry run: ' + shlex.join(['sudo', 'swupdate', '-v', '-i', '/data/<staged-bundle>.swu', '-k', key, '-e', 'update,full']))
+            click.echo('Dry run: ' + shlex.join(['sudo', 'swupdate', '-v', '-i', staging_root + '/<staged-bundle>.swu', '-k', key, '-e', 'update,full']))
             click.echo('No bundle installed or reboot scheduled.')
             return
         if not auto_confirm:
             click.confirm('Install the full system into the inactive slot?', default=False, abort=True)
-        staging = target.run('set -eu; d=$(mktemp -d /data/sima-cli-update.XXXXXXXX); chown "${SUDO_UID:-0}:${SUDO_GID:-0}" "$d"; printf "%s" "$d"').strip()
-        if not re.fullmatch(r'/data/sima-cli-update\.[A-Za-z0-9]+', staging):
+        staging = target.run('set -eu; d=$(mktemp -d ' + shlex.quote(staging_root + '/sima-cli-update.XXXXXXXX') + '); chown "${SUDO_UID:-0}:${SUDO_GID:-0}" "$d"; printf "%s" "$d"').strip()
+        if not re.fullmatch(STAGING_PATTERN, staging):
             raise click.ClickException('Invalid staging directory returned by target.')
         with tempfile.TemporaryDirectory(prefix='sima-cli-swu-', dir=None if ip else staging) as cache:
             if local_source:
@@ -187,10 +223,10 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             size = os.path.getsize(local)
             if not size:
                 raise click.ClickException('The SWU bundle is empty.')
-            _check_space(target, size)
+            _check_space(target, size if ip or local_source else 0, staging_root)
             remote = staging + '/bundle.swu'
             click.echo('Staging and verifying bundle integrity...')
-            target.transfer(local, remote)
+            target.transfer(local, remote, move=not ip and not local_source)
             click.echo('Validating signature and installing the full inactive slot...')
             installing = True
             with InstallProgress() as progress:
@@ -214,7 +250,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
     except (KeyboardInterrupt, EOFError, OSError) as exc:
         raise click.ClickException('Update interrupted or connection lost. State is unknown; inspect the board before retrying.') from exc
     finally:
-        if staging and re.fullmatch(r'/data/sima-cli-update\.[A-Za-z0-9]+', staging):
+        if staging and re.fullmatch(STAGING_PATTERN, staging):
             if not installing or complete:
                 try:
                     target.run('rm -rf -- ' + shlex.quote(staging))

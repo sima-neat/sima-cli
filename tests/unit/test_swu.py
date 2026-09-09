@@ -137,6 +137,7 @@ def run_install(tmp_path, *, fail=False, dryrun=False):
     target.run.side_effect = run
     with patch.object(swu, 'Target', return_value=target), patch.object(swu, 'preflight', return_value=parse_state(STATE)), \
             patch.object(swu, 'resolve_bundle', return_value=str(bundle)), patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
+            patch.object(swu, '_select_staging_root', return_value='/data'), \
             patch.object(swu, '_reboot_and_verify') as reboot:
         if fail:
             with pytest.raises(click.ClickException, match='install failed'):
@@ -356,3 +357,40 @@ def test_supported_legacy_updates_keep_their_dispatch(fwtype, requested):
             patch.object(swu, 'update_system') as install:
         assert swu.handle_update(requested, ip='192.0.2.1') is False
     install.assert_not_called()
+
+
+@pytest.mark.parametrize('available,expected', [
+    ({'/tmp': 1000, '/media/nvme': 1000, '/data': 1000}, '/tmp'),
+    ({'/tmp': 0, '/media/nvme': 1000, '/data': 1000}, '/media/nvme'),
+    ({'/tmp': 0, '/media/nvme': 0, '/data': 1000}, '/data'),
+    ({'/tmp': 0, '/media/nvme': 0, '/data': 0}, None),
+])
+def test_staging_storage_order_and_exhaustion(available, expected):
+    target = MagicMock()
+    with patch.object(swu, '_available_space', side_effect=lambda target, root: available[root] + swu.SPACE_MARGIN) as space:
+        if expected:
+            assert swu._select_staging_root(target, 1000) == expected
+        else:
+            with pytest.raises(click.ClickException, match='No staging storage'):
+                swu._select_staging_root(target, 1000)
+    checked = [call.args[1] for call in space.call_args_list]
+    assert checked == list(swu.STAGING_ROOTS[:len(checked)])
+    commands = [call.args[0] for call in target.run.call_args_list]
+    assert any('remount,rw' in cmd for cmd in commands) == (expected != '/tmp')
+
+
+def test_nvme_mount_failure_falls_back_to_data():
+    target = MagicMock()
+    def run(script):
+        if 'remount,rw' in script:
+            raise click.ClickException('NVMe unavailable')
+    target.run.side_effect = run
+    with patch.object(swu, '_available_space', side_effect=[0, 1024**3]):
+        assert swu._select_staging_root(target, 1000) == '/data'
+
+
+def test_staging_dryrun_does_not_mount_nvme():
+    target = MagicMock()
+    with patch.object(swu, '_available_space', side_effect=[0, 1024**3]):
+        assert swu._select_staging_root(target, 1000, dryrun=True) == '/media/nvme'
+    assert not any('mount -o' in call.args[0] or 'mkdir' in call.args[0] for call in target.run.call_args_list)

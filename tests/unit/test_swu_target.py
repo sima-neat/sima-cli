@@ -45,3 +45,14 @@ def test_remote_command_sends_password_only_via_stdin():
         command = connect.return_value.exec_command.call_args.args[0]
         assert 'secret' not in command
         stdin.write.assert_called_once_with('secret\n')
+
+
+def test_local_download_is_moved_without_a_second_copy(tmp_path):
+    import hashlib
+    source = tmp_path / 'download.swu'
+    source.write_bytes(b'bundle')
+    target = Target()
+    target.run = MagicMock(side_effect=['', hashlib.sha256(b'bundle').hexdigest() + ' bundle.swu'])
+    target.transfer(str(source), '/tmp/staging/bundle.swu', move=True)
+    assert target.run.call_args_list[0].args[0].startswith('mv -- ')
+    assert target.run.call_args_list[1].args[0].startswith('sha256sum -- ')

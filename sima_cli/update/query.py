@@ -1,9 +1,17 @@
+import json
 import re
 import requests
 from sima_cli.utils.config_loader import load_resource_config, artifactory_url
 from sima_cli.utils.config import get_auth_token
 
 ARTIFACTORY_BASE_URL = artifactory_url() + '/artifactory'
+
+def elxr_firmware_path(board: str, version: str) -> str:
+    """Return the Artifactory root for an eLxr build (3.0+ uses BSP)."""
+    match = re.match(r"^(\d+)\.(\d+)(?=$|[._-])", version)
+    uses_bsp = match is not None and tuple(map(int, match.groups())) >= (3, 0)
+    return f"elxr/bsp/{board}" if uses_bsp else f"elxr/{board}"
+
 
 def _list_available_firmware_versions_internal(board: str, match_keyword: str = None, flavor: str = 'headless', swtype: str = 'yocto'):
     if swtype == 'yocto':
@@ -18,20 +26,25 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
                     }}).include("repo", "path", "name")
                     """.strip()
     elif swtype == 'elxr':
-        fw_path = f"elxr/{board}"
-        aql_query = f"""
-                    items.find({{
-                        "repo": "soc-images",
-                        "path": {{
-                            "$match": "{fw_path}/*/artifacts/palette"
-                        }},
-                        "$or": [
-                            {{"name": "modalix-tftp-boot-palette.tar.gz"}},
-                            {{"name": "modalix-tftp-boot.tar.gz"}}
-                        ],
-                        "type": "file"
-                    }}).include("repo", "path", "name")
-                    """.strip()
+        # Keywords can be nonnumeric (e.g. "daily"), so search both layouts.
+        paths = [f"elxr/{board}", f"elxr/bsp/{board}"]
+        criteria = {
+            "repo": "soc-images",
+            "$and": [
+                {"$or": [
+                    {"path": {"$match": f"{path}/*/artifacts/palette"}}
+                    for path in paths
+                ]},
+                {"$or": [
+                    {"name": f"{board}-tftp-boot-palette.tar.gz"},
+                    {"name": f"{board}-tftp-boot.tar.gz"},
+                ]},
+            ],
+            "type": "file",
+        }
+        aql_query = (
+            f'items.find({json.dumps(criteria)}).include("repo", "path", "name")'
+        )
     else:
         raise ValueError(f"Unsupported swtype: {swtype}")
 
@@ -61,10 +74,13 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
         }
         top_level_folders = sorted({path.split("/")[0] for path in full_paths})
     else:  # elxr
-        # Extract version from path like: elxr/{board}/<version>/artifacts/palette
-        top_level_folders = sorted({
-            item['path'].split('/')[2] for item in results
-        })
+        versions = set()
+        for item in results:
+            root, version, artifacts, flavor_dir = item['path'].rsplit('/', 3)
+            if (root == elxr_firmware_path(board, version)
+                    and artifacts == 'artifacts' and flavor_dir == 'palette'):
+                versions.add(version)
+        top_level_folders = sorted(versions)
 
     if match_keyword:
         match_keyword = match_keyword.lower()

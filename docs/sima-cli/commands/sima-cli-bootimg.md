@@ -93,3 +93,11 @@ Options:
                                   the internal storage - TBD
   --help                          Show this message and exit.
 ```
+
+### Internal eLxr firmware layout
+
+Internal Artifactory builds use `soc-images/elxr/<board>/<version>/` before
+version 3.0 and `soc-images/elxr/bsp/<board>/<version>/` for 3.0 and later.
+Version searches cover both layouts, including daily build names such as
+`3.0.0_daily_develop_B1168`. Netboot downloads use the selected build's
+`artifacts/minimal/<board>-tftp-boot-minimal.tar.gz` archive.

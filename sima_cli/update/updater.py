@@ -142,7 +142,8 @@ def _pick_from_available_versions(
         return version_or_url
 
     available_versions = list_available_firmware_versions(
-        board, version_or_url, internal, flavor, swtype, update_type
+        board, version_or_url, internal, flavor, swtype, update_type,
+        with_metadata=True,
     )
 
     try:
@@ -153,7 +154,12 @@ def _pick_from_available_versions(
             
             selected_version = inquirer.fuzzy(
                 message="Select a version:",
-                choices=available_versions,
+                choices=[
+                    {"value": entry["version"], "name": (
+                        f"{entry['version']}  (created: {entry['created'] or 'unknown'})"
+                    )} if isinstance(entry, dict) else entry
+                    for entry in available_versions
+                ],
                 max_height="70%",  # scrollable
                 instruction="(Use ↑↓ to navigate, / to search, Enter to select)"
             ).execute()
@@ -165,7 +171,8 @@ def _pick_from_available_versions(
             return selected_version
 
         elif len(available_versions) == 1:
-            return available_versions[0]
+            entry = available_versions[0]
+            return entry["version"] if isinstance(entry, dict) else entry
 
         else:
             click.echo(

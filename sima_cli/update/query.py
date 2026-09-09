@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 import re
 from urllib.parse import quote, urljoin
 import requests
@@ -42,7 +43,7 @@ def resolve_elxr_palette_image(palette_url: str, board: str) -> str:
     return urljoin(palette_url.rstrip('/') + '/', quote(candidates[0]))
 
 
-def _list_available_firmware_versions_internal(board: str, match_keyword: str = None, flavor: str = 'headless', swtype: str = 'yocto'):
+def _list_available_firmware_versions_internal(board: str, match_keyword: str = None, flavor: str = 'headless', swtype: str = 'yocto', with_metadata: bool = False):
     if swtype == 'yocto':
         fw_path = f"{board}"
         aql_query = f"""
@@ -72,7 +73,7 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
             "type": "file",
         }
         aql_query = (
-            f'items.find({json.dumps(criteria)}).include("repo", "path", "name")'
+            f'items.find({json.dumps(criteria)}).include("repo", "path", "name", "created")'
         )
     else:
         raise ValueError(f"Unsupported swtype: {swtype}")
@@ -103,13 +104,30 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
         }
         top_level_folders = sorted({path.split("/")[0] for path in full_paths})
     else:  # elxr
-        versions = set()
+        versions = {}
         for item in results:
             root, version, artifacts, flavor_dir = item['path'].rsplit('/', 3)
             if (root == elxr_firmware_path(board, version)
                     and artifacts == 'artifacts' and flavor_dir == 'palette'):
-                versions.add(version)
+                try:
+                    created = datetime.fromisoformat(item.get('created', '').replace('Z', '+00:00'))
+                    if created.tzinfo is None:
+                        created = None
+                    else:
+                        created = created.astimezone(timezone.utc)
+                except (TypeError, ValueError, AttributeError):
+                    created = None
+                # Legacy builds may have two archive names; use the newest one.
+                previous = versions.get(version)
+                if version not in versions or (created is not None
+                        and (previous is None or created > previous)):
+                    versions[version] = created
+        # Stable name ordering breaks timestamp ties; unknown dates sort last.
         top_level_folders = sorted(versions)
+        top_level_folders.sort(
+            key=lambda version: versions[version] or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
 
     if match_keyword:
         match_keyword = match_keyword.lower()
@@ -117,6 +135,14 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
             f for f in top_level_folders if match_keyword in f.lower()
         ]
 
+    if with_metadata and swtype == 'elxr':
+        return [
+            {"version": version, "created": (
+                versions[version].strftime('%Y-%m-%d %H:%M:%S UTC')
+                if versions[version] is not None else None
+            )}
+            for version in top_level_folders
+        ]
     return top_level_folders
 
 
@@ -183,6 +209,7 @@ def list_available_firmware_versions(
     flavor: str = 'headless',
     swtype: str = 'yocto',
     update_type: str = 'standard',
+    with_metadata: bool = False,
 ):
     """
     Public interface to list available firmware versions.
@@ -195,11 +222,15 @@ def list_available_firmware_versions(
     - update_type: str – Operation being prepared (standard, bootimg, or netboot).
 
     Returns:
-    - List[str] of firmware version folder names, or None if access is not allowed
+    - List[str] of firmware version folder names, or None if access is not allowed.
+      With with_metadata=True, internal eLxr results contain version and created
+      fields instead. Creation dates are archive timestamps in UTC.
     """
     if not internal:
         return _list_available_firmware_versions_external(
             board, match_keyword, flavor, swtype, update_type
         )
 
-    return _list_available_firmware_versions_internal(board, match_keyword, flavor, swtype)
+    return _list_available_firmware_versions_internal(
+        board, match_keyword, flavor, swtype, with_metadata=with_metadata
+    )

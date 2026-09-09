@@ -53,6 +53,11 @@ confirm. All three start unchecked; selecting none skips extension installation.
 Only selected extensions are installed, and existing unselected extensions are
 left in place.
 
+Interactive terminals show an animated activity bar with the selected extension
+names and elapsed time during installation. The installer does not report a
+download percentage. Redirected output and CI logs omit the animation; installer
+output and errors are printed when the command finishes.
+
 For automation, bypass the checklist and install all three with:
 
 ```bash

@@ -27,6 +27,7 @@ from sima_cli.sdk.config import (
 )
 from sima_cli.sdk.vscode_extensions import (
     extension_install_command,
+    extension_install_progress,
     load_extension_versions,
     pin_extensions_command,
     resolve_extension_target,
@@ -1338,21 +1339,23 @@ def ensure_codex_vscode_extension_installed(
         print(f"   - SiMa Neat: {neat_extension_target}")
     for label, extension_id in extensions:
         print(f"   - {label}: {extension_id}")
-    result = subprocess.run(
-        [
-            "docker",
-            "exec",
-            "-u",
-            "root",
-            sdk_container_name,
-            "bash",
-            "-lc",
-            install_script,
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    progress_labels = (["Neat"] if install_neat else []) + [label for label, _ in extensions]
+    with extension_install_progress(progress_labels, console):
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                sdk_container_name,
+                "bash",
+                "-lc",
+                install_script,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
     if result.returncode != 0:
         print("⚠️  Could not install browser VS Code extensions; continuing SDK setup.")
         details = (result.stderr or result.stdout or "").strip()

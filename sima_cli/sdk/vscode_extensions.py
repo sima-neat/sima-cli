@@ -4,9 +4,12 @@ import json
 import re
 import shlex
 import subprocess
+from contextlib import contextmanager
 from typing import Dict, List, Mapping
 
 from InquirerPy import inquirer
+from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 
 SDK_EXTENSION_MANIFEST = "/etc/sima-neat/vscode-extensions.json"
@@ -39,6 +42,25 @@ def select_browser_extensions(auto_install: bool, allow_prompt: bool) -> List[st
         choices=[dict(choice) for choice in EXTENSION_CHOICES],
         instruction="Space to select, Enter to confirm; leave all unchecked to skip",
     ).execute() or []
+
+
+@contextmanager
+def extension_install_progress(labels: List[str], console: Console):
+    """Keep interactive installs visibly active without inventing percentages."""
+    if not console.is_interactive:
+        yield
+        return
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}", markup=False),
+        BarColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+        refresh_per_second=4,
+    ) as progress:
+        progress.add_task("Installing " + ", ".join(labels) + " extensions", total=None)
+        yield
 
 
 def load_extension_versions(container: str) -> Dict[str, str]:

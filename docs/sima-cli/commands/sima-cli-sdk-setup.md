@@ -31,6 +31,63 @@ sima-cli sdk setup [OPTIONS]
 
 None.
 
+## Browser VS Code extension versions
+
+When browser VS Code extensions are selected during setup, sima-cli installs
+exact versions of Codex and Claude and pins them against automatic extension
+updates. Rerunning setup replaces a different installed version, including a
+newer incompatible version. A matching version is retained and pinned without
+downloading it again. Updates for unrelated extensions are unaffected.
+
+SDK images can declare the versions validated with their bundled OpenVSCode
+Server in `/etc/sima-neat/vscode-extensions.json`:
+
+```json
+{
+  "schema_version": 1,
+  "extensions": {
+    "openai.chatgpt": "26.5825.51511",
+    "anthropic.claude-code": "2.1.266"
+  }
+}
+```
+
+The manifest does not install extensions or change the setup opt-in behavior.
+SDK publishers should ship it even when extensions are not preinstalled, and
+validate both versions with each SDK release. Schema version 1 requires exact
+versions for both IDs; additional extension entries do not cause installation.
+
+For older images without this file, including the existing SDK 2.1.3 image,
+sima-cli uses Codex `26.5825.51511` and Claude `2.1.266` as compatibility
+fallbacks. Codex `26.901.22334` was reported to fail activation with
+`Unexpected identifier 'p'` on the SDK 2.1.3 OpenVSCode Server `1.109.5`;
+downgrading to the fallback version restored functionality.
+
+An unreadable or invalid manifest reports an error and skips browser extension
+installation while the rest of SDK setup continues. An unavailable requested
+version also reports an installation error; sima-cli never retries with an
+unpinned latest release.
+
+The existing environment overrides take precedence over SDK/default versions:
+
+| Variable | Behavior |
+| --- | --- |
+| `SIMA_CLI_CODEX_EXTENSION_ID` | Override the Codex target with `publisher.extension@exact-version`. Empty disables Codex installation. |
+| `SIMA_CLI_CLAUDE_EXTENSION_ID` | Override the Claude target with `publisher.extension@exact-version`. Empty disables Claude installation. |
+| `SIMA_CLI_INSTALL_CODEX_EXTENSION` | A truthy value automatically selects browser extension installation without its interactive prompt; retained for compatibility. |
+
+A bare `openai.chatgpt` or `anthropic.claude-code` override uses the corresponding
+SDK/default pin. Other extension IDs now require an explicit version rather
+than resolving to latest. Overrides still require a valid manifest when one
+is present. `--minimal` skips optional extension installation.
+
+Setup verifies the installed versions and writes each selected extension's
+`metadata.pinned` flag in the mapped user's
+`~/.openvscode-server/extensions/extensions.json`, then restarts the browser
+VS Code service. This also pins matching versions installed before this policy
+was introduced, which OpenVSCode's install command otherwise leaves unpinned.
+Reload an open browser VS Code tab after setup to load the selected versions.
+
 ## Full Help
 
 ```text

@@ -25,6 +25,12 @@ from sima_cli.sdk.config import (
     BASELINE_IMAGE,
     IMAGE_ALIASES,
 )
+from sima_cli.sdk.vscode_extensions import (
+    extension_install_command,
+    load_extension_versions,
+    pin_extensions_command,
+    resolve_extension_target,
+)
 
 
 FILTER_KEYWORDS = ["elxr", "yocto", "mpk", "modelsdk", "neat-sdk", "sima-neat/sdk", "sima-neat/elxr"]
@@ -1236,18 +1242,6 @@ def ensure_codex_vscode_extension_installed(
         return
 
     neat_extension_target = "sdk/vscode-extension"
-    extensions = []
-    claude_extension_id = os.environ.get(CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID).strip()
-    codex_extension_id = os.environ.get(CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID).strip()
-    if claude_extension_id:
-        extensions.append(("Claude", claude_extension_id))
-    else:
-        print(f"ℹ️  {CLAUDE_EXTENSION_ID_ENV} is empty; skipping Claude extension install.")
-    if codex_extension_id:
-        extensions.append(("Codex", codex_extension_id))
-    else:
-        print(f"ℹ️  {CODEX_EXTENSION_ID_ENV} is empty; skipping Codex extension install.")
-
     if auto_install:
         print("ℹ️  Auto-installing Neat, Claude, and Codex extensions for browser VS Code.")
     elif allow_prompt:
@@ -1255,6 +1249,30 @@ def ensure_codex_vscode_extension_installed(
             print("ℹ️  Skipping browser VS Code extension install.")
             return
     else:
+        return
+
+    extensions = []
+    try:
+        requested_extensions = [
+            ("Claude", CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID),
+            ("Codex", CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID),
+        ]
+        selected = [
+            (label, env, os.environ.get(env, default).strip())
+            for label, env, default in requested_extensions
+        ]
+        versions = (
+            load_extension_versions(sdk_container_name)
+            if any(target for _, _, target in selected) else {}
+        )
+        for label, env, target in selected:
+            if target:
+                extensions.append((label, resolve_extension_target(target, versions)))
+            else:
+                print(f"ℹ️  {env} is empty; skipping {label} extension install.")
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        print(f"⚠️  Could not resolve browser VS Code extension pins: {exc}")
+        print("Skipping browser VS Code extension install; continuing SDK setup.")
         return
 
     home_directory = f"/home/{login_name}"
@@ -1288,22 +1306,20 @@ def ensure_codex_vscode_extension_installed(
         "fi"
     ]
     legacy_cleanup_steps = []
-    for label, extension_id in extensions:
-        quoted_extension_id = shlex.quote(extension_id)
-        install_steps.append(
-            f"echo 'Installing {label} extension: {extension_id}'; "
-            f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-            f"--list-extensions 2>/dev/null | grep -Fxq {quoted_extension_id}; then "
-            f"echo '{label} extension already installed: {extension_id}'; "
-            "else "
-            f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-            f"--install-extension {quoted_extension_id} --force --accept-server-license-terms; "
-            "fi"
-        )
+    for label, extension_target in extensions:
+        extension_id = extension_target.split("@", 1)[0]
+        install_steps.append(extension_install_command(
+            OPENVSCODE_SERVER_BIN, extensions_dir, label, extension_target,
+        ))
         legacy_cleanup_steps.append(
             f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
             f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true"
         )
+
+    install_steps.append(pin_extensions_command(
+        extensions_dir,
+        dict(target.split("@", 1) for _, target in extensions),
+    ))
 
     user_extension_script = (
         "set -e; "
@@ -1335,14 +1351,13 @@ def ensure_codex_vscode_extension_installed(
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
-        + "; ".join(legacy_cleanup_steps)
-        + "; "
         f"mkdir -p {shlex.quote(neat_extension_install_dir)}; "
         f"mkdir -p {shlex.quote(extensions_dir)}; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(neat_extension_install_dir)} 2>/dev/null || true; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(extensions_dir)} 2>/dev/null || true; "
         f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_extension_script)}; "
-        "if command -v supervisorctl >/dev/null 2>&1; then "
+        + ("; ".join(legacy_cleanup_steps) + "; " if legacy_cleanup_steps else "")
+        + "if command -v supervisorctl >/dev/null 2>&1; then "
         "supervisorctl restart openvscode-server >/dev/null 2>&1 || true; "
         "fi"
     )
@@ -1375,7 +1390,7 @@ def ensure_codex_vscode_extension_installed(
 
     if result.stdout:
         print(result.stdout.strip())
-    print("✅ Neat, Claude, and Codex extensions installed for browser VS Code.")
+    print("✅ Selected browser VS Code extensions installed; AI extension versions are pinned.")
 
 
 def _container_openvscode_available(sdk_container_name: str) -> bool:

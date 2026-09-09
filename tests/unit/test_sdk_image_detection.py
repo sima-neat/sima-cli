@@ -4008,9 +4008,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_codex_vscode_extension_auto_installs_without_prompt(self):
         server_available = Mock(returncode=0)
+        manifest_missing = Mock(returncode=44)
         install_result = Mock(returncode=0, stdout="installed\n", stderr="")
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
-             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, install_result]) as run, \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, manifest_missing, install_result]) as run, \
              patch("sima_cli.sdk.utils.yes_no_prompt") as prompt:
             ensure_codex_vscode_extension_installed(
                 "container",
@@ -4021,7 +4022,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             )
 
         prompt.assert_not_called()
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 3)
         install_cmd = run.call_args_list[-1].args[0]
         self.assertEqual(install_cmd[:5], ["docker", "exec", "-u", "root", "container"])
         self.assertIn("Installing SiMa Neat extension: sdk/vscode-extension", install_cmd[-1])
@@ -4031,8 +4032,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("Installing downloaded SiMa Neat VSIX with OpenVSCode Server.", install_cmd[-1])
         self.assertIn("--install-extension \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\"", install_cmd[-1])
         self.assertIn("/opt/sima-cli/venv/bin/sima-cli", install_cmd[-1])
-        self.assertIn("--install-extension anthropic.claude-code", install_cmd[-1])
-        self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])
+        self.assertIn("--install-extension anthropic.claude-code@2.1.266", install_cmd[-1])
+        self.assertIn("--install-extension openai.chatgpt@26.5825.51511", install_cmd[-1])
         self.assertIn("Installing Claude extension: anthropic.claude-code", install_cmd[-1])
         self.assertIn("Installing Codex extension: openai.chatgpt", install_cmd[-1])
         self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'anthropic.claude-code-*'", install_cmd[-1])

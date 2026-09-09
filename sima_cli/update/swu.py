@@ -4,7 +4,7 @@ import re
 import shlex
 import tempfile
 import time
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import click
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -253,8 +253,14 @@ def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_conf
     if fwtype == 'elxr' and not running:
         raise click.ClickException('Cannot determine the target eLxr firmware version.')
     if fwtype != 'elxr' or running < (3, 0, 0):
-        if fwtype == 'elxr' and requested_release and requested_release >= (3, 0, 0):
-            raise click.ClickException('Migration to the eLxr 3.0 A/B layout requires recovery/provisioning first.')
+        explicit_swu = bool(requested and unquote(urlparse(requested).path).lower().endswith('.swu'))
+        if fwtype == 'elxr' and (explicit_swu or reboot or key != DEFAULT_KEY or
+                                 (requested_release and requested_release >= (3, 0, 0))):
+            raise click.ClickException(
+                f'This DevKit is running eLxr {version.strip()}; this firmware version does not support '
+                'the SWUpdate command. SWUpdate requires eLxr 3.0+ with the A/B layout. '
+                'Use recovery/provisioning to install eLxr 3.0+ first.'
+            )
         if reboot or key != DEFAULT_KEY:
             raise click.ClickException('--reboot and --key require the eLxr 3.0+ SWUpdate flow.')
         return False

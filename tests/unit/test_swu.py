@@ -302,3 +302,57 @@ def test_artifactory_daily_prefix_is_not_part_of_on_device_build_identity():
     with patch.object(swu, 'Target', return_value=peer), patch.object(swu, 'inspect_target', return_value=state), \
             patch.object(swu.time, 'sleep'), patch.object(swu.time, 'monotonic', side_effect=[0, 1]):
         swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_daily_develop_B1211')
+
+
+@pytest.mark.parametrize('local', [False, True])
+@pytest.mark.parametrize('requested', [
+    '3.0', '/tmp/bundle.swu', './bundle.swu', 'bundle.swu',
+    'https://example.com/bundle.swu?token=test#download',
+    'https://example.com/bundle%2Eswu?token=test',
+])
+def test_elxr_2_rejects_swu_before_any_install_or_download(local, requested):
+    info_method = ('sima_cli.update.local.get_local_board_info' if local else
+                   'sima_cli.update.remote.get_remote_board_info')
+    with patch(info_method, return_value=('modalix', '2.1.3', '', False, 'elxr')), \
+            patch.object(swu, 'update_system') as install, patch.object(swu, 'resolve_bundle') as resolve:
+        with pytest.raises(click.ClickException, match='eLxr 2.1.3.*does not support'):
+            swu.handle_update(requested, ip=None if local else '192.0.2.1', local_elxr=local)
+    install.assert_not_called()
+    resolve.assert_not_called()
+
+
+@pytest.mark.parametrize('options', [{'reboot': True}, {'key': '/tmp/key.pem'}])
+def test_elxr_2_rejects_modern_update_options_with_detected_version(options):
+    with patch('sima_cli.update.remote.get_remote_board_info', return_value=('modalix', '2.0.0', '', False, 'elxr')):
+        with pytest.raises(click.ClickException, match='eLxr 2.0.0.*does not support'):
+            swu.handle_update(None, ip='192.0.2.1', **options)
+
+
+@pytest.mark.parametrize('args', [['-v', '3.0'], ['https://example.com/bundle.swu?token=test'], ['./bundle.swu']])
+def test_host_rejects_elxr_2_swu_without_legacy_fallback(args):
+    with patch('sima_cli.cli.check_for_update', return_value=False), \
+            patch('sima_cli.cli.internal_resource_exists', return_value=True), \
+            patch('sima_cli.cli.check_artifactory_reachability', return_value=True), \
+            patch('sima_cli.cli.is_devkit_running_elxr', return_value=False), \
+            patch('sima_cli.update.remote.get_remote_board_info', return_value=('modalix', '2.1.3', '', False, 'elxr')), \
+            patch('sima_cli.cli.resolve_version') as resolve, \
+            patch('sima_cli.cli.perform_update') as legacy, patch.object(swu, 'update_system') as install:
+        result = CliRunner().invoke(main, ['-i', 'update', '--ip', '192.0.2.1'] + args)
+    assert result.exit_code == 1, result.output
+    assert 'eLxr 2.1.3' in result.output
+    assert 'does not support the SWUpdate command' in result.output
+    assert 'recovery/provisioning' in result.output
+    resolve.assert_not_called()
+    legacy.assert_not_called()
+    install.assert_not_called()
+
+
+@pytest.mark.parametrize('fwtype,requested', [
+    ('elxr', None), ('elxr', '2.1.3'),
+    ('yocto', '2.1.3'), ('yocto', 'https://example.com/firmware.tar.gz'),
+])
+def test_supported_legacy_updates_keep_their_dispatch(fwtype, requested):
+    with patch('sima_cli.update.remote.get_remote_board_info', return_value=('modalix', '2.1.2', '', False, fwtype)), \
+            patch.object(swu, 'update_system') as install:
+        assert swu.handle_update(requested, ip='192.0.2.1') is False
+    install.assert_not_called()

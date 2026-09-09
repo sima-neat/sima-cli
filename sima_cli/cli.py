@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.text import Text
 from sima_cli.utils.env import get_environment_type
 from sima_cli.update.updater import perform_update
+from sima_cli.update.swu import handle_update, DEFAULT_KEY
 from sima_cli.model_zoo.model import list_models, download_model, describe_model
 from sima_cli.app_zoo.app import list_apps, download_app, describe_app
 from sima_cli.utils.config_loader import internal_resource_exists
@@ -156,8 +157,18 @@ def _initialize_main_context(ctx, internal, yes):
         click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
 
 
+class InspectionAwareGroup(click.Group):
+    def parse_args(self, ctx, args):
+        # Capture the actual Click arguments (also works with CliRunner), before
+        # the root callback can perform a CLI self-update or network login.
+        options = args[:args.index('--')] if '--' in args else args
+        if _command_name_from_argv(['sima-cli'] + options) == 'update' and '--inspect' in options:
+            ctx.meta['update_inspect'] = True
+        return super().parse_args(ctx, args)
+
+
 # Entry point for the CLI tool using Click's command group decorator
-@click.group(context_settings=dict(help_option_names=["-h", "--help", "-?"], max_content_width=120))
+@click.group(cls=InspectionAwareGroup, context_settings=dict(help_option_names=["-h", "--help", "-?"], max_content_width=120))
 @click.option('-i', '--internal', is_flag=True, help="Use internal Artifactory resources, Authorized Sima employees only")
 @click.option('-y', '--yes', is_flag=True, help="Assume yes for confirmation prompts.")
 @click.version_option(version=f"{__version__}", message="SiMa CLI version: %(version)s")
@@ -169,6 +180,10 @@ def main(ctx, internal, yes):
     Global Options:
       --internal  Use internal Artifactory resources (can also be set via env variable SIMA_CLI_INTERNAL=1)
     """
+    if ctx.meta.get('update_inspect'):
+        ctx.ensure_object(dict)
+        ctx.obj.update(internal=internal, yes=yes)
+        return
     # Model Registry JSON must remain parseable on stdout. Route root-level
     # update and environment diagnostics to stderr for this command group.
     output_context = (
@@ -321,10 +336,13 @@ def download(ctx, url, dest):
     "--dryrun",
     is_flag=True,
     default=False,
-    help="For ELXR updates only, validate the update path and print the simaai-ota command without running it."
+    help="For eLxr updates, validate the update path and show the command without installing."
 )
+@click.option("--inspect", "inspect_state", is_flag=True, help="Show eLxr 3.0+ A/B slot state without updating (local or --ip).")
+@click.option("--key", default=DEFAULT_KEY, show_default=True, help="SWUpdate verification key path on the target board (eLxr 3.0+).")
+@click.option("--reboot", is_flag=True, help="Reboot after successful eLxr 3.0+ installation; verify remote boot health.")
 @click.pass_context
-def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun):
+def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, key, reboot):
     """
     Update the software on a SiMa DevKit or remote SiMa device.
 
@@ -332,6 +350,10 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
     different SiMa environments (Modalix, MLSoC/Davinci, headless images,
     or remote devices accessible over the network). Updates may be
     installed directly on the device or pushed from a development host.
+
+    eLxr 3.0+ uses signed full-system SWU bundles. Use --inspect for A/B
+    state, --ip for remote updates, and --reboot to reboot after installation.
+    Developer-portal version lookup for 3.0 is not available yet.
 
     How Version Resolution Works:
 
@@ -382,7 +404,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
 
         sima-cli update -v 1.7.0 -y
 
-        # Update ELXR to the latest official release without prompts
+        # Update legacy eLxr (<3.0) to the latest official release without prompts
 
         sima-cli update -y
 
@@ -390,11 +412,11 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
 
         sima-cli -i update -y
 
-        # Update ELXR from the public pre-release mirror without prompts
+        # Update legacy eLxr (<3.0) from the public pre-release mirror without prompts
 
         sima-cli -y update -f -y
 
-        # Validate ELXR update path without running simaai-ota
+        # Validate the eLxr update path without installing
 
         sima-cli update --dryrun
 
@@ -406,6 +428,19 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
     # Prioritize explicit --version option over positional argument
     version_or_url = version_option or version_or_url
     is_elxr = is_devkit_running_elxr()
+    if inspect_state and (version_or_url or dryrun or force or troot_only or reboot or key != DEFAULT_KEY or flavor != 'auto'):
+        raise click.UsageError("--inspect cannot be combined with installation options.")
+    try:
+        if handle_update(version_or_url, ip=ip, passwd=passwd,
+                         internal=ctx.obj.get("internal", False),
+                         auto_confirm=yes or ctx.obj.get("yes", False), dryrun=dryrun,
+                         key=key, reboot=reboot, inspect=inspect_state, force=force,
+                         troot_only=troot_only, flavor=flavor, local_elxr=is_elxr):
+            return
+    except (click.ClickException, click.Abort):
+        raise
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
 
     if dryrun and not is_elxr:
         raise click.ClickException("--dryrun is only supported when running update on an ELXR devkit.")

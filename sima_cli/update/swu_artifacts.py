@@ -96,8 +96,9 @@ def resolve_bundle(requested, board, internal=False):
             click.echo(f"Selecting newest SWU build: {builds[0]['version']}")
             return builds[0]['url']
         from InquirerPy import inquirer
+        version_width = max(len(b['version']) for b in builds)
         return inquirer.fuzzy(message='Select a full-system SWU build (newest first):', choices=[
-            {'name': b['version'] + '  Created: ' + (b['created'].strftime('%Y-%m-%d %H:%M:%S UTC') if b['created'] else 'unknown'),
+            {'name': b['version'].ljust(version_width) + '  Created: ' + (b['created'].strftime('%Y-%m-%d %H:%M:%S UTC') if b['created'] else 'unknown'),
              'value': b['url']} for b in builds
         ]).execute()
     raise click.ClickException(

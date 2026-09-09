@@ -71,7 +71,8 @@ def test_failed_extra_download_does_not_return_incomplete_netboot_files(tmp_path
             patch('sima_cli.update.updater.download_file_from_url',
                   side_effect=[str(tmp_path / 'netboot.tar.gz'), RuntimeError('404')]), \
             patch('sima_cli.update.updater._extract_required_files', return_value=['Image']):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as error:
             _download_image(ROOT + 'minimal/modalix-tftp-boot-minimal.tar.gz', 'modalix',
                             internal=True, swtype='elxr', update_type='netboot')
+        assert error.value.code == 1
         assert 'Failed to download required eMMC image' in capsys.readouterr().out

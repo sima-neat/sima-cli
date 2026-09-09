@@ -413,7 +413,7 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
 
     except Exception as e:
         click.echo(f"❌ Host update failed: {e}")
-        exit(0)
+        raise SystemExit(1) from e
 
 def _update_host(script_path: str, board: str, boardip: str, passwd: str):
     """

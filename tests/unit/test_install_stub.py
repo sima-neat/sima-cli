@@ -20,6 +20,25 @@ def test_branch_key_normalizes_slashes_and_spaces():
     assert installer.branch_key("feature/foo bar") == "feature%2Ffoo%20bar"
 
 
+def test_join_url_double_encodes_branch_key_so_cdn_sees_published_key():
+    installer = load_installer()
+
+    assert installer.join_url(
+        "https://example.invalid/sima-cli", installer.branch_key("feature/foo"), "latest.tag"
+    ) == "https://example.invalid/sima-cli/feature%252Ffoo/latest.tag"
+
+
+def test_join_url_leaves_slashless_refs_untouched():
+    installer = load_installer()
+
+    assert installer.join_url(
+        "https://example.invalid/sima-cli/", installer.branch_key("main"), "latest.tag"
+    ) == "https://example.invalid/sima-cli/main/latest.tag"
+    assert installer.join_url(
+        "https://example.invalid/sima-cli", installer.branch_key("v2.1.5"), "latest.tag"
+    ) == "https://example.invalid/sima-cli/v2.1.5/latest.tag"
+
+
 def test_normalize_index_uses_tags_and_releases_fallback():
     installer = load_installer()
 
@@ -43,6 +62,28 @@ def test_normalize_index_accepts_vulcan_branch_objects():
             "tags": [{"name": "v2.1.6"}],
         }
     ) == (["develop", "main"], ["v2.1.6"])
+
+
+def test_normalize_index_decodes_key_only_branch_objects():
+    installer = load_installer()
+
+    assert installer.normalize_index(
+        {"branches": [{"key": "feature%2Ffoo"}, {"key": "main"}]}
+    ) == (["feature/foo", "main"], [])
+
+
+def test_key_only_branch_object_resolves_to_the_published_key():
+    installer = load_installer()
+    payload = {"branches": [{"key": "feature%2Ffoo"}]}
+
+    with patch.object(installer, "fetch_json", return_value=payload), \
+         patch.object(installer, "fetch_pypi_releases", return_value=[]):
+        ref = installer.resolve_ref("https://example.invalid/sima-cli", None, True)
+
+    with patch.object(installer, "fetch_text", return_value="abc1234\n") as fetch_text:
+        installer.resolve_tag("https://example.invalid/sima-cli", ref, "latest")
+
+    fetch_text.assert_called_once_with("https://example.invalid/sima-cli/feature%252Ffoo/latest.tag")
 
 
 def test_choose_ref_noninteractive_prefers_main():
@@ -148,7 +189,16 @@ def test_resolve_tag_reads_latest_tag():
     with patch.object(installer, "fetch_text", return_value="abc1234\n") as fetch_text:
         assert installer.resolve_tag("https://example.invalid/sima-cli", "feature/foo", "latest") == "abc1234"
 
-    fetch_text.assert_called_once_with("https://example.invalid/sima-cli/feature%2Ffoo/latest.tag")
+    fetch_text.assert_called_once_with("https://example.invalid/sima-cli/feature%252Ffoo/latest.tag")
+
+
+def test_resolve_tag_reads_latest_tag_for_slashless_ref():
+    installer = load_installer()
+
+    with patch.object(installer, "fetch_text", return_value="abc1234\n") as fetch_text:
+        assert installer.resolve_tag("https://example.invalid/sima-cli", "main", "latest") == "abc1234"
+
+    fetch_text.assert_called_once_with("https://example.invalid/sima-cli/main/latest.tag")
 
 
 def test_resolve_metadata_prefers_vulcan_metadata_json():
@@ -157,9 +207,24 @@ def test_resolve_metadata_prefers_vulcan_metadata_json():
     with patch.object(installer, "fetch_json", return_value={"resources": []}) as fetch_json:
         metadata = installer.resolve_metadata("https://example.invalid/sima-cli", "feature/foo", "abc1234")
 
-    fetch_json.assert_called_once_with("https://example.invalid/sima-cli/feature%2Ffoo/abc1234/metadata.json")
-    assert metadata["_metadata_url"] == "https://example.invalid/sima-cli/feature%2Ffoo/abc1234/metadata.json"
-    assert metadata["_resource_base_url"] == "https://example.invalid/sima-cli/feature%2Ffoo/abc1234"
+    fetch_json.assert_called_once_with("https://example.invalid/sima-cli/feature%252Ffoo/abc1234/metadata.json")
+    assert metadata["_metadata_url"] == "https://example.invalid/sima-cli/feature%252Ffoo/abc1234/metadata.json"
+    assert metadata["_resource_base_url"] == "https://example.invalid/sima-cli/feature%252Ffoo/abc1234"
+
+
+def test_resolve_metadata_resource_urls_keep_double_encoded_branch_key():
+    installer = load_installer()
+    payload = {"resources": ["sima-cli-package-2.1.5+feature.abc1234.zip"]}
+
+    with patch.object(installer, "fetch_json", return_value=payload):
+        metadata = installer.resolve_metadata("https://example.invalid/sima-cli", "feature/foo", "abc1234")
+
+    artifact = installer.find_artifact(metadata, ".zip", "sima-cli-package")
+
+    assert artifact["url"] == (
+        "https://example.invalid/sima-cli/feature%252Ffoo/abc1234/"
+        "sima-cli-package-2.1.5%2Bfeature.abc1234.zip"
+    )
 
 
 def test_resolve_metadata_falls_back_to_legacy_json():

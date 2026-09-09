@@ -145,6 +145,9 @@ else:
         handle.write(target + '\\n')
     if (root / 'fail').exists():
         sys.exit(9)
+    if (root / 'fail-once').exists():
+        (root / 'fail-once').unlink()
+        sys.exit(9)
     extension_id, version = target.split('@')
     entries = [entry for entry in entries if entry['identifier']['id'] != extension_id]
     entries.append({'identifier': {'id': extension_id}, 'version': version})
@@ -192,12 +195,12 @@ def test_failed_version_install_does_not_pin_old_version_or_fall_back(tmp_path, 
     profile.write_text(original)
     (tmp_path / "fail").touch()
     target = "openai.chatgpt@26.5825.51511"
-    command = "set -e; " + extension_install_command(fake_server, str(tmp_path), "Codex", target)
+    command = "set -e; sleep() { :; }; " + extension_install_command(fake_server, str(tmp_path), "Codex", target)
     command += "; " + pin_extensions_command(str(tmp_path), {"openai.chatgpt": "26.5825.51511"})
     result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
     assert result.returncode == 9
     assert profile.read_text() == original
-    assert (tmp_path / "calls").read_text().splitlines() == [target]
+    assert (tmp_path / "calls").read_text().splitlines() == [target] * 3
 
 
 def test_version_check_drains_cli_output_without_sigpipe(tmp_path, fake_server):
@@ -328,3 +331,32 @@ def test_all_extensions_applies_to_existing_sdk():
          patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed") as install:
         setup_and_start(noninteractive=True, all_extensions=True)
     install.assert_called_once_with("existing", "devuser", all_extensions=True, allow_prompt=False, uid=1000, gid=1000)
+
+
+def test_extension_install_retries_transient_failure(tmp_path, fake_server):
+    (tmp_path / "extensions.json").write_text("[]")
+    (tmp_path / "fail-once").touch()
+    target = "openai.chatgpt@26.5825.51511"
+    command = "set -e; sleep() { :; }; " + extension_install_command(
+        fake_server, str(tmp_path), "Codex", target,
+    )
+    command += "; " + pin_extensions_command(str(tmp_path), {"openai.chatgpt": "26.5825.51511"})
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=True)
+    assert "Retrying Codex" in result.stdout
+    assert (tmp_path / "calls").read_text().splitlines() == [target, target]
+    assert json.loads((tmp_path / "extensions.json").read_text())[0]["metadata"]["pinned"] is True
+
+
+def test_failed_install_preserves_stdout_and_stderr(capsys):
+    with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
+         patch("sima_cli.sdk.utils.select_browser_extensions", return_value=["neat"]), \
+         patch("sima_cli.sdk.utils.subprocess.run", side_effect=[
+             Mock(returncode=0),
+             Mock(returncode=1, stdout="actionable installer error", stderr="download progress"),
+         ]):
+        ensure_codex_vscode_extension_installed("sdk", "user")
+    output = capsys.readouterr().out
+    assert "actionable installer error" in output
+    assert "download progress" in output
+    assert "later extensions may not have been installed" in output
+    assert "✅ Selected" not in output

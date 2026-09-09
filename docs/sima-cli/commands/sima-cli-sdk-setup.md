@@ -109,6 +109,12 @@ installation while the rest of SDK setup continues. An unavailable requested
 version also reports an installation error; sima-cli never retries with an
 unpinned latest release.
 
+Failed Codex or Claude install commands are retried up to three times, with
+2-second and 4-second waits. Every attempt uses the same exact version and
+normal TLS verification. If all attempts fail, installation stops and reports
+both output streams; later selected extensions may not have been installed.
+Rerun setup with `--all-extensions` to complete the remaining installations.
+
 The existing environment overrides take precedence over SDK/default versions:
 
 | Variable | Behavior |

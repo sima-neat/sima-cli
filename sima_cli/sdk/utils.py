@@ -1356,15 +1356,17 @@ def ensure_codex_vscode_extension_installed(
             capture_output=True,
             check=False,
         )
-    if result.returncode != 0:
-        print("⚠️  Could not install browser VS Code extensions; continuing SDK setup.")
-        details = (result.stderr or result.stdout or "").strip()
-        if details:
-            print(details)
-        return
-
+    # Preserve both streams: stderr often contains progress bars while stdout
+    # carries the installer stage and its actionable failure details.
     if result.stdout:
         print(result.stdout.strip())
+    if result.stderr:
+        print(result.stderr.strip())
+    if result.returncode != 0:
+        print(f"⚠️  Browser VS Code extension installation failed (exit {result.returncode}); "
+              "later extensions may not have been installed. Continuing SDK setup.")
+        return
+
     print("✅ Selected browser VS Code extensions installed; AI extension versions are pinned.")
 
 

@@ -2708,6 +2708,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
             setup_and_start(**kwargs)
         return start_container
 
+    def test_setup_forwards_all_extensions_to_new_container(self):
+        start_container = self._run_setup_for_studio(noninteractive=True, all_extensions=True)
+        self.assertTrue(start_container.call_args.kwargs["all_extensions"])
+        self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
+
     def test_setup_installs_and_publishes_edgematic_studio_when_requested(self):
         start_container = self._run_setup_for_studio(
             edgematic_studio=True, yes_to_all=True, noninteractive=True
@@ -3984,18 +3989,15 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_count, 1)
         prompt.assert_not_called()
 
-    def test_codex_vscode_extension_skips_when_user_declines(self):
+    def test_vscode_extension_skips_when_checklist_is_empty(self):
         server_available = Mock(returncode=0)
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
              patch("sima_cli.sdk.utils.subprocess.run", return_value=server_available) as run, \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False) as prompt:
+             patch("sima_cli.sdk.utils.select_browser_extensions", return_value=[]) as select:
             ensure_codex_vscode_extension_installed("container", "docker")
 
         self.assertEqual(run.call_count, 1)
-        prompt.assert_called_once_with(
-            "Do you want to install SiMa Neat, Claude, and Codex VSCode Extensions?",
-            default_yes=False,
-        )
+        select.assert_called_once_with(False, True)
 
     def test_codex_vscode_extension_auto_installs_without_prompt(self):
         server_available = Mock(returncode=0)
@@ -4052,7 +4054,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         codex_extension.assert_not_called()
 
-    def test_configure_container_yes_to_all_auto_installs_codex_extension(self):
+    def test_configure_container_all_extensions_auto_installs_without_prompt(self):
         with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
              patch("sima_cli.sdk.utils.run_command"), \
              patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
@@ -4063,10 +4065,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed") as codex_extension:
             from sima_cli.sdk.utils import configure_container
 
-            configure_container("container", yes_to_all=True)
+            configure_container("container", yes_to_all=True, all_extensions=True)
 
         codex_extension.assert_called_once()
-        self.assertTrue(codex_extension.call_args.kwargs["auto_install"])
+        self.assertTrue(codex_extension.call_args.kwargs["all_extensions"])
         self.assertFalse(codex_extension.call_args.kwargs["allow_prompt"])
 
     def test_sudoers_drop_in_uses_sudoers_d_without_replacing_base_file(self):

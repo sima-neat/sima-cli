@@ -4,7 +4,9 @@ import json
 import re
 import shlex
 import subprocess
-from typing import Dict, Mapping
+from typing import Dict, List, Mapping
+
+from InquirerPy import inquirer
 
 
 SDK_EXTENSION_MANIFEST = "/etc/sima-neat/vscode-extensions.json"
@@ -15,6 +17,28 @@ DEFAULT_EXTENSION_VERSIONS = {
 }
 _EXTENSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*\.[A-Za-z0-9][A-Za-z0-9-]*")
 _VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
+
+
+EXTENSION_CHOICES = (
+    {"name": "Neat Extension", "value": "neat"},
+    {"name": "Codex Extension", "value": "codex"},
+    {"name": "Claude Extension", "value": "claude"},
+)
+
+
+def select_browser_extensions(auto_install: bool, allow_prompt: bool) -> List[str]:
+    """Choose optional extensions without prompting in automation mode."""
+    if not auto_install and not allow_prompt:
+        return []
+    print("Neat Extension adds Neat SDK tools to VS Code, while Codex Extension "
+          "and Claude Extension provide AI coding assistance.")
+    if auto_install:
+        return [choice["value"] for choice in EXTENSION_CHOICES]
+    return inquirer.checkbox(
+        message="Select VS Code extensions to install:",
+        choices=[dict(choice) for choice in EXTENSION_CHOICES],
+        instruction="Space to select, Enter to confirm; leave all unchecked to skip",
+    ).execute() or []
 
 
 def load_extension_versions(container: str) -> Dict[str, str]:

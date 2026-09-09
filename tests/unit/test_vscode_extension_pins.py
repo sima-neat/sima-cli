@@ -222,3 +222,109 @@ def test_pin_verification_rejects_wrong_installed_version_without_writing(tmp_pa
     assert result.returncode != 0
     assert "does not match requested pin" in result.stderr
     assert profile.read_text() == original
+
+
+@pytest.mark.parametrize("names", [
+    [], ["neat"], ["codex"], ["claude"], ["neat", "codex"],
+    ["neat", "claude"], ["codex", "claude"], ["neat", "codex", "claude"],
+])
+def test_checklist_installs_only_selected_extensions(names, monkeypatch):
+    monkeypatch.delenv("SIMA_CLI_CODEX_EXTENSION_ID", raising=False)
+    monkeypatch.delenv("SIMA_CLI_CLAUDE_EXTENSION_ID", raising=False)
+    with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
+         patch("sima_cli.sdk.utils.select_browser_extensions", return_value=names), \
+         patch("sima_cli.sdk.utils.load_extension_versions", return_value=DEFAULT_EXTENSION_VERSIONS) as load, \
+         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+        ensure_codex_vscode_extension_installed("sdk", "user")
+    if not names:
+        assert run.call_count == 1
+        load.assert_not_called()
+        return
+    script = run.call_args.args[0][-1]
+    assert ("sima-neat.vsix" in script) == ("neat" in names)
+    for name, extension_id in [("codex", "openai.chatgpt"), ("claude", "anthropic.claude-code")]:
+        assert (f"--install-extension {extension_id}@" in script) == (name in names)
+        assert (f"-name '{extension_id}-*'" in script) == (name in names)
+    assert load.call_count == int(bool(set(names) & {"codex", "claude"}))
+    subprocess.run(["bash", "-n", "-c", script], capture_output=True, check=True)
+
+
+def test_checklist_labels_and_empty_selection(capsys):
+    from sima_cli.sdk.vscode_extensions import select_browser_extensions
+    with patch("sima_cli.sdk.vscode_extensions.inquirer.checkbox") as checkbox:
+        checkbox.return_value.execute.return_value = []
+        assert select_browser_extensions(False, True) == []
+    choices = checkbox.call_args.kwargs["choices"]
+    assert [choice["name"] for choice in choices] == ["Neat Extension", "Codex Extension", "Claude Extension"]
+    assert not any(choice.get("enabled", False) for choice in choices)
+    assert capsys.readouterr().out.strip() == (
+        "Neat Extension adds Neat SDK tools to VS Code, while Codex Extension "
+        "and Claude Extension provide AI coding assistance."
+    )
+
+
+@pytest.mark.parametrize("allow_prompt", [False, True])
+def test_auto_selection_bypasses_checklist(allow_prompt):
+    from sima_cli.sdk.vscode_extensions import select_browser_extensions
+    with patch("sima_cli.sdk.vscode_extensions.inquirer.checkbox") as checkbox:
+        assert select_browser_extensions(True, allow_prompt) == ["neat", "codex", "claude"]
+    checkbox.assert_not_called()
+
+
+def test_noninteractive_without_all_skips_checklist():
+    from sima_cli.sdk.vscode_extensions import select_browser_extensions
+    with patch("sima_cli.sdk.vscode_extensions.inquirer.checkbox") as checkbox:
+        assert select_browser_extensions(False, False) == []
+    checkbox.assert_not_called()
+
+
+def test_explicit_all_installs_three_even_with_legacy_empty_overrides():
+    with patch.dict(os.environ, {"SIMA_CLI_CODEX_EXTENSION_ID": "", "SIMA_CLI_CLAUDE_EXTENSION_ID": ""}), \
+         patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
+         patch("sima_cli.sdk.vscode_extensions.inquirer.checkbox") as checkbox, \
+         patch("sima_cli.sdk.utils.load_extension_versions", return_value=DEFAULT_EXTENSION_VERSIONS), \
+         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+        ensure_codex_vscode_extension_installed("sdk", "user", all_extensions=True)
+    checkbox.assert_not_called()
+    script = run.call_args.args[0][-1]
+    assert "sima-neat.vsix" in script
+    assert "--install-extension openai.chatgpt@26.5825.51511" in script
+    assert "--install-extension anthropic.claude-code@2.1.266" in script
+
+
+def test_setup_cli_forwards_all_extensions():
+    from click.testing import CliRunner
+    from sima_cli.sdk.commands import sdk
+    with patch("sima_cli.sdk.commands.setup_and_start") as setup:
+        result = CliRunner().invoke(sdk, ["setup", "--noninteractive", "--all-extensions"])
+    assert result.exit_code == 0, result.output
+    assert setup.call_args.kwargs["all_extensions"] is True
+    assert setup.call_args.kwargs["noninteractive"] is True
+
+
+def test_all_extensions_rejects_minimal_before_setup():
+    from sima_cli.sdk.install import setup_and_start
+    with pytest.raises(RuntimeError, match="--all-extensions cannot be combined with --minimal"):
+        setup_and_start(all_extensions=True, minimal=True)
+
+
+def test_all_extensions_applies_to_existing_sdk():
+    from sima_cli.sdk.install import setup_and_start
+    image = "ghcr.io/sima-neat/sdk:2.1.3"
+    with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+         patch("sima_cli.sdk.install.syscheck"), \
+         patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+         patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+         patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+         patch("sima_cli.sdk.install.get_container_status", return_value={"existing": "running"}), \
+         patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+         patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+         patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/extensions"), \
+         patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="existing"), \
+         patch("sima_cli.sdk.install.is_container_running", return_value=True), \
+         patch("sima_cli.sdk.install.check_os", return_value="linux"), \
+         patch("sima_cli.sdk.install.detect_current_user", return_value=("devuser", 1000, 1000)), \
+         patch("sima_cli.sdk.install.configure_container_user"), \
+         patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed") as install:
+        setup_and_start(noninteractive=True, all_extensions=True)
+    install.assert_called_once_with("existing", "devuser", all_extensions=True, allow_prompt=False, uid=1000, gid=1000)

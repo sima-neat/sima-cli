@@ -30,6 +30,7 @@ from sima_cli.sdk.vscode_extensions import (
     load_extension_versions,
     pin_extensions_command,
     resolve_extension_target,
+    select_browser_extensions,
 )
 
 
@@ -1187,6 +1188,7 @@ def ensure_codex_vscode_extension_installed(
     allow_prompt: bool = True,
     uid: int = None,
     gid: int = None,
+    all_extensions: bool = False,
 ) -> None:
     """
     Optionally install Neat, Claude, and Codex extensions into browser VS Code.
@@ -1205,29 +1207,27 @@ def ensure_codex_vscode_extension_installed(
         check=False,
     )
     if server_check.returncode != 0:
-        if auto_install:
+        if auto_install or all_extensions:
             print("ℹ️  Browser VS Code is not available in this SDK image; skipping browser VS Code extension install.")
         return
 
     neat_extension_target = "sdk/vscode-extension"
-    if auto_install:
-        print("ℹ️  Auto-installing Neat, Claude, and Codex extensions for browser VS Code.")
-    elif allow_prompt:
-        if not yes_no_prompt("Do you want to install SiMa Neat, Claude, and Codex VSCode Extensions?", default_yes=False):
-            print("ℹ️  Skipping browser VS Code extension install.")
-            return
-    else:
+    selected_names = select_browser_extensions(auto_install or all_extensions, allow_prompt)
+    if not selected_names:
         return
+    install_neat = "neat" in selected_names
 
     extensions = []
     try:
         requested_extensions = [
-            ("Claude", CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID),
-            ("Codex", CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID),
+            ("codex", "Codex", CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID),
+            ("claude", "Claude", CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID),
         ]
         selected = [
-            (label, env, os.environ.get(env, default).strip())
-            for label, env, default in requested_extensions
+            (label, env, (os.environ.get(env, default).strip() or default)
+             if all_extensions else os.environ.get(env, default).strip())
+            for name, label, env, default in requested_extensions
+            if name in selected_names
         ]
         versions = (
             load_extension_versions(sdk_container_name)
@@ -1241,6 +1241,9 @@ def ensure_codex_vscode_extension_installed(
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"⚠️  Could not resolve browser VS Code extension pins: {exc}")
         print("Skipping browser VS Code extension install; continuing SDK setup.")
+        return
+
+    if not install_neat and not extensions:
         return
 
     home_directory = f"/home/{login_name}"
@@ -1272,7 +1275,7 @@ def ensure_codex_vscode_extension_installed(
         "else "
         "exit 1; "
         "fi"
-    ]
+    ] if install_neat else []
     legacy_cleanup_steps = []
     for label, extension_target in extensions:
         extension_id = extension_target.split("@", 1)[0]
@@ -1331,7 +1334,8 @@ def ensure_codex_vscode_extension_installed(
     )
 
     print("ℹ️  Installing browser VS Code extensions:")
-    print(f"   - SiMa Neat: {neat_extension_target}")
+    if install_neat:
+        print(f"   - SiMa Neat: {neat_extension_target}")
     for label, extension_id in extensions:
         print(f"   - {label}: {extension_id}")
     result = subprocess.run(
@@ -1671,6 +1675,7 @@ def configure_container(
     install_edgematic_studio=False,
     minimal=False,
     user_and_workspace_only=False,
+    all_extensions=False,
 ) -> bool:
     """
     Configure container user mappings and permissions:
@@ -1775,7 +1780,8 @@ def configure_container(
         ensure_codex_vscode_extension_installed(
             sdk_container_name,
             login_name,
-            auto_install=(noninteractive or yes_to_all or _env_truthy(CODEX_EXTENSION_INSTALL_ENV)),
+            auto_install=_env_truthy(CODEX_EXTENSION_INSTALL_ENV),
+            all_extensions=all_extensions,
             allow_prompt=not (noninteractive or yes_to_all),
             uid=uid,
             gid=gid,
@@ -1909,6 +1915,7 @@ def start_docker_container(
     install_edgematic_studio=False,
     publish_edgematic_studio_port=False,
     minimal=False,
+    all_extensions=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -2115,6 +2122,7 @@ def start_docker_container(
         install_edgematic_studio=install_edgematic_studio,
         minimal=minimal,
         user_and_workspace_only=ros2_sdk_image,
+        all_extensions=all_extensions,
     )
 
     if devkit_env and neat_sdk_image:

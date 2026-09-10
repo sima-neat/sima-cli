@@ -75,7 +75,7 @@ def _download_set(urls, board, flavor, mirror):
         raise
 
 
-def download_netboot_image(requested, board, flavor='headless'):
+def download_netboot_image(requested, board, flavor='headless', allow_daily_fallback=False):
     from sima_cli.update.updater import _download_image
     selected = None
     try:
@@ -95,5 +95,11 @@ def download_netboot_image(requested, board, flavor='headless'):
             raise
         if release_tuple(selected or requested) and release_tuple(selected or requested) < (3, 0, 0):
             raise click.ClickException('Artifactory is unavailable; daily netboot fallback requires an eLxr 3.0+ build.') from exc
+        if not allow_daily_fallback:
+            raise click.ClickException(
+                f'{reason} Daily mirror fallback is disabled. '
+                'Retry with -f/--force to allow daily mirror downloads, or restore Artifactory access. '
+                'TFTP was not started.'
+            ) from exc
         urls = _mirror_files(selected or requested, board, reason, exact=selected is not None)
         return _download_set(urls, board, flavor, mirror=True)

@@ -57,7 +57,7 @@ def test_discovery_failure_falls_back(error):
     with patch.object(net, '_list_available_firmware_versions_internal', side_effect=error), \
             patch.object(net, '_mirror_files', return_value=sources()) as mirror, \
             patch.object(net, '_download_set', return_value=['ready']) as download:
-        assert net.download_netboot_image('1247', 'modalix') == ['ready']
+        assert net.download_netboot_image('1247', 'modalix', allow_daily_fallback=True) == ['ready']
     assert mirror.call_args.args[:2] == ('1247', 'modalix')
     assert mirror.call_args.kwargs['exact'] is False
     assert download.call_args.kwargs['mirror'] is True
@@ -70,7 +70,7 @@ def test_artifact_failure_retries_exact_selected_build():
             patch.object(net, 'resolve_elxr_palette_image', return_value='internal.img.gz'), \
             patch.object(net, '_download_set', side_effect=[requests.HTTPError(response=response), ['ready']]), \
             patch.object(net, '_mirror_files', return_value=sources()) as mirror:
-        assert net.download_netboot_image('3.0', 'modalix') == ['ready']
+        assert net.download_netboot_image('3.0', 'modalix', allow_daily_fallback=True) == ['ready']
     assert mirror.call_args.args[0] == VERSION
     assert mirror.call_args.kwargs['exact'] is True
 
@@ -161,3 +161,26 @@ def test_empty_archive_is_failure_and_cleans_staging(tmp_path):
         with pytest.raises(click.ClickException, match='contains no usable files'):
             net._download_set(['archive', 'image', 'troot'], 'modalix', 'headless', mirror=False)
     assert not tmp_path.exists()
+
+
+@pytest.mark.parametrize('selected', [False, True])
+def test_no_force_never_contacts_daily_mirror(selected):
+    discovery = {'return_value': [{'version': VERSION}]} if selected else {'side_effect': requests.ConnectionError()}
+    with patch.object(net, '_list_available_firmware_versions_internal', **discovery), \
+            patch.object(net, 'resolve_elxr_palette_image', side_effect=requests.ConnectionError()), \
+            patch.object(net, '_mirror_files') as mirror:
+        with pytest.raises(click.ClickException, match='Retry with -f/--force'):
+            net.download_netboot_image('1247', 'modalix')
+    mirror.assert_not_called()
+
+
+@pytest.mark.parametrize('force_args,expected', [([], False), (['-f'], True), (['--force'], True)])
+def test_cli_passes_explicit_fallback_policy(force_args, expected):
+    with patch('sima_cli.cli.check_for_update', return_value=False), \
+            patch('sima_cli.cli.internal_resource_exists', return_value=True), \
+            patch('sima_cli.cli.check_artifactory_reachability', return_value=False), \
+            patch('sima_cli.update.netboot.setup_netboot') as setup:
+        result = CliRunner().invoke(main, ['-i', 'bootimg', '-v', '1247', '--boardtype',
+                                          'modalix', '--fwtype', 'elxr', '-n'] + force_args)
+    assert result.exit_code == 0, result.output
+    assert setup.call_args.kwargs['allow_daily_fallback'] is expected

@@ -475,7 +475,7 @@ def run_cli(client_manager):
             click.echo("\n🛑 Exiting netboot session.")
             return True
 
-def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto'):
+def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto', allow_daily_fallback: bool = False):
     """
     Download and serve a bootable image for network boot over TFTP with client monitoring.
 
@@ -506,7 +506,7 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
 
     try:
         click.echo(f"⬇️  Downloading netboot image for version: {version}, board: {board}, swtype: {swtype}")
-        file_list = download_image(version, board, swtype=swtype, internal=internal, update_type='netboot', flavor=flavor)
+        file_list = download_image(version, board, swtype=swtype, internal=internal, update_type='netboot', flavor=flavor, allow_daily_fallback=allow_daily_fallback)
         if not isinstance(file_list, list):
             raise ValueError("Expected list of extracted files, got something else.")
         extract_dir = os.path.dirname(file_list[0])

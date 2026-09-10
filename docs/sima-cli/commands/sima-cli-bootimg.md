@@ -18,6 +18,7 @@ sima-cli bootimg [OPTIONS]
 | `-b, --boardtype` | Target board type. (default: mlsoc) |
 | `-t, --fwtype` | Target firmware type. (default: yocto) |
 | `-n, --netboot` | Prepare image for network boot and launch TFTP server. |
+| `-f, --force` | Allow daily mirror fallback if Artifactory is unavailable (internal Modalix eLxr netboot only). |
 | `--recovery` | Write eLxr Modalix recovery media for automatic eMMC recovery. |
 | `--devkit-ip` | Optional DevKit IP address for pre-netboot version probing. |
 | `-r, --rootfs` | Custom root fs folders (internal use only) |
@@ -79,10 +80,10 @@ Usage: sima-cli bootimg [OPTIONS]
       sima-cli bootimg -v 2.1.0 --boardtype modalix --netboot --devkit-ip
       192.168.1.20
 
-      # Internal eLxr 3.0+ netboot falls back to the daily mirror when
-      Artifactory is unavailable
+      # Allow daily mirror fallback for internal eLxr 3.0+ netboot
 
       sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot
+      -f
 
       # Prepare an eLxr netboot image for Modalix
 
@@ -100,6 +101,9 @@ Options:
   -t, --fwtype [yocto|elxr]       Target firmware type.  [default: yocto]
   -n, --netboot                   Prepare image for network boot and launch
                                   TFTP server.
+  -f, --force                     Allow daily mirror fallback if Artifactory
+                                  is unavailable (internal Modalix eLxr
+                                  netboot only).
   --recovery                      Write eLxr Modalix recovery media for
                                   automatic eMMC recovery.
   --devkit-ip TEXT                Optional DevKit IP address for pre-netboot
@@ -112,7 +116,7 @@ Options:
 
 ### Daily netboot fallback
 
-For internal Modalix eLxr 3.0+ builds, `--netboot` (also `--autoflash`) uses the public daily platform mirror if Artifactory cannot be reached or authentication fails. `-v` accepts an exact build name or a search term such as `1247`, `3.0`, or `develop`. Multiple matches appear newest build first.
+For internal Modalix eLxr 3.0+ builds, `--netboot` (also `--autoflash`) uses the public daily platform mirror only when `-f/--force` is provided and Artifactory cannot be reached or authentication fails. Without `-f`, preparation stops with an error explaining how to enable fallback. Size and SHA-256 verification remain mandatory with `-f`. `-v` accepts an exact build name or a search term such as `1247`, `3.0`, or `develop`. Multiple matches appear newest build first.
 
 The minimal TFTP archive, palette `.img.gz` eMMC image, and `troot_blob.be` come from the same selected build. Mirror downloads must match the index size and SHA-256 before extraction or TFTP startup. If an Artifactory artifact request fails after selection, the fallback retains that exact build. Missing or invalid mirror artifacts stop preparation with an error.
 

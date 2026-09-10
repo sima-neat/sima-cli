@@ -599,12 +599,13 @@ def show_mla_memory_usage(ctx):
 @click.option("-b", "--boardtype", type=click.Choice(["modalix",  "mlsoc"], case_sensitive=False), default="mlsoc", show_default=True, help="Target board type.")
 @click.option("-t", "--fwtype", type=click.Choice(["yocto",  "elxr"], case_sensitive=False), default="yocto", show_default=True, help="Target firmware type.")
 @click.option("-n", "--netboot", is_flag=True, default=False, show_default=True, help="Prepare image for network boot and launch TFTP server.")
+@click.option("-f", "--force", is_flag=True, help="Allow daily mirror fallback if Artifactory is unavailable (internal Modalix eLxr netboot only).")
 @click.option("--recovery", is_flag=True, help="Write eLxr Modalix recovery media for automatic eMMC recovery.")
 @click.option("--devkit-ip", required=False, help="Optional DevKit IP address for pre-netboot version probing.")
 @click.option("-r", "--rootfs", required=False, help="Custom root fs folders (internal use only)")
 @click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Net boot the DevKit and automatically flash the internal storage - TBD")
 @click.pass_context
-def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, rootfs, recovery=False):
+def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, rootfs, recovery=False, force=False):
     """
     Prepare a bootable image for the SiMa DevKit.
 
@@ -652,9 +653,9 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
         sima-cli bootimg -v 2.1.0 --boardtype modalix --netboot --devkit-ip 192.168.1.20
 
-        # Internal eLxr 3.0+ netboot falls back to the daily mirror when Artifactory is unavailable
+        # Allow daily mirror fallback for internal eLxr 3.0+ netboot
 
-        sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot
+        sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot -f
 
         # Prepare an eLxr netboot image for Modalix
 
@@ -705,7 +706,7 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
         boardtype = boardtype if boardtype != 'mlsoc' else 'davinci'
         if netboot or autoflash:
-            setup_netboot(version, boardtype, internal, autoflash, flavor='headless', rootfs=rootfs, swtype=fwtype)
+            setup_netboot(version, boardtype, internal, autoflash, flavor='headless', rootfs=rootfs, swtype=fwtype, allow_daily_fallback=force)
             click.echo("✅ Netboot image prepared and TFTP server is running.")
         else:
             write_image(version, boardtype, fwtype, internal, flavor='headless', recovery=recovery)

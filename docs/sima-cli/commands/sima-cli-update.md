@@ -163,7 +163,10 @@ staging directory are removed to free space, including for remote updates.
 
 Remote updates download on the host, transfer to the selected board storage,
 verify the transfer checksum, and run SWUpdate there. Both modes verify the signed bundle
-with `/etc/swupdate/public.pem` and select `update,full`. `--key` can select a
+with `/etc/swupdate/public.pem` and select `update,full`. If that default key
+is absent, the CLI temporarily provisions the bundled SiMa certificate under
+`/tmp` and removes it after the update attempt. Existing keys are preserved.
+`--key` can select a
 verification key already installed on the target. Firmware-only/OS-only modes
 and unsigned `--force` updates are not supported in this flow.
 

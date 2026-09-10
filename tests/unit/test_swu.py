@@ -122,7 +122,7 @@ def test_installer_uses_signed_full_collection_and_progress_without_reboot():
     assert script.index('swupdate-progress -w') < script.index('swupdate -v')
 
 
-def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2.1'):
+def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2.1', key_directory=None):
     bundle = tmp_path / 'bundle.swu'
     bundle.write_bytes(b'signed bundle fixture')
     target = MagicMock()
@@ -138,6 +138,7 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
     with patch.object(swu, 'Target', return_value=target), patch.object(swu, 'preflight', return_value=parse_state(STATE)), \
             patch.object(swu, 'resolve_bundle', return_value=str(bundle)), patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
             patch.object(swu, '_select_staging_root', return_value=root), \
+            patch.object(swu, 'prepare_key', return_value=(key_directory + '/public.pem' if key_directory else swu.DEFAULT_KEY, key_directory)), \
             patch.object(swu.tempfile, 'TemporaryDirectory') as cache, \
             patch.object(swu, '_reboot_and_verify') as reboot:
         cache.return_value.__enter__.return_value = str(tmp_path)
@@ -415,3 +416,47 @@ def test_nvme_staging_directory_created_after_mount():
         assert swu._select_staging_root(target, 1000) == '/media/nvme/swupdate'
     mount_script = next(call.args[0] for call in target.run.call_args_list if 'remount,rw' in call.args[0])
     assert mount_script.rindex('findmnt') < mount_script.index('mkdir -p /media/nvme/swupdate')
+
+
+@pytest.mark.parametrize('key', [swu.DEFAULT_KEY, '/etc/custom.pem'])
+def test_existing_or_explicit_key_never_uses_fallback(key):
+    target = MagicMock()
+    target.run.return_value = 'present'
+    assert swu.prepare_key(target, key) == (key, None)
+    assert not any('mktemp' in c.args[0] or 'CERTIFICATE' in c.args[0] for c in target.run.call_args_list)
+
+
+def test_missing_default_key_is_provisioned_in_private_tmp_directory():
+    from sima_cli.update.swu_certificate import PUBLIC_CERTIFICATE
+    target = MagicMock()
+    target.run.side_effect = ['absent', '/tmp/sima-cli-key.ABC12345', '']
+    assert swu.prepare_key(target, swu.DEFAULT_KEY) == ('/tmp/sima-cli-key.ABC12345/public.pem', '/tmp/sima-cli-key.ABC12345')
+    command = target.run.call_args.args[0]
+    assert PUBLIC_CERTIFICATE in command
+    assert 'umask 077' in command
+    assert '> /tmp/sima-cli-key.ABC12345/public.pem' in command
+
+
+def test_missing_key_dryrun_does_not_provision():
+    target = MagicMock()
+    target.run.return_value = 'absent'
+    assert swu.prepare_key(target, swu.DEFAULT_KEY, dryrun=True) == (None, None)
+    assert target.run.call_count == 1
+
+
+def test_key_write_failure_cleans_temporary_directory():
+    target = MagicMock()
+    target.run.side_effect = ['absent', '/tmp/sima-cli-key.ABC12345', click.ClickException('write failed'), '']
+    with pytest.raises(click.ClickException, match='write failed'):
+        swu.prepare_key(target, swu.DEFAULT_KEY)
+    assert target.run.call_args.args[0] == 'rm -rf -- /tmp/sima-cli-key.ABC12345'
+
+
+@pytest.mark.parametrize('ip', [None, '192.0.2.1'])
+@pytest.mark.parametrize('fail', [False, True])
+def test_temporary_key_used_and_cleaned_for_local_and_remote_updates(tmp_path, ip, fail):
+    directory = '/tmp/sima-cli-key.ABC12345'
+    target = run_install(tmp_path, ip=ip, fail=fail, key_directory=directory)
+    commands = [call.args[0] for call in target.run.call_args_list]
+    assert any('-k ' + directory + '/public.pem' in command for command in commands)
+    assert 'rm -rf -- ' + directory in commands

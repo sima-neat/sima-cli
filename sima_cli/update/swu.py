@@ -72,6 +72,31 @@ class InstallProgress:
         self.progress.stop()
 
 
+def prepare_key(target, key, dryrun=False):
+    """Prefer the target key; provision the bundled fallback only when absent."""
+    if key != DEFAULT_KEY:
+        return key, None
+    exists = target.run('if test -e ' + shlex.quote(key) + '; then echo present; else echo absent; fi').strip()
+    if exists == 'present':
+        return key, None
+    if exists != 'absent':
+        raise click.ClickException('Cannot determine whether the target verification key exists.')
+    click.echo('Default verification key is absent; using the bundled SiMa certificate temporarily.')
+    if dryrun:
+        return None, None
+    from sima_cli.update.swu_certificate import PUBLIC_CERTIFICATE
+    directory = target.run('mktemp -d /tmp/sima-cli-key.XXXXXXXX').strip()
+    if not re.fullmatch(r'/tmp/sima-cli-key\.[A-Za-z0-9]+', directory):
+        raise click.ClickException('Invalid temporary key directory returned by target.')
+    path = directory + '/public.pem'
+    try:
+        target.run('set -eu; umask 077; printf %s ' + shlex.quote(PUBLIC_CERTIFICATE) + ' > ' + shlex.quote(path))
+    except Exception:
+        target.run('rm -rf -- ' + shlex.quote(directory), check=False)
+        raise
+    return path, directory
+
+
 def preflight(target, key):
     target.run('''set -eu
 for tool in swupdate simaai-ab-info simaai-trootctl findmnt readlink sha256sum flock pgrep; do
@@ -85,7 +110,7 @@ test -b "$rootdev" && test "$(cat "/sys/class/block/$dev/dm/name")" = rootfs || 
 }
 test -s /etc/hwrevision || { echo 'Hardware identity is missing'; exit 1; }
 test "$(date +%Y)" -ge 2024 || { echo 'Set the system clock before signed updates'; exit 1; }
-test -s ''' + shlex.quote(key) + " || { echo 'SWUpdate verification key is missing'; exit 1; }")
+''' + ("test -s " + shlex.quote(key) + " || { echo 'SWUpdate verification key is missing'; exit 1; }" if key else ':'))
     state = inspect_target(target)
     if state.get('running slot') not in ('A', 'B') or state.get('active slot') != state.get('running slot'):
         raise click.ClickException('Cannot establish a consistent running A/B slot. Inspect the system before updating.')
@@ -196,10 +221,12 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                   auto_confirm=False, dryrun=False, key=DEFAULT_KEY, reboot=False):
     target = Target(ip, passwd)
     staging = None
+    key_directory = None
     installing = False
     complete = False
     try:
         click.echo('Checking target and A/B state...')
+        key, key_directory = prepare_key(target, key, dryrun=dryrun)
         before = preflight(target, key)
         source = resolve_bundle(requested, board, internal)
         if not source:
@@ -209,7 +236,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
         size_hint = bundle_size(source, internal)
         staging_root = _select_staging_root(target, size_hint, dryrun=dryrun)
         if dryrun:
-            click.echo('Dry run: ' + shlex.join(['sudo', 'swupdate', '-v', '-i', staging_root + '/<staged-bundle>.swu', '-k', key, '-e', 'update,full']))
+            click.echo('Dry run: ' + shlex.join(['sudo', 'swupdate', '-v', '-i', staging_root + '/<staged-bundle>.swu', '-k', key or '/tmp/<temporary-key>/public.pem', '-e', 'update,full']))
             click.echo('No bundle installed or reboot scheduled.')
             return
         if not auto_confirm:
@@ -249,6 +276,9 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                     expected = parts[index]
             target.run('rm -rf -- ' + shlex.quote(staging))
             staging = None
+            if key_directory:
+                target.run('rm -rf -- ' + shlex.quote(key_directory))
+                key_directory = None
             _reboot_and_verify(target, before, ip, passwd, expected=expected)
     except (KeyboardInterrupt, EOFError, OSError) as exc:
         raise click.ClickException('Update interrupted or connection lost. State is unknown; inspect the board before retrying.') from exc
@@ -261,6 +291,11 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                     click.echo(f'Staging cleanup deferred: {staging}')
             else:
                 click.echo(f'Installation did not finish cleanly. Retained bundle at {staging}; inspect before retrying.')
+        if key_directory:
+            try:
+                target.run('rm -rf -- ' + shlex.quote(key_directory))
+            except Exception:
+                click.echo(f'Temporary key cleanup deferred: {key_directory}')
         target.close()
 
 

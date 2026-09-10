@@ -128,7 +128,7 @@ Use `--netboot --devkit 192.168.2.2` to select a DevKit, or omit `--devkit` to u
 
 The host route to the selected DevKit determines the TFTP server IP, including on hosts with multiple interfaces. The DevKit's active address, subnet, and return-route gateway are reused for static netboot; DHCP is not required.
 
-After downloading the image and starting TFTP, a yellow panel shows the device, network settings, persistent U-Boot changes, and reboot consequences. Confirmation defaults to No. Accepting saves the previous environment under `/boot/sima-cli-netboot-backup.*`, sets `boot_targets=net` and the static network boot commands, verifies the settings, and schedules a reboot. Declining leaves U-Boot unchanged. Failures during environment preparation restore the saved environment and prevent reboot.
+After downloading the image and starting TFTP, a yellow panel shows the device, network settings, persistent U-Boot changes, and reboot consequences. Confirmation defaults to No. Accepting temporarily remounts `/boot` writable when needed, restores its original mount mode on exit, and saves the previous environment under `/boot/sima-cli-netboot-backup.*`, sets `boot_targets=net` and the static network boot commands, verifies the settings, and schedules a reboot. Declining leaves U-Boot unchanged. Failures during environment preparation restore the saved environment and prevent reboot.
 
 Keep the host and TFTP server running. The settings persist until changed: failed network boots retry and reboot, so recovery may require serial access. The backup directory includes both original environment files and a readable `environment.txt`. Netboot preparation does not itself flash the eMMC image; that remains a separate action in the interactive TFTP session.
 

@@ -238,7 +238,7 @@ def reboot_remote_board(ip: str, passwd: str):
         click.echo(f"⚠️  Unable to connect to the remote board")
 
 
-def run_remote_command_capture(ssh, command: str, password: str = DEFAULT_PASSWORD):
+def run_remote_command_capture(ssh, command: str, password: str = DEFAULT_PASSWORD, sudo_pty: bool = True):
     """
     Run a remote command over SSH and return (exit_status, stdout_str, stderr_str).
     Does not stream output to the console.
@@ -248,7 +248,7 @@ def run_remote_command_capture(ssh, command: str, password: str = DEFAULT_PASSWO
     if needs_sudo:
         command = f"sudo -S {command[len('sudo '):]}"
 
-    stdin, stdout, stderr = ssh.exec_command(command, get_pty=needs_sudo)
+    stdin, stdout, stderr = ssh.exec_command(command, get_pty=needs_sudo and sudo_pty)
     if needs_sudo:
         stdin.write(password + "\n")
         stdin.flush()

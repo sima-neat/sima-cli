@@ -136,6 +136,3 @@ Keep the host and TFTP server running. The settings persist until changed: faile
 sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot -f --devkit 192.168.2.2
 ```
 
-### Image transfer performance
-
-The interactive eMMC upload uses native OpenSSH on macOS/Linux when available, with the existing progress bar, transfer rate, and ETA. The data connection pins the host key from the established SSH connection. The file is uploaded under a temporary name, its size is checked, and it is renamed into place only after successful completion. Windows and hosts without `ssh` retain SFTP transfers with progress.

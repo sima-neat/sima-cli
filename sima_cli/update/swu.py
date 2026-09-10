@@ -13,6 +13,7 @@ from sima_cli.download import download_file_from_url
 from sima_cli.update.ab_state import inspect_target
 from sima_cli.update.swu_artifacts import release_tuple, resolve_bundle, bundle_size
 from sima_cli.update.swu_target import Target
+from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
 
 DEFAULT_KEY = '/etc/swupdate/public.pem'
 
@@ -26,9 +27,9 @@ if pgrep -x swupdate >/dev/null; then
     echo 'SWUpdate is already running; inspect it before starting another install'; exit 1
 fi
 state=$(simaai-trootctl get-active-slot)
-if ! printf '%s\n' "$state" | grep -Eq 'upgrade_available:[[:space:]]*no([,[:space:]]|$)'; then
+if ! printf '%s\n' "$state" | grep -Eq 'upgrade_available[[:space:]]*:[[:space:]]*no([,[:space:]]|$)'; then
     # A factory control block is the supported initial state before the first A/B update.
-    if printf '%s\n' "$state" | grep -q 'upgrade_available:' ||
+    if printf '%s\n' "$state" | grep -Eq 'upgrade_available[[:space:]]*:' ||
        ! printf '%s\n' "$state" | grep -Eq '^control block[[:space:]]*:[[:space:]]*blank/invalid -> factory \(boots slot A\)$' ||
        ! printf '%s\n' "$state" | grep -Eq '^running slot[[:space:]]*:[[:space:]]*A[[:space:]]*$' ||
        ! simaai-trootctl rollback-status | grep -q 'normal boot'; then
@@ -103,12 +104,7 @@ for tool in swupdate simaai-ab-info simaai-trootctl findmnt readlink sha256sum f
     command -v "$tool" >/dev/null || { echo "Missing required tool: $tool"; exit 1; }
 done
 findmnt -n -M /data >/dev/null || { echo '/data must be mounted'; exit 1; }
-rootdev=$(findmnt -n -o SOURCE /)
-dev=$(basename "$(readlink -f "$rootdev")")
-test -b "$rootdev" && test "$(cat "/sys/class/block/$dev/dm/name")" = rootfs || {
-    echo 'A/B rootfs mapping missing; use recovery to provision this board'; exit 1
-}
-test -s /etc/hwrevision || { echo 'Hardware identity is missing'; exit 1; }
+''' + ROOT_DEVICE_SCRIPT + '''test -s /etc/hwrevision || { echo 'Hardware identity is missing'; exit 1; }
 test "$(date +%Y)" -ge 2024 || { echo 'Set the system clock before signed updates'; exit 1; }
 ''' + ("test -s " + shlex.quote(key) + " || { echo 'SWUpdate verification key is missing'; exit 1; }" if key else ':'))
     state = inspect_target(target)

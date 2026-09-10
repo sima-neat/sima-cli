@@ -4,6 +4,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
+from sima_cli.update.rootfs import ROOT_IDENTITY_SCRIPT
 
 
 def parse_state(output):
@@ -18,11 +19,19 @@ def parse_state(output):
         match = re.match(r'([AB])\b', value, re.I)
         fields[key] = match.group(1).upper() if match else 'unknown'
     for name in ('upgrade_available', 'next-boot'):
-        match = re.search(r'\b' + name + r':\s*([^,\s]+)', output, re.I)
+        match = re.search(r'\b' + name + r'\s*:\s*([^,\s]+)', output, re.I)
         fields[name] = match.group(1) if match else 'unknown'
+    next_boot = fields.get('next-boot slot (cb)', '')
+    if next_boot.upper() in ('A', 'B'):
+        fields['next-boot'] = next_boot.upper()
     for slot in ('A', 'B'):
         match = re.search(r'\b(valid|invalid|blank)\s+' + slot + r'\b', output, re.I)
         fields['validity ' + slot] = match.group(1).lower() if match else 'unknown'
+    valid_slots = fields.get('slots valid', '')
+    if re.fullmatch(r'[AB](?:\s*,\s*[AB])*', valid_slots):
+        for slot in ('A', 'B'):
+            fields['validity ' + slot] = 'valid' if slot in valid_slots else 'invalid'
+        fields['control block'] = 'initialized'
     factory = re.fullmatch(r'blank/invalid\s*->\s*factory\s*\(boots slot A\)', fields.get('control block', ''), re.I)
     fields['factory'] = bool(factory)
     if factory:
@@ -39,6 +48,13 @@ def inspect_target(target, display=True):
     # These queries do not change the slot, upgrade flag, or boot counter.
     extra = target.run('simaai-trootctl bootcount', check=False)
     state = parse_state(output)
+    if state.get('active slot') == 'unknown':
+        identity = target.run(ROOT_IDENTITY_SCRIPT, check=False)
+        supplemental = parse_state(identity)
+        if supplemental.get('active slot') in ('A', 'B'):
+            for key in ('active slot', 'fallback slot', 'active version', 'active os', 'medium'):
+                if supplemental.get(key):
+                    state[key] = supplemental[key]
     count = re.search(r'boot retries[^\n]*:\s*(\d+)\s*$', extra, re.I)
     state['bootcount'] = count.group(1) if count else (extra.strip() or 'unknown')
     if display:
@@ -54,7 +70,7 @@ def render_state(state):
     running = state.get('running slot', 'unknown')
     for slot in ('A', 'B'):
         prefix = 'active' if state.get('active slot') == slot else 'fallback' if state.get('fallback slot') == slot else None
-        role = 'Running' if slot == running else 'Fallback' if prefix == 'fallback' else 'Unknown'
+        role = 'Running' if slot == running else 'Next boot' if slot == state.get('next-boot') else 'Fallback' if prefix == 'fallback' else 'Unknown'
         values = [slot, role, state.get(f'{prefix} version', 'unknown'), state.get(f'{prefix} os', 'unknown'), state.get('validity ' + slot, 'unknown')]
         table.add_row(*(Text(value) for value in values))
     console.print(table)

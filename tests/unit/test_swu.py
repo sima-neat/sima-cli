@@ -460,3 +460,46 @@ def test_temporary_key_used_and_cleaned_for_local_and_remote_updates(tmp_path, i
     commands = [call.args[0] for call in target.run.call_args_list]
     assert any('-k ' + directory + '/public.pem' in command for command in commands)
     assert 'rm -rf -- ' + directory in commands
+
+
+CURRENT_CONTROL_STATE = '''running slot        : B
+next-boot slot (CB) : B
+slots valid         : A,B
+upgrade_available   : no
+rolled back         : no
+boot mode: normal boot
+'''
+
+
+def test_current_troot_output_parses_spaced_fields_and_slot_validity():
+    state = parse_state(CURRENT_CONTROL_STATE)
+    assert state['running slot'] == state['next-boot'] == 'B'
+    assert state['upgrade_available'] == 'no'
+    assert state['validity A'] == state['validity B'] == 'valid'
+    assert state['control block'] == 'initialized'
+    pending = parse_state(CURRENT_CONTROL_STATE.replace('running slot        : B', 'running slot        : A').replace('upgrade_available   : no', 'upgrade_available   : yes'))
+    assert pending['running slot'] == 'A'
+    assert pending['next-boot'] == 'B'
+    assert pending['upgrade_available'] == 'yes'
+
+
+def test_overlay_inspection_supplements_identity_without_inventing_fallback_version():
+    from sima_cli.update.ab_state import inspect_target
+    target = MagicMock()
+    target.run.side_effect = [
+        'running system: not on an A/B medium (netboot?)\n' + CURRENT_CONTROL_STATE,
+        'boot retries: 0',
+        'active slot: B\nfallback slot: A\nmedium: /dev/mmcblk0\nactive version: 3.0.0_fix_recovery_B1230\nactive os: eLxr 26.04.02',
+    ]
+    state = inspect_target(target, display=False)
+    assert state['active slot'] == state['running slot'] == 'B'
+    assert state['active version'] == '3.0.0_fix_recovery_B1230'
+    assert state['medium'] == '/dev/mmcblk0'
+    assert 'fallback version' not in state
+
+
+def test_current_pending_flag_blocks_preflight():
+    state = parse_state('active slot: B\n' + CURRENT_CONTROL_STATE.replace('upgrade_available   : no', 'upgrade_available   : yes'))
+    with patch.object(swu, 'inspect_target', return_value=state):
+        with pytest.raises(click.ClickException, match='pending'):
+            swu.preflight(MagicMock(), swu.DEFAULT_KEY)

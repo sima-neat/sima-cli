@@ -298,6 +298,7 @@ def copy_file_to_remote_board(ip: str, file_path: str, remote_dir: str, passwd: 
     
     from tqdm import tqdm
 
+    sftp = None
     try:
         ssh.connect(ip, username=DEFAULT_USER, password=passwd, timeout=10)
         sftp = ssh.open_sftp()
@@ -314,16 +315,20 @@ def copy_file_to_remote_board(ip: str, file_path: str, remote_dir: str, passwd: 
             def progress(transferred, total):
                 pbar.update(transferred - pbar.n)
 
-            sftp.put(file_path, remote_path, callback=progress)
+            from sima_cli.update.fast_upload import upload
+            upload(ssh, sftp, ip, passwd, file_path, remote_path, progress)
 
         click.echo("✅ Upload complete")
 
-        sftp.close()
-        ssh.close()
         return True
 
     except Exception as e:
         click.echo(f"❌ Remote file copy failed: {e}")
+
+    finally:
+        if sftp is not None:
+            sftp.close()
+        ssh.close()
 
     return False
 

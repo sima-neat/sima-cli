@@ -25,6 +25,14 @@ from sima_cli.sdk.config import (
     BASELINE_IMAGE,
     IMAGE_ALIASES,
 )
+from sima_cli.sdk.vscode_extensions import (
+    extension_install_command,
+    extension_install_progress,
+    load_extension_versions,
+    pin_extensions_command,
+    resolve_extension_target,
+    select_browser_extensions,
+)
 
 
 FILTER_KEYWORDS = ["elxr", "yocto", "mpk", "modelsdk", "neat-sdk", "sima-neat/sdk", "sima-neat/elxr"]
@@ -870,13 +878,14 @@ def resolve_edgematic_studio_choice(
     """
     Decide whether setup installs Edgematic Studio and publishes its port.
 
-    Studio is opt-in, and both halves are settled before the container is
-    created: port maps are immutable afterwards, so a prompt at install time
-    could not govern the port.
+    Only explicit flags enable Studio; default setup never advertises or asks
+    about it. The interactive argument is retained for caller compatibility
+    and does not change the choice.
 
     Returns (install, publish_port).
     """
-    from sima_cli.sdk.neat import EDGEMATIC_STUDIO_CONTAINER_PORT
+    if not install_requested and not port_only:
+        return False, False
 
     extension_install_args = _edgematic_studio_install_args()
     if not extension_install_args:
@@ -895,39 +904,6 @@ def resolve_edgematic_studio_choice(
         )
         return False, True
 
-    if not interactive:
-        print(
-            "ℹ️  Edgematic Studio is opt-in and will not be installed. Pass "
-            "--edgematic-studio to install it, or --edgematic-studio-port to publish "
-            "its port for a manual install."
-        )
-        return False, False
-
-    console.print(
-        Panel(
-            "[yellow]This SDK can install Edgematic Studio as an optional extension.[/yellow]\n\n"
-            "Edgematic Studio is a browser-based development environment for building "
-            "and running AI applications with an AI agent, an editor, and DevKit tooling "
-            "in one place.\n"
-            "It will be installed on your host in the SDK extensions directory "
-            "mounted into this container at /sdk-extensions.\n"
-            "The download is small, but it also fetches a coding-agent CLI and its skills, "
-            f"and setup publishes its HTTP port ({EDGEMATIC_STUDIO_CONTAINER_PORT}) on this host.\n"
-            "It is a preview: its documentation and support are still in progress, so it is "
-            "only installed if you ask for it here.\n\n"
-            "Answering no leaves the port unpublished. To enable it later, recreate this "
-            "container with:\n"
-            "sima-cli sdk setup --edgematic-studio",
-            title="Edgematic Studio Extension (optional)",
-            border_style="green",
-            style="green",
-            expand=False,
-        )
-    )
-    if yes_no_prompt("Install the Edgematic Studio extension now?", default_yes=False):
-        return True, True
-    print("ℹ️  Skipping Edgematic Studio; its port will not be published.")
-    print("   To enable it later, recreate this container with: sima-cli sdk setup --edgematic-studio")
     return False, False
 
 
@@ -1213,6 +1189,7 @@ def ensure_codex_vscode_extension_installed(
     allow_prompt: bool = True,
     uid: int = None,
     gid: int = None,
+    all_extensions: bool = False,
 ) -> None:
     """
     Optionally install Neat, Claude, and Codex extensions into browser VS Code.
@@ -1231,30 +1208,43 @@ def ensure_codex_vscode_extension_installed(
         check=False,
     )
     if server_check.returncode != 0:
-        if auto_install:
+        if auto_install or all_extensions:
             print("ℹ️  Browser VS Code is not available in this SDK image; skipping browser VS Code extension install.")
         return
 
     neat_extension_target = "sdk/vscode-extension"
-    extensions = []
-    claude_extension_id = os.environ.get(CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID).strip()
-    codex_extension_id = os.environ.get(CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID).strip()
-    if claude_extension_id:
-        extensions.append(("Claude", claude_extension_id))
-    else:
-        print(f"ℹ️  {CLAUDE_EXTENSION_ID_ENV} is empty; skipping Claude extension install.")
-    if codex_extension_id:
-        extensions.append(("Codex", codex_extension_id))
-    else:
-        print(f"ℹ️  {CODEX_EXTENSION_ID_ENV} is empty; skipping Codex extension install.")
+    selected_names = select_browser_extensions(auto_install or all_extensions, allow_prompt)
+    if not selected_names:
+        return
+    install_neat = "neat" in selected_names
 
-    if auto_install:
-        print("ℹ️  Auto-installing Neat, Claude, and Codex extensions for browser VS Code.")
-    elif allow_prompt:
-        if not yes_no_prompt("Do you want to install SiMa Neat, Claude, and Codex VSCode Extensions?", default_yes=False):
-            print("ℹ️  Skipping browser VS Code extension install.")
-            return
-    else:
+    extensions = []
+    try:
+        requested_extensions = [
+            ("codex", "Codex", CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID),
+            ("claude", "Claude", CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID),
+        ]
+        selected = [
+            (label, env, (os.environ.get(env, default).strip() or default)
+             if all_extensions else os.environ.get(env, default).strip())
+            for name, label, env, default in requested_extensions
+            if name in selected_names
+        ]
+        versions = (
+            load_extension_versions(sdk_container_name)
+            if any(target for _, _, target in selected) else {}
+        )
+        for label, env, target in selected:
+            if target:
+                extensions.append((label, resolve_extension_target(target, versions)))
+            else:
+                print(f"ℹ️  {env} is empty; skipping {label} extension install.")
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        print(f"⚠️  Could not resolve browser VS Code extension pins: {exc}")
+        print("Skipping browser VS Code extension install; continuing SDK setup.")
+        return
+
+    if not install_neat and not extensions:
         return
 
     home_directory = f"/home/{login_name}"
@@ -1286,24 +1276,22 @@ def ensure_codex_vscode_extension_installed(
         "else "
         "exit 1; "
         "fi"
-    ]
+    ] if install_neat else []
     legacy_cleanup_steps = []
-    for label, extension_id in extensions:
-        quoted_extension_id = shlex.quote(extension_id)
-        install_steps.append(
-            f"echo 'Installing {label} extension: {extension_id}'; "
-            f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-            f"--list-extensions 2>/dev/null | grep -Fxq {quoted_extension_id}; then "
-            f"echo '{label} extension already installed: {extension_id}'; "
-            "else "
-            f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-            f"--install-extension {quoted_extension_id} --force --accept-server-license-terms; "
-            "fi"
-        )
+    for label, extension_target in extensions:
+        extension_id = extension_target.split("@", 1)[0]
+        install_steps.append(extension_install_command(
+            OPENVSCODE_SERVER_BIN, extensions_dir, label, extension_target,
+        ))
         legacy_cleanup_steps.append(
             f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
             f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true"
         )
+
+    install_steps.append(pin_extensions_command(
+        extensions_dir,
+        dict(target.split("@", 1) for _, target in extensions),
+    ))
 
     user_extension_script = (
         "set -e; "
@@ -1335,47 +1323,51 @@ def ensure_codex_vscode_extension_installed(
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
-        + "; ".join(legacy_cleanup_steps)
-        + "; "
         f"mkdir -p {shlex.quote(neat_extension_install_dir)}; "
         f"mkdir -p {shlex.quote(extensions_dir)}; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(neat_extension_install_dir)} 2>/dev/null || true; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(extensions_dir)} 2>/dev/null || true; "
         f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_extension_script)}; "
-        "if command -v supervisorctl >/dev/null 2>&1; then "
+        + ("; ".join(legacy_cleanup_steps) + "; " if legacy_cleanup_steps else "")
+        + "if command -v supervisorctl >/dev/null 2>&1; then "
         "supervisorctl restart openvscode-server >/dev/null 2>&1 || true; "
         "fi"
     )
 
     print("ℹ️  Installing browser VS Code extensions:")
-    print(f"   - SiMa Neat: {neat_extension_target}")
+    if install_neat:
+        print(f"   - SiMa Neat: {neat_extension_target}")
     for label, extension_id in extensions:
         print(f"   - {label}: {extension_id}")
-    result = subprocess.run(
-        [
-            "docker",
-            "exec",
-            "-u",
-            "root",
-            sdk_container_name,
-            "bash",
-            "-lc",
-            install_script,
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        print("⚠️  Could not install browser VS Code extensions; continuing SDK setup.")
-        details = (result.stderr or result.stdout or "").strip()
-        if details:
-            print(details)
-        return
-
+    progress_labels = (["Neat"] if install_neat else []) + [label for label, _ in extensions]
+    with extension_install_progress(progress_labels, console):
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                sdk_container_name,
+                "bash",
+                "-lc",
+                install_script,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    # Preserve both streams: stderr often contains progress bars while stdout
+    # carries the installer stage and its actionable failure details.
     if result.stdout:
         print(result.stdout.strip())
-    print("✅ Neat, Claude, and Codex extensions installed for browser VS Code.")
+    if result.stderr:
+        print(result.stderr.strip())
+    if result.returncode != 0:
+        print(f"⚠️  Browser VS Code extension installation failed (exit {result.returncode}); "
+              "later extensions may not have been installed. Continuing SDK setup.")
+        return
+
+    print("✅ Selected browser VS Code extensions installed; AI extension versions are pinned.")
 
 
 def _container_openvscode_available(sdk_container_name: str) -> bool:
@@ -1688,6 +1680,7 @@ def configure_container(
     install_edgematic_studio=False,
     minimal=False,
     user_and_workspace_only=False,
+    all_extensions=False,
 ) -> bool:
     """
     Configure container user mappings and permissions:
@@ -1792,7 +1785,8 @@ def configure_container(
         ensure_codex_vscode_extension_installed(
             sdk_container_name,
             login_name,
-            auto_install=(noninteractive or yes_to_all or _env_truthy(CODEX_EXTENSION_INSTALL_ENV)),
+            auto_install=_env_truthy(CODEX_EXTENSION_INSTALL_ENV),
+            all_extensions=all_extensions,
             allow_prompt=not (noninteractive or yes_to_all),
             uid=uid,
             gid=gid,
@@ -1926,6 +1920,7 @@ def start_docker_container(
     install_edgematic_studio=False,
     publish_edgematic_studio_port=False,
     minimal=False,
+    all_extensions=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -2132,6 +2127,7 @@ def start_docker_container(
         install_edgematic_studio=install_edgematic_studio,
         minimal=minimal,
         user_and_workspace_only=ros2_sdk_image,
+        all_extensions=all_extensions,
     )
 
     if devkit_env and neat_sdk_image:

@@ -2708,6 +2708,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
             setup_and_start(**kwargs)
         return start_container
 
+    def test_setup_forwards_all_extensions_to_new_container(self):
+        start_container = self._run_setup_for_studio(noninteractive=True, all_extensions=True)
+        self.assertTrue(start_container.call_args.kwargs["all_extensions"])
+        self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
+
     def test_setup_installs_and_publishes_edgematic_studio_when_requested(self):
         start_container = self._run_setup_for_studio(
             edgematic_studio=True, yes_to_all=True, noninteractive=True
@@ -2732,18 +2737,15 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
         self.assertFalse(start_container.call_args.kwargs["publish_edgematic_studio_port"])
 
-    def test_setup_offers_edgematic_studio_interactively_and_honours_yes(self):
-        with patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True) as prompt:
+    def test_setup_is_silent_about_edgematic_studio_by_default_interactively(self):
+        with patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True) as prompt, \
+             patch("sima_cli.sdk.utils.console.print") as panel, \
+             patch("builtins.print") as printed:
             start_container = self._run_setup_for_studio()
 
-        self.assertFalse(prompt.call_args.kwargs["default_yes"])
-        self.assertTrue(start_container.call_args.kwargs["install_edgematic_studio"])
-        self.assertTrue(start_container.call_args.kwargs["publish_edgematic_studio_port"])
-
-    def test_setup_declined_prompt_publishes_no_edgematic_studio_port(self):
-        with patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False):
-            start_container = self._run_setup_for_studio()
-
+        prompt.assert_not_called()
+        output = str(panel.call_args_list) + str(printed.call_args_list)
+        self.assertNotIn("edgematic", output.lower())
         self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
         self.assertFalse(start_container.call_args.kwargs["publish_edgematic_studio_port"])
 
@@ -3567,17 +3569,21 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         prompt.assert_not_called()
 
-    def test_edgematic_studio_choice_prompts_with_default_no(self):
-        with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False) as prompt:
-            self.assertEqual(resolve_edgematic_studio_choice(), (False, False))
-
-        self.assertFalse(prompt.call_args.kwargs["default_yes"])
-
-        with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True):
-            # A yes has to settle the port too — port maps are fixed at create.
-            self.assertEqual(resolve_edgematic_studio_choice(), (True, True))
+    def test_edgematic_studio_choice_is_silent_without_explicit_options(self):
+        for interactive in (True, False):
+            with self.subTest(interactive=interactive), \
+                 patch("sima_cli.sdk.utils._edgematic_studio_install_args") as install_args, \
+                 patch("sima_cli.sdk.utils.yes_no_prompt") as prompt, \
+                 patch("sima_cli.sdk.utils.console.print") as panel, \
+                 patch("builtins.print") as printed:
+                self.assertEqual(
+                    resolve_edgematic_studio_choice(interactive=interactive),
+                    (False, False),
+                )
+                install_args.assert_not_called()
+                prompt.assert_not_called()
+                panel.assert_not_called()
+                printed.assert_not_called()
 
     def test_edgematic_studio_choice_skips_unsupported_host_platform(self):
         with patch("sima_cli.sdk.utils.platform.machine", return_value="riscv64"), \
@@ -3848,16 +3854,6 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(calls, ["model", "codex-skills", "playbooks", "vscode", "studio"])
         self.assertGreater(calls.index("studio"), calls.index("playbooks"))
 
-    def test_edgematic_studio_skip_notice_names_the_options_that_enable_it(self):
-        # A user who never heard of Studio has to learn how to turn it on here.
-        with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("builtins.print") as printed:
-            resolve_edgematic_studio_choice(interactive=False)
-
-        output = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
-        self.assertIn("--edgematic-studio", output)
-        self.assertIn("--edgematic-studio-port", output)
-
     def test_configure_container_minimal_skips_edgematic_studio(self):
         with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
              patch("sima_cli.sdk.utils.run_command"), \
@@ -3993,24 +3989,22 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_count, 1)
         prompt.assert_not_called()
 
-    def test_codex_vscode_extension_skips_when_user_declines(self):
+    def test_vscode_extension_skips_when_checklist_is_empty(self):
         server_available = Mock(returncode=0)
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
              patch("sima_cli.sdk.utils.subprocess.run", return_value=server_available) as run, \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False) as prompt:
+             patch("sima_cli.sdk.utils.select_browser_extensions", return_value=[]) as select:
             ensure_codex_vscode_extension_installed("container", "docker")
 
         self.assertEqual(run.call_count, 1)
-        prompt.assert_called_once_with(
-            "Do you want to install SiMa Neat, Claude, and Codex VSCode Extensions?",
-            default_yes=False,
-        )
+        select.assert_called_once_with(False, True)
 
     def test_codex_vscode_extension_auto_installs_without_prompt(self):
         server_available = Mock(returncode=0)
+        manifest_missing = Mock(returncode=44)
         install_result = Mock(returncode=0, stdout="installed\n", stderr="")
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
-             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, install_result]) as run, \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, manifest_missing, install_result]) as run, \
              patch("sima_cli.sdk.utils.yes_no_prompt") as prompt:
             ensure_codex_vscode_extension_installed(
                 "container",
@@ -4021,7 +4015,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             )
 
         prompt.assert_not_called()
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 3)
         install_cmd = run.call_args_list[-1].args[0]
         self.assertEqual(install_cmd[:5], ["docker", "exec", "-u", "root", "container"])
         self.assertIn("Installing SiMa Neat extension: sdk/vscode-extension", install_cmd[-1])
@@ -4031,8 +4025,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("Installing downloaded SiMa Neat VSIX with OpenVSCode Server.", install_cmd[-1])
         self.assertIn("--install-extension \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\"", install_cmd[-1])
         self.assertIn("/opt/sima-cli/venv/bin/sima-cli", install_cmd[-1])
-        self.assertIn("--install-extension anthropic.claude-code", install_cmd[-1])
-        self.assertIn("--install-extension openai.chatgpt", install_cmd[-1])
+        self.assertIn("--install-extension anthropic.claude-code@2.1.266", install_cmd[-1])
+        self.assertIn("--install-extension openai.chatgpt@26.5825.51511", install_cmd[-1])
         self.assertIn("Installing Claude extension: anthropic.claude-code", install_cmd[-1])
         self.assertIn("Installing Codex extension: openai.chatgpt", install_cmd[-1])
         self.assertIn("find /opt/openvscode-server/extensions -maxdepth 1 -type d -name 'anthropic.claude-code-*'", install_cmd[-1])
@@ -4060,7 +4054,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         codex_extension.assert_not_called()
 
-    def test_configure_container_yes_to_all_auto_installs_codex_extension(self):
+    def test_configure_container_all_extensions_auto_installs_without_prompt(self):
         with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
              patch("sima_cli.sdk.utils.run_command"), \
              patch("sima_cli.sdk.utils._copy_sima_cli_auth_cache_to_container"), \
@@ -4071,10 +4065,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed") as codex_extension:
             from sima_cli.sdk.utils import configure_container
 
-            configure_container("container", yes_to_all=True)
+            configure_container("container", yes_to_all=True, all_extensions=True)
 
         codex_extension.assert_called_once()
-        self.assertTrue(codex_extension.call_args.kwargs["auto_install"])
+        self.assertTrue(codex_extension.call_args.kwargs["all_extensions"])
         self.assertFalse(codex_extension.call_args.kwargs["allow_prompt"])
 
     def test_sudoers_drop_in_uses_sudoers_d_without_replacing_base_file(self):

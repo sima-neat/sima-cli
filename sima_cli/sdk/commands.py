@@ -312,6 +312,11 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility.",
 )
 @click.option(
+    "--all-extensions",
+    is_flag=True,
+    help="Install Neat, Codex, and Claude VS Code extensions without prompting.",
+)
+@click.option(
     "--edgematic-studio",
     "--studio",
     "edgematic_studio",
@@ -349,7 +354,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt.",
 )
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, edgematic_studio, edgematic_studio_port, minimal, workspace, persistent_network_profile, image_selectors):
+def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, edgematic_studio, edgematic_studio_port, minimal, workspace, persistent_network_profile, image_selectors, all_extensions):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
@@ -366,6 +371,7 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, 
             workspace=workspace,
             persistent_network_profile=persistent_network_profile,
             image_selectors=image_selectors,
+            all_extensions=all_extensions,
         )
     except subprocess.CalledProcessError as e:
         raise click.ClickException(f"SDK setup failed while running: {' '.join(e.cmd)}") from e

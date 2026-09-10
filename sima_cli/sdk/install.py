@@ -43,6 +43,7 @@ from sima_cli.sdk.utils import (
     sanitize_container_name,
     ensure_simasdkbridge_network,
     resolve_edgematic_studio_choice,
+    ensure_codex_vscode_extension_installed,
     start_docker_container,
     bootstrap_devkit_container,
     configure_container_user,
@@ -1095,6 +1096,7 @@ def setup_and_start(
     workspace: Optional[str] = None,
     persistent_network_profile: bool = False,
     image_selectors=(),
+    all_extensions: bool = False,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -1104,6 +1106,9 @@ def setup_and_start(
         raise RuntimeError(
             f"--insight-video-channels must be between 1 and {MAX_INSIGHT_VIDEO_CHANNELS}."
         )
+
+    if all_extensions and minimal:
+        raise RuntimeError("--all-extensions cannot be combined with --minimal.")
 
     # Studio drives the Insight APIs; fail rather than drop the positive option.
     if (edgematic_studio or edgematic_studio_port) and (no_insight or minimal):
@@ -1256,6 +1261,7 @@ def setup_and_start(
                 install_edgematic_studio=install_studio,
                 publish_edgematic_studio_port=publish_studio_port,
                 minimal=minimal,
+                all_extensions=all_extensions,
             )
         else:
             if (edgematic_studio or edgematic_studio_port) and is_neat_sdk_image(img):
@@ -1290,6 +1296,14 @@ def setup_and_start(
                     )
                 else:
                     configure_container_user(existing_container, login_name, user_uid, user_gid)
+
+            if all_extensions and is_neat_sdk_image(img):
+                if check_os() not in ["linux", "macos"]:
+                    login_name, user_uid, user_gid = "docker", 900, 900
+                ensure_codex_vscode_extension_installed(
+                    existing_container, login_name, all_extensions=True,
+                    allow_prompt=False, uid=user_uid, gid=user_gid,
+                )
 
             if devkit_env and is_neat_sdk_image(img):
                 if not skip_insight:

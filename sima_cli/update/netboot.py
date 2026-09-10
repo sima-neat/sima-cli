@@ -475,7 +475,7 @@ def run_cli(client_manager):
             click.echo("\n🛑 Exiting netboot session.")
             return True
 
-def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto', allow_daily_fallback: bool = False):
+def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto', allow_daily_fallback: bool = False, devkit: str = None):
     """
     Download and serve a bootable image for network boot over TFTP with client monitoring.
 
@@ -545,12 +545,19 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
     except Exception as e:
         raise RuntimeError(f"❌ Failed to download and extract netboot image: {e}")
 
+    from sima_cli.update.netboot_device import resolve_device, server_address, configure_and_reboot
+    if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
+        raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
+    selected_devkit = resolve_device(devkit)
+    server_ip = server_address(selected_devkit)
+    server = None
+    client_manager = None
+    server_thread = None
     try:
         click.echo(f"🚀 Starting TFTP server in: {extract_dir}")
         ip_candidates = get_local_ip_candidates()
-        if not ip_candidates:
-            click.echo("❌ No suitable local IP addresses found.")
-            exit(1)
+        if not any(ip == server_ip for _, ip in ip_candidates):
+            ip_candidates.append(('route to selected DevKit', server_ip))
 
         click.echo("🌐 TFTP server is listening on these interfaces (UDP port 69):")
         for iface, ip in ip_candidates:
@@ -559,14 +566,36 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
         client_manager = ClientManager()
 
         server = InteractiveTftpServer(tftproot=extract_dir, client_manager=client_manager)
-        server_thread = threading.Thread(target=server.listen, args=('0.0.0.0', 69), daemon=True)
+        startup_errors = []
+
+        def serve():
+            try:
+                server.listen('0.0.0.0', 69)
+            except Exception as exc:
+                startup_errors.append(exc)
+
+        server_thread = threading.Thread(target=serve, daemon=True)
         server_thread.start()
 
-        if run_cli(client_manager):
-            server.stop(now=True)
-            client_manager.shutdown()
+        deadline = time.monotonic() + 5
+        while not server.is_running.wait(0.05):
+            if startup_errors:
+                raise startup_errors[0]
+            if not server_thread.is_alive() or time.monotonic() >= deadline:
+                raise RuntimeError('TFTP server did not become ready; the DevKit was not changed.')
+
+        configure_and_reboot(selected_devkit, server_ip)
+        run_cli(client_manager)
 
     except PermissionError:
         raise RuntimeError("❌ Permission denied. You must run this command with sudo to bind to port 69.")
     except OSError as e:
         raise RuntimeError(f"❌ Failed to start TFTP server: {e}")
+
+    finally:
+        if server is not None:
+            server.stop(now=True)
+        if client_manager is not None:
+            client_manager.shutdown()
+        if server_thread is not None:
+            server_thread.join(timeout=3)

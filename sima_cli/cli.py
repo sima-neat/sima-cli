@@ -601,7 +601,7 @@ def show_mla_memory_usage(ctx):
 @click.option("-n", "--netboot", is_flag=True, default=False, show_default=True, help="Prepare image for network boot and launch TFTP server.")
 @click.option("-f", "--force", is_flag=True, help="Allow daily mirror fallback if Artifactory is unavailable (internal Modalix eLxr netboot only).")
 @click.option("--recovery", is_flag=True, help="Write eLxr Modalix recovery media for automatic eMMC recovery.")
-@click.option("--devkit-ip", required=False, help="Optional DevKit IP address for pre-netboot version probing.")
+@click.option("--devkit", "--devkit-ip", "devkit_ip", required=False, help="DevKit IP for remote netboot; discover and select a DevKit when omitted.")
 @click.option("-r", "--rootfs", required=False, help="Custom root fs folders (internal use only)")
 @click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Net boot the DevKit and automatically flash the internal storage - TBD")
 @click.pass_context
@@ -649,7 +649,7 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
         sima-cli bootimg -v 1.6.0 --boardtype modalix --netboot
 
-        # Set up netboot and probe an existing DevKit first
+        # Select a DevKit for confirmed remote U-Boot setup and reboot
 
         sima-cli bootimg -v 2.1.0 --boardtype modalix --netboot --devkit-ip 192.168.1.20
 
@@ -679,8 +679,6 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
     from sima_cli.update.bootimg import write_image
     from sima_cli.update.netboot import setup_netboot
-    from sima_cli.update.remote import get_remote_board_info
-
     internal = ctx.obj.get("internal", False)
     if internal and ctx.meta.get('daily_netboot') and (boardtype != 'modalix' or fwtype != 'elxr'):
         if not internal_resource_exists() or not ctx.obj.get('internal_reachable', True):
@@ -695,18 +693,9 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
     click.echo(f"   🔹 DevKit IP : {devkit_ip}")
     
     try:
-        if devkit_ip and (netboot or autoflash):
-            click.echo(f"🔎 Probing DevKit version at {devkit_ip} ...")
-            _, remote_version, _, _, _ = get_remote_board_info(devkit_ip)
-            if not remote_version:
-                raise click.ClickException(
-                    f"Unable to retrieve remote version from DevKit at {devkit_ip}."
-                )
-            click.echo(f"✅ DevKit current version: {remote_version}")
-
         boardtype = boardtype if boardtype != 'mlsoc' else 'davinci'
         if netboot or autoflash:
-            setup_netboot(version, boardtype, internal, autoflash, flavor='headless', rootfs=rootfs, swtype=fwtype, allow_daily_fallback=force)
+            setup_netboot(version, boardtype, internal, autoflash, flavor='headless', rootfs=rootfs, swtype=fwtype, allow_daily_fallback=force, devkit=devkit_ip)
             click.echo("✅ Netboot image prepared and TFTP server is running.")
         else:
             write_image(version, boardtype, fwtype, internal, flavor='headless', recovery=recovery)

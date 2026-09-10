@@ -30,7 +30,7 @@ def _internal_headers():
     token = get_auth_token(internal=True)
     if not token or not token.strip():
         raise click.ClickException(
-            'Artifactory login is required on this machine. Run `sima-cli -i login`, then retry the update.'
+            'Artifactory login is required on this machine. Run `sima-cli -i login`, then retry the update. No firmware was installed.'
         )
     return {'Authorization': 'Bearer ' + token}
 

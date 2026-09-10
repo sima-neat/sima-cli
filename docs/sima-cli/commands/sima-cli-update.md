@@ -10,6 +10,18 @@ Parent command: [`sima-cli`](./sima-cli.md)
 sima-cli update [OPTIONS] [VERSION_OR_URL]
 ```
 
+## eLxr 3.0 update access errors
+
+For internal downloads, run `sima-cli -i login` on the machine running the
+update command. HTTP 401 means authentication was rejected: refresh your login
+and retry. HTTP 403 means access was denied: refresh your credentials and, if
+access is still denied, ask your Artifactory administrator for permission.
+
+Artifact-access failures before installation explicitly report that no firmware
+was installed. A download-server error does not mean the DevKit lost its
+connection. If a connection is lost after installation starts, inspect the board
+with `sima-cli update --inspect --ip <device-ip>` before retrying.
+
 ## Options
 
 | Name | Description |

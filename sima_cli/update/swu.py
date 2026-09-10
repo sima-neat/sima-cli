@@ -7,6 +7,7 @@ import time
 from urllib.parse import unquote, urlparse
 
 import click
+import requests
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from sima_cli.download import download_file_from_url
@@ -213,6 +214,33 @@ def _reboot_and_verify(target, before, ip, passwd, expected=None):
     raise click.ClickException('Could not verify the new boot. Update state is unknown; inspect before retrying.')
 
 
+def _artifact_request_error(error, internal):
+    """Recognize HTTP errors even when the downloader wraps them."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, requests.RequestException):
+            service = 'Artifactory' if internal else 'the bundle server'
+            status = error.response.status_code if error.response is not None else None
+            if status == 401:
+                action = ('Run `sima-cli -i login` on this machine, then retry the update.'
+                          if internal else 'Check your bundle-server credentials or log in with `sima-cli login`, then retry.')
+                return f'{service} rejected authentication (HTTP 401). Your login may be missing or expired. {action}'
+            if status == 403:
+                action = ('Run `sima-cli -i login` to refresh your credentials. If access is still denied, ask your Artifactory administrator for permission.'
+                          if internal else 'Check that your account has permission to download this bundle.')
+                return f'Access to {service} was denied (HTTP 403). {action}'
+            if status == 404:
+                return f'The requested update artifact was not found on {service} (HTTP 404). Check the selected version or bundle URL.'
+            if status is not None:
+                return f'{service} returned HTTP {status} while accessing the update artifact. Retry later or contact the server administrator.'
+            if isinstance(error, requests.Timeout):
+                return f'The request to {service} timed out. Check your network or VPN connection, then retry.'
+            return f'Unable to access {service}. Check your network or VPN connection and bundle URL, then retry.'
+        error = error.__cause__ or error.__context__
+    return None
+
+
 def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                   auto_confirm=False, dryrun=False, key=DEFAULT_KEY, reboot=False):
     target = Target(ip, passwd)
@@ -220,16 +248,20 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
     key_directory = None
     installing = False
     complete = False
+    phase = "checking the target"
     try:
         click.echo('Checking target and A/B state...')
         key, key_directory = prepare_key(target, key, dryrun=dryrun)
         before = preflight(target, key)
+        phase = "resolving the update bundle"
         source = resolve_bundle(requested, board, internal)
         if not source:
             raise click.Abort()
         click.echo(f'Full-system bundle: {source}')
         local_source = urlparse(source).scheme not in ('http', 'https')
+        phase = "checking the update bundle"
         size_hint = bundle_size(source, internal)
+        phase = "preparing staging storage"
         staging_root = _select_staging_root(target, size_hint, dryrun=dryrun)
         if dryrun:
             click.echo('Dry run: ' + shlex.join(['sudo', 'swupdate', '-v', '-i', staging_root + '/<staged-bundle>.swu', '-k', key or '/tmp/<temporary-key>/public.pem', '-e', 'update,full']))
@@ -244,8 +276,10 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             if local_source:
                 local = source
             else:
+                phase = 'downloading the update bundle'
                 click.echo('Downloading signed SWU bundle...')
                 local = download_file_from_url(source, cache, internal=internal)
+            phase = "staging the update bundle"
             size = os.path.getsize(local)
             if not size:
                 raise click.ClickException('The SWU bundle is empty.')
@@ -276,8 +310,19 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                 target.run('rm -rf -- ' + shlex.quote(key_directory))
                 key_directory = None
             _reboot_and_verify(target, before, ip, passwd, expected=expected)
-    except (KeyboardInterrupt, EOFError, OSError) as exc:
-        raise click.ClickException('Update interrupted or connection lost. State is unknown; inspect the board before retrying.') from exc
+    except (KeyboardInterrupt, Exception) as exc:
+        if not installing:
+            artifact_error = _artifact_request_error(exc, internal)
+            if artifact_error:
+                raise click.ClickException(artifact_error + ' No firmware was installed.') from exc
+            if isinstance(exc, (KeyboardInterrupt, EOFError, OSError)):
+                raise click.ClickException(
+                    f'Update stopped while {phase}, before firmware installation started. '
+                    'No firmware was installed. Check the host and target connection, then retry.'
+                ) from exc
+        elif isinstance(exc, (KeyboardInterrupt, EOFError, OSError)):
+            raise click.ClickException('Update interrupted or connection lost. State is unknown; inspect the board before retrying.') from exc
+        raise
     finally:
         if staging and re.fullmatch(STAGING_PATTERN, staging):
             if not installing or complete:

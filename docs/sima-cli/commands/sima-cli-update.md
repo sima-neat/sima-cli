@@ -139,3 +139,49 @@ Options:
                                  running it.
   --help                         Show this message and exit.
 ```
+
+## eLxr 3.0 and later
+
+On an A/B-provisioned Modalix system, `update` installs a signed full-system
+SWU bundle into the inactive slot. It preserves the running slot and persistent
+`/data`. Developer-portal version lookup for 3.0 is not available yet; use an
+explicit bundle URL/file or internal build selection.
+
+```sh
+sima-cli update /path/to/full-system.swu
+sima-cli update --ip 192.168.6.5 /path/to/full-system.swu
+sima-cli update --inspect
+sima-cli update --ip 192.168.6.5 --inspect
+```
+
+Staging checks `/tmp`, `/media/nvme/swupdate`, then `/data`, choosing the first location
+with room for the bundle plus a 64 MiB margin. NVMe is mounted or remounted
+read/write before checking it (except during `--dryrun`). If no location is
+usable, the update stops with a storage error. Local downloads use one staged
+copy. After successful installation, the downloaded bundle and its temporary
+staging directory are removed to free space, including for remote updates.
+
+Remote updates download on the host, transfer to the selected board storage,
+verify the transfer checksum, and run SWUpdate there. Both modes verify the signed bundle
+with `/etc/swupdate/public.pem` and select `update,full`. If that default key
+is absent, the CLI temporarily provisions the bundled SiMa certificate under
+`/tmp` and removes it after the update attempt. Existing keys are preserved.
+`--key` can select a
+verification key already installed on the target. Firmware-only/OS-only modes
+and unsigned `--force` updates are not supported in this flow.
+
+Download and transfer show byte progress. Installation shows the current
+artifact, step, and percentage from `swupdate-progress` when available; otherwise
+installer diagnostics remain visible. `--dryrun` checks the target and resolves
+the bundle without installation or reboot.
+
+A successful installation reports that a reboot is required. Add `--reboot` to
+reboot after success; for a remote board the CLI reconnects and checks the new
+slot and health confirmation. The board's health service commits the boot;
+`update` does not clear pending or rollback flags. Connection loss or a failed
+install must be inspected before retrying.
+
+`--inspect` displays both slots, their versions/OS and validity, the running and
+next-boot slots, pending-update status, rollback status, and boot count. It does
+not download or install firmware, switch slots, reboot, or self-update the CLI.
+Migration from an older layout to the 3.0 A/B layout requires provisioning/recovery.

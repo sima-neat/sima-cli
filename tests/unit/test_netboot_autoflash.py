@@ -41,12 +41,14 @@ def test_failed_ssh_wait_does_not_mark_connected():
     assert manager.clients['192.0.2.2']['state']=='Booting'
 
 
-def test_autoflash_confirmation_explains_overwrite(capsys):
+def test_autoflash_confirmation_explains_automatic_flash(capsys):
     with patch.object(netboot_device,'init_ssh_session'), \
             patch.object(netboot_device,'_checked'), \
             patch.object(netboot_device,'network_settings',return_value={'interface':'end0','netmask':'255.255.255.0','gateway':'0.0.0.0'}), \
             patch.object(click,'confirm',return_value=False) as confirm:
         with pytest.raises(click.Abort):
             netboot_device.configure_and_reboot('192.0.2.2','192.0.2.1',autoflash=True)
-    assert 'overwrites its internal storage' in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert 'Open SSH is available after network boot' in output
+    assert 'overwrites its internal storage' not in output
     assert 'automatically flash' in confirm.call_args.args[0]

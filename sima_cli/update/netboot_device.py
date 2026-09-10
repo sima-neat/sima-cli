@@ -15,8 +15,11 @@ from sima_cli.update.remote import init_ssh_session, run_remote_command_capture
 
 def resolve_device(devkit=None):
     # Share SDK setup's discovery, deduplication, selection, and IP validation.
-    from sima_cli.sdk.commands import _resolve_devkit_ipv4
-    return _resolve_devkit_ipv4(devkit or 'auto')
+    from sima_cli.sdk.commands import _resolve_devkit_ipv4, NoDevkitsDiscovered
+    try:
+        return _resolve_devkit_ipv4(devkit or 'auto')
+    except NoDevkitsDiscovered:
+        return None
 
 
 def server_address(devkit):

@@ -38,10 +38,9 @@ def test_explicit_device_skips_discovery():
     discover.assert_not_called()
 
 
-def test_no_discovered_device_is_actionable():
+def test_no_discovered_device_allows_manual_setup():
     with patch.object(sdk, 'discover_and_probe', return_value=[]):
-        with pytest.raises(click.ClickException, match='--devkit'):
-            device.resolve_device()
+        assert device.resolve_device() is None
 
 
 def test_decline_never_writes_or_reboots():
@@ -90,7 +89,8 @@ def test_remote_failure_prevents_reboot(failed_call):
 
 
 @pytest.mark.parametrize('bind_failure', [False, True])
-def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_failure):
+@pytest.mark.parametrize('selected', ['192.0.2.1', None])
+def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_failure, selected):
     boot = tmp_path / 'netboot.scr.uimg'
     boot.write_bytes(b'boot')
     events = []
@@ -113,7 +113,7 @@ def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_f
             patch.object(netboot, 'ClientManager') as manager, \
             patch.object(netboot.threading, 'Thread', side_effect=start_thread), \
             patch.object(netboot, 'run_cli', side_effect=lambda *a: events.append('cli')), \
-            patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
+            patch.object(device, 'resolve_device', return_value=selected), \
             patch.object(device, 'server_address', return_value='192.0.2.10'), \
             patch.object(device, 'configure_and_reboot', side_effect=lambda *a, **k: events.append('reboot')) as reboot:
         if bind_failure:
@@ -122,7 +122,9 @@ def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_f
             reboot.assert_not_called()
         else:
             netboot.setup_netboot('3.0', 'modalix')
-            assert events == ['listening', 'reboot', 'cli']
+            assert events == (['listening', 'reboot', 'cli'] if selected else ['listening', 'cli'])
+            if selected is None:
+                reboot.assert_not_called()
     server.stop.assert_called_once_with(now=True)
     manager.return_value.shutdown.assert_called_once()
 

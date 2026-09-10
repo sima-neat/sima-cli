@@ -578,14 +578,14 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
     if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
         raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
     selected_devkit = resolve_device(devkit)
-    server_ip = server_address(selected_devkit)
+    server_ip = server_address(selected_devkit) if selected_devkit else None
     server = None
     client_manager = None
     server_thread = None
     try:
         click.echo(f"🚀 Starting TFTP server in: {extract_dir}")
         ip_candidates = get_local_ip_candidates()
-        if not any(ip == server_ip for _, ip in ip_candidates):
+        if server_ip and not any(ip == server_ip for _, ip in ip_candidates):
             ip_candidates.append(('route to selected DevKit', server_ip))
 
         click.echo("🌐 TFTP server is listening on these interfaces (UDP port 69):")
@@ -613,9 +613,18 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
             if not server_thread.is_alive() or time.monotonic() >= deadline:
                 raise RuntimeError('TFTP server did not become ready; the DevKit was not changed.')
 
-        configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
-        if autoflash:
-            auto_flash(client_manager, selected_devkit)
+        if selected_devkit:
+            configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
+            if autoflash:
+                auto_flash(client_manager, selected_devkit)
+        else:
+            message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'
+                           'Configure the DevKit manually through its serial console to boot from the network, '
+                           'using a reachable host IP listed above as its TFTP server.\n'
+                           'Keep this program running. Once "✅ SSH is available on <IP>" appears, type "f" to flash the device.')
+            if autoflash:
+                message.append('\n\nAutomatic flashing is disabled because no DevKit was selected.', style='bold yellow')
+            console.print(Panel(message, title='Manual netboot setup', border_style='yellow'))
         run_cli(client_manager)
 
     except PermissionError:

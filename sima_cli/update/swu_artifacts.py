@@ -13,6 +13,128 @@ from sima_cli.update.query import ARTIFACTORY_BASE_URL
 from sima_cli.utils.config import get_auth_token
 
 
+DAILY_MIRROR = 'https://artifacts.neat.sima.ai/daily-platform-images/'
+
+
+class ArtifactoryUnavailable(click.ClickException):
+    """Artifactory cannot supply a build because access is unavailable."""
+
+
+class BundleSource(str):
+    """Download URL carrying build identity and optional mirror integrity data."""
+    def __new__(cls, url, version=None, size=None, sha256=None):
+        source = super().__new__(cls, url)
+        source.version = version
+        source.size = size
+        source.sha256 = sha256
+        return source
+
+
+def is_mirror_source(source):
+    return source.startswith(DAILY_MIRROR)
+
+
+def artifactory_failure_reason(error):
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, ArtifactoryUnavailable):
+            return error.format_message()
+        if isinstance(error, requests.RequestException):
+            status = error.response.status_code if error.response is not None else None
+            if status in (401, 403) or (status is not None and 500 <= status < 600):
+                return f'Artifactory returned HTTP {status}.'
+            if isinstance(error, (requests.ConnectionError, requests.Timeout)):
+                return 'Artifactory could not be reached.'
+        error = error.__cause__ or error.__context__
+    return None
+
+
+def _matching_builds(builds, requested):
+    exact = [b for b in builds if b['version'] == requested]
+    if exact or not requested:
+        return exact or builds
+    if re.fullmatch(r'\d+\.\d+(?:\.\d+)?', requested):
+        return [b for b in builds if re.match(re.escape(requested) + r'(?=$|[._-])', b['version'])]
+    return [b for b in builds if requested.lower() in b['version'].lower()]
+
+
+def mirror_bundles(board, requested):
+    """Read only complete palette SWUs from the public daily manifest."""
+    try:
+        with requests.Session() as session:
+            # No Artifactory credentials or ambient .netrc credentials on the mirror.
+            session.trust_env = False
+            response = session.get(DAILY_MIRROR + 'index.json', timeout=30)
+            response.raise_for_status()
+            index = response.json()
+        if index.get('schema_version') != 1 or index.get('platform') != board:
+            raise ValueError('unsupported index schema or platform')
+        builds = []
+        seen = set()
+        for entry in index['builds']:
+            version = entry['name']
+            if not re.fullmatch(r'[A-Za-z0-9_.-]+', version) or version in ('.', '..'):
+                raise ValueError('invalid build name')
+            if version in seen:
+                raise ValueError('duplicate build name')
+            seen.add(version)
+            release = release_tuple(version)
+            if not release or release < (3, 0, 0):
+                continue
+            files = [f for f in entry['files'] if re.fullmatch(
+                r'artifacts/palette/elxr-palette-' + re.escape(board) + r'-[A-Za-z0-9_.-]+\.swu', f['path'])]
+            if not files:
+                continue
+            if len(files) != 1:
+                raise ValueError(f'multiple palette SWUs for {version}')
+            artifact = files[0]
+            key = f"daily-platform-images/{version}/{artifact['path']}"
+            if artifact['key'] != key or not re.fullmatch(r'[0-9a-fA-F]{64}', artifact['sha256']):
+                raise ValueError('invalid artifact key or checksum')
+            if type(artifact['size']) is not int or artifact['size'] <= 0 or type(entry['build_number']) is not int:
+                raise ValueError('invalid artifact size or build number')
+            builds.append({'version': version, 'build_number': entry['build_number'],
+                           'url': BundleSource(DAILY_MIRROR + quote(version + '/' + artifact['path'], safe='/'),
+                                               version, artifact['size'], artifact['sha256'].lower())})
+        builds.sort(key=lambda b: (b['build_number'], b['version']), reverse=True)
+        return _matching_builds(builds, requested)
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise click.ClickException(
+            'Unable to read the daily platform build index. Check your network and mirror availability. '
+            'No firmware was installed.'
+        ) from exc
+
+
+def select_mirror_bundle(requested, board, reason, exact=False):
+    click.echo(f'{reason} Using the public daily platform mirror.')
+    builds = mirror_bundles(board, requested)
+    if exact:
+        builds = [b for b in builds if b['version'] == requested]
+    if not builds:
+        raise click.ClickException(
+            f'No matching palette SWU for {requested or "latest"} in the retained daily builds. '
+            'The build may have expired or may not contain a palette SWU. No firmware was installed.'
+        )
+    if len(builds) == 1:
+        return builds[0]['url']
+    from InquirerPy import inquirer
+    width = max(len(b['version']) for b in builds)
+    selected = inquirer.fuzzy(message='Select a daily SWU build (newest first):', choices=[
+        {'name': f"{b['version']:<{width}}  Build {b['build_number']}", 'value': b['version']}
+        for b in builds
+    ]).execute()
+    return next((b['url'] for b in builds if b['version'] == selected), None)
+
+
+def fallback_for_bundle(source, board, error):
+    reason = artifactory_failure_reason(error)
+    version = getattr(source, 'version', None)
+    if reason and version and source.startswith(ARTIFACTORY_BASE_URL.rstrip('/') + '/'):
+        return select_mirror_bundle(version, board, reason, exact=True)
+    return None
+
+
 def release_tuple(version):
     match = re.match(r'^(\d+)\.(\d+)(?:\.(\d+))?(?=$|[_-])', (version or '').strip().strip('\"\''))
     return tuple(int(part or 0) for part in match.groups()) if match else None
@@ -29,7 +151,7 @@ def _created(value):
 def _internal_headers():
     token = get_auth_token(internal=True)
     if not token or not token.strip():
-        raise click.ClickException(
+        raise ArtifactoryUnavailable(
             'Artifactory login is required on this machine. Run `sima-cli -i login`, then retry the update. No firmware was installed.'
         )
     return {'Authorization': 'Bearer ' + token}
@@ -38,6 +160,8 @@ def _internal_headers():
 def internal_bundles(board, keyword):
     if not re.fullmatch(r'[a-z0-9-]+', board):
         raise click.ClickException('Invalid board identity.')
+    if not ARTIFACTORY_BASE_URL.startswith(('https://', 'http://')):
+        raise ArtifactoryUnavailable('Artifactory is not configured on this machine.')
     criteria = {'repo': 'soc-images', 'type': 'file',
                 'path': {'$match': f'elxr/bsp/{board}/*/artifacts/palette'},
                 'name': {'$match': f'elxr-palette-{board}-*.swu'}}
@@ -100,7 +224,16 @@ def resolve_bundle(requested, board, internal=False):
             raise click.ClickException('Internal bundle URLs must use the configured Artifactory.')
         return requested
     if internal:
-        builds = internal_bundles(board, requested)
+        try:
+            builds = internal_bundles(board, requested)
+        except Exception as exc:
+            reason = artifactory_failure_reason(exc)
+            if not reason:
+                raise
+            return select_mirror_bundle(requested, board, reason)
+        builds = _matching_builds(builds, requested)
+        for build in builds:
+            build['url'] = BundleSource(build['url'], build['version'])
         if not builds:
             raise click.ClickException(f'No matching eLxr 3.0+ SWU builds for {requested or "latest"}.')
         if len(builds) == 1:

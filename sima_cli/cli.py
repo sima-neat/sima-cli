@@ -125,7 +125,8 @@ def _initialize_main_context(ctx, internal, yes):
     if not internal:
         internal = os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
 
-    if internal and not internal_resource_exists():
+    defer_update_access = ctx.invoked_subcommand == "update"
+    if internal and not internal_resource_exists() and not defer_update_access:
         click.echo("❌ You have specified -i or --internal argument to access internal resources, but you do not have an internal resource map configured.")
         click.echo("Refer to the confluence page to find out how to configure internal resource map.")
         exit(0)
@@ -134,12 +135,12 @@ def _initialize_main_context(ctx, internal, yes):
     if internal:
         internal_reachable = check_artifactory_reachability()
 
-    if internal and not internal_reachable and not _allows_external_prerelease_fallback(sys.argv):
+    if internal and not internal_reachable and not defer_update_access and not _allows_external_prerelease_fallback(sys.argv):
         click.secho("❌ You have specified -i or --internal argument to access internal resources, but you can't connect to Artifactory.", fg='red')
         click.secho("Please make sure you are connected to VPN or are on the corporate network.", fg='red')
         exit(0)
 
-    if internal and not internal_reachable:
+    if internal and not internal_reachable and not defer_update_access:
         click.secho(
             "⚠️  Internal resources are unreachable. --force allows this update to use the external pre-release mirror.",
             fg="yellow",
@@ -180,6 +181,12 @@ def main(ctx, internal, yes):
     Global Options:
       --internal  Use internal Artifactory resources (can also be set via env variable SIMA_CLI_INTERNAL=1)
     """
+    internal = internal or os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
+    if internal:
+        Console(stderr=True).print(Panel(
+            "Pre-release software may be unstable. Use at your own risk.",
+            title="Pre-release software", border_style="yellow",
+        ))
     if ctx.meta.get('update_inspect'):
         ctx.ensure_object(dict)
         ctx.obj.update(internal=internal, yes=yes)
@@ -355,11 +362,17 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
     state, --ip for remote updates, and --reboot to reboot after installation.
     Developer-portal version lookup for 3.0 is not available yet.
 
-    For internal downloads, run ``sima-cli -i login`` on the machine running
-    this command. Authentication or download failures before installation
-    report that no firmware was installed. HTTP 401 requires a fresh login;
-    HTTP 403 may require Artifactory access permissions. A connection loss
-    after installation starts requires inspecting the board before retrying.
+    Internal mode warns that pre-release software may be unstable and is used
+    at your own risk. On eLxr 3.0+, unavailable Artifactory access falls back
+    to the public daily platform mirror, including missing login, HTTP 401/403,
+    connection failures, timeouts, and server errors. Exact build names select
+    directly; partial matches show builds newest first by build number.
+
+    Mirror downloads verify the indexed size and SHA-256 before signed
+    installation. A missing build or failed download stops before installation.
+    A connection loss after installation starts requires inspecting the board
+    before retrying. Devices running eLxr 2.1.3 retain the APT update flow;
+    upgrading those devices to 3.0 requires recovery/provisioning first.
 
     How Version Resolution Works:
 
@@ -447,6 +460,16 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
         raise
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
+
+    # Legacy updates retain their original access/--force policy after dispatch.
+    if ctx.obj.get("internal", False):
+        if not internal_resource_exists():
+            raise click.ClickException("Internal resources are not configured on this machine.")
+        if not ctx.obj.get("internal_reachable", True) and not force:
+            raise click.ClickException(
+                "Artifactory is unreachable. Connect to VPN or the corporate network. "
+                "Automatic daily SWU fallback requires a device already running eLxr 3.0+."
+            )
 
     if dryrun and not is_elxr:
         raise click.ClickException("--dryrun is only supported when running update on an ELXR devkit.")

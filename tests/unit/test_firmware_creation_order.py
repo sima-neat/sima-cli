@@ -47,8 +47,8 @@ def test_picker_displays_creation_and_returns_plain_version():
         fuzzy.return_value.execute.return_value = '3.0.0_B10'
         assert _pick_from_available_versions('modalix', '3.0', True, 'headless', 'elxr') == '3.0.0_B10'
         assert fuzzy.call_args.kwargs['choices'] == [
-            {'value': '3.0.0_B10', 'name': '3.0.0_B10  (created: 2026-09-09 09:00:00 UTC)'},
-            {'value': '3.0.0_B9', 'name': '3.0.0_B9  (created: unknown)'},
+            {'value': '3.0.0_B10', 'name': f"{'3.0.0_B10':<48}  {'2026-09-09 09:00:00 UTC':<23}"},
+            {'value': '3.0.0_B9', 'name': f"{'3.0.0_B9':<48}  {'Unknown':<23}"},
         ]
 
 

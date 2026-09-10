@@ -186,6 +186,12 @@ def _list_available_firmware_versions_external(
             f'{download_url_base}SDK{match_keyword}/devkit/{board}/{swtype}/'
             f'simaai-devkit-fw-{board}-{swtype}-{flavor_str}{match_keyword}.tar.gz'
         )
+    elif update_type == 'recovery':
+        base_version = match_keyword.split('_')[0]
+        firmware_download_url = (
+            f'{download_url_base}SDK{match_keyword}/devkit/{board}/{swtype}/'
+            f'elxr-recovery-palette-{board}-{base_version}-agate-arm64.img'
+        )
     elif update_type == 'bootimg':
         firmware_download_url = (
             f'{download_url_base}SDK{match_keyword}/devkit/{board}/{swtype}/'

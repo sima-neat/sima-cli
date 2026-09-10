@@ -566,11 +566,12 @@ def show_mla_memory_usage(ctx):
 @click.option("-b", "--boardtype", type=click.Choice(["modalix",  "mlsoc"], case_sensitive=False), default="mlsoc", show_default=True, help="Target board type.")
 @click.option("-t", "--fwtype", type=click.Choice(["yocto",  "elxr"], case_sensitive=False), default="yocto", show_default=True, help="Target firmware type.")
 @click.option("-n", "--netboot", is_flag=True, default=False, show_default=True, help="Prepare image for network boot and launch TFTP server.")
+@click.option("--recovery", is_flag=True, help="Write eLxr Modalix recovery media for automatic eMMC recovery.")
 @click.option("--devkit-ip", required=False, help="Optional DevKit IP address for pre-netboot version probing.")
 @click.option("-r", "--rootfs", required=False, help="Custom root fs folders (internal use only)")
 @click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Net boot the DevKit and automatically flash the internal storage - TBD")
 @click.pass_context
-def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, rootfs):
+def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, rootfs, recovery=False):
     """
     Prepare a bootable image for the SiMa DevKit.
 
@@ -578,6 +579,10 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
     removable boot medium (SD card or USB) or configures a TFTP-based
     network boot environment. It supports both MLSoC- and Modalix-based
     DevKits, as well as Yocto and eLxr firmware types.
+
+    Matching internal builds appear in aligned Version and Build time (UTC)
+    columns, newest first. Build time uses the newest Artifactory archive
+    creation timestamp for each version. Unknown timestamps appear last.
 
     Operations Performed:
 
@@ -618,7 +623,21 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
         sima-cli bootimg -v 2.0.0 --boardtype modalix --fwtype elxr --netboot
 
+        # Prepare USB/SD recovery media that automatically recovers eMMC
+
+        sima-cli bootimg -v 3.0.0 --recovery
+
     """
+
+    if recovery:
+        if netboot or autoflash or rootfs or devkit_ip:
+            raise click.UsageError("--recovery cannot be combined with --netboot, --autoflash, --rootfs, or --devkit-ip.")
+        if ctx.get_parameter_source("boardtype") == click.core.ParameterSource.DEFAULT:
+            boardtype = "modalix"
+        if ctx.get_parameter_source("fwtype") == click.core.ParameterSource.DEFAULT:
+            fwtype = "elxr"
+        if boardtype != "modalix" or fwtype != "elxr":
+            raise click.UsageError("--recovery requires --boardtype modalix and --fwtype elxr.")
 
     from sima_cli.update.bootimg import write_image
     from sima_cli.update.netboot import setup_netboot
@@ -649,9 +668,8 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
             setup_netboot(version, boardtype, internal, autoflash, flavor='headless', rootfs=rootfs, swtype=fwtype)
             click.echo("✅ Netboot image prepared and TFTP server is running.")
         else:
-            write_image(version, boardtype, fwtype, internal, flavor='headless')
+            write_image(version, boardtype, fwtype, internal, flavor='headless', recovery=recovery)
             click.echo("✅ Boot image successfully written.")
-        click.echo("✅ Boot image successfully written.")
     except Exception as e:
         click.echo(f"❌ Failed to write boot image: {e}", err=True)
         ctx.exit(1)

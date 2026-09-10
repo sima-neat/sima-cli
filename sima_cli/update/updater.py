@@ -1,4 +1,5 @@
 import click
+import requests
 import os
 import re
 import time
@@ -73,6 +74,13 @@ def _resolve_firmware_url(
     if swtype == 'yocto':
         image_file = 'release.tar.gz' if flavor == 'headless' else 'graphics.tar.gz'
         download_url = url.rstrip("/") + f"/soc-images/{board}/{version_or_url}/artifacts/{image_file}"
+    elif swtype == 'elxr' and update_type == 'recovery':
+        base_version = version_or_url.split('_')[0]
+        image_file = f'elxr-recovery-palette-{board}-{base_version}-agate-arm64.img'
+        download_url = (
+            url.rstrip("/")
+            + f"/soc-images/{elxr_firmware_path(board, version_or_url)}/{version_or_url}/artifacts/palette/{image_file}"
+        )
     elif swtype == 'elxr' and update_type == 'bootimg':
         if internal and elxr_firmware_path(board, version_or_url).startswith('elxr/bsp/'):
             palette_url = (
@@ -146,20 +154,29 @@ def _pick_from_available_versions(
         with_metadata=True,
     )
 
+    choices = []
+    if available_versions:
+        version_width = max(48, max(
+            len(v['version'] if isinstance(v, dict) else v)
+            for v in available_versions
+        ))
+        for entry in available_versions:
+            version = entry['version'] if isinstance(entry, dict) else entry
+            name = (f"{version:<{version_width}}  {(entry['created'] or 'Unknown'):<23}"
+                    if isinstance(entry, dict) else version)
+            choices.append({'name': name, 'value': version})
+
     try:
-        if len(available_versions) > 1:
+        if len(choices) > 1:
             click.echo("Multiple firmware versions found matching your input:")
             
             from InquirerPy import inquirer
-            
+
+            if internal:
+                click.echo(f"  {'Version':<{version_width}}  Build time")
             selected_version = inquirer.fuzzy(
                 message="Select a version:",
-                choices=[
-                    {"value": entry["version"], "name": (
-                        f"{entry['version']}  (created: {entry['created'] or 'unknown'})"
-                    )} if isinstance(entry, dict) else entry
-                    for entry in available_versions
-                ],
+                choices=choices,
                 max_height="70%",  # scrollable
                 instruction="(Use ↑↓ to navigate, / to search, Enter to select)"
             ).execute()
@@ -170,9 +187,8 @@ def _pick_from_available_versions(
 
             return selected_version
 
-        elif len(available_versions) == 1:
-            entry = available_versions[0]
-            return entry["version"] if isinstance(entry, dict) else entry
+        elif len(choices) == 1:
+            return choices[0]['value']
 
         else:
             click.echo(
@@ -217,6 +233,10 @@ def _extract_required_files(tar_path: str, board: str, update_type: str = 'stand
     Returns:
         list: List of full paths to extracted files.
     """    
+    # Recovery media is already a raw disk image, not an archive.
+    if update_type == 'recovery' and tar_path.endswith('.img'):
+        return [tar_path]
+
     extract_dir = os.path.dirname(tar_path)
     _flavor = convert_flavor(flavor)
 
@@ -419,6 +439,19 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
         return extracted_files
 
     except Exception as e:
+        if update_type == 'recovery':
+            # The downloader wraps HTTP failures; inspect the exception chain
+            # so auth/network failures are not mistaken for absent images.
+            cause = e
+            while cause is not None:
+                if (isinstance(cause, requests.HTTPError)
+                        and cause.response is not None
+                        and cause.response.status_code == 404):
+                    raise RuntimeError(
+                        f"The selected version '{version_or_url}' doesn't contain a recovery image."
+                    ) from e
+                cause = cause.__cause__ or cause.__context__
+            raise
         click.echo(f"❌ Host update failed: {e}")
         raise SystemExit(1) from e
 

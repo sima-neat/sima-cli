@@ -68,7 +68,7 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
         message.append('• Boot parameters will be automatically updated on the DevKit to let it boot from the network.\n'
                        '• The DevKit will reboot, interrupting running applications.\n\n')
         if autoflash:
-            message.append('• Once SSH is available after network boot, automatically flash the selected DevKit.\n'
+            message.append('• Open SSH is available after network boot, this tool will automatically flash the selected devkit.\n'
                            '  This overwrites its internal storage.\n\n', style='bold red')
         message.append('These boot settings persist across reboots. No DHCP is required.\nKeep this host and TFTP server running.\n'
                        'If netboot fails, the DevKit retries and reboots; restoring local boot may require serial access.\n'

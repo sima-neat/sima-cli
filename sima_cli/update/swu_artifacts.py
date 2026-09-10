@@ -61,8 +61,8 @@ def _matching_builds(builds, requested):
     return [b for b in builds if requested.lower() in b['version'].lower()]
 
 
-def mirror_bundles(board, requested):
-    """Read only complete palette SWUs from the public daily manifest."""
+def mirror_bundles(board, requested, netboot=False):
+    """Read complete SWU bundles or netboot artifact sets from the daily manifest."""
     try:
         with requests.Session() as session:
             # No Artifactory credentials or ambient .netrc credentials on the mirror.
@@ -84,21 +84,32 @@ def mirror_bundles(board, requested):
             release = release_tuple(version)
             if not release or release < (3, 0, 0):
                 continue
-            files = [f for f in entry['files'] if re.fullmatch(
-                r'artifacts/palette/elxr-palette-' + re.escape(board) + r'-[A-Za-z0-9_.-]+\.swu', f['path'])]
-            if not files:
-                continue
-            if len(files) != 1:
-                raise ValueError(f'multiple palette SWUs for {version}')
-            artifact = files[0]
-            key = f"daily-platform-images/{version}/{artifact['path']}"
-            if artifact['key'] != key or not re.fullmatch(r'[0-9a-fA-F]{64}', artifact['sha256']):
-                raise ValueError('invalid artifact key or checksum')
-            if type(artifact['size']) is not int or artifact['size'] <= 0 or type(entry['build_number']) is not int:
-                raise ValueError('invalid artifact size or build number')
-            builds.append({'version': version, 'build_number': entry['build_number'],
-                           'url': BundleSource(DAILY_MIRROR + quote(version + '/' + artifact['path'], safe='/'),
-                                               version, artifact['size'], artifact['sha256'].lower())})
+            patterns = ([
+                r'artifacts/minimal/' + re.escape(board) + r'-tftp-boot-minimal\.tar\.gz',
+                r'artifacts/palette/elxr-palette-' + re.escape(board) + r'-[A-Za-z0-9_.-]+-arm64\.img\.gz',
+                r'artifacts/minimal/troot_blob\.be',
+            ] if netboot else [
+                r'artifacts/palette/elxr-palette-' + re.escape(board) + r'-[A-Za-z0-9_.-]+\.swu',
+            ])
+            selected = []
+            for pattern in patterns:
+                files = [f for f in entry['files'] if re.fullmatch(pattern, f['path'])]
+                if not files:
+                    break
+                if len(files) != 1:
+                    raise ValueError(f'ambiguous artifacts for {version}')
+                artifact = files[0]
+                key = f"daily-platform-images/{version}/{artifact['path']}"
+                if artifact['key'] != key or not re.fullmatch(r'[0-9a-fA-F]{64}', artifact['sha256']):
+                    raise ValueError('invalid artifact key or checksum')
+                if type(artifact['size']) is not int or artifact['size'] <= 0 or type(entry['build_number']) is not int:
+                    raise ValueError('invalid artifact size or build number')
+                selected.append(BundleSource(
+                    DAILY_MIRROR + quote(version + '/' + artifact['path'], safe='/'),
+                    version, artifact['size'], artifact['sha256'].lower()))
+            if len(selected) == len(patterns):
+                builds.append({'version': version, 'build_number': entry['build_number'],
+                               'url': selected[0], 'artifacts': selected})
         builds.sort(key=lambda b: (b['build_number'], b['version']), reverse=True)
         return _matching_builds(builds, requested)
     except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError) as exc:

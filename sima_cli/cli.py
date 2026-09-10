@@ -125,8 +125,8 @@ def _initialize_main_context(ctx, internal, yes):
     if not internal:
         internal = os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
 
-    defer_update_access = ctx.invoked_subcommand == "update"
-    if internal and not internal_resource_exists() and not defer_update_access:
+    defer_artifactory_access = ctx.invoked_subcommand == "update" or ctx.meta.get("daily_netboot", False)
+    if internal and not internal_resource_exists() and not defer_artifactory_access:
         click.echo("❌ You have specified -i or --internal argument to access internal resources, but you do not have an internal resource map configured.")
         click.echo("Refer to the confluence page to find out how to configure internal resource map.")
         exit(0)
@@ -135,12 +135,12 @@ def _initialize_main_context(ctx, internal, yes):
     if internal:
         internal_reachable = check_artifactory_reachability()
 
-    if internal and not internal_reachable and not defer_update_access and not _allows_external_prerelease_fallback(sys.argv):
+    if internal and not internal_reachable and not defer_artifactory_access and not _allows_external_prerelease_fallback(sys.argv):
         click.secho("❌ You have specified -i or --internal argument to access internal resources, but you can't connect to Artifactory.", fg='red')
         click.secho("Please make sure you are connected to VPN or are on the corporate network.", fg='red')
         exit(0)
 
-    if internal and not internal_reachable and not defer_update_access:
+    if internal and not internal_reachable and not defer_artifactory_access:
         click.secho(
             "⚠️  Internal resources are unreachable. --force allows this update to use the external pre-release mirror.",
             fg="yellow",
@@ -163,6 +163,10 @@ class InspectionAwareGroup(click.Group):
         # Capture the actual Click arguments (also works with CliRunner), before
         # the root callback can perform a CLI self-update or network login.
         options = args[:args.index('--')] if '--' in args else args
+        ctx.meta['daily_netboot'] = (
+            _command_name_from_argv(['sima-cli'] + options) == 'bootimg'
+            and any(arg in ('--netboot', '-n', '--autoflash', '-a') for arg in options)
+        )
         if _command_name_from_argv(['sima-cli'] + options) == 'update' and '--inspect' in options:
             ctx.meta['update_inspect'] = True
         return super().parse_args(ctx, args)
@@ -648,6 +652,10 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
         sima-cli bootimg -v 2.1.0 --boardtype modalix --netboot --devkit-ip 192.168.1.20
 
+        # Internal eLxr 3.0+ netboot falls back to the daily mirror when Artifactory is unavailable
+
+        sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot
+
         # Prepare an eLxr netboot image for Modalix
 
         sima-cli bootimg -v 2.0.0 --boardtype modalix --fwtype elxr --netboot
@@ -673,6 +681,9 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
     from sima_cli.update.remote import get_remote_board_info
 
     internal = ctx.obj.get("internal", False)
+    if internal and ctx.meta.get('daily_netboot') and (boardtype != 'modalix' or fwtype != 'elxr'):
+        if not internal_resource_exists() or not ctx.obj.get('internal_reachable', True):
+            raise click.ClickException('Artifactory is unavailable. Daily netboot fallback requires Modalix eLxr.')
 
     click.echo(f"📦 Preparing boot image:")
     click.echo(f"   🔹 Version   : {version}")

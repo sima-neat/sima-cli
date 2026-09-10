@@ -79,6 +79,11 @@ Usage: sima-cli bootimg [OPTIONS]
       sima-cli bootimg -v 2.1.0 --boardtype modalix --netboot --devkit-ip
       192.168.1.20
 
+      # Internal eLxr 3.0+ netboot falls back to the daily mirror when
+      Artifactory is unavailable
+
+      sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot
+
       # Prepare an eLxr netboot image for Modalix
 
       sima-cli bootimg -v 2.0.0 --boardtype modalix --fwtype elxr --netboot
@@ -104,3 +109,11 @@ Options:
                                   the internal storage - TBD
   --help                          Show this message and exit.
 ```
+
+### Daily netboot fallback
+
+For internal Modalix eLxr 3.0+ builds, `--netboot` (also `--autoflash`) uses the public daily platform mirror if Artifactory cannot be reached or authentication fails. `-v` accepts an exact build name or a search term such as `1247`, `3.0`, or `develop`. Multiple matches appear newest build first.
+
+The minimal TFTP archive, palette `.img.gz` eMMC image, and `troot_blob.be` come from the same selected build. Mirror downloads must match the index size and SHA-256 before extraction or TFTP startup. If an Artifactory artifact request fails after selection, the fallback retains that exact build. Missing or invalid mirror artifacts stop preparation with an error.
+
+Existing local-file, direct-URL, Yocto, and older eLxr download paths remain available.

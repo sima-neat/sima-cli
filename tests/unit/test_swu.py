@@ -503,3 +503,16 @@ def test_current_pending_flag_blocks_preflight():
     with patch.object(swu, 'inspect_target', return_value=state):
         with pytest.raises(click.ClickException, match='pending'):
             swu.preflight(MagicMock(), swu.DEFAULT_KEY)
+
+
+@pytest.mark.parametrize('token', [None, '', '  '])
+@pytest.mark.parametrize('operation', ['query', 'size'])
+def test_missing_artifactory_login_has_actionable_error_before_network(token, operation):
+    with patch.object(swu_artifacts, 'get_auth_token', return_value=token), \
+            patch.object(swu_artifacts.requests, 'Session') as session:
+        with pytest.raises(click.ClickException, match='sima-cli -i login'):
+            if operation == 'query':
+                swu_artifacts.internal_bundles('modalix', None)
+            else:
+                swu_artifacts.bundle_size('https://example.com/bundle.swu', internal=True)
+    session.assert_not_called()

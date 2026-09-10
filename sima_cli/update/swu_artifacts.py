@@ -26,19 +26,29 @@ def _created(value):
         return None
 
 
+def _internal_headers():
+    token = get_auth_token(internal=True)
+    if not token or not token.strip():
+        raise click.ClickException(
+            'Artifactory login is required on this machine. Run `sima-cli -i login`, then retry the update.'
+        )
+    return {'Authorization': 'Bearer ' + token}
+
+
 def internal_bundles(board, keyword):
     if not re.fullmatch(r'[a-z0-9-]+', board):
         raise click.ClickException('Invalid board identity.')
     criteria = {'repo': 'soc-images', 'type': 'file',
                 'path': {'$match': f'elxr/bsp/{board}/*/artifacts/palette'},
                 'name': {'$match': f'elxr-palette-{board}-*.swu'}}
+    headers = _internal_headers()
+    headers['Content-Type'] = 'text/plain'
     session = requests.Session()
     session.trust_env = False
     try:
         response = session.post(ARTIFACTORY_BASE_URL + '/api/search/aql',
                                 data='items.find(' + json.dumps(criteria) + ').include("repo","path","name","created","size")',
-                                headers={'Authorization': 'Bearer ' + get_auth_token(internal=True),
-                                         'Content-Type': 'text/plain'}, timeout=30)
+                                headers=headers, timeout=30)
         response.raise_for_status()
         items = response.json().get('results', [])
     finally:
@@ -112,9 +122,9 @@ def bundle_size(source, internal=False):
         return Path(source).stat().st_size
     headers = {}
     if internal:
+        headers = _internal_headers()
         session = requests.Session()
         session.trust_env = False
-        headers['Authorization'] = 'Bearer ' + get_auth_token(internal=True)
     elif urlparse(source).hostname in ('docs.sima.ai', 'docs-dev.sima.ai'):
         session = _portal_session()
     else:

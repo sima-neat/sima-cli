@@ -115,7 +115,7 @@ def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_f
             patch.object(netboot, 'run_cli', side_effect=lambda *a: events.append('cli')), \
             patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
             patch.object(device, 'server_address', return_value='192.0.2.10'), \
-            patch.object(device, 'configure_and_reboot', side_effect=lambda *a: events.append('reboot')) as reboot:
+            patch.object(device, 'configure_and_reboot', side_effect=lambda *a, **k: events.append('reboot')) as reboot:
         if bind_failure:
             with pytest.raises(RuntimeError, match='Permission denied'):
                 netboot.setup_netboot('3.0', 'modalix')

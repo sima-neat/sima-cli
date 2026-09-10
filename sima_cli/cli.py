@@ -603,7 +603,7 @@ def show_mla_memory_usage(ctx):
 @click.option("--recovery", is_flag=True, help="Write eLxr Modalix recovery media for automatic eMMC recovery.")
 @click.option("--devkit", "--devkit-ip", "devkit_ip", required=False, help="DevKit IP for remote netboot; discover and select a DevKit when omitted.")
 @click.option("-r", "--rootfs", required=False, help="Custom root fs folders (internal use only)")
-@click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Net boot the DevKit and automatically flash the internal storage - TBD")
+@click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Network boot the selected DevKit, then automatically flash its internal storage once SSH is ready.")
 @click.pass_context
 def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, rootfs, recovery=False, force=False):
     """

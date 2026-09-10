@@ -246,7 +246,10 @@ class ClientManager:
             while not self.shutdown_event.is_set():
                 click.echo(f"🔍 Checking SSH availability for {ip}...")
                 try:
-                    wait_for_ssh(ip, timeout=120)
+                    if not wait_for_ssh(ip, timeout=120):
+                        if self.shutdown_event.wait(timeout=10):
+                            break
+                        continue
                     with self.lock:
                         self.clients[ip]['state'] = 'Connected'
                         self.clients[ip]['board_info'] = "SSH available"
@@ -475,6 +478,32 @@ def run_cli(client_manager):
             click.echo("\n🛑 Exiting netboot session.")
             return True
 
+def auto_flash(client_manager, selected_ip, timeout=900):
+    """Flash only the confirmed device, once, after its network boot is ready."""
+    click.echo(f'Waiting for SSH on {selected_ip}; flashing will start automatically.')
+    deadline = time.monotonic() + timeout
+    while not client_manager.shutdown_event.is_set():
+        connected = any(ip == selected_ip and info.get('state') == 'Connected'
+                        for ip, info in client_manager.get_client_info())
+        if connected:
+            from sima_cli.update.remote import run_remote_command_capture
+            ssh = init_ssh_session(selected_ip, password=DEFAULT_PASSWORD)
+            try:
+                code, cmdline, _ = run_remote_command_capture(ssh, 'cat /proc/cmdline')
+            finally:
+                ssh.close()
+            if code != 0 or 'root=/dev/ram0' not in cmdline.split():
+                raise click.ClickException('Automatic flashing stopped: the selected DevKit is not confirmed '
+                                           'to be running the network boot image.')
+            click.echo(f'Starting automatic flash on {selected_ip}.')
+            flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
+                       troot_image_path=troot_image_path)
+            return
+        if time.monotonic() >= deadline:
+            raise click.ClickException(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')
+        client_manager.shutdown_event.wait(0.5)
+
+
 def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto', allow_daily_fallback: bool = False, devkit: str = None):
     """
     Download and serve a bootable image for network boot over TFTP with client monitoring.
@@ -584,7 +613,9 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
             if not server_thread.is_alive() or time.monotonic() >= deadline:
                 raise RuntimeError('TFTP server did not become ready; the DevKit was not changed.')
 
-        configure_and_reboot(selected_devkit, server_ip)
+        configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
+        if autoflash:
+            auto_flash(client_manager, selected_devkit)
         run_cli(client_manager)
 
     except PermissionError:

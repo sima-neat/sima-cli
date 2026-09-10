@@ -52,6 +52,7 @@ def wait_for_ssh(ip: str, timeout: int = 120):
         print(f"❌ Timeout: SSH did not become available on {ip} within {timeout} seconds.")
     else:
         print("\r✅ Board is online!           \n")
+    return success
 
 
 def get_remote_board_info(ip: str, passwd: str = DEFAULT_PASSWORD) -> Tuple[str, str, str, bool, str]:

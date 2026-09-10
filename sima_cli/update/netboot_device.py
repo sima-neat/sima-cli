@@ -53,7 +53,7 @@ def network_settings(ssh, devkit, server_ip):
                                    'U-Boot was not changed.') from exc
 
 
-def configure_and_reboot(devkit, server_ip):
+def configure_and_reboot(devkit, server_ip, autoflash=False):
     """Require confirmation before changing persistent environment or rebooting."""
     ssh = init_ssh_session(devkit)
     try:
@@ -67,11 +67,15 @@ def configure_and_reboot(devkit, server_ip):
         message.append('After confirmation:\n', style='bold yellow')
         message.append('• Boot parameters will be automatically updated on the DevKit to let it boot from the network.\n'
                        '• The DevKit will reboot, interrupting running applications.\n\n')
+        if autoflash:
+            message.append('• Once SSH is available after network boot, automatically flash the selected DevKit.\n'
+                           '  This overwrites its internal storage.\n\n', style='bold red')
         message.append('These boot settings persist across reboots. No DHCP is required.\nKeep this host and TFTP server running.\n'
                        'If netboot fails, the DevKit retries and reboots; restoring local boot may require serial access.\n'
-                       'Netboot preparation itself does not write the eMMC image.', style='bold yellow')
+                       + ('Automatic flashing is enabled.' if autoflash else 'Netboot preparation itself does not write the eMMC image.'), style='bold yellow')
         Console().print(Panel(message, title='Reboot DevKit into network boot', border_style='yellow'))
-        if not click.confirm('Set up network boot and reboot this DevKit?', default=False):
+        if not click.confirm('Set up network boot, reboot, and automatically flash this DevKit?' if autoflash
+                             else 'Set up network boot and reboot this DevKit?', default=False):
             raise click.Abort()
         # Match Kerrigan's redundant environment layout. Use a temporary config,
         # preserving any system fw_env.config, and back up before the first write.
@@ -83,7 +87,8 @@ def configure_and_reboot(devkit, server_ip):
         click.secho(
             f'Reboot scheduled for {devkit}. Keep this program running to serve images through TFTP. '
             'You may connect to the device through its serial port to monitor netboot progress, but this is optional. '
-            'Once you see the device-connected message, type "f" to flash the device.',
+            + (f'Once you see "✅ SSH is available on {devkit}", flashing will start automatically.' if autoflash
+             else f'Once you see "✅ SSH is available on {devkit}", type "f" to flash the device.'),
             fg='green',
         )
     finally:

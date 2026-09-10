@@ -18,6 +18,7 @@ sima-cli bootimg [OPTIONS]
 | `-b, --boardtype` | Target board type. (default: mlsoc) |
 | `-t, --fwtype` | Target firmware type. (default: yocto) |
 | `-n, --netboot` | Prepare image for network boot and launch TFTP server. |
+| `--recovery` | Write eLxr Modalix recovery media for automatic eMMC recovery. |
 | `--devkit-ip` | Optional DevKit IP address for pre-netboot version probing. |
 | `-r, --rootfs` | Custom root fs folders (internal use only) |
 | `-a, --autoflash` | Net boot the DevKit and automatically flash the internal storage - TBD |
@@ -37,6 +38,10 @@ Usage: sima-cli bootimg [OPTIONS]
   removable boot medium (SD card or USB) or configures a TFTP-based network
   boot environment. It supports both MLSoC- and Modalix-based DevKits, as well
   as Yocto and eLxr firmware types.
+
+  Matching internal builds appear in aligned Version and Build time (UTC)
+  columns, newest first. Build time uses the newest Artifactory archive
+  creation timestamp for each version. Unknown timestamps appear last.
 
   Operations Performed:
 
@@ -78,6 +83,10 @@ Usage: sima-cli bootimg [OPTIONS]
 
       sima-cli bootimg -v 2.0.0 --boardtype modalix --fwtype elxr --netboot
 
+      # Prepare USB/SD recovery media that automatically recovers eMMC
+
+      sima-cli bootimg -v 3.0.0 --recovery
+
 Options:
   -v, --version TEXT              Firmware version to download and write
                                   (e.g., 1.6.0)  [required]
@@ -86,6 +95,8 @@ Options:
   -t, --fwtype [yocto|elxr]       Target firmware type.  [default: yocto]
   -n, --netboot                   Prepare image for network boot and launch
                                   TFTP server.
+  --recovery                      Write eLxr Modalix recovery media for
+                                  automatic eMMC recovery.
   --devkit-ip TEXT                Optional DevKit IP address for pre-netboot
                                   version probing.
   -r, --rootfs TEXT               Custom root fs folders (internal use only)

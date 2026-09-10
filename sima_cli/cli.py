@@ -355,6 +355,12 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
     state, --ip for remote updates, and --reboot to reboot after installation.
     Developer-portal version lookup for 3.0 is not available yet.
 
+    For internal downloads, run ``sima-cli -i login`` on the machine running
+    this command. Authentication or download failures before installation
+    report that no firmware was installed. HTTP 401 requires a fresh login;
+    HTTP 403 may require Artifactory access permissions. A connection loss
+    after installation starts requires inspecting the board before retrying.
+
     How Version Resolution Works:
 
       • If a version string is provided (e.g., ``1.7.0``), sima-cli automatically resolves it to the correct downloadable firmware asset based on channel, flavor, and board type.

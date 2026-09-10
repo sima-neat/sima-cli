@@ -246,7 +246,10 @@ class ClientManager:
             while not self.shutdown_event.is_set():
                 click.echo(f"🔍 Checking SSH availability for {ip}...")
                 try:
-                    wait_for_ssh(ip, timeout=120)
+                    if not wait_for_ssh(ip, timeout=120):
+                        if self.shutdown_event.wait(timeout=10):
+                            break
+                        continue
                     with self.lock:
                         self.clients[ip]['state'] = 'Connected'
                         self.clients[ip]['board_info'] = "SSH available"
@@ -475,7 +478,33 @@ def run_cli(client_manager):
             click.echo("\n🛑 Exiting netboot session.")
             return True
 
-def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto'):
+def auto_flash(client_manager, selected_ip, timeout=900):
+    """Flash only the confirmed device, once, after its network boot is ready."""
+    click.echo(f'Waiting for SSH on {selected_ip}; flashing will start automatically.')
+    deadline = time.monotonic() + timeout
+    while not client_manager.shutdown_event.is_set():
+        connected = any(ip == selected_ip and info.get('state') == 'Connected'
+                        for ip, info in client_manager.get_client_info())
+        if connected:
+            from sima_cli.update.remote import run_remote_command_capture
+            ssh = init_ssh_session(selected_ip, password=DEFAULT_PASSWORD)
+            try:
+                code, cmdline, _ = run_remote_command_capture(ssh, 'cat /proc/cmdline')
+            finally:
+                ssh.close()
+            if code != 0 or 'root=/dev/ram0' not in cmdline.split():
+                raise click.ClickException('Automatic flashing stopped: the selected DevKit is not confirmed '
+                                           'to be running the network boot image.')
+            click.echo(f'Starting automatic flash on {selected_ip}.')
+            flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
+                       troot_image_path=troot_image_path)
+            return
+        if time.monotonic() >= deadline:
+            raise click.ClickException(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')
+        client_manager.shutdown_event.wait(0.5)
+
+
+def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto', allow_daily_fallback: bool = False, devkit: str = None):
     """
     Download and serve a bootable image for network boot over TFTP with client monitoring.
 
@@ -506,7 +535,7 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
 
     try:
         click.echo(f"⬇️  Downloading netboot image for version: {version}, board: {board}, swtype: {swtype}")
-        file_list = download_image(version, board, swtype=swtype, internal=internal, update_type='netboot', flavor=flavor)
+        file_list = download_image(version, board, swtype=swtype, internal=internal, update_type='netboot', flavor=flavor, allow_daily_fallback=allow_daily_fallback)
         if not isinstance(file_list, list):
             raise ValueError("Expected list of extracted files, got something else.")
         extract_dir = os.path.dirname(file_list[0])
@@ -545,12 +574,19 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
     except Exception as e:
         raise RuntimeError(f"❌ Failed to download and extract netboot image: {e}")
 
+    from sima_cli.update.netboot_device import resolve_device, server_address, configure_and_reboot
+    if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
+        raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
+    selected_devkit = resolve_device(devkit)
+    server_ip = server_address(selected_devkit) if selected_devkit else None
+    server = None
+    client_manager = None
+    server_thread = None
     try:
         click.echo(f"🚀 Starting TFTP server in: {extract_dir}")
         ip_candidates = get_local_ip_candidates()
-        if not ip_candidates:
-            click.echo("❌ No suitable local IP addresses found.")
-            exit(1)
+        if server_ip and not any(ip == server_ip for _, ip in ip_candidates):
+            ip_candidates.append(('route to selected DevKit', server_ip))
 
         click.echo("🌐 TFTP server is listening on these interfaces (UDP port 69):")
         for iface, ip in ip_candidates:
@@ -559,14 +595,47 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
         client_manager = ClientManager()
 
         server = InteractiveTftpServer(tftproot=extract_dir, client_manager=client_manager)
-        server_thread = threading.Thread(target=server.listen, args=('0.0.0.0', 69), daemon=True)
+        startup_errors = []
+
+        def serve():
+            try:
+                server.listen('0.0.0.0', 69)
+            except Exception as exc:
+                startup_errors.append(exc)
+
+        server_thread = threading.Thread(target=serve, daemon=True)
         server_thread.start()
 
-        if run_cli(client_manager):
-            server.stop(now=True)
-            client_manager.shutdown()
+        deadline = time.monotonic() + 5
+        while not server.is_running.wait(0.05):
+            if startup_errors:
+                raise startup_errors[0]
+            if not server_thread.is_alive() or time.monotonic() >= deadline:
+                raise RuntimeError('TFTP server did not become ready; the DevKit was not changed.')
+
+        if selected_devkit:
+            configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
+            if autoflash:
+                auto_flash(client_manager, selected_devkit)
+        else:
+            message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'
+                           'Configure the DevKit manually through its serial console to boot from the network, '
+                           'using a reachable host IP listed above as its TFTP server.\n'
+                           'Keep this program running. Once "✅ SSH is available on <IP>" appears, type "f" to flash the device.')
+            if autoflash:
+                message.append('\n\nAutomatic flashing is disabled because no DevKit was selected.', style='bold yellow')
+            console.print(Panel(message, title='Manual netboot setup', border_style='yellow'))
+        run_cli(client_manager)
 
     except PermissionError:
         raise RuntimeError("❌ Permission denied. You must run this command with sudo to bind to port 69.")
     except OSError as e:
         raise RuntimeError(f"❌ Failed to start TFTP server: {e}")
+
+    finally:
+        if server is not None:
+            server.stop(now=True)
+        if client_manager is not None:
+            client_manager.shutdown()
+        if server_thread is not None:
+            server_thread.join(timeout=3)

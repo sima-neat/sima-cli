@@ -43,7 +43,7 @@ def resolve_elxr_palette_image(palette_url: str, board: str) -> str:
     return urljoin(palette_url.rstrip('/') + '/', quote(candidates[0]))
 
 
-def _list_available_firmware_versions_internal(board: str, match_keyword: str = None, flavor: str = 'headless', swtype: str = 'yocto', with_metadata: bool = False):
+def _list_available_firmware_versions_internal(board: str, match_keyword: str = None, flavor: str = 'headless', swtype: str = 'yocto', with_metadata: bool = False, strict: bool = False):
     if swtype == 'yocto':
         fw_path = f"{board}"
         aql_query = f"""
@@ -78,6 +78,10 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
     else:
         raise ValueError(f"Unsupported swtype: {swtype}")
 
+    if strict:
+        from sima_cli.update.swu_artifacts import _internal_headers
+        _internal_headers()
+
     aql_url = f"{ARTIFACTORY_BASE_URL}/api/search/aql"
     headers = {
         "Content-Type": "text/plain",
@@ -86,7 +90,9 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
 
     session = requests.Session()
     session.trust_env = False
-    response = session.post(aql_url, data=aql_query, headers=headers)
+    response = session.post(aql_url, data=aql_query, headers=headers, timeout=30)
+    if strict:
+        response.raise_for_status()
 
     if response.status_code == 401:
         print('❌ You are not authorized to access Artifactory, use `sima-cli -i login` with your Artifactory identity token to authenticate, then try the command again.')

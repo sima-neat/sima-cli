@@ -97,6 +97,10 @@ def sdk(ctx, version_filter):
 # Helper functions 
 # ------------------------------------------------------------
 
+class NoDevkitsDiscovered(click.ClickException):
+    """Discovery completed without finding a device."""
+
+
 def _resolve_devkit_ip(devkit: Optional[str]) -> str:
     """
     Resolve --devkit value into a concrete IP.
@@ -126,7 +130,7 @@ def _resolve_devkit_ip(devkit: Optional[str]) -> str:
             ips.append(ip)
 
     if not ips:
-        raise click.ClickException(
+        raise NoDevkitsDiscovered(
             "Could not auto-discover devices. Please provide a connectable DevKit IP via --devkit <IP>."
         )
 

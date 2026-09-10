@@ -594,7 +594,7 @@ def _update_remote(extracted_paths: List[str], ip: str, board: str, passwd: str,
 
     return script_path
 
-def download_image(version_or_url: str, board: str, swtype: str, internal: bool = False, update_type: str = 'standard', flavor: str = 'headless'):
+def download_image(version_or_url: str, board: str, swtype: str, internal: bool = False, update_type: str = 'standard', flavor: str = 'headless', allow_daily_fallback: bool = False):
     """
     Download and extract a firmware image for a specified board.
 
@@ -610,6 +610,11 @@ def download_image(version_or_url: str, board: str, swtype: str, internal: bool 
         List[str]: Paths to the extracted image files.
     """
     
+    if (internal and update_type == 'netboot' and swtype == 'elxr' and board == 'modalix'
+            and not version_or_url.startswith(('http://', 'https://')) and not os.path.exists(version_or_url)):
+        from sima_cli.update.netboot_artifacts import download_netboot_image
+        return download_netboot_image(version_or_url, board, flavor, allow_daily_fallback=allow_daily_fallback)
+
     if 'http' not in version_or_url and not os.path.exists(version_or_url): 
         version_or_url = _pick_from_available_versions(
             board, version_or_url, internal, flavor, swtype, update_type

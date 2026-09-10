@@ -1,13 +1,17 @@
-import unittest
 import os
 import stat
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import click
+
 from sima_cli.install.metadata_installer import (
     InstallationPreflightError,
+    _combine_multipart_files,
     _download_and_validate_metadata,
+    _extract_archives_in_folder,
     _is_http_forbidden_error,
     _download_metadata_file_resource,
     _ensure_install_dir_writable,
@@ -505,21 +509,47 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
         )
 
     def test_metadata_resource_path_uses_relative_resource_name(self):
-        self.assertEqual(
-            os.path.basename(
+        with TemporaryDirectory() as tmpdir:
+            self.assertEqual(
                 _metadata_resource_path(
-                    "/tmp/pkg",
-                    "neat-runtime_2.0.0%2Bmain.abc_arm64.deb",
-                    "https://artifacts.example.com/neat-runtime_2.0.0%252Bmain.abc_arm64.deb",
-                )
-            ),
-            "neat-runtime_2.0.0%2Bmain.abc_arm64.deb",
-        )
+                    tmpdir,
+                    "device-agent/neat-runtime_2.0.0%2Bmain.abc_arm64.deb",
+                    "https://artifacts.example.com/device-agent/neat-runtime_2.0.0%252Bmain.abc_arm64.deb",
+                ),
+                Path(tmpdir) / "device-agent" / "neat-runtime_2.0.0%2Bmain.abc_arm64.deb",
+            )
+
+    def test_metadata_resource_path_uses_basename_for_absolute_url(self):
+        with TemporaryDirectory() as tmpdir:
+            self.assertEqual(
+                _metadata_resource_path(
+                    tmpdir,
+                    "https://downloads.example.com/releases/install.sh",
+                    "https://downloads.example.com/releases/install.sh",
+                ),
+                Path(tmpdir) / "install.sh",
+            )
+
+    def test_metadata_resource_path_rejects_unsafe_paths(self):
+        with TemporaryDirectory() as tmpdir:
+            resources = (
+                "../install.sh",
+                "nested/../../install.sh",
+                "/tmp/install.sh",
+                r"C:\tmp\install.sh",
+            )
+            for resource in resources:
+                with self.subTest(resource=resource), self.assertRaises(click.ClickException):
+                    _metadata_resource_path(
+                        tmpdir,
+                        resource,
+                        "https://artifacts.example.com/install.sh",
+                    )
 
     def test_normalize_downloaded_metadata_resource_renames_to_expected_path(self):
         with TemporaryDirectory() as tmpdir:
             downloaded = os.path.join(tmpdir, "neat-runtime_2.0.0%252Bmain.abc_arm64.deb")
-            expected = os.path.join(tmpdir, "neat-runtime_2.0.0%2Bmain.abc_arm64.deb")
+            expected = os.path.join(tmpdir, "device-agent", "neat-runtime_2.0.0%2Bmain.abc_arm64.deb")
             with open(downloaded, "w", encoding="utf-8") as f:
                 f.write("deb")
 
@@ -528,6 +558,99 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
             self.assertEqual(local_path, expected)
             self.assertTrue(os.path.exists(expected))
             self.assertFalse(os.path.exists(downloaded))
+
+    @patch("sima_cli.install.metadata_installer.download_file_from_url")
+    def test_download_metadata_file_resource_preserves_nested_resource_path(self, mock_download):
+        with TemporaryDirectory() as tmpdir:
+            downloaded = Path(tmpdir) / "install_kerrigan_device_agent.sh"
+            downloaded.write_text("#!/bin/sh\n", encoding="utf-8")
+            mock_download.return_value = str(downloaded)
+            expected = Path(tmpdir) / "device-agent" / downloaded.name
+
+            local_path = _download_metadata_file_resource(
+                "device-agent/install_kerrigan_device_agent.sh",
+                ["https://artifacts.example.com/device-agent/install_kerrigan_device_agent.sh"],
+                tmpdir,
+                expected,
+                False,
+            )
+
+            self.assertEqual(local_path, str(expected))
+            self.assertEqual(mock_download.call_args.kwargs["dest_folder"], str(expected.parent))
+            self.assertEqual(expected.read_text(encoding="utf-8"), "#!/bin/sh\n")
+            self.assertFalse(downloaded.exists())
+
+    @patch("sima_cli.install.metadata_installer.download_file_from_url")
+    def test_download_metadata_file_resource_avoids_same_basename_collision(self, mock_download):
+        with TemporaryDirectory() as tmpdir:
+            install_root = Path(tmpdir)
+
+            def download(url, dest_folder, internal):
+                destination = Path(dest_folder) / Path(url).name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                content = "nested" if "/device/" in url else "root"
+                destination.write_text(content, encoding="utf-8")
+                return str(destination)
+
+            mock_download.side_effect = download
+            root_path = install_root / "install.sh"
+            nested_path = install_root / "device" / "install.sh"
+
+            _download_metadata_file_resource(
+                "install.sh",
+                ["https://artifacts.example.com/install.sh"],
+                tmpdir,
+                root_path,
+                False,
+            )
+            _download_metadata_file_resource(
+                "device/install.sh",
+                ["https://artifacts.example.com/device/install.sh"],
+                tmpdir,
+                nested_path,
+                False,
+            )
+
+            self.assertEqual(root_path.read_text(encoding="utf-8"), "root")
+            self.assertEqual(nested_path.read_text(encoding="utf-8"), "nested")
+
+    @patch("sima_cli.install.metadata_installer._extract_tar_streaming")
+    def test_combine_multipart_files_processes_nested_resources(self, mock_extract):
+        with TemporaryDirectory() as tmpdir:
+            install_root = Path(tmpdir)
+            nested = install_root / "payloads"
+            nested.mkdir()
+            first = nested / "bundle-split-aa"
+            second = nested / "bundle-split-ab"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+
+            _combine_multipart_files(tmpdir, local_paths=[str(first), str(second)])
+
+            nested = nested.resolve()
+            combined = nested / "bundle.tar"
+            self.assertEqual(combined.read_bytes(), b"firstsecond")
+            mock_extract.assert_called_once_with(combined, nested / "bundle")
+
+    @patch("sima_cli.install.metadata_installer._extract_zip_streaming")
+    @patch("sima_cli.install.metadata_installer._extract_tar_streaming")
+    def test_extract_archives_processes_nested_resources(self, mock_tar, mock_zip):
+        with TemporaryDirectory() as tmpdir:
+            install_root = Path(tmpdir)
+            nested = install_root / "payloads"
+            nested.mkdir()
+            tar_path = nested / "bundle.tar.gz"
+            zip_path = nested / "assets.zip"
+            tar_path.touch()
+            zip_path.touch()
+
+            _extract_archives_in_folder(tmpdir, [str(tar_path), str(zip_path)])
+
+            nested = nested.resolve()
+            tar_path = tar_path.resolve()
+            zip_path = zip_path.resolve()
+            mock_tar.assert_called_once_with(tar_path, nested / "bundle")
+            mock_zip.assert_called_once_with(zip_path, nested / "assets")
 
     @patch("sima_cli.install.metadata_installer.download_file_from_url")
     def test_download_metadata_file_resource_retries_percent_preserving_url(self, mock_download):
@@ -555,13 +678,14 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
 
     def test_mark_install_script_executable_sets_execute_bits(self):
         with TemporaryDirectory() as tmpdir:
-            script_path = os.path.join(tmpdir, "install_neat_framework.sh")
+            script_path = os.path.join(tmpdir, "device-agent", "install_neat_framework.sh")
+            os.makedirs(os.path.dirname(script_path))
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write("#!/bin/sh\n")
             os.chmod(script_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
 
             _mark_install_script_executable(
-                {"installation": {"script": "./install_neat_framework.sh"}},
+                {"installation": {"script": "./device-agent/install_neat_framework.sh"}},
                 tmpdir,
             )
 

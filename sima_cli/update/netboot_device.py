@@ -125,7 +125,7 @@ def _uboot_script(devkit, server_ip, network):
         '    mount -o remount,rw /boot || { echo "Cannot remount /boot writable; U-Boot was not changed and the DevKit will not be rebooted." >&2; exit 1; }',
         '    restore_ro=1 ;;',
         'esac',
-        'backup=$(mktemp -d /boot/sima-cli-netboot-backup.XXXXXX)', 
+        'backup=$(mktemp -d /boot/sima-cli-netboot-backup.XXXXXX)',
         'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
         'fw_printenv -c "$config" > "$backup/environment.txt"',
         'backup_complete=1',

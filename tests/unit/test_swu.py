@@ -89,12 +89,13 @@ def test_internal_swu_query_filters_and_sorts_real_artifacts():
         assert '"$match": "elxr-palette-modalix-*.swu"' in query
 
 
-def test_internal_picker_preserves_full_build_and_timestamp():
+@pytest.mark.parametrize('requested', [None, '3.0'])
+def test_internal_picker_preserves_full_build_and_timestamp(requested):
     builds = [{'version': '3.0.0_daily_B11', 'created': swu_artifacts._created('2026-09-09T09:00:00Z'), 'url': 'https://example/B11.swu'},
               {'version': '3.0.0_custom_B9', 'created': None, 'url': 'https://example/B9.swu'}]
     with patch.object(swu_artifacts, 'internal_bundles', return_value=builds), patch('InquirerPy.inquirer.fuzzy') as picker:
         picker.return_value.execute.return_value = builds[0]['url']
-        assert swu_artifacts.resolve_bundle('3.0', 'modalix', True) == builds[0]['url']
+        assert swu_artifacts.resolve_bundle(requested, 'modalix', True) == builds[0]['url']
         choices = picker.call_args.kwargs['choices']
         assert '2026-09-09 09:00:00 UTC' in choices[0]['name']
         assert 'unknown' in choices[1]['name']

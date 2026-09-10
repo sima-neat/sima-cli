@@ -102,9 +102,6 @@ def resolve_bundle(requested, board, internal=False):
             raise click.ClickException(f'No matching eLxr 3.0+ SWU builds for {requested or "latest"}.')
         if len(builds) == 1:
             return builds[0]['url']
-        if not requested:
-            click.echo(f"Selecting newest SWU build: {builds[0]['version']}")
-            return builds[0]['url']
         from InquirerPy import inquirer
         version_width = max(len(b['version']) for b in builds)
         return inquirer.fuzzy(message='Select a full-system SWU build (newest first):', choices=[

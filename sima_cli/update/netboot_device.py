@@ -1,5 +1,6 @@
 """Confirmed remote U-Boot preparation for a host-served netboot image."""
 import ipaddress
+import inspect
 import json
 import shlex
 import socket
@@ -57,6 +58,7 @@ def configure_and_reboot(devkit, server_ip):
     ssh = init_ssh_session(devkit)
     try:
         _checked(ssh, 'command -v fw_setenv && command -v fw_printenv && '
+                 'command -v python3 && test -f /boot/u-boot.bin && '
                  'test -f /boot/uboot.env && test -f /boot/uboot-redund.env')
         network = network_settings(ssh, devkit, server_ip)
         message = Text()
@@ -88,6 +90,8 @@ def configure_and_reboot(devkit, server_ip):
 
 def _uboot_script(devkit, server_ip, network):
     """Prepare redundant environment files while preserving the boot mount mode."""
+    from sima_cli.update.uboot_environment import configure_environment
+    helper = inspect.getsource(configure_environment) + '\nimport sys\nconfigure_environment(sys.argv[1])\n'
     return '\n'.join([
         'set -eu',
         'config=$(mktemp)',
@@ -127,8 +131,9 @@ def _uboot_script(devkit, server_ip, network):
         'esac',
         'backup=$(mktemp -d /boot/sima-cli-netboot-backup.XXXXXX)',
         'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
-        'fw_printenv -c "$config" > "$backup/environment.txt"',
         'backup_complete=1',
+        'python3 -c ' + shlex.quote(helper) + ' "$config"',
+        'fw_printenv -c "$config" > "$backup/environment.txt"',
         'echo "Saved U-Boot environment to $backup"',
         'fw_setenv -c "$config" bootfile netboot.scr.uimg',
         'fw_setenv -c "$config" netcfg static',
@@ -140,8 +145,10 @@ def _uboot_script(devkit, server_ip, network):
         'fw_setenv -c "$config" serverip ' + shlex.quote(server_ip),
         "fw_setenv -c \"$config\" bootcmd_net 'tftp ${scriptaddr} ${serverip}:${bootfile} && source ${scriptaddr}'",
         "fw_setenv -c \"$config\" bootcmd 'for attempt in 1 2 3 4 5; do echo Netboot attempt ${attempt}; run bootcmd_net; sleep 10; done; reset'",
+        'echo "Setting boot_targets=net"',
         'fw_setenv -c "$config" boot_targets net',
         'test "$(fw_printenv -c "$config" -n boot_targets)" = net',
         'test "$(fw_printenv -c "$config" -n serverip)" = ' + shlex.quote(server_ip),
+        'fw_printenv -c "$config" boot_targets serverip ipaddr',
         'sync',
     ])

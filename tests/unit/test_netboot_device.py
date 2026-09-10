@@ -193,7 +193,7 @@ elif name == 'fw_printenv':
     else:
         print('boot_targets=mmc0')
 '''
-    for name in ('findmnt', 'mount', 'fw_setenv', 'fw_printenv', 'sync'):
+    for name in ('findmnt', 'mount', 'fw_setenv', 'fw_printenv', 'sync', 'python3'):
         path = binary / name
         path.write_text('#!' + sys.executable + '\n' + stub)
         path.chmod(0o755)

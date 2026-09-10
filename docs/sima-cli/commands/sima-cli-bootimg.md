@@ -124,7 +124,7 @@ Existing local-file, direct-URL, Yocto, and older eLxr download paths remain ava
 
 ### Remote netboot preparation
 
-Use `--netboot --devkit 192.168.2.2` to select a DevKit, or omit `--devkit` to use SDK setup discovery. Multiple discovered devices prompt for a selection. `--devkit-ip` remains an alias. The device must be reachable over SSH and support the redundant U-Boot environment files under `/boot`.
+Use `--netboot --devkit 192.168.2.2` to select a DevKit, or omit `--devkit` to use SDK setup discovery. Multiple discovered devices prompt for a selection. `--devkit-ip` remains an alias. The device must be reachable over SSH and provide the U-Boot binary and environment files under `/boot`. The CLI matches the environment format to the bootloader: a single-file FAT loader uses a four-byte CRC header, while a redundant loader uses the two-file format. Existing files written in the wrong redundant format are backed up and converted for single-file loaders before applying settings.
 
 The host route to the selected DevKit determines the TFTP server IP, including on hosts with multiple interfaces. The DevKit's active address, subnet, and return-route gateway are reused for static netboot; DHCP is not required.
 

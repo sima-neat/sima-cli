@@ -80,7 +80,11 @@ def configure_and_reboot(devkit, server_ip):
         click.echo(output)
         # A delayed systemd job acknowledges scheduling before SSH disconnects.
         _checked(ssh, 'sudo systemd-run --on-active=3s /sbin/reboot')
-        click.secho(f'Reboot scheduled for {devkit}. Keep the TFTP server running.', fg='green')
+        click.secho(
+            f'Reboot scheduled for {devkit}. Keep this program running to serve images through TFTP. '
+            'You may connect to the device through its serial port to monitor netboot progress, but this is optional.',
+            fg='green',
+        )
     finally:
         ssh.close()
 

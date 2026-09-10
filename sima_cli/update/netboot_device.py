@@ -82,7 +82,8 @@ def configure_and_reboot(devkit, server_ip):
         _checked(ssh, 'sudo systemd-run --on-active=3s /sbin/reboot')
         click.secho(
             f'Reboot scheduled for {devkit}. Keep this program running to serve images through TFTP. '
-            'You may connect to the device through its serial port to monitor netboot progress, but this is optional.',
+            'You may connect to the device through its serial port to monitor netboot progress, but this is optional. '
+            'Once you see the device-connected message, type "f" to flash the device.',
             fg='green',
         )
     finally:

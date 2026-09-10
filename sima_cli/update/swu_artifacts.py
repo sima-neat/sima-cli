@@ -34,7 +34,7 @@ def is_mirror_source(source):
     return source.startswith(DAILY_MIRROR)
 
 
-def artifactory_failure_reason(error):
+def artifactory_failure_reason(error, post_selection=False):
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
@@ -42,10 +42,12 @@ def artifactory_failure_reason(error):
             return error.format_message()
         if isinstance(error, requests.RequestException):
             status = error.response.status_code if error.response is not None else None
-            if status in (401, 403) or (status is not None and 500 <= status < 600):
+            if status is not None and (post_selection or status in (401, 403) or 500 <= status < 600):
                 return f'Artifactory returned HTTP {status}.'
             if isinstance(error, (requests.ConnectionError, requests.Timeout)):
                 return 'Artifactory could not be reached.'
+            if post_selection:
+                return 'The selected Artifactory bundle request failed.'
         error = error.__cause__ or error.__context__
     return None
 
@@ -128,7 +130,9 @@ def select_mirror_bundle(requested, board, reason, exact=False):
 
 
 def fallback_for_bundle(source, board, error):
-    reason = artifactory_failure_reason(error)
+    # Discovery is deliberately stricter; any failed artifact request after
+    # selection may retry the same build, including 404 races and protocol errors.
+    reason = artifactory_failure_reason(error, post_selection=True)
     version = getattr(source, 'version', None)
     if reason and version and source.startswith(ARTIFACTORY_BASE_URL.rstrip('/') + '/'):
         return select_mirror_bundle(version, board, reason, exact=True)

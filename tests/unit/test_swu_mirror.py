@@ -259,3 +259,54 @@ def test_unavailable_mirror_index_reports_failure_without_installation(error):
         session.return_value.__enter__.return_value.get.side_effect = error
         with pytest.raises(click.ClickException, match='Unable to read the daily platform build index.*No firmware was installed'):
             artifacts.select_mirror_bundle('3.0', 'modalix', 'Artifactory unavailable.')
+
+
+@pytest.mark.parametrize('stage', ['size', 'download'])
+@pytest.mark.parametrize('kind', ['404', '429', 'protocol'])
+def test_post_selection_request_failures_retry_exact_build(stage, kind, tmp_path):
+    local = tmp_path / 'bundle.swu'
+    local.write_bytes(CONTENT)
+    if kind == 'protocol':
+        error = requests.exceptions.ChunkedEncodingError('broken response')
+    else:
+        response = requests.Response()
+        response.status_code = int(kind)
+        error = requests.HTTPError(response=response)
+    wrapped = RuntimeError('Download failed')
+    wrapped.__cause__ = error
+    internal = artifacts.BundleSource(artifacts.ARTIFACTORY_BASE_URL + '/bundle.swu', VERSION)
+    mirror = artifacts.BundleSource(artifacts.DAILY_MIRROR + VERSION + '/' + SWU,
+                                    VERSION, len(CONTENT), hashlib.sha256(CONTENT).hexdigest())
+    target = MagicMock()
+    target.run.return_value = '/tmp/sima-cli-update.ABC12345'
+    with patch.object(swu, 'Target', return_value=target), \
+            patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
+            patch.object(swu, 'preflight', return_value={'running slot': 'A'}), \
+            patch.object(swu, 'resolve_bundle', return_value=internal), \
+            patch.object(swu, 'bundle_size', side_effect=error if stage == 'size' else None, return_value=len(CONTENT)), \
+            patch.object(swu, '_select_staging_root', return_value='/tmp'), \
+            patch.object(swu, '_check_space'), \
+            patch.object(swu, 'inspect_target', return_value={'next-boot': 'B', 'upgrade_available': 'yes'}), \
+            patch.object(artifacts, 'select_mirror_bundle', return_value=mirror) as fallback, \
+            patch.object(swu, 'download_file_from_url', side_effect=[wrapped, str(local)] if stage == 'download' else None, return_value=str(local)) as download:
+        swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True)
+    assert fallback.call_args.args[0] == VERSION
+    assert fallback.call_args.kwargs['exact'] is True
+    assert download.call_args.args[0] == mirror
+    assert download.call_args.kwargs['internal'] is False
+    target.transfer.assert_called_once()
+
+
+def test_discovery_protocol_error_does_not_fall_back():
+    with patch.object(artifacts, 'internal_bundles', side_effect=requests.exceptions.ChunkedEncodingError()), \
+            patch.object(artifacts, 'select_mirror_bundle') as mirror:
+        with pytest.raises(requests.exceptions.ChunkedEncodingError):
+            artifacts.resolve_bundle('3.0', 'modalix', True)
+    mirror.assert_not_called()
+
+
+def test_post_selection_local_io_error_does_not_fall_back():
+    source = artifacts.BundleSource(artifacts.ARTIFACTORY_BASE_URL + '/bundle.swu', VERSION)
+    with patch.object(artifacts, 'select_mirror_bundle') as mirror:
+        assert artifacts.fallback_for_bundle(source, 'modalix', OSError('disk full')) is None
+    mirror.assert_not_called()

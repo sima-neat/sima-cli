@@ -125,7 +125,8 @@ def _initialize_main_context(ctx, internal, yes):
     if not internal:
         internal = os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
 
-    if internal and not internal_resource_exists():
+    defer_artifactory_access = ctx.invoked_subcommand == "update" or ctx.meta.get("daily_netboot", False)
+    if internal and not internal_resource_exists() and not defer_artifactory_access:
         click.echo("❌ You have specified -i or --internal argument to access internal resources, but you do not have an internal resource map configured.")
         click.echo("Refer to the confluence page to find out how to configure internal resource map.")
         exit(0)
@@ -134,12 +135,12 @@ def _initialize_main_context(ctx, internal, yes):
     if internal:
         internal_reachable = check_artifactory_reachability()
 
-    if internal and not internal_reachable and not _allows_external_prerelease_fallback(sys.argv):
+    if internal and not internal_reachable and not defer_artifactory_access and not _allows_external_prerelease_fallback(sys.argv):
         click.secho("❌ You have specified -i or --internal argument to access internal resources, but you can't connect to Artifactory.", fg='red')
         click.secho("Please make sure you are connected to VPN or are on the corporate network.", fg='red')
         exit(0)
 
-    if internal and not internal_reachable:
+    if internal and not internal_reachable and not defer_artifactory_access:
         click.secho(
             "⚠️  Internal resources are unreachable. --force allows this update to use the external pre-release mirror.",
             fg="yellow",
@@ -162,6 +163,10 @@ class InspectionAwareGroup(click.Group):
         # Capture the actual Click arguments (also works with CliRunner), before
         # the root callback can perform a CLI self-update or network login.
         options = args[:args.index('--')] if '--' in args else args
+        ctx.meta['daily_netboot'] = (
+            _command_name_from_argv(['sima-cli'] + options) == 'bootimg'
+            and any(arg in ('--netboot', '-n', '--autoflash', '-a') for arg in options)
+        )
         if _command_name_from_argv(['sima-cli'] + options) == 'update' and '--inspect' in options:
             ctx.meta['update_inspect'] = True
         return super().parse_args(ctx, args)
@@ -180,6 +185,12 @@ def main(ctx, internal, yes):
     Global Options:
       --internal  Use internal Artifactory resources (can also be set via env variable SIMA_CLI_INTERNAL=1)
     """
+    internal = internal or os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
+    if internal:
+        Console(stderr=True).print(Panel(
+            "Pre-release software may be unstable. Use at your own risk.",
+            title="Pre-release software", border_style="yellow",
+        ))
     if ctx.meta.get('update_inspect'):
         ctx.ensure_object(dict)
         ctx.obj.update(internal=internal, yes=yes)
@@ -355,11 +366,17 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
     state, --ip for remote updates, and --reboot to reboot after installation.
     Developer-portal version lookup for 3.0 is not available yet.
 
-    For internal downloads, run ``sima-cli -i login`` on the machine running
-    this command. Authentication or download failures before installation
-    report that no firmware was installed. HTTP 401 requires a fresh login;
-    HTTP 403 may require Artifactory access permissions. A connection loss
-    after installation starts requires inspecting the board before retrying.
+    Internal mode warns that pre-release software may be unstable and is used
+    at your own risk. On eLxr 3.0+, unavailable Artifactory access falls back
+    to the public daily platform mirror, including missing login, HTTP 401/403,
+    connection failures, timeouts, and server errors. Exact build names select
+    directly; partial matches show builds newest first by build number.
+
+    Mirror downloads verify the indexed size and SHA-256 before signed
+    installation. A missing build or failed download stops before installation.
+    A connection loss after installation starts requires inspecting the board
+    before retrying. Devices running eLxr 2.1.3 retain the APT update flow;
+    upgrading those devices to 3.0 requires recovery/provisioning first.
 
     How Version Resolution Works:
 
@@ -447,6 +464,16 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
         raise
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
+
+    # Legacy updates retain their original access/--force policy after dispatch.
+    if ctx.obj.get("internal", False):
+        if not internal_resource_exists():
+            raise click.ClickException("Internal resources are not configured on this machine.")
+        if not ctx.obj.get("internal_reachable", True) and not force:
+            raise click.ClickException(
+                "Artifactory is unreachable. Connect to VPN or the corporate network. "
+                "Automatic daily SWU fallback requires a device already running eLxr 3.0+."
+            )
 
     if dryrun and not is_elxr:
         raise click.ClickException("--dryrun is only supported when running update on an ELXR devkit.")
@@ -572,12 +599,13 @@ def show_mla_memory_usage(ctx):
 @click.option("-b", "--boardtype", type=click.Choice(["modalix",  "mlsoc"], case_sensitive=False), default="mlsoc", show_default=True, help="Target board type.")
 @click.option("-t", "--fwtype", type=click.Choice(["yocto",  "elxr"], case_sensitive=False), default="yocto", show_default=True, help="Target firmware type.")
 @click.option("-n", "--netboot", is_flag=True, default=False, show_default=True, help="Prepare image for network boot and launch TFTP server.")
+@click.option("-f", "--force", is_flag=True, help="Allow daily mirror fallback if Artifactory is unavailable (internal Modalix eLxr netboot only).")
 @click.option("--recovery", is_flag=True, help="Write eLxr Modalix recovery media for automatic eMMC recovery.")
-@click.option("--devkit-ip", required=False, help="Optional DevKit IP address for pre-netboot version probing.")
+@click.option("--devkit", "--devkit-ip", "devkit_ip", required=False, help="DevKit IP for remote netboot; discover and select a DevKit when omitted.")
 @click.option("-r", "--rootfs", required=False, help="Custom root fs folders (internal use only)")
-@click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Net boot the DevKit and automatically flash the internal storage - TBD")
+@click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Network boot the selected DevKit, then automatically flash its internal storage once SSH is ready.")
 @click.pass_context
-def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, rootfs, recovery=False):
+def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, rootfs, recovery=False, force=False):
     """
     Prepare a bootable image for the SiMa DevKit.
 
@@ -621,9 +649,13 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
         sima-cli bootimg -v 1.6.0 --boardtype modalix --netboot
 
-        # Set up netboot and probe an existing DevKit first
+        # Select a DevKit for confirmed remote U-Boot setup and reboot
 
         sima-cli bootimg -v 2.1.0 --boardtype modalix --netboot --devkit-ip 192.168.1.20
+
+        # Allow daily mirror fallback for internal eLxr 3.0+ netboot
+
+        sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot -f
 
         # Prepare an eLxr netboot image for Modalix
 
@@ -647,9 +679,10 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
     from sima_cli.update.bootimg import write_image
     from sima_cli.update.netboot import setup_netboot
-    from sima_cli.update.remote import get_remote_board_info
-
     internal = ctx.obj.get("internal", False)
+    if internal and ctx.meta.get('daily_netboot') and (boardtype != 'modalix' or fwtype != 'elxr'):
+        if not internal_resource_exists() or not ctx.obj.get('internal_reachable', True):
+            raise click.ClickException('Artifactory is unavailable. Daily netboot fallback requires Modalix eLxr.')
 
     click.echo(f"📦 Preparing boot image:")
     click.echo(f"   🔹 Version   : {version}")
@@ -660,18 +693,9 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
     click.echo(f"   🔹 DevKit IP : {devkit_ip}")
     
     try:
-        if devkit_ip and (netboot or autoflash):
-            click.echo(f"🔎 Probing DevKit version at {devkit_ip} ...")
-            _, remote_version, _, _, _ = get_remote_board_info(devkit_ip)
-            if not remote_version:
-                raise click.ClickException(
-                    f"Unable to retrieve remote version from DevKit at {devkit_ip}."
-                )
-            click.echo(f"✅ DevKit current version: {remote_version}")
-
         boardtype = boardtype if boardtype != 'mlsoc' else 'davinci'
         if netboot or autoflash:
-            setup_netboot(version, boardtype, internal, autoflash, flavor='headless', rootfs=rootfs, swtype=fwtype)
+            setup_netboot(version, boardtype, internal, autoflash, flavor='headless', rootfs=rootfs, swtype=fwtype, allow_daily_fallback=force, devkit=devkit_ip)
             click.echo("✅ Netboot image prepared and TFTP server is running.")
         else:
             write_image(version, boardtype, fwtype, internal, flavor='headless', recovery=recovery)

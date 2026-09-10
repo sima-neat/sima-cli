@@ -1,5 +1,6 @@
 """Full signed A/B system updates on eLxr 3.0+, locally or through SSH."""
 import os
+import hashlib
 import re
 import shlex
 import tempfile
@@ -12,7 +13,9 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 
 from sima_cli.download import download_file_from_url
 from sima_cli.update.ab_state import inspect_target
-from sima_cli.update.swu_artifacts import release_tuple, resolve_bundle, bundle_size
+from sima_cli.update.swu_artifacts import (
+    release_tuple, resolve_bundle, bundle_size, is_mirror_source, fallback_for_bundle,
+)
 from sima_cli.update.swu_target import Target
 from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
 
@@ -244,6 +247,7 @@ def _artifact_request_error(error, internal):
 def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                   auto_confirm=False, dryrun=False, key=DEFAULT_KEY, reboot=False):
     target = Target(ip, passwd)
+    source = ''
     staging = None
     key_directory = None
     installing = False
@@ -260,7 +264,15 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
         click.echo(f'Full-system bundle: {source}')
         local_source = urlparse(source).scheme not in ('http', 'https')
         phase = "checking the update bundle"
-        size_hint = bundle_size(source, internal)
+        try:
+            size_hint = (source.size if is_mirror_source(source) and getattr(source, 'size', None)
+                         else bundle_size(source, internal))
+        except Exception as exc:
+            fallback = fallback_for_bundle(source, board, exc) if internal else None
+            if fallback is None:
+                raise
+            source = fallback
+            size_hint = source.size
         phase = "preparing staging storage"
         staging_root = _select_staging_root(target, size_hint, dryrun=dryrun)
         if dryrun:
@@ -278,7 +290,26 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             else:
                 phase = 'downloading the update bundle'
                 click.echo('Downloading signed SWU bundle...')
-                local = download_file_from_url(source, cache, internal=internal)
+                try:
+                    local = download_file_from_url(source, cache, internal=internal and not is_mirror_source(source))
+                except Exception as exc:
+                    fallback = fallback_for_bundle(source, board, exc) if internal else None
+                    if fallback is None:
+                        raise
+                    source = fallback
+                    _check_space(target, source.size, staging_root)
+                    local = download_file_from_url(source, cache, internal=False)
+                if is_mirror_source(source) and getattr(source, 'sha256', None):
+                    click.echo('Verifying the daily mirror bundle size and SHA-256...')
+                    digest = hashlib.sha256()
+                    with open(local, 'rb') as bundle:
+                        for chunk in iter(lambda: bundle.read(1024 * 1024), b''):
+                            digest.update(chunk)
+                    if os.path.getsize(local) != source.size or digest.hexdigest() != source.sha256:
+                        raise click.ClickException(
+                            'The daily mirror bundle failed size or SHA-256 verification. '
+                            'No firmware was installed. Retry the download.'
+                        )
             phase = "staging the update bundle"
             size = os.path.getsize(local)
             if not size:
@@ -298,7 +329,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             raise click.ClickException('SWUpdate exited successfully, but pending activation could not be verified. Run update --inspect before rebooting.')
         click.echo('Full system installed. Reboot required; the new slot is not yet health-confirmed.')
         if reboot:
-            expected = None
+            expected = getattr(source, 'version', None)
             parts = urlparse(source).path.split('/')
             if 'bsp' in parts:
                 index = parts.index('bsp') + 2
@@ -311,8 +342,10 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                 key_directory = None
             _reboot_and_verify(target, before, ip, passwd, expected=expected)
     except (KeyboardInterrupt, Exception) as exc:
+        if isinstance(exc, click.ClickException):
+            raise
         if not installing:
-            artifact_error = _artifact_request_error(exc, internal)
+            artifact_error = _artifact_request_error(exc, internal and not is_mirror_source(source))
             if artifact_error:
                 raise click.ClickException(artifact_error + ' No firmware was installed.') from exc
             if isinstance(exc, (KeyboardInterrupt, EOFError, OSError)):

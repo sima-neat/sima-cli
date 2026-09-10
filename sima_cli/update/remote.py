@@ -52,6 +52,7 @@ def wait_for_ssh(ip: str, timeout: int = 120):
         print(f"❌ Timeout: SSH did not become available on {ip} within {timeout} seconds.")
     else:
         print("\r✅ Board is online!           \n")
+    return success
 
 
 def get_remote_board_info(ip: str, passwd: str = DEFAULT_PASSWORD) -> Tuple[str, str, str, bool, str]:
@@ -238,7 +239,7 @@ def reboot_remote_board(ip: str, passwd: str):
         click.echo(f"⚠️  Unable to connect to the remote board")
 
 
-def run_remote_command_capture(ssh, command: str, password: str = DEFAULT_PASSWORD):
+def run_remote_command_capture(ssh, command: str, password: str = DEFAULT_PASSWORD, sudo_pty: bool = True):
     """
     Run a remote command over SSH and return (exit_status, stdout_str, stderr_str).
     Does not stream output to the console.
@@ -248,7 +249,7 @@ def run_remote_command_capture(ssh, command: str, password: str = DEFAULT_PASSWO
     if needs_sudo:
         command = f"sudo -S {command[len('sudo '):]}"
 
-    stdin, stdout, stderr = ssh.exec_command(command, get_pty=needs_sudo)
+    stdin, stdout, stderr = ssh.exec_command(command, get_pty=needs_sudo and sudo_pty)
     if needs_sudo:
         stdin.write(password + "\n")
         stdin.flush()
@@ -298,6 +299,7 @@ def copy_file_to_remote_board(ip: str, file_path: str, remote_dir: str, passwd: 
     
     from tqdm import tqdm
 
+    sftp = None
     try:
         ssh.connect(ip, username=DEFAULT_USER, password=passwd, timeout=10)
         sftp = ssh.open_sftp()
@@ -314,16 +316,20 @@ def copy_file_to_remote_board(ip: str, file_path: str, remote_dir: str, passwd: 
             def progress(transferred, total):
                 pbar.update(transferred - pbar.n)
 
-            sftp.put(file_path, remote_path, callback=progress)
+            from sima_cli.update.fast_upload import upload
+            upload(ssh, sftp, ip, passwd, file_path, remote_path, progress)
 
         click.echo("✅ Upload complete")
 
-        sftp.close()
-        ssh.close()
         return True
 
     except Exception as e:
         click.echo(f"❌ Remote file copy failed: {e}")
+
+    finally:
+        if sftp is not None:
+            sftp.close()
+        ssh.close()
 
     return False
 

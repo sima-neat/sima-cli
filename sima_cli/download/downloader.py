@@ -97,6 +97,8 @@ def download_file_from_url(url: str, dest_folder: str = ".", internal: bool = Fa
             return download_github_asset(url, token=token)
         else:
             session = requests.Session()
+            if parsed_url.hostname == 'artifacts.neat.sima.ai':
+                session.trust_env = False
             request_fn = session.get
             head_fn = session.head            
 

@@ -10,17 +10,45 @@ Parent command: [`sima-cli`](./sima-cli.md)
 sima-cli update [OPTIONS] [VERSION_OR_URL]
 ```
 
-## eLxr 3.0 update access errors
+## Internal daily updates on eLxr 3.0+
 
-For internal downloads, run `sima-cli -i login` on the machine running the
-update command. HTTP 401 means authentication was rejected: refresh your login
-and retry. HTTP 403 means access was denied: refresh your credentials and, if
-access is still denied, ask your Artifactory administrator for permission.
+Internal mode (`-i`, `--internal`, or `SIMA_CLI_INTERNAL=1`) displays an
+informational warning panel: **Pre-release software may be unstable. Use at your
+own risk.** This applies across internal commands and does not add a confirmation
+prompt. The panel is written to stderr so JSON stdout remains usable.
 
-Artifact-access failures before installation explicitly report that no firmware
-was installed. A download-server error does not mean the DevKit lost its
-connection. If a connection is lost after installation starts, inspect the board
+On Modalix devices already running eLxr 3.0+, `sima-cli -i update` first queries
+Artifactory. If credentials are missing, access returns HTTP 401/403, the server
+returns HTTP 5xx, or the connection fails or times out, it announces the reason
+and falls back to the [daily platform index](https://artifacts.neat.sima.ai/daily-platform-images/index.json).
+A successful Artifactory query with no matching builds does not trigger fallback.
+
+```bash
+# Search for matching builds; add --ip <device-ip> when running from a host.
+sima-cli -i update -v 3.0
+# Select an exact build directly.
+sima-cli -i update -v 3.0.0_daily_develop_B1247
+```
+
+Exact matches take priority. Partial queries such as `3.0`, `develop`, or `B1247`
+filter the index. Multiple matches show an aligned selector ordered by descending
+build number, without build times. Only builds containing a palette SWU are
+eligible. A missing build may have expired from the mirror's retained daily builds.
+
+The selected build's indexed `artifacts/palette/elxr-palette-modalix-*.swu` is
+downloaded from the public mirror without Artifactory credentials. Its size and
+SHA-256 are verified before the existing signed SWUpdate installation. If an
+Artifactory download fails after selection, fallback is restricted to that exact
+build. The selected build identity is also used for post-reboot verification.
+
+An unavailable index, missing artifact, or failed integrity check stops before
+installation. If connection is lost after installation starts, inspect the board
 with `sima-cli update --inspect --ip <device-ip>` before retrying.
+
+Devices running eLxr 2.1.3 retain their existing APT update behavior, remote-update
+limitations, and `--force` policy. Explicitly targeting 3.0 on those devices is
+still rejected; recovery/provisioning is required first. This mirror fallback
+applies only to eLxr 3.0+ SWUpdate, not bootimg or recovery-media creation.
 
 ## Options
 

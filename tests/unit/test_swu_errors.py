@@ -14,7 +14,7 @@ def update_command():
     swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True)
 
 
-@pytest.mark.parametrize('stage', ['query', 'size', 'download'])
+@pytest.mark.parametrize('stage', ['size', 'download'])
 @pytest.mark.parametrize('status,expected', [
     (401, 'Artifactory rejected authentication (HTTP 401)'),
     (403, 'Access to Artifactory was denied (HTTP 403)'),
@@ -36,10 +36,7 @@ def test_http_error_reports_cause_and_never_installs(stage, status, expected):
             patch.object(swu_artifacts, 'get_auth_token', return_value='expired-token'), \
             patch.object(swu_artifacts.requests, 'Session') as session, \
             patch.object(swu, 'install_script') as install:
-        if stage == 'query':
-            session.return_value.post.return_value.raise_for_status.side_effect = error
-            result = CliRunner().invoke(update_command)
-        elif stage == 'size':
+        if stage == 'size':
             session.return_value.head.return_value.raise_for_status.side_effect = error
             with patch.object(swu, 'resolve_bundle', return_value=bundle):
                 result = CliRunner().invoke(update_command)
@@ -64,20 +61,26 @@ def test_http_error_reports_cause_and_never_installs(stage, status, expected):
 
 
 @pytest.mark.parametrize('token', [None, '', '  '])
-def test_missing_login_reaches_cli_as_actionable_error(token):
+def test_missing_login_reports_failed_mirror_fallback(token):
     target = MagicMock()
     with patch.object(swu, 'Target', return_value=target), \
             patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
             patch.object(swu, 'preflight'), \
             patch.object(swu_artifacts, 'get_auth_token', return_value=token), \
             patch.object(swu_artifacts.requests, 'Session') as session:
+        session.return_value.__enter__.return_value.get.return_value.json.return_value = {
+            'schema_version': 1, 'platform': 'modalix', 'builds': [],
+        }
         result = CliRunner().invoke(update_command)
     assert result.exit_code == 1
     assert 'Artifactory login is required on this machine' in result.output
     assert 'sima-cli -i login' in result.output
     assert 'No firmware was installed.' in result.output
     assert 'State is unknown' not in result.output
-    session.assert_not_called()
+    assert 'Using the public daily platform mirror' in result.output
+    assert 'No matching palette SWU' in result.output
+    session.return_value.post.assert_not_called()
+    session.return_value.__enter__.return_value.get.assert_called_once()
     target.transfer.assert_not_called()
 
 

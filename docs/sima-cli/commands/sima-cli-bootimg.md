@@ -135,4 +135,3 @@ Keep the host and TFTP server running. The settings persist until changed: faile
 ```bash
 sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot -f --devkit 192.168.2.2
 ```
-

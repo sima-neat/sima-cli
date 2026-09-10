@@ -122,3 +122,30 @@ def test_actual_install_interruption_still_requires_inspection(tmp_path, error):
     assert 'State is unknown; inspect the board before retrying.' in result.output
     assert 'No firmware was installed.' not in result.output
     assert 'Retained bundle' in result.output
+
+
+@pytest.mark.parametrize('host', ['docs.sima.ai', 'docs-dev.sima.ai'])
+def test_missing_portal_session_reports_login_and_no_installation(host):
+    @click.command()
+    def external_update_command():
+        swu.update_system(f'https://{host}/bundle.swu', 'modalix',
+                          ip='192.0.2.1', auto_confirm=True)
+
+    target = MagicMock()
+    with patch.object(swu, 'Target', return_value=target), \
+            patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
+            patch.object(swu, 'preflight', return_value={'running slot': 'A'}), \
+            patch.object(swu_artifacts, 'login_external', return_value=None) as login, \
+            patch.object(swu, 'download_file_from_url') as download, \
+            patch.object(swu, 'install_script') as install:
+        result = CliRunner().invoke(external_update_command)
+    assert result.exit_code == 1
+    assert 'Developer portal login is required on this machine.' in result.output
+    assert 'Run `sima-cli login`, then retry the update.' in result.output
+    assert 'No firmware was installed.' in result.output
+    assert 'State is unknown' not in result.output
+    login.assert_called_once_with(loginDocker=False)
+    download.assert_not_called()
+    target.transfer.assert_not_called()
+    install.assert_not_called()
+    target.close.assert_called_once()

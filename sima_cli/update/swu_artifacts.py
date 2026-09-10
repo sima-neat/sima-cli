@@ -80,7 +80,10 @@ def internal_bundles(board, keyword):
 def _portal_session():
     session = login_external(loginDocker=False)
     if session is None:
-        raise click.ClickException('Developer portal login is required.')
+        raise click.ClickException(
+            'Developer portal login is required on this machine. '
+            'Run `sima-cli login`, then retry the update. No firmware was installed.'
+        )
     return session
 
 

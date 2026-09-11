@@ -1,22 +1,57 @@
-"""Temporary SWUpdate trust certificate supplied by SiMa engineering."""
+"""Retrieve the SWUpdate verification certificate without bundling a signing key."""
+import calendar
+from pathlib import Path
+from urllib.parse import urlparse
 
-PUBLIC_CERTIFICATE = """-----BEGIN CERTIFICATE-----
-MIIDBzCCAe+gAwIBAgIUPLSzGzEiTyIw+YWstu2stDaSAf4wDQYJKoZIhvcNAQEL
-BQAwEzERMA8GA1UEAwwIU1dVcGRhdGUwHhcNMjYwODE5MTcyOTE3WhcNMzYwODE2
-MTcyOTE3WjATMREwDwYDVQQDDAhTV1VwZGF0ZTCCASIwDQYJKoZIhvcNAQEBBQAD
-ggEPADCCAQoCggEBALPkZ+VObqq30JVY4LlhIGibMwTE7AIXyuxMoZ5F4e+5utMZ
-GuGoivifq2diR8ZPpfWtUimrjPAtket0SMTLkPPBhfn4fPuGlZiWIprBTF7bP7cg
-IYXCNzQClTrnpeOXBxnMTel6NWkjfmEow/4E9IihAXquE2pzG9aCFszE2QUEXvMx
-t+CvHhcYbenLwe+ds4lSJ4jOLCwp42h76qhomip/767RDJdNbVqg/qhI8pPbFxff
-gTNLpS2Ras+ta0gWE+pqQ45l2gPXZ3hNrV/C7SiwdXc7+pcsvMbvo6UMaBZbcaET
-DHmfxheRTA1NLCCKZkSO/qzyyI7QqKnijoE/E7ECAwEAAaNTMFEwHQYDVR0OBBYE
-FAVVkKpnHvntbay7cGqnmFyAlg9ZMB8GA1UdIwQYMBaAFAVVkKpnHvntbay7cGqn
-mFyAlg9ZMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAD+pYglc
-rHoWZzB0j7mclahTTXU92pUlah9HoBYBvikt0iphegwB0oaHMOggUu/bfHxG6YI9
-pEjR6/khS6Cmj+Eu38av3kMCMyI9buByPvaTET20GnSxVw3e0CBWgEjxsNxcI/HT
-DqHmpTtAbBwfRV8Z6sY1i+X47YlT2eJDXmk9yqVqhx43YSzgmeXKxaCyr9QwQYR4
-AsYm1r81BFWXpG1oYSWQzGS+uwAH5jz8bwXd5m5PleJUZYzbrrSFJNPOngazum8O
-yLH5sfGialBXwIuEjKLBDnNTo2mMSAOq3CACp22s2GPGuBunWT45qEwGDXiu48CM
-e6ht0MQHzLg/JXg=
------END CERTIFICATE-----
-"""
+import click
+import requests
+from cryptography import x509
+
+INTERNAL_SIGNING_CERT_URL = 'https://debian.neat.sima.ai/daily/swupdate-signing-cert.pem'
+# Configure this when the production signing certificate is published.
+PRODUCTION_SIGNING_CERT_URL = None
+MAX_CERTIFICATE_BYTES = 64 * 1024
+
+
+def certificate_source(signing_cert=None, internal=False):
+    """An explicit certificate overrides the default for the selected channel."""
+    if signing_cert is not None:
+        return signing_cert
+    return INTERNAL_SIGNING_CERT_URL if internal else PRODUCTION_SIGNING_CERT_URL
+
+
+def load_certificate(source):
+    """Return a single public PEM certificate and its UTC validity bounds."""
+    try:
+        if urlparse(source).scheme in ('http', 'https'):
+            with requests.get(source, stream=True, timeout=(10, 30)) as response:
+                response.raise_for_status()
+                data = bytearray()
+                for chunk in response.iter_content(chunk_size=8192):
+                    data.extend(chunk)
+                    if len(data) > MAX_CERTIFICATE_BYTES:
+                        raise ValueError('certificate exceeds 64 KiB')
+                data = bytes(data)
+        else:
+            # Check files before rejecting URL schemes so Windows drive paths work.
+            path = Path(source).expanduser()
+            with path.open('rb') as certificate:
+                data = certificate.read(MAX_CERTIFICATE_BYTES + 1)
+        pem = data.strip()
+        if (not pem.startswith(b'-----BEGIN CERTIFICATE-----')
+                or not pem.endswith(b'-----END CERTIFICATE-----')
+                or pem.count(b'-----BEGIN ') != 1 or pem.count(b'-----END ') != 1
+                or len(data) > MAX_CERTIFICATE_BYTES):
+            raise ValueError('expected one PEM public certificate, without private keys or extra content')
+        certificate = x509.load_pem_x509_certificate(pem)
+        if hasattr(certificate, 'not_valid_before_utc'):
+            before, after = certificate.not_valid_before_utc, certificate.not_valid_after_utc
+        else:
+            before, after = certificate.not_valid_before, certificate.not_valid_after
+        return pem.decode('ascii') + '\n', calendar.timegm(before.utctimetuple()), calendar.timegm(after.utctimetuple())
+    except (OSError, ValueError, requests.RequestException) as exc:
+        raise click.ClickException(
+            f'Cannot load SWUpdate signing certificate: {exc}. '
+            'Use --signing-cert with a reachable HTTP(S) URL or a local PEM certificate file. '
+            'No firmware was installed.'
+        ) from exc

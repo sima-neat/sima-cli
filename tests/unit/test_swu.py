@@ -139,7 +139,7 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
     with patch.object(swu, 'Target', return_value=target), patch.object(swu, 'preflight', return_value=parse_state(STATE)), \
             patch.object(swu, 'resolve_bundle', return_value=str(bundle)), patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
             patch.object(swu, '_select_staging_root', return_value=root), \
-            patch.object(swu, 'prepare_key', return_value=(key_directory + '/public.pem' if key_directory else swu.DEFAULT_KEY, key_directory)), \
+            patch.object(swu, 'prepare_key', return_value=(key_directory + '/public.pem' if key_directory else '/tmp/test-signing-cert.pem', key_directory)), \
             patch.object(swu.tempfile, 'TemporaryDirectory') as cache, \
             patch.object(swu, '_reboot_and_verify') as reboot:
         cache.return_value.__enter__.return_value = str(tmp_path)
@@ -173,7 +173,7 @@ def test_dryrun_does_not_transfer_or_install(tmp_path):
 def test_pending_upgrade_preflight_stops_install():
     with patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('upgrade_available: no', 'upgrade_available: yes'))):
         with pytest.raises(click.ClickException, match='pending'):
-            swu.preflight(MagicMock(), swu.DEFAULT_KEY)
+            swu.preflight(MagicMock(), '/tmp/test-signing-cert.pem')
 
 
 def test_progress_uses_real_artifact_percentage():
@@ -286,7 +286,7 @@ def test_factory_control_block_is_explicit_without_inventing_slot_validity():
 def test_factory_preflight_allows_first_update_and_uses_actual_root_device():
     target = MagicMock()
     with patch.object(swu, 'inspect_target', return_value=parse_state(FACTORY_STATE)):
-        state = swu.preflight(target, swu.DEFAULT_KEY)
+        state = swu.preflight(target, '/tmp/test-signing-cert.pem')
     assert state['factory'] is True
     command = target.run.call_args.args[0]
     assert 'findmnt -n -o SOURCE /' in command
@@ -297,7 +297,7 @@ def test_factory_preflight_allows_first_update_and_uses_actual_root_device():
 def test_factory_mode_does_not_override_a_pending_flag():
     with patch.object(swu, 'inspect_target', return_value=parse_state(FACTORY_STATE + '\nupgrade_available: yes')):
         with pytest.raises(click.ClickException, match='pending'):
-            swu.preflight(MagicMock(), swu.DEFAULT_KEY)
+            swu.preflight(MagicMock(), '/tmp/test-signing-cert.pem')
 
 
 def test_artifactory_daily_prefix_is_not_part_of_on_device_build_identity():
@@ -326,7 +326,7 @@ def test_elxr_2_rejects_swu_before_any_install_or_download(local, requested):
     resolve.assert_not_called()
 
 
-@pytest.mark.parametrize('options', [{'reboot': True}, {'key': '/tmp/key.pem'}])
+@pytest.mark.parametrize('options', [{'reboot': True}, {'signing_cert': '/tmp/cert.pem'}])
 def test_elxr_2_rejects_modern_update_options_with_detected_version(options):
     with patch('sima_cli.update.remote.get_remote_board_info', return_value=('modalix', '2.0.0', '', False, 'elxr')):
         with pytest.raises(click.ClickException, match='eLxr 2.0.0.*does not support'):
@@ -419,37 +419,32 @@ def test_nvme_staging_directory_created_after_mount():
     assert mount_script.rindex('findmnt') < mount_script.index('mkdir -p /media/nvme/swupdate')
 
 
-@pytest.mark.parametrize('key', [swu.DEFAULT_KEY, '/etc/custom.pem'])
-def test_existing_or_explicit_key_never_uses_fallback(key):
+def test_downloaded_key_is_provisioned_in_private_tmp_directory():
     target = MagicMock()
-    target.run.return_value = 'present'
-    assert swu.prepare_key(target, key) == (key, None)
-    assert not any('mktemp' in c.args[0] or 'CERTIFICATE' in c.args[0] for c in target.run.call_args_list)
-
-
-def test_missing_default_key_is_provisioned_in_private_tmp_directory():
-    from sima_cli.update.swu_certificate import PUBLIC_CERTIFICATE
-    target = MagicMock()
-    target.run.side_effect = ['absent', '/tmp/sima-cli-key.ABC12345', '']
-    assert swu.prepare_key(target, swu.DEFAULT_KEY) == ('/tmp/sima-cli-key.ABC12345/public.pem', '/tmp/sima-cli-key.ABC12345')
+    target.run.side_effect = ['150', '/tmp/sima-cli-key.ABC12345', '']
+    with patch.object(swu, 'load_certificate', return_value=('public certificate', 100, 200)) as load:
+        assert swu.prepare_key(target, internal=True) == ('/tmp/sima-cli-key.ABC12345/public.pem', '/tmp/sima-cli-key.ABC12345')
+    load.assert_called_once_with('https://debian.neat.sima.ai/daily/swupdate-signing-cert.pem')
     command = target.run.call_args.args[0]
-    assert PUBLIC_CERTIFICATE in command
+    assert 'public certificate' in command
     assert 'umask 077' in command
     assert '> /tmp/sima-cli-key.ABC12345/public.pem' in command
 
 
-def test_missing_key_dryrun_does_not_provision():
+def test_certificate_dryrun_validates_clock_without_provisioning():
     target = MagicMock()
-    target.run.return_value = 'absent'
-    assert swu.prepare_key(target, swu.DEFAULT_KEY, dryrun=True) == (None, None)
-    assert target.run.call_count == 1
+    target.run.return_value = '150'
+    with patch.object(swu, 'load_certificate', return_value=('public certificate', 100, 200)):
+        assert swu.prepare_key(target, dryrun=True, internal=True) == (None, None)
+    target.run.assert_called_once_with('date -u +%s')
 
 
 def test_key_write_failure_cleans_temporary_directory():
     target = MagicMock()
-    target.run.side_effect = ['absent', '/tmp/sima-cli-key.ABC12345', click.ClickException('write failed'), '']
-    with pytest.raises(click.ClickException, match='write failed'):
-        swu.prepare_key(target, swu.DEFAULT_KEY)
+    target.run.side_effect = ['150', '/tmp/sima-cli-key.ABC12345', click.ClickException('write failed'), '']
+    with patch.object(swu, 'load_certificate', return_value=('public certificate', 100, 200)):
+        with pytest.raises(click.ClickException, match='write failed'):
+            swu.prepare_key(target, internal=True)
     assert target.run.call_args.args[0] == 'rm -rf -- /tmp/sima-cli-key.ABC12345'
 
 
@@ -503,7 +498,7 @@ def test_current_pending_flag_blocks_preflight():
     state = parse_state('active slot: B\n' + CURRENT_CONTROL_STATE.replace('upgrade_available   : no', 'upgrade_available   : yes'))
     with patch.object(swu, 'inspect_target', return_value=state):
         with pytest.raises(click.ClickException, match='pending'):
-            swu.preflight(MagicMock(), swu.DEFAULT_KEY)
+            swu.preflight(MagicMock(), '/tmp/test-signing-cert.pem')
 
 
 @pytest.mark.parametrize('token', [None, '', '  '])

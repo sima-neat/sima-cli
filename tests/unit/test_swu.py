@@ -427,29 +427,32 @@ def test_existing_or_explicit_key_never_uses_fallback(key):
     assert not any('mktemp' in c.args[0] or 'CERTIFICATE' in c.args[0] for c in target.run.call_args_list)
 
 
-def test_missing_default_key_is_provisioned_in_private_tmp_directory():
-    from sima_cli.update.swu_certificate import PUBLIC_CERTIFICATE
+def test_downloaded_key_is_provisioned_in_private_tmp_directory():
     target = MagicMock()
-    target.run.side_effect = ['absent', '/tmp/sima-cli-key.ABC12345', '']
-    assert swu.prepare_key(target, swu.DEFAULT_KEY) == ('/tmp/sima-cli-key.ABC12345/public.pem', '/tmp/sima-cli-key.ABC12345')
+    target.run.side_effect = ['150', '/tmp/sima-cli-key.ABC12345', '']
+    with patch.object(swu, 'load_certificate', return_value=('public certificate', 100, 200)) as load:
+        assert swu.prepare_key(target) == ('/tmp/sima-cli-key.ABC12345/public.pem', '/tmp/sima-cli-key.ABC12345')
+    load.assert_called_once_with(None)
     command = target.run.call_args.args[0]
-    assert PUBLIC_CERTIFICATE in command
+    assert 'public certificate' in command
     assert 'umask 077' in command
     assert '> /tmp/sima-cli-key.ABC12345/public.pem' in command
 
 
-def test_missing_key_dryrun_does_not_provision():
+def test_certificate_dryrun_validates_clock_without_provisioning():
     target = MagicMock()
-    target.run.return_value = 'absent'
-    assert swu.prepare_key(target, swu.DEFAULT_KEY, dryrun=True) == (None, None)
-    assert target.run.call_count == 1
+    target.run.return_value = '150'
+    with patch.object(swu, 'load_certificate', return_value=('public certificate', 100, 200)):
+        assert swu.prepare_key(target, dryrun=True) == (None, None)
+    target.run.assert_called_once_with('date -u +%s')
 
 
 def test_key_write_failure_cleans_temporary_directory():
     target = MagicMock()
-    target.run.side_effect = ['absent', '/tmp/sima-cli-key.ABC12345', click.ClickException('write failed'), '']
-    with pytest.raises(click.ClickException, match='write failed'):
-        swu.prepare_key(target, swu.DEFAULT_KEY)
+    target.run.side_effect = ['150', '/tmp/sima-cli-key.ABC12345', click.ClickException('write failed'), '']
+    with patch.object(swu, 'load_certificate', return_value=('public certificate', 100, 200)):
+        with pytest.raises(click.ClickException, match='write failed'):
+            swu.prepare_key(target)
     assert target.run.call_args.args[0] == 'rm -rf -- /tmp/sima-cli-key.ABC12345'
 
 

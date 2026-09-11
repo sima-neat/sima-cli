@@ -18,7 +18,9 @@ from sima_cli.update.swu_artifacts import (
 )
 from sima_cli.update.swu_target import Target
 from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
+from sima_cli.update.swu_certificate import load_certificate, DEFAULT_SIGNING_CERT
 
+# Legacy target path retained for callers that explicitly select --key.
 DEFAULT_KEY = '/etc/swupdate/public.pem'
 
 
@@ -77,26 +79,32 @@ class InstallProgress:
         self.progress.stop()
 
 
-def prepare_key(target, key, dryrun=False):
-    """Prefer the target key; provision the bundled fallback only when absent."""
-    if key != DEFAULT_KEY:
+def prepare_key(target, key=None, dryrun=False, signing_cert=None):
+    """Stage a freshly retrieved certificate, or use an explicit target path."""
+    if key is not None:
+        if signing_cert is not None:
+            raise click.UsageError('--key and --signing-cert cannot be combined.')
         return key, None
-    exists = target.run('if test -e ' + shlex.quote(key) + '; then echo present; else echo absent; fi').strip()
-    if exists == 'present':
-        return key, None
-    if exists != 'absent':
-        raise click.ClickException('Cannot determine whether the target verification key exists.')
-    click.echo('Default verification key is absent; using the bundled SiMa certificate temporarily.')
+    click.echo('Loading SWUpdate verification certificate: ' + (signing_cert or DEFAULT_SIGNING_CERT))
+    certificate, not_before, not_after = load_certificate(signing_cert)
+    try:
+        target_time = int(target.run('date -u +%s').strip())
+    except ValueError as exc:
+        raise click.ClickException('Cannot read the DevKit clock; synchronize time before signed updates.') from exc
+    if not not_before <= target_time <= not_after:
+        raise click.ClickException(
+            'The signing certificate is not valid at the DevKit system time. '
+            'Synchronize the DevKit clock and check the certificate validity dates before updating.'
+        )
     if dryrun:
         return None, None
-    from sima_cli.update.swu_certificate import PUBLIC_CERTIFICATE
     directory = target.run('mktemp -d /tmp/sima-cli-key.XXXXXXXX').strip()
     if not re.fullmatch(r'/tmp/sima-cli-key\.[A-Za-z0-9]+', directory):
         raise click.ClickException('Invalid temporary key directory returned by target.')
     path = directory + '/public.pem'
     try:
-        target.run('set -eu; umask 077; printf %s ' + shlex.quote(PUBLIC_CERTIFICATE) + ' > ' + shlex.quote(path))
-    except Exception:
+        target.run('set -eu; umask 077; printf %s ' + shlex.quote(certificate) + ' > ' + shlex.quote(path))
+    except BaseException:
         target.run('rm -rf -- ' + shlex.quote(directory), check=False)
         raise
     return path, directory
@@ -245,7 +253,7 @@ def _artifact_request_error(error, internal):
 
 
 def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
-                  auto_confirm=False, dryrun=False, key=DEFAULT_KEY, reboot=False):
+                  auto_confirm=False, dryrun=False, key=None, reboot=False, signing_cert=None):
     target = Target(ip, passwd)
     source = ''
     staging = None
@@ -255,7 +263,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
     phase = "checking the target"
     try:
         click.echo('Checking target and A/B state...')
-        key, key_directory = prepare_key(target, key, dryrun=dryrun)
+        key, key_directory = prepare_key(target, key, dryrun=dryrun, signing_cert=signing_cert)
         before = preflight(target, key)
         phase = "resolving the update bundle"
         source = resolve_bundle(requested, board, internal)
@@ -374,10 +382,14 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
 
 
 def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_confirm=False,
-                  dryrun=False, key=DEFAULT_KEY, reboot=False, inspect=False,
-                  force=False, troot_only=False, flavor='auto', local_elxr=False):
+                  dryrun=False, key=None, reboot=False, inspect=False,
+                  force=False, troot_only=False, flavor='auto', local_elxr=False, signing_cert=None):
     """Return False for legacy platforms; handle all eLxr 3.0+ operations here."""
+    if key is not None and signing_cert is not None:
+        raise click.UsageError('--key and --signing-cert cannot be combined.')
     if not (ip or local_elxr or inspect):
+        if signing_cert is not None or key is not None:
+            raise click.ClickException('--signing-cert and --key require a local eLxr 3.0+ DevKit or --ip.')
         return False
     if ip:
         from sima_cli.update.remote import get_remote_board_info
@@ -402,15 +414,15 @@ def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_conf
         raise click.ClickException('Cannot determine the target eLxr firmware version.')
     if fwtype != 'elxr' or running < (3, 0, 0):
         explicit_swu = bool(requested and unquote(urlparse(requested).path).lower().endswith('.swu'))
-        if fwtype == 'elxr' and (explicit_swu or reboot or key != DEFAULT_KEY or
+        if fwtype == 'elxr' and (explicit_swu or reboot or (key is not None or signing_cert is not None) or
                                  (requested_release and requested_release >= (3, 0, 0))):
             raise click.ClickException(
                 f'This DevKit is running eLxr {version.strip()}; this firmware version does not support '
                 'the SWUpdate command. SWUpdate requires eLxr 3.0+ with the A/B layout. '
                 'Use recovery/provisioning to install eLxr 3.0+ first.'
             )
-        if reboot or key != DEFAULT_KEY:
-            raise click.ClickException('--reboot and --key require the eLxr 3.0+ SWUpdate flow.')
+        if reboot or (key is not None or signing_cert is not None):
+            raise click.ClickException('--reboot, --key and --signing-cert require the eLxr 3.0+ SWUpdate flow.')
         return False
     if force or troot_only or flavor == 'full':
         raise click.ClickException('eLxr 3.0+ supports signed full-system updates only; --force, --troot_only, and legacy --flavor full are not supported.')
@@ -419,5 +431,5 @@ def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_conf
     if board != 'modalix':
         raise click.ClickException(f'eLxr SWUpdate is not supported for board {board or "unknown"}.')
     update_system(requested, board, ip=ip, passwd=passwd, internal=internal,
-                  auto_confirm=auto_confirm, dryrun=dryrun, key=key, reboot=reboot)
+                  auto_confirm=auto_confirm, dryrun=dryrun, key=key, reboot=reboot, signing_cert=signing_cert)
     return True

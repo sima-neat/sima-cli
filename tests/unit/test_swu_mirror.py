@@ -142,7 +142,7 @@ def test_mirror_install_verifies_integrity_and_preserves_version(tmp_path, failu
     target = MagicMock()
     target.run.return_value = '/tmp/sima-cli-update.ABC12345'
     with patch.object(swu, 'Target', return_value=target), \
-            patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
+            patch.object(swu, 'prepare_key', return_value=('/tmp/test-signing-cert.pem', None)), \
             patch.object(swu, 'preflight', return_value={'running slot': 'A'}), \
             patch.object(swu, 'resolve_bundle', return_value=mirror if failure_stage == 'none' else internal), \
             patch.object(swu, 'bundle_size', side_effect=requests.Timeout() if failure_stage == 'size' else None, return_value=len(CONTENT)), \
@@ -280,7 +280,7 @@ def test_post_selection_request_failures_retry_exact_build(stage, kind, tmp_path
     target = MagicMock()
     target.run.return_value = '/tmp/sima-cli-update.ABC12345'
     with patch.object(swu, 'Target', return_value=target), \
-            patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
+            patch.object(swu, 'prepare_key', return_value=('/tmp/test-signing-cert.pem', None)), \
             patch.object(swu, 'preflight', return_value={'running slot': 'A'}), \
             patch.object(swu, 'resolve_bundle', return_value=internal), \
             patch.object(swu, 'bundle_size', side_effect=error if stage == 'size' else None, return_value=len(CONTENT)), \

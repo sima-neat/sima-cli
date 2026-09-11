@@ -350,11 +350,10 @@ def download(ctx, url, dest):
     help="For eLxr updates, validate the update path and show the command without installing."
 )
 @click.option("--inspect", "inspect_state", is_flag=True, help="Show eLxr 3.0+ A/B slot state without updating (local or --ip).")
-@click.option("--key", help="Use a verification certificate already on the target board (eLxr 3.0+). Cannot combine with --signing-cert.")
 @click.option("--signing-cert", metavar="URL_OR_FILE", help="SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the SiMa daily mirror certificate (eLxr 3.0+).")
 @click.option("--reboot", is_flag=True, help="Reboot after successful eLxr 3.0+ installation; verify remote boot health.")
 @click.pass_context
-def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, key, reboot, signing_cert):
+def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, reboot, signing_cert):
     """
     Update the software on a SiMa DevKit or remote SiMa device.
 
@@ -454,15 +453,13 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
     # Prioritize explicit --version option over positional argument
     version_or_url = version_option or version_or_url
     is_elxr = is_devkit_running_elxr()
-    if key is not None and signing_cert is not None:
-        raise click.UsageError("--key and --signing-cert cannot be combined.")
-    if inspect_state and (version_or_url or dryrun or force or troot_only or reboot or (key is not None or signing_cert is not None) or flavor != 'auto'):
+    if inspect_state and (version_or_url or dryrun or force or troot_only or reboot or signing_cert is not None or flavor != 'auto'):
         raise click.UsageError("--inspect cannot be combined with installation options.")
     try:
         if handle_update(version_or_url, ip=ip, passwd=passwd,
                          internal=ctx.obj.get("internal", False),
                          auto_confirm=yes or ctx.obj.get("yes", False), dryrun=dryrun,
-                         key=key, signing_cert=signing_cert, reboot=reboot, inspect=inspect_state, force=force,
+                         signing_cert=signing_cert, reboot=reboot, inspect=inspect_state, force=force,
                          troot_only=troot_only, flavor=flavor, local_elxr=is_elxr):
             return
     except (click.ClickException, click.Abort):

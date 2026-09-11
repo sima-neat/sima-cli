@@ -30,7 +30,7 @@ def test_http_error_reports_cause_and_never_installs(stage, status, expected):
     target.run.return_value = '/tmp/sima-cli-update.ABC12345'
     bundle = swu_artifacts.ARTIFACTORY_BASE_URL + '/bundle.swu'
     with patch.object(swu, 'Target', return_value=target), \
-            patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
+            patch.object(swu, 'prepare_key', return_value=('/tmp/test-signing-cert.pem', None)), \
             patch.object(swu, 'preflight', return_value={'running slot': 'A'}), \
             patch.object(swu, '_select_staging_root', return_value='/tmp'), \
             patch.object(swu_artifacts, 'get_auth_token', return_value='expired-token'), \
@@ -64,7 +64,7 @@ def test_http_error_reports_cause_and_never_installs(stage, status, expected):
 def test_missing_login_reports_failed_mirror_fallback(token):
     target = MagicMock()
     with patch.object(swu, 'Target', return_value=target), \
-            patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
+            patch.object(swu, 'prepare_key', return_value=('/tmp/test-signing-cert.pem', None)), \
             patch.object(swu, 'preflight'), \
             patch.object(swu_artifacts, 'get_auth_token', return_value=token), \
             patch.object(swu_artifacts.requests, 'Session') as session:
@@ -93,7 +93,7 @@ def test_missing_login_reports_failed_mirror_fallback(token):
 ])
 def test_preinstall_failures_do_not_claim_unknown_firmware_state(error, expected):
     with patch.object(swu, 'Target') as target, \
-            patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
+            patch.object(swu, 'prepare_key', return_value=('/tmp/test-signing-cert.pem', None)), \
             patch.object(swu, 'preflight'), \
             patch.object(swu, 'resolve_bundle', side_effect=error):
         result = CliRunner().invoke(update_command)
@@ -115,7 +115,7 @@ def test_actual_install_interruption_still_requires_inspection(tmp_path, error):
         return '/tmp/sima-cli-update.ABC12345'
     target.run.side_effect = run
     with patch.object(swu, 'Target', return_value=target), \
-            patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
+            patch.object(swu, 'prepare_key', return_value=('/tmp/test-signing-cert.pem', None)), \
             patch.object(swu, 'preflight', return_value={'running slot': 'A'}), \
             patch.object(swu, 'resolve_bundle', return_value=str(bundle)), \
             patch.object(swu, '_select_staging_root', return_value='/tmp'), \
@@ -136,7 +136,7 @@ def test_missing_portal_session_reports_login_and_no_installation(host):
 
     target = MagicMock()
     with patch.object(swu, 'Target', return_value=target), \
-            patch.object(swu, 'prepare_key', return_value=(swu.DEFAULT_KEY, None)), \
+            patch.object(swu, 'prepare_key', return_value=('/tmp/test-signing-cert.pem', None)), \
             patch.object(swu, 'preflight', return_value={'running slot': 'A'}), \
             patch.object(swu_artifacts, 'login_external', return_value=None) as login, \
             patch.object(swu, 'download_file_from_url') as download, \

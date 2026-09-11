@@ -222,10 +222,10 @@ sima-cli update ./custom-image.swu --signing-cert https://updates.example.com/si
 
 The CLI retrieves the certificate on the host and provisions it on the remote
 DevKit; the DevKit does not need access to the certificate URL. For offline use,
-supply a local bundle and certificate. `--key /path/on/board/cert.pem` remains
-available to use a certificate already on the target without downloading one.
-`--key` and `--signing-cert` cannot be combined. These options require the eLxr
-3.0+ SWUpdate flow; older APT/Yocto update paths are unchanged.
+supply a local bundle and certificate. When running the CLI directly on the
+DevKit, `--signing-cert /data/my-cert.pem` can use a certificate already there.
+This option requires the eLxr 3.0+ SWUpdate flow; older APT/Yocto update paths
+are unchanged.
 
 Certificate download or validation failures stop the update without a bundled
 fallback or unsigned installation. `/data` must be mounted. Synchronize the

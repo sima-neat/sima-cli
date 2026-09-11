@@ -95,11 +95,11 @@ def test_cli_passes_custom_certificate(source):
         result = CliRunner().invoke(main, ['update', '--ip', '192.0.2.1', '--signing-cert', source])
     assert result.exit_code == 0, result.output
     assert handle.call_args.kwargs['signing_cert'] == source
-    assert handle.call_args.kwargs['key'] is None
+    assert 'key' not in handle.call_args.kwargs
 
 
-@pytest.mark.parametrize('args', [['--key', '/etc/cert.pem'], ['--inspect']])
-def test_conflicting_options_rejected(args):
+def test_inspection_rejects_certificate_option():
+    args = ['--inspect']
     with patch('sima_cli.cli.check_for_update', return_value=False), patch('sima_cli.cli.handle_update') as handle:
         result = CliRunner().invoke(main, ['update', '--signing-cert', './cert.pem'] + args)
     assert result.exit_code != 0
@@ -153,3 +153,14 @@ def test_custom_certificate_reaches_installer_and_is_removed(tmp_path):
     assert any('custom public certificate' in c and '> ' + directory + '/public.pem' in c for c in commands)
     assert any('swupdate -v' in c and '-k ' + directory + '/public.pem' in c for c in commands)
     assert 'rm -rf -- ' + directory in commands
+
+
+def test_unreleased_key_option_is_removed():
+    with patch('sima_cli.cli.check_for_update', return_value=False), patch('sima_cli.cli.handle_update') as handle:
+        result = CliRunner().invoke(main, ['update', '--key', '/data/cert.pem'])
+        help_result = CliRunner().invoke(main, ['update', '--help'])
+    assert result.exit_code == 2
+    assert 'No such option' in result.output and '--key' in result.output
+    handle.assert_not_called()
+    assert '--key' not in help_result.output
+    assert '--signing-cert' in help_result.output

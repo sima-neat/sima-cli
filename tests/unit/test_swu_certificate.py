@@ -33,13 +33,13 @@ def response_for(data):
     return response
 
 
-@pytest.mark.parametrize('source', [None, 'https://updates.example/cert.pem', 'http://updates.example/cert.pem'])
+@pytest.mark.parametrize('source', [cert.INTERNAL_SIGNING_CERT_URL, 'https://updates.example/cert.pem', 'http://updates.example/cert.pem'])
 def test_default_and_custom_url(source, pem):
     with patch.object(cert.requests, 'get', return_value=response_for(pem)) as get:
         text, before, after = cert.load_certificate(source)
     assert text.encode() == pem
     assert before < datetime.now(timezone.utc).timestamp() < after
-    get.assert_called_once_with(source or cert.DEFAULT_SIGNING_CERT, stream=True, timeout=(10, 30))
+    get.assert_called_once_with(source, stream=True, timeout=(10, 30))
 
 
 def test_local_file_is_read_without_network(tmp_path, pem):
@@ -56,21 +56,21 @@ def test_local_file_is_read_without_network(tmp_path, pem):
 def test_invalid_response_rejected(data):
     with patch.object(cert.requests, 'get', return_value=response_for(data)):
         with pytest.raises(click.ClickException, match='Cannot load SWUpdate signing certificate'):
-            cert.load_certificate()
+            cert.load_certificate(cert.INTERNAL_SIGNING_CERT_URL)
 
 
 def test_extra_certificates_or_private_keys_rejected(pem):
     for extra in (pem, b'-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----', b'junk'):
         with patch.object(cert.requests, 'get', return_value=response_for(pem + extra)):
             with pytest.raises(click.ClickException):
-                cert.load_certificate()
+                cert.load_certificate(cert.INTERNAL_SIGNING_CERT_URL)
 
 
 @pytest.mark.parametrize('error', [requests.Timeout('timeout'), requests.HTTPError('403 Forbidden')])
 def test_failed_request_does_not_fall_back(error):
     with patch.object(cert.requests, 'get', side_effect=error) as get:
         with pytest.raises(click.ClickException, match='--signing-cert'):
-            cert.load_certificate()
+            cert.load_certificate(cert.INTERNAL_SIGNING_CERT_URL)
     assert get.call_count == 1
 
 
@@ -85,7 +85,7 @@ def test_invalid_device_clock_blocks_staging(clock):
     target.run.return_value = clock
     with patch.object(swu, 'load_certificate', return_value=('public cert', 100, 200)):
         with pytest.raises(click.ClickException, match='clock|system time'):
-            swu.prepare_key(target)
+            swu.prepare_key(target, internal=True)
     target.run.assert_called_once_with('date -u +%s')
 
 
@@ -119,7 +119,7 @@ def test_certificate_error_blocks_bundle_download_and_install(ip):
             patch.object(swu, 'load_certificate', side_effect=click.ClickException('bad certificate')), \
             patch.object(swu, 'resolve_bundle') as resolve:
         with pytest.raises(click.ClickException, match='bad certificate'):
-            swu.update_system(None, 'modalix', ip=ip)
+            swu.update_system(None, 'modalix', ip=ip, internal=True)
     resolve.assert_not_called()
     target.run.assert_not_called()
     target.transfer.assert_not_called()
@@ -164,3 +164,43 @@ def test_unreleased_key_option_is_removed():
     handle.assert_not_called()
     assert '--key' not in help_result.output
     assert '--signing-cert' in help_result.output
+
+
+@pytest.mark.parametrize('internal', [False, True])
+def test_explicit_certificate_overrides_both_channels(internal):
+    assert cert.certificate_source('custom.pem', internal) == 'custom.pem'
+
+
+def test_channel_defaults_are_separate():
+    assert cert.certificate_source(internal=True) == cert.INTERNAL_SIGNING_CERT_URL
+    assert cert.certificate_source() is None
+    with patch.object(cert, 'PRODUCTION_SIGNING_CERT_URL', 'https://production.example/cert.pem'):
+        assert cert.certificate_source() == 'https://production.example/cert.pem'
+        assert cert.certificate_source(internal=True) == cert.INTERNAL_SIGNING_CERT_URL
+
+
+def test_unconfigured_production_certificate_is_silently_skipped(capsys):
+    target = MagicMock()
+    with patch.object(swu, 'load_certificate') as load:
+        assert swu.prepare_key(target) == (None, None)
+    load.assert_not_called()
+    target.run.assert_not_called()
+    assert capsys.readouterr().out == ''
+    command = swu.install_script('/tmp/bundle.swu', None).splitlines()[-1]
+    assert command == 'swupdate -v -i /tmp/bundle.swu -e update,full'
+
+
+@pytest.mark.parametrize('internal', [False, True])
+def test_legacy_devices_never_prepare_certificates(internal):
+    with patch('sima_cli.update.remote.get_remote_board_info', return_value=('modalix', '2.1.3', '', False, 'elxr')), \
+            patch.object(swu, 'prepare_key') as prepare:
+        assert swu.handle_update(None, ip='192.0.2.1', internal=internal) is False
+    prepare.assert_not_called()
+
+
+@pytest.mark.parametrize('internal', [False, True])
+def test_modern_device_preserves_certificate_channel(internal):
+    with patch('sima_cli.update.remote.get_remote_board_info', return_value=('modalix', '3.0.0', '', False, 'elxr')), \
+            patch.object(swu, 'update_system') as install:
+        assert swu.handle_update(None, ip='192.0.2.1', internal=internal) is True
+    assert install.call_args.kwargs['internal'] is internal

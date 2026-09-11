@@ -423,8 +423,8 @@ def test_downloaded_key_is_provisioned_in_private_tmp_directory():
     target = MagicMock()
     target.run.side_effect = ['150', '/tmp/sima-cli-key.ABC12345', '']
     with patch.object(swu, 'load_certificate', return_value=('public certificate', 100, 200)) as load:
-        assert swu.prepare_key(target) == ('/tmp/sima-cli-key.ABC12345/public.pem', '/tmp/sima-cli-key.ABC12345')
-    load.assert_called_once_with(None)
+        assert swu.prepare_key(target, internal=True) == ('/tmp/sima-cli-key.ABC12345/public.pem', '/tmp/sima-cli-key.ABC12345')
+    load.assert_called_once_with('https://debian.neat.sima.ai/daily/swupdate-signing-cert.pem')
     command = target.run.call_args.args[0]
     assert 'public certificate' in command
     assert 'umask 077' in command
@@ -435,7 +435,7 @@ def test_certificate_dryrun_validates_clock_without_provisioning():
     target = MagicMock()
     target.run.return_value = '150'
     with patch.object(swu, 'load_certificate', return_value=('public certificate', 100, 200)):
-        assert swu.prepare_key(target, dryrun=True) == (None, None)
+        assert swu.prepare_key(target, dryrun=True, internal=True) == (None, None)
     target.run.assert_called_once_with('date -u +%s')
 
 
@@ -444,7 +444,7 @@ def test_key_write_failure_cleans_temporary_directory():
     target.run.side_effect = ['150', '/tmp/sima-cli-key.ABC12345', click.ClickException('write failed'), '']
     with patch.object(swu, 'load_certificate', return_value=('public certificate', 100, 200)):
         with pytest.raises(click.ClickException, match='write failed'):
-            swu.prepare_key(target)
+            swu.prepare_key(target, internal=True)
     assert target.run.call_args.args[0] == 'rm -rf -- /tmp/sima-cli-key.ABC12345'
 
 

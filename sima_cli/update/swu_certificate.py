@@ -7,13 +7,21 @@ import click
 import requests
 from cryptography import x509
 
-DEFAULT_SIGNING_CERT = 'https://debian.neat.sima.ai/daily/swupdate-signing-cert.pem'
+INTERNAL_SIGNING_CERT_URL = 'https://debian.neat.sima.ai/daily/swupdate-signing-cert.pem'
+# Configure this when the production signing certificate is published.
+PRODUCTION_SIGNING_CERT_URL = None
 MAX_CERTIFICATE_BYTES = 64 * 1024
 
 
-def load_certificate(source=None):
+def certificate_source(signing_cert=None, internal=False):
+    """An explicit certificate overrides the default for the selected channel."""
+    if signing_cert is not None:
+        return signing_cert
+    return INTERNAL_SIGNING_CERT_URL if internal else PRODUCTION_SIGNING_CERT_URL
+
+
+def load_certificate(source):
     """Return a single public PEM certificate and its UTC validity bounds."""
-    source = source or DEFAULT_SIGNING_CERT
     try:
         if urlparse(source).scheme in ('http', 'https'):
             with requests.get(source, stream=True, timeout=(10, 30)) as response:

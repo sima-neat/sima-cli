@@ -350,7 +350,7 @@ def download(ctx, url, dest):
     help="For eLxr updates, validate the update path and show the command without installing."
 )
 @click.option("--inspect", "inspect_state", is_flag=True, help="Show eLxr 3.0+ A/B slot state without updating (local or --ip).")
-@click.option("--signing-cert", metavar="URL_OR_FILE", help="SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the SiMa daily mirror certificate (eLxr 3.0+).")
+@click.option("--signing-cert", metavar="URL_OR_FILE", help="SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the certificate for the selected channel when configured (eLxr 3.0+).")
 @click.option("--reboot", is_flag=True, help="Reboot after successful eLxr 3.0+ installation; verify remote boot health.")
 @click.pass_context
 def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, reboot, signing_cert):
@@ -364,7 +364,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
 
     eLxr 3.0+ uses signed full-system SWU bundles. Use --inspect for A/B
     state, --ip for remote updates, and --reboot to reboot after installation.
-    The verification certificate is downloaded from the SiMa mirror; use
+    The verification certificate is downloaded for the selected channel when configured; use
     --signing-cert URL_OR_FILE for an image signed with your own certificate.
     Developer-portal version lookup for 3.0 is not available yet.
 

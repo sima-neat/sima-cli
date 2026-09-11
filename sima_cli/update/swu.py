@@ -18,11 +18,12 @@ from sima_cli.update.swu_artifacts import (
 )
 from sima_cli.update.swu_target import Target
 from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
-from sima_cli.update.swu_certificate import load_certificate, DEFAULT_SIGNING_CERT
+from sima_cli.update.swu_certificate import load_certificate, certificate_source
 
 
 def install_script(bundle, key):
-    command = shlex.join(['swupdate', '-v', '-i', bundle, '-k', key, '-e', 'update,full'])
+    key_args = ['-k', key] if key else []
+    command = shlex.join(['swupdate', '-v', '-i', bundle, *key_args, '-e', 'update,full'])
     return r'''set -eu
 exec 9>/run/lock/sima-cli-swupdate.lock
 flock -n 9 || { echo 'Another sima-cli update is running'; exit 1; }
@@ -76,10 +77,13 @@ class InstallProgress:
         self.progress.stop()
 
 
-def prepare_key(target, dryrun=False, signing_cert=None):
+def prepare_key(target, dryrun=False, signing_cert=None, internal=False):
     """Stage a freshly retrieved certificate on the target."""
-    click.echo('Loading SWUpdate verification certificate: ' + (signing_cert or DEFAULT_SIGNING_CERT))
-    certificate, not_before, not_after = load_certificate(signing_cert)
+    source = certificate_source(signing_cert, internal)
+    if source is None:
+        return None, None
+    click.echo('Loading SWUpdate verification certificate: ' + source)
+    certificate, not_before, not_after = load_certificate(source)
     try:
         target_time = int(target.run('date -u +%s').strip())
     except ValueError as exc:
@@ -256,7 +260,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
     phase = "checking the target"
     try:
         click.echo('Checking target and A/B state...')
-        key, key_directory = prepare_key(target, dryrun=dryrun, signing_cert=signing_cert)
+        key, key_directory = prepare_key(target, dryrun=dryrun, signing_cert=signing_cert, internal=internal)
         before = preflight(target, key)
         phase = "resolving the update bundle"
         source = resolve_bundle(requested, board, internal)
@@ -277,7 +281,9 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
         phase = "preparing staging storage"
         staging_root = _select_staging_root(target, size_hint, dryrun=dryrun)
         if dryrun:
-            click.echo('Dry run: ' + shlex.join(['sudo', 'swupdate', '-v', '-i', staging_root + '/<staged-bundle>.swu', '-k', key or '/tmp/<temporary-key>/public.pem', '-e', 'update,full']))
+            key_args = (['-k', '/tmp/<temporary-key>/public.pem']
+                        if certificate_source(signing_cert, internal) is not None else [])
+            click.echo('Dry run: ' + shlex.join(['sudo', 'swupdate', '-v', '-i', staging_root + '/<staged-bundle>.swu', *key_args, '-e', 'update,full']))
             click.echo('No bundle installed or reboot scheduled.')
             return
         if not auto_confirm:

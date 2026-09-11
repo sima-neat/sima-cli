@@ -202,42 +202,18 @@ copy. After successful installation, the downloaded bundle and its temporary
 staging directory are removed to free space, including for remote updates.
 
 Remote updates download on the host, transfer to the selected board storage,
-verify the transfer checksum, and run SWUpdate there. Both modes fetch the current
-SiMa public verification certificate from
-`https://debian.neat.sima.ai/daily/swupdate-signing-cert.pem` on each update,
-including `sima-cli -i update`. The CLI contains no bundled certificate. It
-validates the PEM certificate, checks its validity against the DevKit clock,
-stages it privately under `/tmp`, and passes that path to `swupdate -k` with
-`-e update,full`. The temporary certificate is removed after the update attempt;
-existing certificates on the board are preserved.
-
-For an image signed with your own key, supply its matching **public certificate**
-as an HTTP(S) URL or a file on the machine running the CLI:
-
-```sh
-sima-cli update ./custom-image.swu --signing-cert ./my-signing-cert.pem
-sima-cli update --ip 192.168.6.5 ./custom-image.swu --signing-cert ./my-signing-cert.pem
-sima-cli update ./custom-image.swu --signing-cert https://updates.example.com/signing-cert.pem
-```
-
-The CLI retrieves the certificate on the host and provisions it on the remote
-DevKit; the DevKit does not need access to the certificate URL. For offline use,
-supply a local bundle and certificate. When running the CLI directly on the
-DevKit, `--signing-cert /data/my-cert.pem` can use a certificate already there.
-This option requires the eLxr 3.0+ SWUpdate flow; older APT/Yocto update paths
-are unchanged.
-
-Certificate download or validation failures stop the update without a bundled
-fallback or unsigned installation. `/data` must be mounted. Synchronize the
-DevKit clock before updating: these boards have no RTC, and a certificate can
-appear not yet valid until the clock is stepped. An expired certificate also
-stops the update. Firmware-only/OS-only modes and unsigned `--force` updates
-are not supported in this flow.
+verify the transfer checksum, and run SWUpdate there. Both modes verify the signed bundle
+with `/etc/swupdate/public.pem` and select `update,full`. If that default key
+is absent, the CLI temporarily provisions the bundled SiMa certificate under
+`/tmp` and removes it after the update attempt. Existing keys are preserved.
+`--key` can select a
+verification key already installed on the target. Firmware-only/OS-only modes
+and unsigned `--force` updates are not supported in this flow.
 
 Download and transfer show byte progress. Installation shows the current
 artifact, step, and percentage from `swupdate-progress` when available; otherwise
 installer diagnostics remain visible. `--dryrun` checks the target and resolves
-the bundle and validates the selected certificate without staging it, installation, or reboot.
+the bundle without installation or reboot.
 
 A successful installation reports that a reboot is required. Add `--reboot` to
 reboot after success; for a remote board the CLI reconnects and checks the new

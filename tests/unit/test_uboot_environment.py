@@ -46,3 +46,22 @@ def test_corrupt_environment_is_not_replaced_with_defaults(tmp_path):
     with pytest.raises(RuntimeError, match='CRC-valid'):
         configure_environment(str(tmp_path / 'config'), str(tmp_path))
     assert (tmp_path / 'uboot.env').read_bytes() == b'broken'
+
+
+@pytest.mark.parametrize('version,valid_config,success', [('2.1.3_master_B4837', True, True), ('3.0.0_develop_B1247', True, False), ('2.1.3', False, False)])
+def test_legacy_without_bootloader_requires_known_layout(tmp_path, version, valid_config, success):
+    boot, etc = tmp_path / 'boot', tmp_path / 'etc'
+    boot.mkdir(); etc.mkdir()
+    (etc / 'buildinfo').write_text('SIMA_BUILD_VERSION = ' + version)
+    (etc / 'fw_env.config').write_text('/boot/uboot.env 0x0000 0x80000\n/boot/uboot-redund.env 0x0000 0x80000\n' if valid_config else '/dev/mmcblk0 0 0x80000\n')
+    original = env(b'mmc0', 1)
+    (boot / 'uboot.env').write_bytes(original)
+    (boot / 'uboot-redund.env').write_bytes(original)
+    config = tmp_path / 'config'
+    if success:
+        configure_environment(str(config), str(boot), str(etc))
+        assert len(config.read_text().splitlines()) == 2
+    else:
+        with pytest.raises(RuntimeError):
+            configure_environment(str(config), str(boot), str(etc))
+    assert (boot / 'uboot.env').read_bytes() == original

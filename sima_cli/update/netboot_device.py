@@ -60,9 +60,15 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
     """Require confirmation before changing persistent environment or rebooting."""
     ssh = init_ssh_session(devkit)
     try:
-        _checked(ssh, 'command -v fw_setenv && command -v fw_printenv && '
-                 'command -v python3 && test -f /boot/u-boot.bin && '
-                 'test -f /boot/uboot.env && test -f /boot/uboot-redund.env')
+        _checked(ssh, "set -eu; "
+                 "for tool in fw_setenv fw_printenv python3; do "
+                 "command -v \"$tool\" >/dev/null || { echo \"Missing required tool: $tool\" >&2; exit 1; }; done; "
+                 "for file in /boot/uboot.env /boot/uboot-redund.env; do "
+                 "test -f \"$file\" || { echo \"Missing U-Boot environment file: $file\" >&2; exit 1; }; done; "
+                 "if ! test -f /boot/u-boot.bin; then "
+                 "grep -Eq \"^SIMA_BUILD_VERSION[[:space:]]*=[[:space:]]*2[.]1[.]\" /etc/build /etc/buildinfo 2>/dev/null "
+                 "|| { echo 'Missing /boot/u-boot.bin; cannot identify the bootloader environment format for this platform.' >&2; exit 1; }; "
+                 "test -f /etc/fw_env.config || { echo 'Missing /etc/fw_env.config for legacy 2.1 environment validation.' >&2; exit 1; }; fi")
         network = network_settings(ssh, devkit, server_ip)
         message = Text()
         message.append(f"DevKit: {devkit} ({network['interface']})\nTFTP server: {server_ip}\n"

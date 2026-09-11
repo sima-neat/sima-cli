@@ -1,24 +1,38 @@
 """Match fw_env configuration to the FAT environment supported by U-Boot."""
 
 
-def configure_environment(config_path, boot_dir='/boot'):
+def configure_environment(config_path, boot_dir='/boot', etc_dir='/etc'):
     """Run after backup: repair redundant files for a single-file FAT loader.
 
     This function is also sent to the DevKit as standalone Python source.
     """
     import os
+    import re
     from pathlib import Path
     import struct
     import tempfile
     import zlib
 
     boot = Path(boot_dir)
-    binary = (boot / 'u-boot.bin').read_bytes()
+    if (boot / 'u-boot.bin').is_file():
+        binary = (boot / 'u-boot.bin').read_bytes()
+        if b'uboot.env\0' not in binary:
+            raise RuntimeError('Cannot identify the U-Boot FAT environment filename; refusing to guess its format.')
+        redundant = b'uboot-redund.env\0' in binary
+    else:
+        etc = Path(etc_dir)
+        builds = '\n'.join(p.read_text() for p in (etc / 'build', etc / 'buildinfo') if p.is_file())
+        if not re.search(r'^SIMA_BUILD_VERSION\s*=\s*2\.1\.', builds, re.MULTILINE):
+            raise RuntimeError('Missing /boot/u-boot.bin; cannot identify the bootloader environment format.')
+        entries = [line.split('#', 1)[0].split() for line in (etc / 'fw_env.config').read_text().splitlines()]
+        entries = [entry for entry in entries if entry]
+        expected = ['/boot/uboot.env', '/boot/uboot-redund.env']
+        if len(entries) != 2 or any(len(e) != 3 or e[0] != path or int(e[1], 0) != 0 or int(e[2], 0) != 0x80000 for e, path in zip(entries, expected)):
+            raise RuntimeError('Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout.')
+        # Legacy 2.1 images omit the binary but declare their redundant FAT layout.
+        redundant = True
     primary = boot / 'uboot.env'
     secondary = boot / 'uboot-redund.env'
-    if b'uboot.env\0' not in binary:
-        raise RuntimeError('Cannot identify the U-Boot FAT environment filename; refusing to guess its format.')
-    redundant = b'uboot-redund.env\0' in binary
     size = 0x80000
 
     def valid(data, header):

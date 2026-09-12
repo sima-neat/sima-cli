@@ -3363,7 +3363,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_model_sdk_extension_skips_non_neat_elxr_image(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="artifacts.eng.sima.ai/elxr:2.1.0"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt") as prompt, \
+             patch("sima_cli.sdk.model_compiler.click.prompt") as prompt, \
              patch("sima_cli.sdk.utils.subprocess.run") as run:
             ensure_model_sdk_extension_installed("container", "docker")
 
@@ -3375,14 +3375,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
-             patch("sima_cli.sdk.utils.platform.machine", return_value="arm64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt") as prompt, \
-             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result) as run, \
+             patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
+             patch("sima_cli.sdk.model_compiler.click.prompt") as prompt, \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="aarch64\n")]) as run, \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
 
         prompt.assert_not_called()
-        run.assert_called_once()
+        self.assertEqual(run.call_count, 2)
         run_command.assert_not_called()
 
     def test_model_sdk_extension_skips_when_user_declines(self):
@@ -3390,13 +3390,13 @@ table ip6 nm-shared-enx6c1ff720d573 {
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
-             patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False), \
-             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result) as run, \
+             patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
+             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="2"), \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="x86_64\n")]) as run, \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
 
-        run.assert_called_once()
+        self.assertEqual(run.call_count, 2)
         run_command.assert_not_called()
 
     def test_model_sdk_extension_installs_for_neat_elxr_image(self):
@@ -3404,15 +3404,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
-             patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True), \
+             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="1"), \
              patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
              patch("sima_cli.sdk.utils.sys.stdout.isatty", return_value=True), \
-             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result) as run, \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="x86_64\n")]) as run, \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
 
-        run.assert_called_once_with(
+        run.assert_any_call(
             ["docker", "exec", "container", "cat", "/etc/sdk-release"],
             text=True,
             capture_output=True,
@@ -3463,9 +3462,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
-             patch("sima_cli.sdk.utils.platform.machine", return_value="arm64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True), \
-             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result), \
+             patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
+             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="1"), \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="aarch64\n")]), \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
 
@@ -3496,9 +3495,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
-             patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True), \
-             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result), \
+             patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
+             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="1"), \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="x86_64\n")]), \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
 
@@ -3516,9 +3515,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.2.0"), \
-             patch("sima_cli.sdk.utils.platform.machine", return_value="aarch64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True), \
-             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result), \
+             patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
+             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="1"), \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="aarch64\n")]), \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
 
@@ -3535,14 +3534,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
-             patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt") as prompt, \
-             patch("sima_cli.sdk.utils.subprocess.run", return_value=read_result), \
+             patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
+             patch("sima_cli.sdk.model_compiler.click.prompt") as prompt, \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="x86_64\n")]), \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker", auto_install=True)
 
         prompt.assert_not_called()
-        self.assertEqual(run_command.call_count, 2)
+        self.assertEqual(run_command.call_count, 1)
 
     def test_edgematic_studio_choice_defaults_to_off_without_a_terminal(self):
         with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \

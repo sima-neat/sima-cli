@@ -15,7 +15,7 @@ sima-cli sdk setup [OPTIONS]
 | Name | Description |
 | --- | --- |
 | `--noninteractive, --non-interactive, -n` | Run in non-interactive mode (auto-select defaults). |
-| `-y, --yes` | Skip confirmation before starting the container. |
+| `-y, --yes` | Accept setup defaults; install Model Compiler from a local ZIP if available, otherwise online. |
 | `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>'. |
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
@@ -184,3 +184,48 @@ Options:
                                   skips the selection prompt.
   --help                          Show this message and exit.
 ```
+
+## Model Compiler installation source
+
+Setup looks only in the **current working directory** for
+`model-compiler-arm64.zip` (ARM64 SDK) or `model-compiler-amd64.zip` (x86-64 SDK).
+The architecture comes from the SDK container, so it also works when the host
+and container architectures differ. Extracted folders, ZIPs in the workspace or
+parent directory, and ZIPs for the other architecture are not searched.
+
+When a valid local ZIP is found, setup displays its full path and offers:
+
+1. Install from local source
+2. Install from online source
+3. Skip
+
+Without a valid ZIP, the options are **1. Install from online source** and
+**2. Skip**. Pressing Enter skips. Invalid or incompatible ZIPs are reported
+and excluded from the local choice.
+
+| Flags | Local ZIP available | No valid local ZIP |
+| --- | --- | --- |
+| `--noninteractive` | Install local | Skip |
+| `--noninteractive -y` | Install local | Install online |
+| `-y` | Install local | Install online |
+
+Without a terminal, the same unattended rules apply. Online automatic
+installation requires `-y`. For legacy SDK sources, authenticate on the host
+with `sima-cli login` first. `--minimal`, `--no-model-compiler`, and its alias
+`--no-model-sdk` always skip Model Compiler installation.
+
+Use the official ZIP with `install_modelsdk_wheels.sh`, `source.json`,
+`manifest.txt`, and package payloads at its root. The local package must match
+the compiler version selected for the SDK: the SDK base version before 2.1.3,
+and compiler 2.1.3 for SDK 2.1.3 and later, matching online version selection.
+
+The local ZIP is extracted to temporary host storage and copied into temporary
+storage in the Linux SDK container. Allow space for both extracted copies in
+addition to the installed compiler. This works on Ubuntu, macOS with Docker
+Desktop, and WSL, including paths with spaces; the installer runs inside the
+container. Temporary files are cleaned up after success or failure, and the
+original ZIP is retained. A failed local installation never falls back online.
+
+Local installation bypasses the compiler download and its online login step.
+System packages or Python prerequisites may still need network access; this
+does not make all of SDK setup air-gapped.

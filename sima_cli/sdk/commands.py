@@ -288,7 +288,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
 @click.option(
     "-y", "--yes",
     is_flag=True,
-    help="Skip confirmation before starting the container."
+    help="Accept setup defaults; install Model Compiler from a local ZIP if available, otherwise online."
 )
 @click.option(
     "--devkit",

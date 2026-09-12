@@ -16,8 +16,12 @@ import platform
 import shutil
 import tempfile
 from collections import defaultdict
+from contextlib import ExitStack
 from rich.console import Console
 from rich.panel import Panel
+
+from sima_cli.sdk.docker_staging import docker_cp_staging_dir as _docker_cp_staging_dir
+from sima_cli.sdk.model_compiler import discover_archive, normalize_arch, select_source, stage_archive
 
 from sima_cli.sdk.config import (
     IMAGE_NAMES,
@@ -843,8 +847,10 @@ def _model_sdk_extension_arch(base_version: str) -> str:
     return ""
 
 
-def _model_sdk_extension_install_args(base_version: str) -> List[str]:
-    arch = _model_sdk_extension_arch(base_version)
+def _model_sdk_extension_install_args(base_version: str, arch: str = None) -> List[str]:
+    arch = _model_sdk_extension_arch(base_version) if arch is None else arch
+    if arch == "arm64" and not _version_at_least(base_version, "2.1.1"):
+        return []
     if not arch:
         return []
     if _version_at_least(base_version, "2.1.3"):
@@ -1063,6 +1069,7 @@ def ensure_model_sdk_extension_installed(
     auto_install: bool = False,
     uid: int = None,
     gid: int = None,
+    noninteractive: bool = False,
 ):
     """
     Install the Model Compiler extension for Neat SDK containers.
@@ -1086,9 +1093,14 @@ def ensure_model_sdk_extension_installed(
         print(f"⚠️  Could not determine SDK base version in '{sdk_container_name}'. Skipping Model Compiler extension install.")
         return
 
-    extension_install_args = _model_sdk_extension_install_args(base_version)
+    machine = subprocess.run(
+        ["docker", "exec", sdk_container_name, "uname", "-m"],
+        text=True, capture_output=True, check=False,
+    )
+    arch = normalize_arch(machine.stdout or "") if machine.returncode == 0 else ""
+    extension_install_args = _model_sdk_extension_install_args(base_version, arch)
     if not extension_install_args:
-        print("ℹ️  Model Compiler extension install is not available on this host platform for SDK versions older than 2.1.1; skipping.")
+        print("ℹ️  Model Compiler extension install is not available for this SDK architecture/version; skipping.")
         return
     uses_vulcan = extension_install_args[:2] == ["neat", "install"]
 
@@ -1109,23 +1121,22 @@ def ensure_model_sdk_extension_installed(
             expand=False,
         )
     )
-    if auto_install:
-        print("ℹ️  Auto-installing Model Compiler extension.")
-    else:
-        if not yes_no_prompt("Install the Model Compiler extension now?"):
-            print("ℹ️  Skipping Model Compiler extension install.")
-            return
+    expected_version = "2.1.3" if _version_at_least(base_version, "2.1.3") else base_version
+    local_archive = discover_archive(arch, expected_version)
+    unattended = noninteractive or auto_install or not sys.stdin.isatty()
+    source = select_source(local_archive, noninteractive=unattended, yes=auto_install)
+    if source == "skip":
+        if unattended and not auto_install and not local_archive:
+            print("ℹ️  No local Model Compiler ZIP found; online auto-install requires -y.")
+        print("ℹ️  Skipping Model Compiler extension install.")
+        return
 
     internal_sima_cli_env = "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; "
-    if not uses_vulcan:
+    if source == "online" and not uses_vulcan and not unattended:
         print("ℹ️  Logging in to sima-cli before installing the Model Compiler extension...")
         run_command(
             _docker_exec_interactive_prefix() + [
-                "-u",
-                login_name,
-                sdk_container_name,
-                "bash",
-                "-lc",
+                "-u", login_name, sdk_container_name, "bash", "-lc",
                 f"{internal_sima_cli_env}sima-cli login",
             ]
         )
@@ -1151,35 +1162,58 @@ def ensure_model_sdk_extension_installed(
         "fi; "
         f"\"$SIMA_CLI_BIN\" {shlex.join(extension_install_args)}"
     )
-    install_script = (
-        "set -e; "
-        f"export HOME={shlex.quote(home_directory)}; "
-        f"{_sudoers_drop_in_script(login_name)}; "
-        "cleanup_model_sdk_install() { "
-        f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
-        f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions || true; fi; "
-        f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\" || true; fi; "
-        "}; "
-        "trap cleanup_model_sdk_install EXIT; "
-        "mkdir -p \"$HOME/extension-installation\"; "
-        "cleanup_model_sdk_install; "
-        f"su -s /bin/bash {shlex.quote(login_name)} -c 'sudo -n true'; "
-        f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
-    )
-    print(f"ℹ️  Installing Model Compiler extension for SDK base version {base_version}...")
-    run_command(
-        [
-            "docker",
-            "exec",
-            "-u",
-            "root",
-            sdk_container_name,
-            "bash",
-            "-lc",
-            install_script,
-        ]
-    )
-    print(f"✅ Model Compiler extension installed for SDK base version {base_version}.")
+    if source == "online" and not uses_vulcan and unattended:
+        # Setup has already copied cached host credentials into the container.
+        # Do not start a browser login during unattended installation.
+        auth_check = (
+            f"if [ ! -s {shlex.quote(home_directory + '/.sima-cli/.tokens.json')} ] "
+            f"&& [ ! -s {shlex.quote(home_directory + '/.sima-cli/.sima-cli-cookies.txt')} ]; then "
+            "echo 'Online Model Compiler installation requires credentials. Run sima-cli login on the host and retry sdk setup -y.' >&2; "
+            "exit 1; fi; "
+        )
+        user_install_script = auth_check + user_install_script
+    with ExitStack() as stack:
+        if source == "local":
+            print("ℹ️  Installing local compiler package; system/Python prerequisites may still require network access.")
+            bundle = stack.enter_context(stage_archive(
+                local_archive, arch, expected_version, sdk_container_name, owner, run_command,
+            ))
+            user_install_script = (
+                "set -e; "
+                f"export HOME={shlex.quote(home_directory)}; "
+                f"export USER={shlex.quote(login_name)}; "
+                f"export LOGNAME={shlex.quote(login_name)}; "
+                f"cd {shlex.quote(bundle)}; bash ./install_modelsdk_wheels.sh"
+            )
+        install_script = (
+            "set -e; "
+            f"export HOME={shlex.quote(home_directory)}; "
+            f"{_sudoers_drop_in_script(login_name)}; "
+            "cleanup_model_sdk_install() { "
+            f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
+            f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions || true; fi; "
+            f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\" || true; fi; "
+            "}; "
+            "trap cleanup_model_sdk_install EXIT; "
+            "mkdir -p \"$HOME/extension-installation\"; "
+            "cleanup_model_sdk_install; "
+            f"su -s /bin/bash {shlex.quote(login_name)} -c 'sudo -n true'; "
+            f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
+        )
+        print(f"ℹ️  Installing Model Compiler extension for SDK base version {base_version}...")
+        run_command(
+            [
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                sdk_container_name,
+                "bash",
+                "-lc",
+                install_script,
+            ]
+        )
+        print(f"✅ Model Compiler extension installed for SDK base version {base_version}.")
 
 
 def ensure_codex_vscode_extension_installed(
@@ -1552,24 +1586,6 @@ def _prepare_log_host_dir(path: str) -> None:
         print(f"⚠️ Could not make log folder writable for container services: {path} ({e})")
 
 
-def _docker_cp_staging_dir():
-    """
-    Docker installed through Snap may not see host /tmp paths. Stage files under
-    a non-hidden user home directory so docker cp can access them across Docker
-    variants, including Snap confinement.
-    """
-    home = os.path.expanduser("~")
-    if home and os.path.isdir(home) and os.access(home, os.W_OK):
-        staging = tempfile.TemporaryDirectory(prefix="sima-cli-sdk-", dir=home)
-        try:
-            os.chmod(staging.name, 0o755)
-        except OSError:
-            staging.cleanup()
-            raise
-        return staging
-    return tempfile.TemporaryDirectory(prefix="sima-cli-sdk-")
-
-
 def configure_container_user(
     sdk_container_name: str,
     login_name: str,
@@ -1773,7 +1789,8 @@ def configure_container(
         ensure_model_sdk_extension_installed(
             sdk_container_name,
             login_name,
-            auto_install=(noninteractive or yes_to_all),
+            auto_install=yes_to_all,
+            noninteractive=noninteractive,
             uid=uid,
             gid=gid,
         )

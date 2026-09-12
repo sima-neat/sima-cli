@@ -1,4 +1,5 @@
 import paramiko
+import shlex
 import os
 import click
 import time
@@ -10,6 +11,7 @@ import select
 from typing import Tuple, Optional
 
 from sima_cli.update.cleanlog import LineSquelcher
+from sima_cli.update.staging import ensure_tmp_space
 
 DEFAULT_USER = "sima"
 DEFAULT_PASSWORD = "edgeai"
@@ -348,6 +350,19 @@ def push_and_update_remote_board(ip: str, troot_path: str, palette_path: str, pa
         remote_dir = "/tmp"
         palette_name = os.path.basename(palette_path)
 
+        def staging_command(script):
+            code, output, error = run_remote_command_capture(
+                ssh, 'sudo -p "" sh -c ' + shlex.quote(script), password=passwd, sudo_pty=False,
+            )
+            if code != 0:
+                raise click.ClickException(f'Target staging check failed: {error or output}')
+            return output
+
+        # Both uploads remain in /tmp, so account for their combined size before
+        # changing the board or sending the first image.
+        images = [troot_path] if troot_only and troot_path else [troot_path, palette_path]
+        ensure_tmp_space(staging_command, sum(os.path.getsize(path) for path in images if path))
+
         boot_mmc = get_remote_boot_mmc(ssh, passwd)
         if boot_mmc != None:
             click.echo(f'✅ Checking partition table GPT record for {boot_mmc}...')
@@ -439,8 +454,12 @@ def push_and_update_remote_board(ip: str, troot_path: str, palette_path: str, pa
 
         click.echo("✅ Firmware update process complete.")
 
+    except click.ClickException:
+        raise
     except Exception as e:
         click.echo(f"❌ Remote update failed: {e}")
+    finally:
+        ssh.close()
 
 
 if __name__ == "__main__":

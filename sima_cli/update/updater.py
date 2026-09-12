@@ -216,7 +216,14 @@ def _sanitize_url_to_filename(url: str) -> str:
     return safe_name
 
 
-def _extract_required_files(tar_path: str, board: str, update_type: str = 'standard', flavor: str = 'headless') -> list:
+def _ensure_local_staging_space(path, size, run):
+    """Apply tmpfs capacity checks only to direct-board staging beneath /tmp."""
+    if run and os.path.commonpath([os.path.realpath(path), os.path.realpath('/tmp')]) == os.path.realpath('/tmp'):
+        from sima_cli.update.staging import ensure_tmp_space
+        ensure_tmp_space(run, size)
+
+
+def _extract_required_files(tar_path: str, board: str, update_type: str = 'standard', flavor: str = 'headless', staging_run=None) -> list:
     """
     Extract required files from a .tar.gz or .tar archive into the same folder
     and return the full paths to the extracted files (with subfolder if present).
@@ -285,7 +292,14 @@ def _extract_required_files(tar_path: str, board: str, update_type: str = 'stand
             tar = tarfile.open(tar_path, mode="r:")
 
         with tar:
-            for member in tar.getmembers():
+            members = tar.getmembers()
+            pending_size = sum(member.size for member in members
+                               if member.isfile()
+                               and (extract_all or os.path.basename(member.name) in target_filenames
+                                    or member.name.endswith('.img.gz'))
+                               and not os.path.exists(os.path.join(extract_dir, member.name)))
+            _ensure_local_staging_space(extract_dir, pending_size, staging_run)
+            for member in members:
                 base_name = os.path.basename(member.name)
 
                 if member.isdir():
@@ -330,13 +344,15 @@ def _extract_required_files(tar_path: str, board: str, update_type: str = 'stand
 
         return extracted_paths
 
+    except click.ClickException:
+        raise
     except Exception as e:
         click.echo(f"❌ Failed to extract files from archive: {e}")
         return []
 
 
     
-def _download_image(version_or_url: str, board: str, internal: bool = False, update_type: str = 'standard', flavor: str = 'headless', swtype: str = 'yocto'):
+def _download_image(version_or_url: str, board: str, internal: bool = False, update_type: str = 'standard', flavor: str = 'headless', swtype: str = 'yocto', staging_run=None):
     """
     Download or use a firmware image for the specified board and version or file path.
 
@@ -352,11 +368,12 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
         - Downloads the firmware into the system's temporary directory otherwise.
         - Target file name is uniquely derived from the URL or preserved from local path.
     """
+    extraction_options = {"staging_run": staging_run} if staging_run else {}
     try:
         # Case 1: Local file provided
         if os.path.exists(version_or_url) and os.path.isfile(version_or_url):
             click.echo(f"📁 Using local firmware file: {version_or_url}")
-            filelist = _extract_required_files(version_or_url, board, update_type, flavor)
+            filelist = _extract_required_files(version_or_url, board, update_type, flavor, **extraction_options)
             
             # In the case of eLxr conversion, add the root file system image that is locally available.
             if update_type == "netboot" and swtype == "elxr":
@@ -406,10 +423,16 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
         safe_filename = _sanitize_url_to_filename(image_url)
         dest_path = os.path.join(temp_dir, safe_filename)
 
+        if staging_run:
+            from sima_cli.update.swu_artifacts import bundle_size
+            # The downloaded archive and extracted tRoot/system images coexist.
+            # Check the archive first, then exact member sizes before extraction.
+            _ensure_local_staging_space(temp_dir, bundle_size(image_url, internal), staging_run)
+
         # Download the file
         click.echo(f"📦 Downloading from {image_url}")
         firmware_path = download_file_from_url(image_url, dest_path, internal=internal)
-        extracted_files = _extract_required_files(firmware_path, board, update_type, flavor)
+        extracted_files = _extract_required_files(firmware_path, board, update_type, flavor, **extraction_options)
 
         # If internal, netboot and elxr, we need to download some additional files to prepare for eMMC flash.
         if update_type == "netboot" and swtype == "elxr":
@@ -713,7 +736,11 @@ def perform_update(
             if 'http' not in version_or_url and not os.path.exists(version_or_url): 
                 version_or_url = _pick_from_available_versions(board, version_or_url, internal, flavor=flavor, swtype='yocto')
 
-            extracted_paths = _download_image(version_or_url, board, internal, flavor=flavor)
+            staging_options = {}
+            if env_type == 'board':
+                from sima_cli.update.swu_target import Target
+                staging_options['staging_run'] = Target(passwd=passwd).run
+            extracted_paths = _download_image(version_or_url, board, internal, flavor=flavor, **staging_options)
 
             if not auto_confirm:
                 click.confirm(
@@ -746,5 +773,7 @@ def perform_update(
         else:
             click.echo("❌ Unable to retrieve target board information")
 
+    except click.ClickException:
+        raise
     except Exception as e:
         click.echo(f"❌ Update failed: {e}")

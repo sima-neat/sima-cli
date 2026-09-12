@@ -4,7 +4,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
-from sima_cli.update.rootfs import ROOT_IDENTITY_SCRIPT
+from sima_cli.update.rootfs import ROOT_IDENTITY_SCRIPT, FALLBACK_IDENTITY_SCRIPT
 
 
 def parse_state(output):
@@ -55,6 +55,12 @@ def inspect_target(target, display=True):
             for key in ('active slot', 'fallback slot', 'active version', 'active os', 'medium'):
                 if supplemental.get(key):
                     state[key] = supplemental[key]
+    if state.get('active slot') in ('A', 'B') and not state.get('fallback version'):
+        peer = parse_state(target.run(FALLBACK_IDENTITY_SCRIPT, check=False))
+        if peer.get('fallback slot') == state.get('fallback slot'):
+            for key in ('fallback version', 'fallback os'):
+                if peer.get(key):
+                    state[key] = peer[key]
     count = re.search(r'boot retries[^\n]*:\s*(\d+)\s*$', extra, re.I)
     state['bootcount'] = count.group(1) if count else (extra.strip() or 'unknown')
     if display:

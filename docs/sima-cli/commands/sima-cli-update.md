@@ -225,3 +225,13 @@ install must be inspected before retrying.
 next-boot slots, pending-update status, rollback status, and boot count. It does
 not download or install firmware, switch slots, reboot, or self-update the CLI.
 Migration from an older layout to the 3.0 A/B layout requires provisioning/recovery.
+
+### Inspection with a persistent root overlay
+
+On overlay-enabled images, `--inspect` reads the active slot version from the
+pristine root at `/oldroot` (or `/mnt` on older images), after verifying that the
+mount belongs to the running rootfs device. It does not use the overlay's package
+database to identify the slot. If the platform inspector omits fallback metadata,
+the CLI temporarily mounts the peer rootfs read-only with journal replay disabled
+and restores its previous LVM activation state. Inspection does not switch slots
+or clear boot flags. Missing or unverifiable metadata remains unknown.

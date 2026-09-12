@@ -486,6 +486,7 @@ def test_overlay_inspection_supplements_identity_without_inventing_fallback_vers
         'running system: not on an A/B medium (netboot?)\n' + CURRENT_CONTROL_STATE,
         'boot retries: 0',
         'active slot: B\nfallback slot: A\nmedium: /dev/mmcblk0\nactive version: 3.0.0_fix_recovery_B1230\nactive os: eLxr 26.04.02',
+        '',
     ]
     state = inspect_target(target, display=False)
     assert state['active slot'] == state['running slot'] == 'B'

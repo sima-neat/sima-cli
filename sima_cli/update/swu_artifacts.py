@@ -226,7 +226,7 @@ def _portal_session():
     return session
 
 
-def resolve_bundle(requested, board, internal=False):
+def resolve_bundle(requested, board, internal=False, *, allow_external_fallback=False):
     """Return a local path or a download URL; never install or unpack the SWU."""
     if requested and urlparse(requested).scheme not in ('http', 'https') and Path(requested).is_file():
         if not requested.endswith('.swu'):
@@ -245,6 +245,8 @@ def resolve_bundle(requested, board, internal=False):
             reason = artifactory_failure_reason(exc)
             if not reason:
                 raise
+            if not allow_external_fallback:
+                raise click.ClickException(reason + " Retry with --force to allow the external pre-release mirror.") from exc
             return select_mirror_bundle(requested, board, reason)
         builds = _matching_builds(builds, requested)
         for build in builds:

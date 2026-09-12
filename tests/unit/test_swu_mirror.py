@@ -75,7 +75,7 @@ def test_artifactory_http_failures_fall_back(status):
     response.status_code = status
     with patch.object(artifacts, 'internal_bundles', side_effect=requests.HTTPError(response=response)), \
             patch.object(artifacts, 'select_mirror_bundle', return_value='mirror') as mirror:
-        assert artifacts.resolve_bundle('3.0', 'modalix', True) == 'mirror'
+        assert artifacts.resolve_bundle('3.0', 'modalix', True, allow_external_fallback=True) == 'mirror'
     assert str(status) in mirror.call_args.args[2]
 
 
@@ -83,7 +83,7 @@ def test_artifactory_http_failures_fall_back(status):
 def test_artifactory_access_failures_fall_back(error):
     with patch.object(artifacts, 'internal_bundles', side_effect=error), \
             patch.object(artifacts, 'select_mirror_bundle', return_value='mirror'):
-        assert artifacts.resolve_bundle('3.0', 'modalix', True) == 'mirror'
+        assert artifacts.resolve_bundle('3.0', 'modalix', True, allow_external_fallback=True) == 'mirror'
 
 
 @pytest.mark.parametrize('status', [400, 404])
@@ -93,7 +93,7 @@ def test_non_access_http_errors_do_not_fall_back(status):
     with patch.object(artifacts, 'internal_bundles', side_effect=requests.HTTPError(response=response)), \
             patch.object(artifacts, 'select_mirror_bundle') as mirror:
         with pytest.raises(requests.HTTPError):
-            artifacts.resolve_bundle('3.0', 'modalix', True)
+            artifacts.resolve_bundle('3.0', 'modalix', True, allow_external_fallback=True)
     mirror.assert_not_called()
 
 
@@ -101,7 +101,7 @@ def test_no_artifactory_match_does_not_fall_back():
     with patch.object(artifacts, 'internal_bundles', return_value=[]), \
             patch.object(artifacts, 'select_mirror_bundle') as mirror:
         with pytest.raises(click.ClickException, match='No matching'):
-            artifacts.resolve_bundle('3.0', 'modalix', True)
+            artifacts.resolve_bundle('3.0', 'modalix', True, allow_external_fallback=True)
     mirror.assert_not_called()
 
 
@@ -154,11 +154,11 @@ def test_mirror_install_verifies_integrity_and_preserves_version(tmp_path, failu
             patch.object(swu, 'download_file_from_url', side_effect=[requests.Timeout(), str(local)] if failure_stage == 'download' else None, return_value=str(local)) as download:
         if corrupt:
             with pytest.raises(click.ClickException, match='failed size or SHA-256 verification'):
-                swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True, reboot=True)
+                swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True, reboot=True, allow_external_fallback=True)
             target.transfer.assert_not_called()
             reboot.assert_not_called()
         else:
-            swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True, reboot=True)
+            swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True, reboot=True, allow_external_fallback=True)
             assert reboot.call_args.kwargs['expected'] == VERSION
             assert any('-k ' in c.args[0] and '-e update,full' in c.args[0] for c in target.run.call_args_list)
         assert download.call_args.kwargs['internal'] is False
@@ -289,7 +289,7 @@ def test_post_selection_request_failures_retry_exact_build(stage, kind, tmp_path
             patch.object(swu, 'inspect_target', return_value={'next-boot': 'B', 'upgrade_available': 'yes'}), \
             patch.object(artifacts, 'select_mirror_bundle', return_value=mirror) as fallback, \
             patch.object(swu, 'download_file_from_url', side_effect=[wrapped, str(local)] if stage == 'download' else None, return_value=str(local)) as download:
-        swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True)
+        swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True, allow_external_fallback=True)
     assert fallback.call_args.args[0] == VERSION
     assert fallback.call_args.kwargs['exact'] is True
     assert download.call_args.args[0] == mirror
@@ -301,7 +301,7 @@ def test_discovery_protocol_error_does_not_fall_back():
     with patch.object(artifacts, 'internal_bundles', side_effect=requests.exceptions.ChunkedEncodingError()), \
             patch.object(artifacts, 'select_mirror_bundle') as mirror:
         with pytest.raises(requests.exceptions.ChunkedEncodingError):
-            artifacts.resolve_bundle('3.0', 'modalix', True)
+            artifacts.resolve_bundle('3.0', 'modalix', True, allow_external_fallback=True)
     mirror.assert_not_called()
 
 
@@ -310,3 +310,22 @@ def test_post_selection_local_io_error_does_not_fall_back():
     with patch.object(artifacts, 'select_mirror_bundle') as mirror:
         assert artifacts.fallback_for_bundle(source, 'modalix', OSError('disk full')) is None
     mirror.assert_not_called()
+
+
+def test_discovery_requires_force_for_external_mirror():
+    with patch.object(artifacts, 'internal_bundles', side_effect=requests.ConnectionError('offline')), patch.object(artifacts, 'select_mirror_bundle') as mirror:
+        with pytest.raises(click.ClickException, match='--force'):
+            artifacts.resolve_bundle('3.0', 'modalix', True)
+    mirror.assert_not_called()
+
+
+@pytest.mark.parametrize('stage', ['size', 'download'])
+def test_artifact_failure_without_force_never_uses_public_mirror(stage):
+    target = MagicMock()
+    target.run.return_value = '/tmp/sima-cli-update.ABC12345'
+    source = artifacts.BundleSource(artifacts.ARTIFACTORY_BASE_URL + '/bsp/bundle.swu', VERSION)
+    with patch.object(swu, 'Target', return_value=target), patch.object(swu, 'prepare_key', return_value=('/key', None)), patch.object(swu, 'preflight'), patch.object(swu, 'resolve_bundle', return_value=source), patch.object(swu, 'bundle_size', side_effect=requests.Timeout('offline') if stage == 'size' else None, return_value=1), patch.object(swu, '_select_staging_root', return_value='/tmp'), patch.object(swu, 'download_file_from_url', side_effect=requests.Timeout('offline')), patch.object(swu, 'fallback_for_bundle') as fallback:
+        with pytest.raises(click.ClickException):
+            swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True)
+    fallback.assert_not_called()
+    target.transfer.assert_not_called()

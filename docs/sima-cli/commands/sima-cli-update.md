@@ -25,9 +25,9 @@ A successful Artifactory query with no matching builds does not trigger fallback
 
 ```bash
 # Search for matching builds; add --ip <device-ip> when running from a host.
-sima-cli -i update -v 3.0
+sima-cli -i update -f -v 3.0
 # Select an exact build directly.
-sima-cli -i update -v 3.0.0_daily_develop_B1247
+sima-cli -i update -f -v 3.0.0_daily_develop_B1247
 ```
 
 Exact matches take priority. Partial queries such as `3.0`, `develop`, or `B1247`
@@ -37,7 +37,7 @@ eligible. A missing build may have expired from the mirror's retained daily buil
 
 The selected build's indexed `artifacts/palette/elxr-palette-modalix-*.swu` is
 downloaded from the public mirror without Artifactory credentials. Its size and
-SHA-256 are verified before the existing signed SWUpdate installation. If an
+SHA-256 are verified before the existing signed SWUpdate installation. With `-f`, if an
 Artifactory download fails after selection, fallback is restricted to that exact
 build. The selected build identity is also used for post-reboot verification.
 
@@ -59,7 +59,7 @@ applies only to eLxr 3.0+ SWUpdate, not bootimg or recovery-media creation.
 | `-y, --yes` | Assume yes for update confirmation prompts. |
 | `-p, --passwd` | Password for remote board SSH or local ELXR sudo authentication. (default: edgeai) |
 | `--flavor` | Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above (default: auto) |
-| `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror without signature verification; without --internal, select that mirror directly (ELXR only). |
+| `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror (eLxr only). On 3.0+, signed-bundle verification remains required. The legacy 2.1 behavior is unchanged. |
 | `-t, --troot_only` | Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion. |
 | `--dryrun` | For ELXR updates only, validate the update path and print the simaai-ota command without running it. |
 
@@ -168,9 +168,10 @@ Options:
                                  deprecated for 2.0 and above  [default: auto]
   -f, --force                    If the internal mirror is unreachable, fall
                                  back to the external pre-release mirror
-                                 without signature verification; without
-                                 --internal, select that mirror directly (ELXR
-                                 only).
+                                 (eLxr only). eLxr 3.0+ still verifies signed
+                                 full-system bundles. On eLxr 2.1, this disables
+                                 repository signature verification and, without
+                                 --internal, selects the mirror directly.
   -t, --troot_only               Only update tRoot and not the root file
                                  system, compatible with Yocto system only,
                                  used for Yocto to eLxr conversion.
@@ -225,7 +226,8 @@ is absent, the CLI temporarily provisions the bundled SiMa certificate under
 `/tmp` and removes it after the update attempt. Existing keys are preserved.
 `--key` can select a
 verification key already installed on the target. Firmware-only/OS-only modes
-and unsigned `--force` updates are not supported in this flow.
+are not supported in this flow. `--force` only permits external pre-release
+mirror fallback; signature verification remains required.
 
 Download and transfer show byte progress. Installation shows the current
 artifact, step, and percentage from `swupdate-progress` when available; otherwise
@@ -252,3 +254,7 @@ database to identify the slot. If the platform inspector omits fallback metadata
 the CLI temporarily mounts the peer rootfs read-only with journal replay disabled
 and restores its previous LVM activation state. Inspection does not switch slots
 or clear boot flags. Missing or unverifiable metadata remains unknown.
+
+For eLxr 3.0+, `sima-cli -i update -f` tries Artifactory first and permits
+external pre-release fallback on supported discovery or artifact-download failures.
+Without `-f`, it stops instead of switching mirrors.

@@ -3,12 +3,13 @@ from contextlib import contextmanager
 import json
 from pathlib import Path, PurePosixPath
 import stat
-import tempfile
 import uuid
 import zipfile
 
 import click
 from InquirerPy import inquirer
+
+from sima_cli.sdk.docker_staging import docker_cp_staging_dir
 
 
 def normalize_arch(machine):
@@ -39,7 +40,9 @@ def validate_archive(archive, arch, expected_version):
     if not isinstance(source, dict):
         raise ValueError("source.json must contain an object")
     version = source.get("sdk_version")
-    if version and version != expected_version:
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError("source.json must declare a non-empty sdk_version")
+    if version != expected_version:
         raise ValueError(f"Bundle SDK version {version} does not match {expected_version}")
     target = source.get("target_arch")
     if target and normalize_arch(target) != arch:
@@ -121,7 +124,7 @@ def select_source(local_archive, noninteractive=False, yes=False):
 def stage_archive(path, arch, expected_version, container, owner, run_command):
     """Copy a validated extracted bundle without relying on host bind mounts."""
     destination = f"/tmp/sima-model-compiler-{uuid.uuid4().hex}"
-    with tempfile.TemporaryDirectory(prefix="sima-model-compiler-") as staging:
+    with docker_cp_staging_dir() as staging:
         try:
             with zipfile.ZipFile(path) as archive:
                 validate_archive(archive, arch, expected_version)

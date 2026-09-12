@@ -61,8 +61,8 @@ def test_discovery_only_current_zip(tmp_path, monkeypatch, arch):
     {"source.json": "not json"},
     {"source.json": "[]"},
     {"source.json": '{"sdk_version":"2.0.0"}'},
-    {"source.json": '{"target_arch":"x86_64"}'},
-    {"source.json": '{"binary-packages":[{"name":"runtime","version":"1"}]}'},
+    {"source.json": '{"sdk_version":"2.1.3","target_arch":"x86_64"}'},
+    {"source.json": '{"sdk_version":"2.1.3","binary-packages":[{"name":"runtime","version":"1"}]}'},
     {"manifest.txt": "missing.whl\n"},
     {"manifest.txt": ""},
     {"manifest.txt": "../payload.whl\n"},
@@ -107,7 +107,7 @@ def test_encoded_manifest_and_binary_payload(tmp_path, monkeypatch):
     path = bundle(tmp_path / "model-compiler-arm64.zip", overrides={
         "manifest.txt": "package-1%2Bdev-py3-none-any.whl\n",
         "package-1+dev-py3-none-any.whl": b"wheel",
-        "source.json": json.dumps({"aarch64": {"binary-packages": [
+        "source.json": json.dumps({"sdk_version": "2.1.3", "aarch64": {"binary-packages": [
             {"name": "mla/mla-toolchain", "version": "1", "extension": ".zip"}]}}),
         "mla-toolchain-1-aarch64-ubuntu.zip": b"binary",
     })
@@ -160,7 +160,10 @@ def test_menu_cancel_aborts_setup(error):
 
 
 @pytest.mark.parametrize("failure", [None, "copy", "install"])
-def test_staging_cleanup_and_original_preserved(tmp_path, failure):
+def test_staging_cleanup_and_original_preserved(tmp_path, failure, monkeypatch):
+    home = tmp_path / "home with spaces"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     path = bundle(tmp_path / "package with spaces.zip")
     commands, host_staging = [], []
 
@@ -169,6 +172,9 @@ def test_staging_cleanup_and_original_preserved(tmp_path, failure):
         if command[:2] == ["docker", "cp"]:
             staging = Path(command[2])
             host_staging.append(staging)
+            assert staging.parent == home
+            assert not staging.name.startswith(".")
+            assert stat.S_IMODE(staging.stat().st_mode) == 0o755
             assert (staging / "install_modelsdk_wheels.sh").is_file()
             if failure == "copy":
                 raise SystemExit(1)
@@ -258,3 +264,19 @@ def test_configure_preserves_separate_automation_flags(yes, noninteractive):
         configure_container("container", yes_to_all=yes, noninteractive=noninteractive)
     assert install.call_args.kwargs["auto_install"] is yes
     assert install.call_args.kwargs["noninteractive"] is noninteractive
+
+
+@pytest.mark.parametrize("source", [{}, {"sdk_version": None}, {"sdk_version": ""},
+                                  {"sdk_version": "   "}, {"sdk_version": 213}])
+def test_missing_version_cannot_be_auto_selected(tmp_path, monkeypatch, capsys, source):
+    monkeypatch.chdir(tmp_path)
+    path = bundle(tmp_path / "model-compiler-arm64.zip", overrides={"source.json": json.dumps(source)})
+    local = discover_archive("arm64", "2.1.3")
+    assert local is None
+    assert "non-empty sdk_version" in capsys.readouterr().out
+    assert select_source(local, noninteractive=True) == "skip"
+    run = Mock()
+    with pytest.raises(click.ClickException, match="non-empty sdk_version"):
+        with stage_archive(path, "arm64", "2.1.3", "container", "1000:1000", run):
+            pytest.fail("Invalid bundle must not reach installation")
+    run.assert_not_called()

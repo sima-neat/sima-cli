@@ -20,6 +20,7 @@ from contextlib import ExitStack
 from rich.console import Console
 from rich.panel import Panel
 
+from sima_cli.sdk.docker_staging import docker_cp_staging_dir as _docker_cp_staging_dir
 from sima_cli.sdk.model_compiler import discover_archive, normalize_arch, select_source, stage_archive
 
 from sima_cli.sdk.config import (
@@ -1583,24 +1584,6 @@ def _prepare_log_host_dir(path: str) -> None:
         os.chmod(path, 0o777)
     except OSError as e:
         print(f"⚠️ Could not make log folder writable for container services: {path} ({e})")
-
-
-def _docker_cp_staging_dir():
-    """
-    Docker installed through Snap may not see host /tmp paths. Stage files under
-    a non-hidden user home directory so docker cp can access them across Docker
-    variants, including Snap confinement.
-    """
-    home = os.path.expanduser("~")
-    if home and os.path.isdir(home) and os.access(home, os.W_OK):
-        staging = tempfile.TemporaryDirectory(prefix="sima-cli-sdk-", dir=home)
-        try:
-            os.chmod(staging.name, 0o755)
-        except OSError:
-            staging.cleanup()
-            raise
-        return staging
-    return tempfile.TemporaryDirectory(prefix="sima-cli-sdk-")
 
 
 def configure_container_user(

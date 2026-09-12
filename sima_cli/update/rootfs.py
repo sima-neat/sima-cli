@@ -42,7 +42,15 @@ printf 'active os: %s\n' "$(. "$base/etc/os-release"; echo "$PRETTY_NAME")"
 
 # Used only when the platform inspector cannot read the peer slot. Keep existing
 # LVM activation unchanged, and suppress journal replay on the temporary mount.
-FALLBACK_IDENTITY_SCRIPT = ROOT_DEVICE_SCRIPT + r'''
+FALLBACK_IDENTITY_SCRIPT = r'''
+# Hold the updater's exclusive lock through activation, inspection and cleanup.
+exec 9>/run/lock/sima-cli-swupdate.lock
+flock -n 9 || { echo 'Update lock is busy; skipping fallback inspection' >&2; exit 1; }
+if pgrep -x swupdate >/dev/null; then
+    echo 'SWUpdate is running; skipping fallback inspection' >&2
+    exit 1
+fi
+''' + ROOT_DEVICE_SCRIPT + r'''
 export LVM_SUPPRESS_FD_WARNINGS=1
 case "$(blkid -s UUID -o value "$rootdev")" in
 740d31f2-aa09-56e0-9c6e-ee357eb533d0) inactive=B; expected=905013a4-b365-5e4a-8ded-0f223098085a ;;
@@ -61,7 +69,11 @@ activated=0
 mnt=
 cleanup() {
     if [ -n "$mnt" ]; then
-        umount "$mnt" || return 1
+        # A signal can arrive before mount, or after it succeeds but before
+        # shell bookkeeping. Query the actual mount rather than directory state.
+        if findmnt -rn -M "$mnt" >/dev/null; then
+            umount "$mnt" || return 1
+        fi
         rmdir "$mnt"
     fi
     [ "$activated" = 0 ] || lvchange --devices "$pv" -an "$lv"

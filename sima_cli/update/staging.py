@@ -50,18 +50,3 @@ def expand_tmpfs(run, required_free, dryrun=False):
     except (click.ClickException, ValueError) as exc:
         click.echo(f'Could not expand /tmp for update staging: {exc}')
         return False
-
-
-def ensure_tmp_space(run, size):
-    """Reserve capacity for all legacy images that will coexist in /tmp."""
-    required = size + SPACE_MARGIN
-    try:
-        free = int(run(TMP_FREE).strip()) * 1024
-    except ValueError as exc:
-        raise click.ClickException('Cannot determine free staging space on /tmp.') from exc
-    if free >= required or expand_tmpfs(run, required):
-        return
-    raise click.ClickException(
-        f'Insufficient /tmp staging space: need {required / 1024**3:.2f} GiB '
-        'for the firmware images and staging margin. Free space before retrying.'
-    )

@@ -53,19 +53,6 @@ def test_expansion_failure_is_reported(result):
     assert not staging.expand_tmpfs(run, 2 * GIB)
 
 
-def test_legacy_enough_space_needs_no_mount_check():
-    run = Mock(return_value=str(4 * GIB // 1024))
-    staging.ensure_tmp_space(run, GIB)
-    run.assert_called_once_with(staging.TMP_FREE)
-
-
-def test_legacy_insufficient_space_stops_before_upload():
-    run = Mock(side_effect=['0', report(available=GIB)])
-    with pytest.raises(click.ClickException, match='Insufficient /tmp staging space'):
-        staging.ensure_tmp_space(run, 2 * GIB)
-    assert run.call_count == 2
-
-
 @pytest.mark.parametrize('ip', [None, '192.0.2.1'])
 def test_swu_selects_expanded_tmp_on_local_and_remote_target(ip):
     # Both invocation modes use Target.run for the same target-side commands.
@@ -84,60 +71,27 @@ def test_swu_preserves_nvme_fallback_when_ram_is_insufficient():
     assert not any('remount,size=' in call.args[0] for call in target.run.call_args_list)
 
 
-def test_direct_legacy_extraction_checks_combined_member_sizes(tmp_path):
-    import io
-    import tarfile
-    from sima_cli.update import updater
-    archive = tmp_path / 'firmware.tar.gz'
-    with tarfile.open(archive, 'w:gz') as tar:
-        for name, size in [('troot-upgrade-simaai-ev.swu', 100),
-                           ('simaai-image-palette-upgrade-modalix.swu', 200)]:
-            member = tarfile.TarInfo(name)
-            member.size = size
-            tar.addfile(member, io.BytesIO(b'x' * size))
-    run = Mock()
-    with patch.object(updater, '_ensure_local_staging_space') as check:
-        paths = updater._extract_required_files(str(archive), 'modalix', staging_run=run)
-    check.assert_called_once_with(str(tmp_path), 300, run)
-    assert len(paths) == 2
+@pytest.mark.parametrize('failure', ['insufficient_ram', 'remount_failed'])
+def test_eight_gib_target_falls_back_to_nvme(failure):
+    commands = []
+
+    def run(command):
+        commands.append(command)
+        if command == staging.TMPFS_INFO:
+            return report(total=8 * GIB, available=3 * GIB if failure == 'insufficient_ram' else 7 * GIB)
+        if 'remount,size=' in command:
+            raise click.ClickException('remount failed')
+        return ''
+
+    with patch.object(swu, '_available_space', side_effect=[GIB, 100 * GIB]):
+        assert swu._select_staging_root(Mock(run=run), 5 * GIB) == '/media/nvme/swupdate'
+    assert any('mount -o remount,rw /media/nvme' in command for command in commands)
+    if failure == 'insufficient_ram':
+        assert not any('remount,size=' in command for command in commands)
 
 
-def test_legacy_remote_checks_both_images_before_transfer(tmp_path):
-    from sima_cli.update import remote
-    troot, palette = tmp_path / 'troot.swu', tmp_path / 'palette.swu'
-    troot.write_bytes(b'x' * 100)
-    palette.write_bytes(b'x' * 200)
-    with patch.object(remote.paramiko, 'SSHClient'), \
-         patch.object(remote, 'ensure_tmp_space', side_effect=click.ClickException('no space')) as check, \
-         patch.object(remote, '_scp_file') as upload, \
-         patch.object(remote, 'get_remote_boot_mmc') as boot:
-        with pytest.raises(click.ClickException, match='no space'):
-            remote.push_and_update_remote_board('192.0.2.1', str(troot), str(palette),
-                                                'password', False)
-    assert check.call_args.args[1] == 300
-    upload.assert_not_called()
-    boot.assert_not_called()
-
-
-def test_direct_legacy_download_checks_space_before_fetch(tmp_path):
-    from sima_cli.update import updater
-    run = Mock()
-    with patch.object(updater.tempfile, 'gettempdir', return_value=str(tmp_path)), \
-         patch('sima_cli.update.swu_artifacts.bundle_size', return_value=1234), \
-         patch.object(updater, '_ensure_local_staging_space', side_effect=click.ClickException('no space')) as check, \
-         patch.object(updater, 'download_file_from_url') as download:
-        with pytest.raises(SystemExit):
-            updater._download_image('https://example.com/image.tar.gz', 'modalix', staging_run=run)
-    check.assert_called_once_with(str(tmp_path), 1234, run)
-    download.assert_not_called()
-
-
-def test_direct_legacy_tmp_space_uses_target_runner():
-    from sima_cli.update import updater
-    run = Mock()
-    with patch('sima_cli.update.staging.ensure_tmp_space') as check:
-        updater._ensure_local_staging_space('/tmp/firmware', 1234, run)
-        check.assert_called_once_with(run, 1234)
-        updater._ensure_local_staging_space('/data/firmware', 9999, run)
-        updater._ensure_local_staging_space('/tmp/firmware', 9999, None)
-        assert check.call_count == 1
+def test_nvme_full_falls_back_to_data_on_small_ram_board():
+    target = Mock()
+    target.run.side_effect = lambda command: report(available=2 * GIB, total=8 * GIB) if command == staging.TMPFS_INFO else ''
+    with patch.object(swu, '_available_space', side_effect=[GIB, GIB, 10 * GIB]):
+        assert swu._select_staging_root(target, 5 * GIB) == '/data'

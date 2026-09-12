@@ -204,18 +204,15 @@ the margin. Expansion requires enough currently available RAM for the incoming
 data while reserving at least 512 MiB or 10% of total RAM for the system,
 whichever is larger. Raising a tmpfs limit does not add physical RAM. Disk-backed
 `/tmp` filesystems are not resized. If expansion is unavailable, fails, or cannot
-leave enough RAM, the CLI continues to NVMe and then `/data`.
+leave enough RAM, the CLI continues to NVMe and then `/data`. For example, an
+8 GiB board with only 3 GiB available will use NVMe for a 5 GiB bundle rather
+than attempting to grow `/tmp` beyond its available RAM budget.
 
 `--dryrun` reports a feasible expansion without remounting `/tmp`. A real
 expansion lasts for the current mount (normally until reboot); it does not edit
 persistent mount configuration. The CLI rechecks free space after expansion.
 
-Legacy tRoot/system-image updates use the same bounded expansion policy. For
-remote updates, the combined size of the images is checked before upload or
-installation. For direct board updates using `/tmp`, checks happen before the
-firmware archive download and before extraction of the tRoot and system images.
-If capacity is still insufficient, the legacy update stops with a space error.
- NVMe is mounted or remounted
+NVMe is mounted or remounted
 read/write before checking it (except during `--dryrun`). If no location is
 usable, the update stops with a storage error. Local downloads use one staged
 copy. After successful installation, the downloaded bundle and its temporary

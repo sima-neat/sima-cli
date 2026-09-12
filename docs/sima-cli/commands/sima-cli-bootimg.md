@@ -138,3 +138,11 @@ sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot -f --dev
 ```
 
 Remote preparation supports legacy 2.1 images without `/boot/u-boot.bin` by validating their redundant FAT environment configuration and CRCs. Other platforms retain bootloader-based format detection.
+
+Before netboot flashing writes the eMMC image, sima-cli lists all mounted
+filesystems backed by the eMMC, including LVM volumes such as `/data` and bind
+mounts. It unmounts them before releasing LVM mappings. Flashing stops if a mount
+is busy, the running root filesystem or active swap uses eMMC, or a device
+mapping remains active. Close the processes using those filesystems and retry
+from the network recovery environment. Unmounting and image-write errors stop
+flashing instead of reporting success.

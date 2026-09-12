@@ -8,6 +8,7 @@ import uuid
 import zipfile
 
 import click
+from InquirerPy import inquirer
 
 
 def normalize_arch(machine):
@@ -104,11 +105,16 @@ def select_source(local_archive, noninteractive=False, yes=False):
         return "local" if local_archive else ("online" if yes else "skip")
     choices = ["local", "online", "skip"] if local_archive else ["online", "skip"]
     labels = {"local": "Install from local source", "online": "Install from online source", "skip": "Skip"}
-    for number, choice in enumerate(choices, 1):
-        click.echo(f"{number}. {labels[choice]}")
-    number = click.prompt("Select Model Compiler installation", default=str(len(choices)),
-                          type=click.Choice([str(i) for i in range(1, len(choices) + 1)]))
-    return choices[int(number) - 1]
+    try:
+        return inquirer.select(
+            message="Select Model Compiler installation:",
+            choices=[{"name": labels[choice], "value": choice} for choice in choices],
+            default="skip",
+            instruction="(↑/↓ to move, Enter to select)",
+        ).execute()
+    except (KeyboardInterrupt, EOFError):
+        raise click.Abort() from None
+
 
 
 @contextmanager

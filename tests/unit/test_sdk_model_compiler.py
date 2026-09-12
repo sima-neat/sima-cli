@@ -6,7 +6,9 @@ from unittest.mock import Mock, patch
 import zipfile
 
 import click
-from click.testing import CliRunner
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 import pytest
 
 from sima_cli.sdk.model_compiler import (
@@ -115,29 +117,46 @@ def test_encoded_manifest_and_binary_payload(tmp_path, monkeypatch):
 @pytest.mark.parametrize("local", [False, True])
 @pytest.mark.parametrize("noninteractive,yes", [(True, False), (True, True), (False, True)])
 def test_unattended_matrix(local, noninteractive, yes):
-    with patch("sima_cli.sdk.model_compiler.click.prompt") as prompt:
+    with patch("sima_cli.sdk.model_compiler.inquirer.select") as prompt:
         result = select_source(Path("/tmp/local.zip") if local else None, noninteractive, yes)
     assert result == ("local" if local else ("online" if yes else "skip"))
     prompt.assert_not_called()
 
 
-@pytest.mark.parametrize("local,number,expected", [
-    (True, "1", "local"), (True, "2", "online"), (True, "3", "skip"),
-    (False, "1", "online"), (False, "2", "skip"), (True, "", "skip"),
-    (False, "", "skip"),
+@pytest.mark.parametrize("local,keys,expected", [
+    (True, "\x1b[A\x1b[A\r", "local"), (True, "\x1b[A\r", "online"),
+    (True, "\r", "skip"), (False, "\x1b[A\r", "online"), (False, "\r", "skip"),
 ])
-def test_menus(local, number, expected):
-    @click.command()
-    def command():
-        click.echo("RESULT=" + select_source(Path("/path with spaces/package.zip") if local else None))
-    result = CliRunner().invoke(command, input=number + "\n")
-    assert result.exit_code == 0, result.output
-    assert f"RESULT={expected}" in result.output
+def test_menu_keyboard_navigation(local, keys, expected, capsys):
+    with create_pipe_input() as pipe:
+        with create_app_session(input=pipe, output=DummyOutput()):
+            pipe.send_text(keys)
+            result = select_source(Path("/path with spaces/package.zip") if local else None)
+    assert result == expected
     if local:
-        assert "/path with spaces/package.zip" in result.output
-        assert "1. Install from local source\n2. Install from online source\n3. Skip" in result.output
-    else:
-        assert "1. Install from online source\n2. Skip" in result.output
+        assert "/path with spaces/package.zip" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("local", [True, False])
+def test_menu_choices_and_default(local):
+    with patch("sima_cli.sdk.model_compiler.inquirer.select") as menu:
+        select_source(Path("/tmp/package.zip") if local else None)
+    choices = menu.call_args.kwargs["choices"]
+    expected = [{"name": "Install from online source", "value": "online"},
+                {"name": "Skip", "value": "skip"}]
+    if local:
+        expected.insert(0, {"name": "Install from local source", "value": "local"})
+    assert choices == expected
+    assert menu.call_args.kwargs["default"] == "skip"
+    menu.return_value.execute.assert_called_once_with()
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, EOFError])
+def test_menu_cancel_aborts_setup(error):
+    with patch("sima_cli.sdk.model_compiler.inquirer.select") as menu:
+        menu.return_value.execute.side_effect = error
+        with pytest.raises(click.Abort):
+            select_source(None)
 
 
 @pytest.mark.parametrize("failure", [None, "copy", "install"])
@@ -180,7 +199,7 @@ def test_install_routing_uses_container_arch(tmp_path, monkeypatch, local, yes, 
              Mock(returncode=0, stdout="SDK Version = 2.1.3_Palette_SDK_neat_main_123\n"),
              Mock(returncode=0, stdout="aarch64\n")]), \
          patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=False), \
-         patch("sima_cli.sdk.model_compiler.click.prompt") as prompt, \
+         patch("sima_cli.sdk.model_compiler.inquirer.select") as prompt, \
          patch("sima_cli.sdk.utils.run_command") as run:
         ensure_model_sdk_extension_installed("container", "developer", auto_install=yes,
                                              noninteractive=noninteractive, uid=123, gid=456)

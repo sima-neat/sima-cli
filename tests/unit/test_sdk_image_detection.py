@@ -3363,7 +3363,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_model_sdk_extension_skips_non_neat_elxr_image(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="artifacts.eng.sima.ai/elxr:2.1.0"), \
-             patch("sima_cli.sdk.model_compiler.click.prompt") as prompt, \
+             patch("sima_cli.sdk.model_compiler.inquirer.select") as prompt, \
              patch("sima_cli.sdk.utils.subprocess.run") as run:
             ensure_model_sdk_extension_installed("container", "docker")
 
@@ -3376,7 +3376,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
              patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
-             patch("sima_cli.sdk.model_compiler.click.prompt") as prompt, \
+             patch("sima_cli.sdk.model_compiler.inquirer.select") as prompt, \
              patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="aarch64\n")]) as run, \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
@@ -3391,7 +3391,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
              patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
-             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="2"), \
+             patch("sima_cli.sdk.model_compiler.inquirer.select", return_value=unittest.mock.Mock(execute=unittest.mock.Mock(return_value="skip"))), \
              patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="x86_64\n")]) as run, \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
@@ -3404,7 +3404,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
-             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="1"), \
+             patch("sima_cli.sdk.model_compiler.inquirer.select", return_value=unittest.mock.Mock(execute=unittest.mock.Mock(return_value="online"))), \
              patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
              patch("sima_cli.sdk.utils.sys.stdout.isatty", return_value=True), \
              patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="x86_64\n")]) as run, \
@@ -3463,7 +3463,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
              patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
-             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="1"), \
+             patch("sima_cli.sdk.model_compiler.inquirer.select", return_value=unittest.mock.Mock(execute=unittest.mock.Mock(return_value="online"))), \
              patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="aarch64\n")]), \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
@@ -3496,7 +3496,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
              patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
-             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="1"), \
+             patch("sima_cli.sdk.model_compiler.inquirer.select", return_value=unittest.mock.Mock(execute=unittest.mock.Mock(return_value="online"))), \
              patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="x86_64\n")]), \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
@@ -3516,7 +3516,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.2.0"), \
              patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
-             patch("sima_cli.sdk.model_compiler.click.prompt", return_value="1"), \
+             patch("sima_cli.sdk.model_compiler.inquirer.select", return_value=unittest.mock.Mock(execute=unittest.mock.Mock(return_value="online"))), \
              patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="aarch64\n")]), \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker")
@@ -3535,7 +3535,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest"), \
              patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
-             patch("sima_cli.sdk.model_compiler.click.prompt") as prompt, \
+             patch("sima_cli.sdk.model_compiler.inquirer.select") as prompt, \
              patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="x86_64\n")]), \
              patch("sima_cli.sdk.utils.run_command") as run_command:
             ensure_model_sdk_extension_installed("container", "docker", auto_install=True)

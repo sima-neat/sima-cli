@@ -17,6 +17,7 @@ from sima_cli.update.swu_artifacts import (
     release_tuple, resolve_bundle, bundle_size, is_mirror_source, fallback_for_bundle,
 )
 from sima_cli.update.swu_target import Target
+from sima_cli.update.staging import SPACE_MARGIN, expand_tmpfs
 from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
 from sima_cli.update.swu_certificate import load_certificate, certificate_source
 
@@ -129,7 +130,6 @@ test "$(date +%Y)" -ge 2024 || { echo 'Set the system clock before signed update
 
 STAGING_ROOTS = ('/tmp', '/media/nvme/swupdate', '/data')
 STAGING_PATTERN = r'/(?:tmp|media/nvme/swupdate|data)/sima-cli-update\.[A-Za-z0-9]+'
-SPACE_MARGIN = 64 * 1024 * 1024
 
 
 def _available_space(target, root):
@@ -141,8 +141,10 @@ def _available_space(target, root):
         raise click.ClickException(f'Cannot determine free staging space on {root}.') from exc
 
 
-def _check_space(target, size, root='/data'):
+def _check_space(target, size, root='/data', allow_expand=False, dryrun=False):
     if _available_space(target, root) < size + SPACE_MARGIN:
+        if root == '/tmp' and allow_expand and expand_tmpfs(target.run, size + SPACE_MARGIN, dryrun=dryrun):
+            return
         raise click.ClickException(f'Insufficient {root} space: need {(size + SPACE_MARGIN) / 1024**3:.2f} GiB for the SWU bundle and staging margin.')
 
 
@@ -168,7 +170,7 @@ mkdir -p /media/nvme/swupdate''')
             # A dry run can assess the mounted parent without creating the staging root.
             check_root = '/media/nvme' if dryrun and root == '/media/nvme/swupdate' else root
             target.run('test -w ' + shlex.quote(check_root))
-            _check_space(target, size, check_root)
+            _check_space(target, size, check_root, allow_expand=True, dryrun=dryrun)
             click.echo(f'Staging storage: {root}')
             return root
         except click.ClickException as exc:
@@ -304,7 +306,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                     if fallback is None:
                         raise
                     source = fallback
-                    _check_space(target, source.size, staging_root)
+                    _check_space(target, source.size, staging_root, allow_expand=True)
                     local = download_file_from_url(source, cache, internal=False)
                 if is_mirror_source(source) and getattr(source, 'sha256', None):
                     click.echo('Verifying the daily mirror bundle size and SHA-256...')
@@ -321,7 +323,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             size = os.path.getsize(local)
             if not size:
                 raise click.ClickException('The SWU bundle is empty.')
-            _check_space(target, size if ip or local_source else 0, staging_root)
+            _check_space(target, size if ip or local_source else 0, staging_root, allow_expand=True)
             remote = staging + '/bundle.swu'
             click.echo('Staging and verifying bundle integrity...')
             target.transfer(local, remote, move=not ip and not local_source)

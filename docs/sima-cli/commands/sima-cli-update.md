@@ -195,7 +195,24 @@ sima-cli update --ip 192.168.6.5 --inspect
 ```
 
 Staging checks `/tmp`, `/media/nvme/swupdate`, then `/data`, choosing the first location
-with room for the bundle plus a 64 MiB margin. NVMe is mounted or remounted
+with room for the bundle plus a 64 MiB margin. This applies both to direct updates
+on the board and to `update --ip` from a host; the checks run on the target board.
+
+If `/tmp` is a dedicated tmpfs and is too small, the CLI automatically increases
+its size limit just enough for its existing contents, the incoming bundle, and
+the margin. Expansion requires enough currently available RAM for the incoming
+data while reserving at least 512 MiB or 10% of total RAM for the system,
+whichever is larger. Raising a tmpfs limit does not add physical RAM. Disk-backed
+`/tmp` filesystems are not resized. If expansion is unavailable, fails, or cannot
+leave enough RAM, the CLI continues to NVMe and then `/data`. For example, an
+8 GiB board with only 3 GiB available will use NVMe for a 5 GiB bundle rather
+than attempting to grow `/tmp` beyond its available RAM budget.
+
+`--dryrun` reports a feasible expansion without remounting `/tmp`. A real
+expansion lasts for the current mount (normally until reboot); it does not edit
+persistent mount configuration. The CLI rechecks free space after expansion.
+
+NVMe is mounted or remounted
 read/write before checking it (except during `--dryrun`). If no location is
 usable, the update stops with a storage error. Local downloads use one staged
 copy. After successful installation, the downloaded bundle and its temporary

@@ -599,8 +599,8 @@ def show_mla_memory_usage(ctx):
 # ----------------------
 @main.command(name="bootimg")
 @click.option("-v", "--version", required=True, help="Firmware version to download and write (e.g., 1.6.0)")
-@click.option("-b", "--boardtype", type=click.Choice(["modalix",  "mlsoc"], case_sensitive=False), default="mlsoc", show_default=True, help="Target board type.")
-@click.option("-t", "--fwtype", type=click.Choice(["yocto",  "elxr"], case_sensitive=False), default="yocto", show_default=True, help="Target firmware type.")
+@click.option("-b", "--boardtype", type=click.Choice(["modalix",  "mlsoc"], case_sensitive=False), default="modalix", show_default=True, help="Target board type.")
+@click.option("-t", "--fwtype", type=click.Choice(["yocto",  "elxr"], case_sensitive=False), default="elxr", show_default=True, help="Target firmware type.")
 @click.option("-n", "--netboot", is_flag=True, default=False, show_default=True, help="Prepare image for network boot and launch TFTP server.")
 @click.option("-f", "--force", is_flag=True, help="Allow daily mirror fallback if Artifactory is unavailable (internal Modalix eLxr netboot only).")
 @click.option("--recovery", is_flag=True, help="Write eLxr Modalix recovery media for automatic eMMC recovery.")
@@ -646,23 +646,23 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
         # Write an SD card image for an MLSoC DevKit
 
-        sima-cli bootimg -v 1.6.0 --boardtype mlsoc
+        sima-cli bootimg -v 1.6.0 --boardtype mlsoc --fwtype yocto
 
         # Set up netboot for a Modalix DevKit
 
-        sima-cli bootimg -v 1.6.0 --boardtype modalix --netboot
+        sima-cli bootimg -v 3.0.0 --netboot
 
         # Select a DevKit for confirmed remote U-Boot setup and reboot
 
-        sima-cli bootimg -v 2.1.0 --boardtype modalix --netboot --devkit-ip 192.168.1.20
+        sima-cli bootimg -v 3.0.0 --netboot --devkit-ip 192.168.1.20
 
         # Allow daily mirror fallback for internal eLxr 3.0+ netboot
 
-        sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot -f
+        sima-cli -i bootimg -v 1247 --netboot -f
 
         # Prepare an eLxr netboot image for Modalix
 
-        sima-cli bootimg -v 2.0.0 --boardtype modalix --fwtype elxr --netboot
+        sima-cli bootimg -v 2.0.0 --netboot
 
         # Prepare USB/SD recovery media that automatically recovers eMMC
 

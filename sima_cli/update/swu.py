@@ -17,7 +17,7 @@ from sima_cli.update.swu_artifacts import (
     release_tuple, resolve_bundle, bundle_size, is_mirror_source, fallback_for_bundle,
 )
 from sima_cli.update.swu_target import Target
-from sima_cli.update.staging import SPACE_MARGIN, expand_tmpfs
+from sima_cli.update.staging import SPACE_MARGIN, expand_tmpfs, check_tmpfs_memory
 from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
 from sima_cli.update.swu_certificate import load_certificate, certificate_source
 
@@ -154,6 +154,7 @@ def _check_extraction_space(target, bundle_size, dryrun=False):
     # member into the inactive block device, not a second ext4 file in /tmp.
     try:
         _check_space(target, bundle_size, '/tmp', allow_expand=True, dryrun=dryrun)
+        check_tmpfs_memory(target.run, bundle_size + SPACE_MARGIN)
     except click.ClickException as exc:
         raise click.ClickException(
             f'Insufficient /tmp space for SWUpdate extraction: need '

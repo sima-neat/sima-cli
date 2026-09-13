@@ -208,6 +208,9 @@ bounds its extracted members, including `rootfs.ext4.gz`; the raw image handler
 decompresses that member directly into the inactive slot. When `/tmp` is also
 the bundle's staging location, selection reserves room for both copies.
 
+For a RAM-backed `/tmp`, available RAM is checked even when `df` reports enough
+space: a tmpfs size limit does not guarantee that memory is available.
+
 If a dedicated `/tmp` tmpfs is too small, the CLI can increase its limit. The
 existing memory guard reserves at least 512 MiB or 10% of total RAM for the
 system, whichever is larger. Raising a tmpfs limit does not add physical RAM.

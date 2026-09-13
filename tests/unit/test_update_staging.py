@@ -85,3 +85,27 @@ def test_data_preferred_on_small_ram_board():
     with patch.object(swu, '_available_space', return_value=10 * GIB):
         assert swu._select_staging_root(target, 5 * GIB) == '/data'
     assert not any('mount -o' in call.args[0] for call in target.run.call_args_list)
+
+
+@pytest.mark.parametrize('available,allowed', [(2 * GIB, False), (3 * GIB, True)])
+def test_extraction_checks_ram_when_tmpfs_capacity_is_already_sufficient(available, allowed):
+    target = Mock()
+    target.run.return_value = f'tmpfs\n{available // 1024} {8 * GIB // 1024}'
+    with patch.object(swu, '_available_space', return_value=10 * GIB), \
+            patch.object(swu, 'expand_tmpfs') as expand:
+        if allowed:
+            swu._check_extraction_space(target, 2 * GIB)
+        else:
+            with pytest.raises(click.ClickException, match='Insufficient available RAM'):
+                swu._check_extraction_space(target, 2 * GIB)
+    expand.assert_not_called()
+
+
+def test_disk_backed_tmp_does_not_require_payload_to_fit_in_ram():
+    staging.check_tmpfs_memory(Mock(return_value='ext4\n0 8388608'), 5 * GIB)
+
+
+@pytest.mark.parametrize('report', ['', 'tmpfs\n0 0', 'tmpfs\nunknown 8388608'])
+def test_extraction_refuses_unverifiable_tmpfs_memory(report):
+    with pytest.raises(click.ClickException, match='Cannot verify'):
+        staging.check_tmpfs_memory(Mock(return_value=report), GIB)

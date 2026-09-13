@@ -128,6 +128,8 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
     bundle.write_bytes(b'signed bundle fixture')
     target = MagicMock()
     def run(script, **kwargs):
+        if 'MemAvailable:' in script:
+            return 'tmpfs\n6291456 8388608'
         if 'mktemp' in script:
             return root + '/sima-cli-update.ABC12345'
         if 'df -Pk' in script:
@@ -536,6 +538,7 @@ def test_extraction_space_accounts_for_bundle_already_in_tmp():
 
 def test_extraction_space_can_expand_tmp_with_memory_guard():
     target = MagicMock()
+    target.run.return_value = 'tmpfs\n6291456 8388608'
     with patch.object(swu, '_available_space', return_value=0), \
             patch.object(swu, 'expand_tmpfs', return_value=True) as expand:
         swu._check_extraction_space(target, 1000)

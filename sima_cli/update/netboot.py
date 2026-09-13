@@ -169,7 +169,8 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
         # Match mounts through the entire block-device tree, including LVM.
         from sima_cli.update.emmc import prepare_emmc
         preparation = inspect.getsource(prepare_emmc) + '\nprepare_emmc()\n'
-        run_remote_command(ssh, 'sudo python3 -c ' + shlex.quote(preparation), check=True)
+        run_remote_command(ssh, 'sudo python3 -c ' + shlex.quote(preparation), check=True,
+                           command_label='Preparing eMMC for flashing')
 
         # Step c: Decide flashing method
         wic_path = next((p for p in emmc_image_paths if p.endswith(".wic.gz")), None)

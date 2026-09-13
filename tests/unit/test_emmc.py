@@ -76,7 +76,7 @@ def test_preparation_failure_prevents_dd(capsys):
             patch.object(netboot, 'run_remote_command', side_effect=RuntimeError('busy')) as run:
         netboot.flash_emmc(None, ['/images/test.img.gz'])
     run.assert_called_once()
-    assert run.call_args.kwargs == {'check': True}
+    assert run.call_args.kwargs == {'check': True, 'command_label': 'Preparing eMMC for flashing'}
     assert 'Flash completed' not in capsys.readouterr().out
 
 

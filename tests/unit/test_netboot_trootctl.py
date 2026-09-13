@@ -69,3 +69,27 @@ def test_checked_remote_command_checks_exit_status(exit_code):
     ssh.exec_command.assert_called_once_with(
         "sudo -S sh -c 'cd /tmp && exec simaai-trootctl full-flash'", get_pty=True,
     )
+
+
+@pytest.mark.parametrize('exit_code', [0, 1])
+def test_command_label_hides_script_and_keeps_output(exit_code, capsys):
+    ssh = MagicMock()
+    stdin, stdout, stderr = MagicMock(), MagicMock(), MagicMock()
+    ssh.exec_command.return_value = (stdin, stdout, stderr)
+    stdout.channel.exit_status_ready.return_value = True
+    stdout.channel.recv_exit_status.return_value = exit_code
+    stdout.read.return_value = b'Mounted filesystems: /data\n'
+    stderr.read.return_value = b''
+    command = "sudo python3 -c 'print(\"embedded script\")'"
+    if exit_code:
+        with pytest.raises(RuntimeError) as exc:
+            run_remote_command(ssh, command, check=True, command_label='Preparing eMMC')
+        assert 'embedded script' not in str(exc.value)
+        assert 'Preparing eMMC' in str(exc.value)
+    else:
+        run_remote_command(ssh, command, check=True, command_label='Preparing eMMC')
+    output = capsys.readouterr().out
+    assert 'Preparing eMMC' in output
+    assert 'Mounted filesystems: /data' in output
+    assert 'embedded script' not in output
+    assert 'embedded script' in ssh.exec_command.call_args.args[0]

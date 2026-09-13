@@ -148,7 +148,8 @@ def _scp_file(sftp, local_path: str, remote_path: str):
 
 
 def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
-                       squelcher: Optional[LineSquelcher] = None, check: bool = False):
+                       squelcher: Optional[LineSquelcher] = None, check: bool = False,
+                       command_label: Optional[str] = None):
     """
     Run a remote command over SSH and stream its output live to the console.
     If the command starts with 'sudo', pipe in the password.
@@ -158,10 +159,12 @@ def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
         command (str): The command to run on the remote host.
         password (str): Password to use if the command requires sudo.
         check (bool): Raise on a nonzero or unavailable remote exit status.
+        command_label (str): Display this description instead of the command source.
     """
     squelcher = squelcher or LineSquelcher()  # use defaults unless you pass a custom one
 
-    click.echo(f"🚀 Running on remote: {command}")
+    display_command = command if command_label is None else command_label
+    click.echo(f"🚀 Running on remote: {display_command}")
     needs_sudo = command.strip().startswith("sudo")
     if needs_sudo:
         command = f"sudo -S {command[len('sudo '):]}"
@@ -212,7 +215,7 @@ def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
     if check:
         exit_code = stdout.channel.recv_exit_status()
         if exit_code != 0:
-            raise RuntimeError(f"Remote command failed with exit status {exit_code}: {command}")
+            raise RuntimeError(f"Remote command failed with exit status {exit_code}: {display_command}")
 
 
 def init_ssh_session(ip: str, password: str = DEFAULT_PASSWORD):

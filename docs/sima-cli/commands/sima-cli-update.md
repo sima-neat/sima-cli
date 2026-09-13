@@ -196,7 +196,9 @@ sima-cli update --ip 192.168.6.5 --inspect
 ```
 
 Staging checks `/data`, `/media/nvme/swupdate`, then `/tmp`, choosing the first
-location with room for the bundle plus a 64 MiB margin. This applies both to
+location with room for the bundle plus a 64 MiB margin. If none is usable,
+the error reports the storage checks and asks you to remove unneeded files in
+`/data`, showing the required free space before retrying. This applies both to
 updates on the board and to `update --ip` from a host.
 
 SWUpdate also needs temporary extraction space in `/tmp`. Before installation,

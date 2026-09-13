@@ -375,8 +375,11 @@ def test_staging_storage_order_and_exhaustion(available, expected):
         if expected:
             assert swu._select_staging_root(target, 1000) == expected
         else:
-            with pytest.raises(click.ClickException, match='No staging storage'):
+            with pytest.raises(click.ClickException, match='No staging storage') as error:
                 swu._select_staging_root(target, 1000)
+            assert 'Free up space in /data' in str(error.value)
+            assert 'then retry' in str(error.value)
+            assert 'Storage checks:' in str(error.value)
     checked = [call.args[1] for call in space.call_args_list]
     assert checked == list(swu.STAGING_ROOTS[:len(checked)])
     commands = [call.args[0] for call in target.run.call_args_list]

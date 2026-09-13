@@ -158,8 +158,9 @@ def _check_extraction_space(target, bundle_size, dryrun=False):
         raise click.ClickException(
             f'Insufficient /tmp space for SWUpdate extraction: need '
             f'{(bundle_size + SPACE_MARGIN) / 1024**3:.2f} GiB free in addition to any '
-            'staged bundle. Free temporary files or provide more temporary storage '
-            'before retrying. ' + exc.format_message()
+            'staged bundle. Remove unneeded temporary files or old update bundles from /tmp, '
+            'then retry. Freeing files in /data does not increase a RAM-backed /tmp. '
+            + exc.format_message()
         ) from exc
 
 
@@ -191,7 +192,13 @@ mkdir -p /media/nvme/swupdate''')
             return root
         except click.ClickException as exc:
             failures.append(f'{root}: {exc.format_message()}')
-    raise click.ClickException('No staging storage has enough usable space. ' + ' '.join(failures))
+    raise click.ClickException(
+        'No staging storage has enough usable space for this update.\n'
+        f'Free up space in /data so at least {(size + SPACE_MARGIN) / 1024**3:.2f} GiB is available, '
+        'then retry the update. Remove files you no longer need, such as old downloads '
+        'or retained bundles from failed updates. No files were deleted automatically.\n'
+        'Storage checks:\n' + '\n'.join('- ' + failure for failure in failures)
+    )
 
 
 def _reboot_and_verify(target, before, ip, passwd, expected=None):

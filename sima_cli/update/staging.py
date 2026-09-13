@@ -50,3 +50,27 @@ def expand_tmpfs(run, required_free, dryrun=False):
     except (click.ClickException, ValueError) as exc:
         click.echo(f'Could not expand /tmp for update staging: {exc}')
         return False
+
+
+def check_tmpfs_memory(run, required_free):
+    """Check actual RAM even when a tmpfs size limit already has room."""
+    report = run("set -eu; findmnt -n -T /tmp -o FSTYPE; "
+                 "awk '/^MemAvailable:/ {available=$2} /^MemTotal:/ {total=$2} "
+                 "END {print available+0, total+0}' /proc/meminfo")
+    fields = report.split() if isinstance(report, str) else []
+    if fields and fields[0] != 'tmpfs':
+        return
+    try:
+        if len(fields) != 3:
+            raise ValueError('missing memory information')
+        available, total = [int(value) * 1024 for value in fields[1:]]
+        if available < 0 or total <= 0:
+            raise ValueError('invalid memory information')
+    except ValueError as exc:
+        raise click.ClickException('Cannot verify available RAM for /tmp extraction.') from exc
+    reserve = max(MEMORY_RESERVE, total // 10)
+    if required_free > available - reserve:
+        raise click.ClickException(
+            'Insufficient available RAM for /tmp extraction after reserving memory '
+            'for the system. Stop unneeded applications or free temporary files, then retry.'
+        )

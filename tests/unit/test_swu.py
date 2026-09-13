@@ -128,6 +128,8 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
     bundle.write_bytes(b'signed bundle fixture')
     target = MagicMock()
     def run(script, **kwargs):
+        if 'MemAvailable:' in script:
+            return 'tmpfs\n6291456 8388608'
         if 'mktemp' in script:
             return root + '/sima-cli-update.ABC12345'
         if 'df -Pk' in script:
@@ -364,9 +366,9 @@ def test_supported_legacy_updates_keep_their_dispatch(fwtype, requested):
 
 
 @pytest.mark.parametrize('available,expected', [
-    ({'/tmp': 1000, '/media/nvme/swupdate': 1000, '/data': 1000}, '/tmp'),
-    ({'/tmp': 0, '/media/nvme/swupdate': 1000, '/data': 1000}, '/media/nvme/swupdate'),
-    ({'/tmp': 0, '/media/nvme/swupdate': 0, '/data': 1000}, '/data'),
+    ({'/tmp': 2000, '/media/nvme/swupdate': 1000, '/data': 1000}, '/data'),
+    ({'/tmp': 2000, '/media/nvme/swupdate': 1000, '/data': 0}, '/media/nvme/swupdate'),
+    ({'/tmp': 2000, '/media/nvme/swupdate': 0, '/data': 0}, '/tmp'),
     ({'/tmp': 0, '/media/nvme/swupdate': 0, '/data': 0}, None),
 ])
 def test_staging_storage_order_and_exhaustion(available, expected):
@@ -375,22 +377,25 @@ def test_staging_storage_order_and_exhaustion(available, expected):
         if expected:
             assert swu._select_staging_root(target, 1000) == expected
         else:
-            with pytest.raises(click.ClickException, match='No staging storage'):
+            with pytest.raises(click.ClickException, match='No staging storage') as error:
                 swu._select_staging_root(target, 1000)
+            assert 'Free up space in /data' in str(error.value)
+            assert 'then retry' in str(error.value)
+            assert 'Storage checks:' in str(error.value)
     checked = [call.args[1] for call in space.call_args_list]
     assert checked == list(swu.STAGING_ROOTS[:len(checked)])
     commands = [call.args[0] for call in target.run.call_args_list]
-    assert any('remount,rw' in cmd for cmd in commands) == (expected != '/tmp')
+    assert any('remount,rw' in cmd for cmd in commands) == (expected != '/data')
 
 
-def test_nvme_mount_failure_falls_back_to_data():
+def test_nvme_mount_failure_falls_back_to_tmp():
     target = MagicMock()
     def run(script):
         if 'remount,rw' in script:
             raise click.ClickException('NVMe unavailable')
     target.run.side_effect = run
     with patch.object(swu, '_available_space', side_effect=[0, 1024**3]):
-        assert swu._select_staging_root(target, 1000) == '/data'
+        assert swu._select_staging_root(target, 1000) == '/tmp'
 
 
 def test_staging_dryrun_does_not_mount_nvme():
@@ -519,3 +524,50 @@ def test_force_controls_signed_update_mirror_permission(force):
     with patch('sima_cli.update.remote.get_remote_board_info', return_value=('modalix', '3.0.0', '', False, 'elxr')), patch.object(swu, 'update_system') as install:
         assert swu.handle_update(None, ip='192.0.2.1', internal=True, force=force)
     assert install.call_args.kwargs['allow_external_fallback'] is force
+
+
+def test_extraction_space_accounts_for_bundle_already_in_tmp():
+    # Reproduce the reported board: the SWU fits, but its extracted members do not.
+    target = MagicMock()
+    with patch.object(swu, '_available_space', return_value=1479737344), \
+            patch.object(swu, 'expand_tmpfs', return_value=False) as expand:
+        with pytest.raises(click.ClickException, match='SWUpdate extraction'):
+            swu._check_extraction_space(target, 1576512000)
+    expand.assert_called_once_with(target.run, 1576512000 + swu.SPACE_MARGIN, dryrun=False)
+
+
+def test_extraction_space_can_expand_tmp_with_memory_guard():
+    target = MagicMock()
+    target.run.return_value = 'tmpfs\n6291456 8388608'
+    with patch.object(swu, '_available_space', return_value=0), \
+            patch.object(swu, 'expand_tmpfs', return_value=True) as expand:
+        swu._check_extraction_space(target, 1000)
+    expand.assert_called_once_with(target.run, 1000 + swu.SPACE_MARGIN, dryrun=False)
+
+
+def test_extraction_space_checked_after_transfer_before_install(tmp_path):
+    target = run_install(tmp_path)
+    calls = target.mock_calls
+    transfer = next(i for i, call in enumerate(calls) if call[0] == 'transfer')
+    check = next(i for i, call in enumerate(calls) if i > transfer and call[0] == 'run'
+                 and 'df -Pk /tmp' in call.args[0])
+    install = next(i for i, call in enumerate(calls) if call[0] == 'run' and 'swupdate -v' in call.args[0])
+    assert transfer < check < install
+
+
+def test_tmp_staging_requires_bundle_and_extraction_capacity():
+    target = MagicMock()
+    with patch.object(swu, '_available_space', return_value=1000 + swu.SPACE_MARGIN), \
+            patch.object(swu, 'expand_tmpfs', return_value=False), \
+            patch.object(swu, 'STAGING_ROOTS', ('/tmp',)):
+        with pytest.raises(click.ClickException, match='No staging storage'):
+            swu._select_staging_root(target, 1000)
+
+
+def test_insufficient_extraction_space_prevents_swupdate(tmp_path):
+    with patch.object(swu, '_available_space', side_effect=lambda target, root: 0 if root == '/tmp' else 10**10), \
+            patch.object(swu, 'expand_tmpfs', return_value=False), \
+            patch.object(swu, 'install_script') as install:
+        with pytest.raises(click.ClickException, match='SWUpdate extraction'):
+            run_install(tmp_path)
+    install.assert_not_called()

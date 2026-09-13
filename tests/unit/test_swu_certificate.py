@@ -132,6 +132,8 @@ def test_custom_certificate_reaches_installer_and_is_removed(tmp_path):
     target = MagicMock()
     directory = '/tmp/sima-cli-key.ABC12345'
     def run(script, **kwargs):
+        if 'MemAvailable:' in script:
+            return 'tmpfs\n6291456 8388608'
         if script == 'date -u +%s':
             return '150'
         if 'mktemp -d /tmp/sima-cli-key.' in script:

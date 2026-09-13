@@ -195,19 +195,28 @@ sima-cli update --inspect
 sima-cli update --ip 192.168.6.5 --inspect
 ```
 
-Staging checks `/tmp`, `/media/nvme/swupdate`, then `/data`, choosing the first location
-with room for the bundle plus a 64 MiB margin. This applies both to direct updates
-on the board and to `update --ip` from a host; the checks run on the target board.
+Staging checks `/data`, `/media/nvme/swupdate`, then `/tmp`, choosing the first
+location with room for the bundle plus a 64 MiB margin. If none is usable,
+the error reports the storage checks and asks you to remove unneeded files in
+`/data`, showing the required free space before retrying. This applies both to
+updates on the board and to `update --ip` from a host.
 
-If `/tmp` is a dedicated tmpfs and is too small, the CLI automatically increases
-its size limit just enough for its existing contents, the incoming bundle, and
-the margin. Expansion requires enough currently available RAM for the incoming
-data while reserving at least 512 MiB or 10% of total RAM for the system,
-whichever is larger. Raising a tmpfs limit does not add physical RAM. Disk-backed
-`/tmp` filesystems are not resized. If expansion is unavailable, fails, or cannot
-leave enough RAM, the CLI continues to NVMe and then `/data`. For example, an
-8 GiB board with only 3 GiB available will use NVMe for a 5 GiB bundle rather
-than attempting to grow `/tmp` beyond its available RAM budget.
+SWUpdate also needs temporary extraction space in `/tmp`. Before installation,
+the CLI checks that `/tmp` has free space equal to the SWU archive size plus
+64 MiB, after the bundle has been staged. The uncompressed CPIO archive size
+bounds its extracted members, including `rootfs.ext4.gz`; the raw image handler
+decompresses that member directly into the inactive slot. When `/tmp` is also
+the bundle's staging location, selection reserves room for both copies.
+
+For a RAM-backed `/tmp`, available RAM is checked even when `df` reports enough
+space: a tmpfs size limit does not guarantee that memory is available.
+
+If a dedicated `/tmp` tmpfs is too small, the CLI can increase its limit. The
+existing memory guard reserves at least 512 MiB or 10% of total RAM for the
+system, whichever is larger. Raising a tmpfs limit does not add physical RAM.
+Disk-backed `/tmp` filesystems are not resized. If there is insufficient
+extraction space and safe expansion is unavailable, installation stops before
+SWUpdate starts, even if `/data` or NVMe has enough space for the bundle.
 
 `--dryrun` reports a feasible expansion without remounting `/tmp`. A real
 expansion lasts for the current mount (normally until reboot); it does not edit

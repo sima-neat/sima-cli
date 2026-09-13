@@ -252,7 +252,7 @@ def _artifact_request_error(error, internal):
 
 
 def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
-                  auto_confirm=False, dryrun=False, reboot=False, signing_cert=None):
+                  auto_confirm=False, dryrun=False, reboot=False, signing_cert=None, allow_external_fallback=False):
     target = Target(ip, passwd)
     source = ''
     staging = None
@@ -265,7 +265,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
         key, key_directory = prepare_key(target, dryrun=dryrun, signing_cert=signing_cert, internal=internal)
         before = preflight(target, key)
         phase = "resolving the update bundle"
-        source = resolve_bundle(requested, board, internal)
+        source = resolve_bundle(requested, board, internal, allow_external_fallback=allow_external_fallback)
         if not source:
             raise click.Abort()
         click.echo(f'Full-system bundle: {source}')
@@ -275,7 +275,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             size_hint = (source.size if is_mirror_source(source) and getattr(source, 'size', None)
                          else bundle_size(source, internal))
         except Exception as exc:
-            fallback = fallback_for_bundle(source, board, exc) if internal else None
+            fallback = fallback_for_bundle(source, board, exc) if internal and allow_external_fallback else None
             if fallback is None:
                 raise
             source = fallback
@@ -302,7 +302,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                 try:
                     local = download_file_from_url(source, cache, internal=internal and not is_mirror_source(source))
                 except Exception as exc:
-                    fallback = fallback_for_bundle(source, board, exc) if internal else None
+                    fallback = fallback_for_bundle(source, board, exc) if internal and allow_external_fallback else None
                     if fallback is None:
                         raise
                     source = fallback
@@ -423,12 +423,13 @@ def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_conf
         if reboot or signing_cert is not None:
             raise click.ClickException('--reboot and --signing-cert require the eLxr 3.0+ SWUpdate flow.')
         return False
-    if force or troot_only or flavor == 'full':
-        raise click.ClickException('eLxr 3.0+ supports signed full-system updates only; --force, --troot_only, and legacy --flavor full are not supported.')
+    if troot_only or flavor == 'full':
+        raise click.ClickException('eLxr 3.0+ supports signed full-system updates only; --troot_only and legacy --flavor full are not supported.')
     if requested_release and requested_release < (3, 0, 0):
         raise click.ClickException('A/B SWUpdate requires an eLxr 3.0+ bundle; use recovery for older layouts.')
     if board != 'modalix':
         raise click.ClickException(f'eLxr SWUpdate is not supported for board {board or "unknown"}.')
     update_system(requested, board, ip=ip, passwd=passwd, internal=internal,
-                  auto_confirm=auto_confirm, dryrun=dryrun, reboot=reboot, signing_cert=signing_cert)
+                  auto_confirm=auto_confirm, dryrun=dryrun, reboot=reboot, signing_cert=signing_cert,
+                  allow_external_fallback=force)
     return True

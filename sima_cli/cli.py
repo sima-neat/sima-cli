@@ -334,7 +334,8 @@ def download(ctx, url, dest):
     is_flag=True,
     help=(
         "If the internal mirror is unreachable, fall back to the external pre-release mirror "
-        "without signature verification; without --internal, select that mirror directly (ELXR only)."
+        "(eLxr only). eLxr 3.0+ still verifies signed full-system bundles. "
+        "On eLxr 2.1, this disables repository signature verification and, without --internal, selects the mirror directly."
     )
 )
 @click.option(

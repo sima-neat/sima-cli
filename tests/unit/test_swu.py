@@ -59,7 +59,7 @@ def test_remote_dispatch_uses_running_board_version(version, modern):
         assert install.called is modern
 
 
-@pytest.mark.parametrize('option', ['force', 'troot_only'])
+@pytest.mark.parametrize('option', ['troot_only'])
 def test_partial_or_unsigned_option_rejected(option):
     with patch('sima_cli.update.remote.get_remote_board_info', return_value=('modalix', '3.0.0', '', False, 'elxr')), \
             patch.object(swu, 'update_system') as install:
@@ -513,3 +513,9 @@ def test_missing_artifactory_login_has_actionable_error_before_network(token, op
             else:
                 swu_artifacts.bundle_size('https://example.com/bundle.swu', internal=True)
     session.assert_not_called()
+
+@pytest.mark.parametrize('force', [False, True])
+def test_force_controls_signed_update_mirror_permission(force):
+    with patch('sima_cli.update.remote.get_remote_board_info', return_value=('modalix', '3.0.0', '', False, 'elxr')), patch.object(swu, 'update_system') as install:
+        assert swu.handle_update(None, ip='192.0.2.1', internal=True, force=force)
+    assert install.call_args.kwargs['allow_external_fallback'] is force

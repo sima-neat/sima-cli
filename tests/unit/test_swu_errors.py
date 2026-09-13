@@ -10,8 +10,10 @@ from sima_cli.update import swu, swu_artifacts
 
 
 @click.command()
-def update_command():
-    swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True)
+@click.option('--force', is_flag=True)
+def update_command(force):
+    swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True,
+                      allow_external_fallback=force)
 
 
 @pytest.mark.parametrize('stage', ['size', 'download'])
@@ -61,7 +63,8 @@ def test_http_error_reports_cause_and_never_installs(stage, status, expected):
 
 
 @pytest.mark.parametrize('token', [None, '', '  '])
-def test_missing_login_reports_failed_mirror_fallback(token):
+@pytest.mark.parametrize('force', [False, True])
+def test_missing_login_respects_mirror_fallback_permission(token, force):
     target = MagicMock()
     with patch.object(swu, 'Target', return_value=target), \
             patch.object(swu, 'prepare_key', return_value=('/tmp/test-signing-cert.pem', None)), \
@@ -71,16 +74,21 @@ def test_missing_login_reports_failed_mirror_fallback(token):
         session.return_value.__enter__.return_value.get.return_value.json.return_value = {
             'schema_version': 1, 'platform': 'modalix', 'builds': [],
         }
-        result = CliRunner().invoke(update_command)
+        result = CliRunner().invoke(update_command, ['--force'] if force else [])
     assert result.exit_code == 1
     assert 'Artifactory login is required on this machine' in result.output
     assert 'sima-cli -i login' in result.output
     assert 'No firmware was installed.' in result.output
     assert 'State is unknown' not in result.output
-    assert 'Using the public daily platform mirror' in result.output
-    assert 'No matching palette SWU' in result.output
+    if force:
+        assert 'Using the public daily platform mirror' in result.output
+        assert 'No matching palette SWU' in result.output
+        session.return_value.__enter__.return_value.get.assert_called_once()
+    else:
+        assert 'Retry with --force' in result.output
+        assert 'Using the public daily platform mirror' not in result.output
+        session.assert_not_called()
     session.return_value.post.assert_not_called()
-    session.return_value.__enter__.return_value.get.assert_called_once()
     target.transfer.assert_not_called()
 
 

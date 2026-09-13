@@ -2,6 +2,10 @@
 
 Prepare a bootable image for the SiMa DevKit.
 
+The default target is **Modalix with eLxr**. For example,
+`sima-cli -i bootimg -v 3.0.0_daily --netboot` needs no board or firmware options.
+Use `--boardtype mlsoc --fwtype yocto` to select the previous defaults.
+
 Parent command: [`sima-cli`](./sima-cli.md)
 
 ## Usage
@@ -15,8 +19,8 @@ sima-cli bootimg [OPTIONS]
 | Name | Description |
 | --- | --- |
 | `-v, --version` | Firmware version to download and write (e.g., 1.6.0) (required) |
-| `-b, --boardtype` | Target board type. (default: mlsoc) |
-| `-t, --fwtype` | Target firmware type. (default: yocto) |
+| `-b, --boardtype` | Target board type. (default: modalix) |
+| `-t, --fwtype` | Target firmware type. (default: elxr) |
 | `-n, --netboot` | Prepare image for network boot and launch TFTP server. |
 | `-f, --force` | Allow daily mirror fallback if Artifactory is unavailable (internal Modalix eLxr netboot only). |
 | `--recovery` | Write eLxr Modalix recovery media for automatic eMMC recovery. |
@@ -69,25 +73,25 @@ Usage: sima-cli bootimg [OPTIONS]
 
       # Write an SD card image for an MLSoC DevKit
 
-      sima-cli bootimg -v 1.6.0 --boardtype mlsoc
+      sima-cli bootimg -v 1.6.0 --boardtype mlsoc --fwtype yocto
 
       # Set up netboot for a Modalix DevKit
 
-      sima-cli bootimg -v 1.6.0 --boardtype modalix --netboot
+      sima-cli bootimg -v 3.0.0 --netboot
 
       # Select a DevKit for confirmed remote U-Boot setup and reboot
 
-      sima-cli bootimg -v 2.1.0 --boardtype modalix --netboot --devkit-ip
+      sima-cli bootimg -v 3.0.0 --netboot --devkit-ip
       192.168.1.20
 
       # Allow daily mirror fallback for internal eLxr 3.0+ netboot
 
-      sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot
+      sima-cli -i bootimg -v 1247 --netboot
       -f
 
       # Prepare an eLxr netboot image for Modalix
 
-      sima-cli bootimg -v 2.0.0 --boardtype modalix --fwtype elxr --netboot
+      sima-cli bootimg -v 2.0.0 --netboot
 
       # Prepare USB/SD recovery media that automatically recovers eMMC
 
@@ -97,8 +101,8 @@ Options:
   -v, --version TEXT              Firmware version to download and write
                                   (e.g., 1.6.0)  [required]
   -b, --boardtype [modalix|mlsoc]
-                                  Target board type.  [default: mlsoc]
-  -t, --fwtype [yocto|elxr]       Target firmware type.  [default: yocto]
+                                  Target board type.  [default: modalix]
+  -t, --fwtype [yocto|elxr]       Target firmware type.  [default: elxr]
   -n, --netboot                   Prepare image for network boot and launch
                                   TFTP server.
   -f, --force                     Allow daily mirror fallback if Artifactory
@@ -129,12 +133,12 @@ Use `--netboot --devkit 192.168.2.2` to select a DevKit, or omit `--devkit` to u
 
 The host route to the selected DevKit determines the TFTP server IP, including on hosts with multiple interfaces. The DevKit's active address, subnet, and return-route gateway are reused for static netboot; DHCP is not required.
 
-After downloading the image and starting TFTP, a yellow panel shows the device, network settings, persistent U-Boot changes, and reboot consequences. Confirmation defaults to No. Accepting temporarily remounts `/boot` writable when needed, restores its original mount mode on exit, and saves the previous environment under `/boot/sima-cli-netboot-backup.*`, sets `boot_targets=net` and the static network boot commands, verifies the settings, and schedules a reboot. Declining leaves U-Boot unchanged. Failures during environment preparation restore the saved environment and prevent reboot.
+After downloading the image and starting TFTP, a yellow panel shows the device, network settings, persistent U-Boot changes, and reboot consequences. Confirmation defaults to No. Accepting temporarily remounts `/boot` writable when needed, restores its original mount mode on exit, and saves the previous environment under `/boot/sima-cli-netboot-backup.*`, sets `boot_targets=net` and the static network boot commands, verifies the settings, and schedules a reboot. If the initial SSH connection to the selected DevKit fails, the CLI reports the DevKit address and connection error, skips remote setup, and keeps TFTP available for manual network boot. Declining leaves U-Boot unchanged and does not reboot the selected DevKit. The TFTP server and client monitoring stay active at the `netboot>` prompt so another device can network boot from this host. Automatic flashing is disabled for this session when setup is declined; wait for `✅ SSH is available on <IP>` and type `f` to flash manually. Failures during environment preparation restore the saved environment and prevent reboot.
 
 Keep the host and TFTP server running. The settings persist until changed: failed network boots retry and reboot, so recovery may require serial access. The backup directory includes both original environment files and a readable `environment.txt`. By default, wait for `✅ SSH is available on <IP>`, then type `f` to flash the device. With `-a/--autoflash`, flashing starts automatically once the selected DevKit is SSH-ready and confirmed to be running the network boot image. The confirmation panel explains that flashing will start automatically. Automatic flashing runs once and does not select another discovered device.
 
 ```bash
-sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot -f --devkit 192.168.2.2
+sima-cli -i bootimg -v 1247 --netboot -f --devkit 192.168.2.2
 ```
 
 Remote preparation supports legacy 2.1 images without `/boot/u-boot.bin` by validating their redundant FAT environment configuration and CRCs. Other platforms retain bootloader-based format detection.

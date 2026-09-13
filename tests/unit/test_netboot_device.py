@@ -47,8 +47,7 @@ def test_decline_never_writes_or_reboots():
     with patch.object(device, 'init_ssh_session') as connect, \
             patch.object(device, '_checked') as command, \
             patch.object(click, 'confirm', return_value=False):
-        with pytest.raises(click.Abort):
-            device.configure_and_reboot('192.0.2.1', '192.0.2.10')
+        assert device.configure_and_reboot('192.0.2.1', '192.0.2.10') is False
     assert command.call_count == 1
     assert not command.call_args.args[1].startswith('sudo')
     connect.return_value.close.assert_called_once()
@@ -233,3 +232,61 @@ def test_netboot_sudo_does_not_allocate_echoing_pty():
     ssh.exec_command.return_value = (stdin, stdout, stderr)
     assert device._checked(ssh, 'sudo true') == 'prepared'
     ssh.exec_command.assert_called_once_with('sudo -S true', get_pty=False)
+
+
+@pytest.mark.parametrize('confirmed', [False, True, None])
+@pytest.mark.parametrize('autoflash', [False, True])
+def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
+        tmp_path, confirmed, autoflash, capsys):
+    boot = tmp_path / 'netboot.scr.uimg'
+    boot.write_bytes(b'boot')
+    server = MagicMock()
+    server.is_running.wait.return_value = True
+    manager = MagicMock()
+
+    def interact(client_manager):
+        assert client_manager is manager
+        server.stop.assert_not_called()
+        manager.shutdown.assert_not_called()
+
+    with patch.object(netboot, 'get_environment_type', return_value=('host', 'mac')), \
+            patch.object(netboot, 'download_image', return_value=[str(boot)]), \
+            patch.object(netboot, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
+            patch.object(netboot, 'InteractiveTftpServer', return_value=server), \
+            patch.object(netboot, 'ClientManager', return_value=manager), \
+            patch.object(netboot.threading, 'Thread'), \
+            patch.object(netboot, 'run_cli', side_effect=interact) as cli, \
+            patch.object(netboot, 'auto_flash') as flash, \
+            patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
+            patch.object(device, 'server_address', return_value='192.0.2.10'), \
+            patch.object(device, 'init_ssh_session', side_effect=TimeoutError('timed out') if confirmed is None else None) as connect, \
+            patch.object(device, '_checked', return_value='') as command, \
+            patch.object(click, 'confirm', return_value=confirmed):
+        netboot.setup_netboot('3.0', 'modalix', autoflash=autoflash)
+    cli.assert_called_once_with(manager)
+    if confirmed is not None:
+        connect.return_value.close.assert_called_once()
+    if confirmed:
+        assert any('systemd-run' in call.args[1] for call in command.call_args_list)
+    else:
+        assert command.call_count == (0 if confirmed is None else 1)  # No writes or reboot.
+        assert 'waiting for a device to connect' in capsys.readouterr().out
+    if confirmed and autoflash:
+        flash.assert_called_once_with(manager, '192.0.2.1')
+    else:
+        flash.assert_not_called()
+    server.stop.assert_called_once_with(now=True)
+    manager.shutdown.assert_called_once()
+
+
+@pytest.mark.parametrize('error', [TimeoutError('timed out'), device.paramiko.SSHException('SSH negotiation failed')])
+def test_initial_ssh_failure_skips_remote_changes(error, capsys):
+    with patch.object(device, 'init_ssh_session', side_effect=error), \
+            patch.object(device, '_checked') as command, \
+            patch.object(click, 'confirm') as confirm:
+        assert device.configure_and_reboot('192.0.2.1', '192.0.2.10') is False
+    command.assert_not_called()
+    confirm.assert_not_called()
+    output = capsys.readouterr().out
+    assert '192.0.2.1 over SSH' in output
+    assert 'no boot settings were changed' in output

@@ -6,6 +6,7 @@ import shlex
 import socket
 
 import click
+import paramiko
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -57,8 +58,14 @@ def network_settings(ssh, devkit, server_ip):
 
 
 def configure_and_reboot(devkit, server_ip, autoflash=False):
-    """Require confirmation before changing persistent environment or rebooting."""
-    ssh = init_ssh_session(devkit)
+    """Return whether the user confirmed and the DevKit reboot was scheduled."""
+    try:
+        ssh = init_ssh_session(devkit)
+    except (OSError, paramiko.SSHException) as exc:
+        click.secho(
+            f'Could not connect to DevKit {devkit} over SSH: {exc}. '
+            'Remote setup was skipped; no boot settings were changed.', fg='yellow')
+        return False
     try:
         _checked(ssh, "set -eu; "
                  "for tool in fw_setenv fw_printenv python3; do "
@@ -84,7 +91,7 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
         Console().print(Panel(message, title='Reboot DevKit into network boot', border_style='yellow'))
         if not click.confirm('Set up network boot, reboot, and automatically flash this DevKit?' if autoflash
                              else 'Set up network boot and reboot this DevKit?', default=False):
-            raise click.Abort()
+            return False
         # Match Kerrigan's redundant environment layout. Use a temporary config,
         # preserving any system fw_env.config, and back up before the first write.
         script = _uboot_script(devkit, server_ip, network)
@@ -99,6 +106,7 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
              else f'Once you see "✅ SSH is available on {devkit}", type "f" to flash the device.'),
             fg='green',
         )
+        return True
     finally:
         ssh.close()
 

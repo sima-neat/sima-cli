@@ -99,11 +99,11 @@ def test_recovery_rejects_incompatible_options(extra):
     netboot.assert_not_called()
 
 
-def test_regular_bootimg_keeps_defaults():
+def test_regular_bootimg_defaults_to_modalix_elxr():
     with patch('sima_cli.update.bootimg.write_image') as write:
         result = CliRunner().invoke(bootimg_cmd, ['-v', '2.1.2'], obj={})
     assert result.exit_code == 0
-    write.assert_called_once_with('2.1.2', 'davinci', 'yocto', False, flavor='headless', recovery=False)
+    write.assert_called_once_with('2.1.2', 'modalix', 'elxr', False, flavor='headless', recovery=False)
 
 
 def test_local_recovery_image_is_written_without_download(tmp_path):

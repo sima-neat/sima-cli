@@ -634,15 +634,12 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
     server = None
     client_manager = None
     server_thread = None
+    tftp_ready = False
     try:
         click.echo(f"🚀 Starting TFTP server in: {extract_dir}")
         ip_candidates = get_local_ip_candidates()
         if server_ip and not any(ip == server_ip for _, ip in ip_candidates):
             ip_candidates.append(('route to selected DevKit', server_ip))
-
-        click.echo("🌐 TFTP server is listening on these interfaces (UDP port 69):")
-        for iface, ip in ip_candidates:
-            click.echo(f"   🔹 {iface}: {ip}")
 
         client_manager = ClientManager()
 
@@ -665,9 +662,23 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
             if not server_thread.is_alive() or time.monotonic() >= deadline:
                 raise RuntimeError('TFTP server did not become ready; the DevKit was not changed.')
 
+        tftp_ready = True
+        click.echo("🌐 TFTP server is listening on these interfaces (UDP port 69):")
+        for iface, ip in ip_candidates:
+            click.echo(f"   🔹 {iface}: {ip}")
+
         if selected_devkit:
-            configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
-            if autoflash:
+            reboot_scheduled = configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
+            if not reboot_scheduled:
+                click.echo(
+                    f'Skipped network boot setup and reboot for {selected_devkit}. '
+                    'The TFTP server is still running; waiting for a device to connect. '
+                    'Boot another device from the network using a reachable host IP listed above. '
+                    'Once "✅ SSH is available on <IP>" appears, type "f" to flash the device.'
+                )
+                if autoflash:
+                    click.echo('Automatic flashing is disabled because device setup was not confirmed.')
+            elif autoflash:
                 auto_flash(client_manager, selected_devkit)
         else:
             message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'
@@ -679,10 +690,12 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
             console.print(Panel(message, title='Manual netboot setup', border_style='yellow'))
         run_cli(client_manager)
 
-    except PermissionError:
-        raise RuntimeError("❌ Permission denied. You must run this command with sudo to bind to port 69.")
     except OSError as e:
-        raise RuntimeError(f"❌ Failed to start TFTP server: {e}")
+        if tftp_ready:
+            raise RuntimeError(f"Netboot device setup or session failed after TFTP started: {e}") from e
+        if isinstance(e, PermissionError):
+            raise RuntimeError("❌ Permission denied. You must run this command with sudo to bind to port 69.") from e
+        raise RuntimeError(f"❌ Failed to start TFTP server: {e}") from e
 
     finally:
         if server is not None:

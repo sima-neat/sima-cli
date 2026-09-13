@@ -14,44 +14,49 @@ from sima_cli.update.cleanlog import LineSquelcher
 DEFAULT_USER = "sima"
 DEFAULT_PASSWORD = "edgeai"
 
-def wait_for_ssh(ip: str, timeout: int = 120):
-    """
-    Show an animated spinner while waiting for SSH on the target IP to become available.
+def wait_for_ssh(ip: str, timeout: int = 120,
+                 cancel_event: Optional[threading.Event] = None) -> bool:
+    """Wait for SSH, returning False on timeout or cancellation.
 
-    Args:
-        ip (str): IP address of the target board.
-        timeout (int): Maximum seconds to wait.
+    Cancellation interrupts retry delays; an active connection attempt takes
+    at most three seconds. Always stop the spinner, including on Ctrl+C.
     """
     spinner = itertools.cycle(['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'])
     stop_event = threading.Event()
+    cancel_event = cancel_event if cancel_event is not None else threading.Event()
 
     def animate():
-        while not stop_event.is_set():
+        while not stop_event.is_set() and not cancel_event.is_set():
             sys.stdout.write(f"\r🔁 Waiting for board to reboot {next(spinner)} ")
             sys.stdout.flush()
-            time.sleep(0.1)
+            stop_event.wait(0.1)
 
     thread = threading.Thread(target=animate)
     thread.start()
-
-    start_time = time.time()
+    deadline = time.monotonic() + timeout
     success = False
-    while time.time() - start_time < timeout:
-        try:
-            sock = socket.create_connection((ip, 22), timeout=3)
-            sock.close()
-            success = True
-            break
-        except (socket.error, paramiko.ssh_exception.SSHException):
-            time.sleep(2)  # wait and retry
+    try:
+        while not cancel_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                with socket.create_connection((ip, 22), timeout=min(3, remaining)):
+                    success = not cancel_event.is_set()
+                break
+            except (socket.error, paramiko.ssh_exception.SSHException):
+                cancel_event.wait(max(0, min(2, deadline - time.monotonic())))
+    finally:
+        stop_event.set()
+        thread.join()
+        click.echo("\r" + " " * 60 + "\r", nl=False)
 
-    stop_event.set()
-    thread.join()
-
-    if not success:
-        print(f"❌ Timeout: SSH did not become available on {ip} within {timeout} seconds.")
+    if cancel_event.is_set():
+        return False
+    if success:
+        click.echo("✅ Board is online!\n")
     else:
-        print("\r✅ Board is online!           \n")
+        click.echo(f"❌ Timeout: SSH did not become available on {ip} within {timeout} seconds.")
     return success
 
 

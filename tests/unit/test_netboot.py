@@ -51,7 +51,8 @@ class NetbootFlashTests(unittest.TestCase):
         mock_warning.assert_called_once_with()
         remote_commands = [args[0][1] for args in mock_run_remote.call_args_list]
         self.assertEqual(remote_commands[0], "sudo troot_upgrade /tmp/troot_blob.be")
-        self.assertIn("[ -e /dev/mmcblk0 ]", remote_commands[1])
+        self.assertIn("prepare_emmc()", remote_commands[1])
+        self.assertTrue(all(call.kwargs.get("check") for call in mock_run_remote.call_args_list))
         self.assertIn("sudo bmaptool copy /tmp/modalix.wic.gz /dev/mmcblk0", remote_commands)
 
     @patch("sima_cli.update.netboot.init_ssh_session")

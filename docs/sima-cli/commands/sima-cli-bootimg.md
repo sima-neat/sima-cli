@@ -153,3 +153,13 @@ Once you have identified the correct board and its current IP, type `f <ip>`
 (for example, `f 192.168.2.20`) to flash it. Discovery does not select a flash
 target automatically. A timed-out SSH check also prints these recovery steps
 and leaves the board unconnected.
+
+### Preparing eMMC for flashing
+
+Before netboot flashing writes the eMMC image, sima-cli lists all mounted
+filesystems backed by the eMMC, including LVM volumes such as `/data` and bind
+mounts. It unmounts them before releasing LVM mappings. Flashing stops if a mount
+is busy, the running root filesystem or active swap uses eMMC, or a device
+mapping remains active. Close the processes using those filesystems and retry
+from the network recovery environment. Unmounting and image-write errors stop
+flashing instead of reporting success.

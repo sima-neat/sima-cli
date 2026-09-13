@@ -3,6 +3,7 @@ from sima_cli.utils.net import get_local_ip_candidates
 from sima_cli.update.remote import wait_for_ssh, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session, get_remote_board_info
 from sima_cli.utils.env import get_environment_type
 import ipaddress
+import inspect
 import os
 import platform
 import re
@@ -165,16 +166,11 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
             _print_troot_programming_warning()
             run_remote_command(ssh, troot_command, check=True)
 
-        # Step a: Check if eMMC exists
-        check_cmd = "[ -e /dev/mmcblk0 ] || (echo '❌ /dev/mmcblk0 not found'; exit 1)"
-        run_remote_command(ssh, check_cmd)
-
-        # Step b: umount eMMC
-        pre_unmount_cmd = (
-            "sudo mount | grep mmcblk0 | awk '{print $3}' | while read mnt; do "
-            "sudo umount \"$mnt\"; done"
-        )
-        run_remote_command(ssh, pre_unmount_cmd)
+        # Match mounts through the entire block-device tree, including LVM.
+        from sima_cli.update.emmc import prepare_emmc
+        preparation = inspect.getsource(prepare_emmc) + '\nprepare_emmc()\n'
+        run_remote_command(ssh, 'sudo python3 -c ' + shlex.quote(preparation), check=True,
+                           command_label='Preparing eMMC for flashing')
 
         # Step c: Decide flashing method
         wic_path = next((p for p in emmc_image_paths if p.endswith(".wic.gz")), None)
@@ -182,19 +178,21 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
 
         if wic_path:
             filename = os.path.basename(wic_path)
-            remote_path = f"/tmp/{filename}"
+            remote_path = shlex.quote(f"/tmp/{filename}")
             flash_cmd = f"sudo bmaptool copy {remote_path} /dev/mmcblk0"
-            run_remote_command(ssh, flash_cmd)
+            run_remote_command(ssh, flash_cmd, check=True)
 
             # Step d: Fix GPT for Yocto
             fix_cmd = 'sudo printf "fix\n" | sudo parted ---pretend-input-tty /dev/mmcblk0 print'
-            run_remote_command(ssh, fix_cmd)
+            run_remote_command(ssh, fix_cmd, check=True)
 
         elif img_path:
             filename = os.path.basename(img_path)
-            remote_path = f"/tmp/{filename}"
-            flash_cmd = f"sudo gzip -dc {remote_path} | sudo dd of=/dev/mmcblk0 bs=16M status=progress"
-            run_remote_command(ssh, flash_cmd)
+            remote_path = shlex.quote(f"/tmp/{filename}")
+            flash_cmd = "sudo bash -o pipefail -c " + shlex.quote(
+                f"gzip -dc {remote_path} | dd of=/dev/mmcblk0 bs=16M conv=fsync status=progress"
+            )
+            run_remote_command(ssh, flash_cmd, check=True)
         else:
             click.echo("❌ No .wic.gz or .img image found in emmc_image_paths.")
             return

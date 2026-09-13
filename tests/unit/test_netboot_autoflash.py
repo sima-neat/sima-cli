@@ -46,8 +46,7 @@ def test_autoflash_confirmation_explains_automatic_flash(capsys):
             patch.object(netboot_device,'_checked'), \
             patch.object(netboot_device,'network_settings',return_value={'interface':'end0','netmask':'255.255.255.0','gateway':'0.0.0.0'}), \
             patch.object(click,'confirm',return_value=False) as confirm:
-        with pytest.raises(click.Abort):
-            netboot_device.configure_and_reboot('192.0.2.2','192.0.2.1',autoflash=True)
+        assert netboot_device.configure_and_reboot('192.0.2.2','192.0.2.1',autoflash=True) is False
     output = capsys.readouterr().out
     assert 'Open SSH is available after network boot' in output
     assert 'overwrites its internal storage' not in output

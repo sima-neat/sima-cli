@@ -57,7 +57,7 @@ def network_settings(ssh, devkit, server_ip):
 
 
 def configure_and_reboot(devkit, server_ip, autoflash=False):
-    """Require confirmation before changing persistent environment or rebooting."""
+    """Return whether the user confirmed and the DevKit reboot was scheduled."""
     ssh = init_ssh_session(devkit)
     try:
         _checked(ssh, "set -eu; "
@@ -84,7 +84,7 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
         Console().print(Panel(message, title='Reboot DevKit into network boot', border_style='yellow'))
         if not click.confirm('Set up network boot, reboot, and automatically flash this DevKit?' if autoflash
                              else 'Set up network boot and reboot this DevKit?', default=False):
-            raise click.Abort()
+            return False
         # Match Kerrigan's redundant environment layout. Use a temporary config,
         # preserving any system fw_env.config, and back up before the first write.
         script = _uboot_script(devkit, server_ip, network)
@@ -99,6 +99,7 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
              else f'Once you see "✅ SSH is available on {devkit}", type "f" to flash the device.'),
             fg='green',
         )
+        return True
     finally:
         ssh.close()
 

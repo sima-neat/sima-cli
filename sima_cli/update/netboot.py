@@ -666,8 +666,17 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
                 raise RuntimeError('TFTP server did not become ready; the DevKit was not changed.')
 
         if selected_devkit:
-            configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
-            if autoflash:
+            reboot_scheduled = configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
+            if not reboot_scheduled:
+                click.echo(
+                    f'Skipped network boot setup and reboot for {selected_devkit}. '
+                    'The TFTP server is still running; waiting for a device to connect. '
+                    'Boot another device from the network using a reachable host IP listed above. '
+                    'Once "✅ SSH is available on <IP>" appears, type "f" to flash the device.'
+                )
+                if autoflash:
+                    click.echo('Automatic flashing is disabled because device setup was declined.')
+            elif autoflash:
                 auto_flash(client_manager, selected_devkit)
         else:
             message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'

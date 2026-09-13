@@ -139,6 +139,23 @@ sima-cli -i bootimg -v 1247 --boardtype modalix --fwtype elxr --netboot -f --dev
 
 Remote preparation supports legacy 2.1 images without `/boot/u-boot.bin` by validating their redundant FAT environment configuration and CRCs. Other platforms retain bootloader-based format detection.
 
+### Recovering from an IP change during netboot
+
+The board may receive a different IP address when Linux boots. If the SSH
+reboot check keeps waiting on the old address, press **Ctrl+C at the `netboot>`
+prompt** to stop automatic SSH checks. The TFTP server stays running; use `q`
+to exit the session.
+
+Type `d` at the prompt to run multicast discovery on the local network. If the
+board does not respond, connect its serial console, run `sima-cli serial` in
+another terminal, log in, and run `ip -4 addr` (or `ifconfig`) on the board.
+Once you have identified the correct board and its current IP, type `f <ip>`
+(for example, `f 192.168.2.20`) to flash it. Discovery does not select a flash
+target automatically. A timed-out SSH check also prints these recovery steps
+and leaves the board unconnected.
+
+### Preparing eMMC for flashing
+
 Before netboot flashing writes the eMMC image, sima-cli lists all mounted
 filesystems backed by the eMMC, including LVM volumes such as `/data` and bind
 mounts. It unmounts them before releasing LVM mappings. Flashing stops if a mount

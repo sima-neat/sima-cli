@@ -208,6 +208,7 @@ class ClientManager:
         self.clients = {}
         self.lock = threading.Lock()
         self.shutdown_event = threading.Event()
+        self.monitor_threads = []
 
     def add_client(self, ip, filename):
         """Add a new client with initial state."""
@@ -215,7 +216,7 @@ class ClientManager:
             if ip not in self.clients:
                 start_time = time.time()
                 self.clients[ip] = {
-                    'state': 'Booting',
+                    'state': 'SSH check stopped' if self.shutdown_event.is_set() else 'Booting',
                     'filename': filename,
                     'timestamp': start_time,
                     'board_info': None
@@ -223,12 +224,16 @@ class ClientManager:
                 click.echo(f"📥 New client connected: {ip}")
                 if filename:
                     click.echo(f"📄 Client {ip} requested file: {filename}")
+                if self.shutdown_event.is_set():
+                    return
                 # Start monitoring thread
-                threading.Thread(
+                thread = threading.Thread(
                     target=self.monitor_client,
                     args=(ip, start_time),
                     daemon=True
-                ).start()
+                )
+                self.monitor_threads.append(thread)
+                thread.start()
 
     def monitor_client(self, ip, start_time):
         """
@@ -244,11 +249,17 @@ class ClientManager:
             while not self.shutdown_event.is_set():
                 click.echo(f"🔍 Checking SSH availability for {ip}...")
                 try:
-                    if not wait_for_ssh(ip, timeout=120):
+                    if not wait_for_ssh(ip, timeout=120, cancel_event=self.shutdown_event):
+                        if not self.shutdown_event.is_set():
+                            with self.lock:
+                                self.clients[ip]['state'] = 'SSH unavailable'
+                            _print_ip_recovery_help()
                         if self.shutdown_event.wait(timeout=10):
                             break
                         continue
                     with self.lock:
+                        if self.shutdown_event.is_set():
+                            break
                         self.clients[ip]['state'] = 'Connected'
                         self.clients[ip]['board_info'] = "SSH available"
                     click.echo(f"✅ SSH is available on {ip}")
@@ -269,9 +280,20 @@ class ClientManager:
         with self.lock:
             return sorted(self.clients.items(), key=lambda x: x[0])
 
+    def stop_monitoring(self):
+        """Stop automatic SSH checks while leaving the TFTP server running."""
+        self.shutdown_event.set()
+        with self.lock:
+            threads = list(self.monitor_threads)
+            for info in self.clients.values():
+                if info['state'] in {'Booting', 'SSH unavailable'}:
+                    info['state'] = 'SSH check stopped'
+        for thread in threads:
+            thread.join()
+
     def shutdown(self):
         """Signal monitoring threads to exit."""
-        self.shutdown_event.set()
+        self.stop_monitoring()
 
 class InteractiveTftpServer(TftpServer):
     """Custom TFTP server with client logging and monitoring."""
@@ -429,12 +451,38 @@ class InteractiveTftpServer(TftpServer):
         self.shutdown_gracefully = self.shutdown_immediately = False
         self.client_manager.shutdown()
 
+def _print_ip_recovery_help():
+    click.echo("The board may have received a different IP address during boot.")
+    click.echo("Type 'd' to discover devices on the local network.")
+    click.echo("Or connect the board's serial console, run 'sima-cli serial' in another terminal, "
+               "log in, and run 'ip -4 addr' (or 'ifconfig') on the device.")
+    click.echo("Identify your board's current IP, then type 'f <ip>' here to flash it "
+               "(for example: f 192.168.2.3).")
+
+
+def _discover_netboot_devices():
+    from sima_cli.discover.discover import discover_and_probe
+
+    try:
+        discover_and_probe(mdns_only=True)
+    except Exception as exc:
+        click.echo(f"❌ Device discovery failed: {exc}")
+    _print_ip_recovery_help()
+
+
 def run_cli(client_manager):
     """Run the interactive CLI for netboot commands."""
-    click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
+    click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'd' to discover devices, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
+    click.echo("Press Ctrl+C at the netboot prompt to stop SSH reboot checks if the board's IP changed.")
     while True:
         try:
-            user_input = input("netboot> ").strip()
+            try:
+                user_input = input("netboot> ").strip()
+            except KeyboardInterrupt:
+                client_manager.stop_monitoring()
+                click.echo("\nStopped SSH reboot checks. The TFTP server is still running.")
+                _print_ip_recovery_help()
+                continue
             parts = user_input.split()
             command = parts[0].lower() if parts else ""
             args = parts[1:]
@@ -456,6 +504,12 @@ def run_cli(client_manager):
                             click.echo(f"     Board Info: {board_info}")
                 else:
                     click.echo("📭 No TFTP client requests received yet.")
+            elif command == "d":
+                if args:
+                    click.echo("❌ Usage: d")
+                    continue
+                client_manager.stop_monitoring()
+                _discover_netboot_devices()
             elif command == "f":
                 if len(args) > 1:
                     click.echo("❌ Usage: f [ip]")
@@ -471,7 +525,7 @@ def run_cli(client_manager):
             elif command == "":
                 continue
             else:
-                click.echo("❓ Unknown command. Try 'c' to print client list, 'f [ip]' to flash emmc, or 'q'.")
+                click.echo("❓ Unknown command. Try 'c' to print client list, 'd' to discover devices, 'f [ip]' to flash emmc, or 'q'.")
         except (KeyboardInterrupt, EOFError):
             click.echo("\n🛑 Exiting netboot session.")
             return True

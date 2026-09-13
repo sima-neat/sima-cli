@@ -6,6 +6,7 @@ import shlex
 import socket
 
 import click
+import paramiko
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -58,7 +59,13 @@ def network_settings(ssh, devkit, server_ip):
 
 def configure_and_reboot(devkit, server_ip, autoflash=False):
     """Return whether the user confirmed and the DevKit reboot was scheduled."""
-    ssh = init_ssh_session(devkit)
+    try:
+        ssh = init_ssh_session(devkit)
+    except (OSError, paramiko.SSHException) as exc:
+        click.secho(
+            f'Could not connect to DevKit {devkit} over SSH: {exc}. '
+            'Remote setup was skipped; no boot settings were changed.', fg='yellow')
+        return False
     try:
         _checked(ssh, "set -eu; "
                  "for tool in fw_setenv fw_printenv python3; do "

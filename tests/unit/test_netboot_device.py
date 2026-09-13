@@ -234,7 +234,7 @@ def test_netboot_sudo_does_not_allocate_echoing_pty():
     ssh.exec_command.assert_called_once_with('sudo -S true', get_pty=False)
 
 
-@pytest.mark.parametrize('confirmed', [False, True])
+@pytest.mark.parametrize('confirmed', [False, True, None])
 @pytest.mark.parametrize('autoflash', [False, True])
 def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
         tmp_path, confirmed, autoflash, capsys):
@@ -259,16 +259,17 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
             patch.object(netboot, 'auto_flash') as flash, \
             patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
             patch.object(device, 'server_address', return_value='192.0.2.10'), \
-            patch.object(device, 'init_ssh_session') as connect, \
+            patch.object(device, 'init_ssh_session', side_effect=TimeoutError('timed out') if confirmed is None else None) as connect, \
             patch.object(device, '_checked', return_value='') as command, \
             patch.object(click, 'confirm', return_value=confirmed):
         netboot.setup_netboot('3.0', 'modalix', autoflash=autoflash)
     cli.assert_called_once_with(manager)
-    connect.return_value.close.assert_called_once()
+    if confirmed is not None:
+        connect.return_value.close.assert_called_once()
     if confirmed:
         assert any('systemd-run' in call.args[1] for call in command.call_args_list)
     else:
-        assert command.call_count == 1  # Read-only preflight; no writes or reboot.
+        assert command.call_count == (0 if confirmed is None else 1)  # No writes or reboot.
         assert 'waiting for a device to connect' in capsys.readouterr().out
     if confirmed and autoflash:
         flash.assert_called_once_with(manager, '192.0.2.1')
@@ -276,3 +277,16 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
         flash.assert_not_called()
     server.stop.assert_called_once_with(now=True)
     manager.shutdown.assert_called_once()
+
+
+@pytest.mark.parametrize('error', [TimeoutError('timed out'), device.paramiko.SSHException('SSH negotiation failed')])
+def test_initial_ssh_failure_skips_remote_changes(error, capsys):
+    with patch.object(device, 'init_ssh_session', side_effect=error), \
+            patch.object(device, '_checked') as command, \
+            patch.object(click, 'confirm') as confirm:
+        assert device.configure_and_reboot('192.0.2.1', '192.0.2.10') is False
+    command.assert_not_called()
+    confirm.assert_not_called()
+    output = capsys.readouterr().out
+    assert '192.0.2.1 over SSH' in output
+    assert 'no boot settings were changed' in output

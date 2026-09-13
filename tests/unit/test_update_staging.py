@@ -57,7 +57,7 @@ def test_expansion_failure_is_reported(result):
 def test_swu_selects_expanded_tmp_on_local_and_remote_target(ip):
     # Both invocation modes use Target.run for the same target-side commands.
     target = Mock(ip=ip)
-    target.run.side_effect = ['', report(), '', str(3 * GIB // 1024)]
+    target.run.side_effect = lambda cmd: report() if cmd == staging.TMPFS_INFO else str(5 * GIB // 1024) if cmd == staging.TMP_FREE else ''
     with patch.object(swu, '_available_space', return_value=0):
         assert swu._select_staging_root(target, 2 * GIB) == '/tmp'
     assert any('remount,size=' in call.args[0] for call in target.run.call_args_list)
@@ -71,27 +71,17 @@ def test_swu_preserves_nvme_fallback_when_ram_is_insufficient():
     assert not any('remount,size=' in call.args[0] for call in target.run.call_args_list)
 
 
-@pytest.mark.parametrize('failure', ['insufficient_ram', 'remount_failed'])
-def test_eight_gib_target_falls_back_to_nvme(failure):
-    commands = []
-
-    def run(command):
-        commands.append(command)
-        if command == staging.TMPFS_INFO:
-            return report(total=8 * GIB, available=3 * GIB if failure == 'insufficient_ram' else 7 * GIB)
-        if 'remount,size=' in command:
-            raise click.ClickException('remount failed')
-        return ''
-
-    with patch.object(swu, '_available_space', side_effect=[GIB, 100 * GIB]):
-        assert swu._select_staging_root(Mock(run=run), 5 * GIB) == '/media/nvme/swupdate'
-    assert any('mount -o remount,rw /media/nvme' in command for command in commands)
-    if failure == 'insufficient_ram':
-        assert not any('remount,size=' in command for command in commands)
-
-
-def test_nvme_full_falls_back_to_data_on_small_ram_board():
+@pytest.mark.parametrize('available_ram', [GIB, 7 * GIB])
+def test_data_full_uses_nvme_before_attempting_ram(available_ram):
     target = Mock()
-    target.run.side_effect = lambda command: report(available=2 * GIB, total=8 * GIB) if command == staging.TMPFS_INFO else ''
-    with patch.object(swu, '_available_space', side_effect=[GIB, GIB, 10 * GIB]):
+    target.run.side_effect = lambda cmd: report(available=available_ram) if cmd == staging.TMPFS_INFO else ''
+    with patch.object(swu, '_available_space', side_effect=[GIB, 100 * GIB]):
+        assert swu._select_staging_root(target, 5 * GIB) == '/media/nvme/swupdate'
+    assert not any(call.args[0] == staging.TMPFS_INFO for call in target.run.call_args_list)
+
+
+def test_data_preferred_on_small_ram_board():
+    target = Mock()
+    with patch.object(swu, '_available_space', return_value=10 * GIB):
         assert swu._select_staging_root(target, 5 * GIB) == '/data'
+    assert not any('mount -o' in call.args[0] for call in target.run.call_args_list)

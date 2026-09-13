@@ -128,7 +128,7 @@ test "$(date +%Y)" -ge 2024 || { echo 'Set the system clock before signed update
     return state
 
 
-STAGING_ROOTS = ('/tmp', '/media/nvme/swupdate', '/data')
+STAGING_ROOTS = ('/data', '/media/nvme/swupdate', '/tmp')
 STAGING_PATTERN = r'/(?:tmp|media/nvme/swupdate|data)/sima-cli-update\.[A-Za-z0-9]+'
 
 
@@ -146,6 +146,21 @@ def _check_space(target, size, root='/data', allow_expand=False, dryrun=False):
         if root == '/tmp' and allow_expand and expand_tmpfs(target.run, size + SPACE_MARGIN, dryrun=dryrun):
             return
         raise click.ClickException(f'Insufficient {root} space: need {(size + SPACE_MARGIN) / 1024**3:.2f} GiB for the SWU bundle and staging margin.')
+
+
+def _check_extraction_space(target, bundle_size, dryrun=False):
+    # SWU is an uncompressed CPIO archive: its size bounds the extracted
+    # members, including rootfs.ext4.gz. The raw handler decompresses that
+    # member into the inactive block device, not a second ext4 file in /tmp.
+    try:
+        _check_space(target, bundle_size, '/tmp', allow_expand=True, dryrun=dryrun)
+    except click.ClickException as exc:
+        raise click.ClickException(
+            f'Insufficient /tmp space for SWUpdate extraction: need '
+            f'{(bundle_size + SPACE_MARGIN) / 1024**3:.2f} GiB free in addition to any '
+            'staged bundle. Free temporary files or provide more temporary storage '
+            'before retrying. ' + exc.format_message()
+        ) from exc
 
 
 def _select_staging_root(target, size, dryrun=False):
@@ -170,7 +185,8 @@ mkdir -p /media/nvme/swupdate''')
             # A dry run can assess the mounted parent without creating the staging root.
             check_root = '/media/nvme' if dryrun and root == '/media/nvme/swupdate' else root
             target.run('test -w ' + shlex.quote(check_root))
-            _check_space(target, size, check_root, allow_expand=True, dryrun=dryrun)
+            _check_space(target, size * 2 if root == '/tmp' else size, check_root,
+                         allow_expand=True, dryrun=dryrun)
             click.echo(f'Staging storage: {root}')
             return root
         except click.ClickException as exc:
@@ -283,6 +299,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
         phase = "preparing staging storage"
         staging_root = _select_staging_root(target, size_hint, dryrun=dryrun)
         if dryrun:
+            _check_extraction_space(target, size_hint, dryrun=True)
             key_args = (['-k', '/tmp/<temporary-key>/public.pem']
                         if certificate_source(signing_cert, internal) is not None else [])
             click.echo('Dry run: ' + shlex.join(['sudo', 'swupdate', '-v', '-i', staging_root + '/<staged-bundle>.swu', *key_args, '-e', 'update,full']))
@@ -327,6 +344,8 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             remote = staging + '/bundle.swu'
             click.echo('Staging and verifying bundle integrity...')
             target.transfer(local, remote, move=not ip and not local_source)
+            phase = 'checking SWUpdate extraction space'
+            _check_extraction_space(target, size)
             click.echo('Validating signature and installing the full inactive slot...')
             installing = True
             with InstallProgress() as progress:

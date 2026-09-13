@@ -78,7 +78,9 @@ def update_package(package_name: str) -> bool:
     try:
         env = os.environ.copy()
         env["PIP_CONFIG_FILE"] = os.devnull
-        subprocess.run(pip_cmd, check=True, env=env)
+        # Python stdout redirection does not change a child's inherited fd 1.
+        # Keep installer diagnostics off stdout used by JSON commands.
+        subprocess.run(pip_cmd, check=True, env=env, stdout=sys.stderr, stderr=sys.stderr)
         cleanup_pip_leftovers()
         click.secho(f"✅ {package_name} updated successfully.", fg="green", bold=True)
         return True

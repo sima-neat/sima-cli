@@ -299,7 +299,7 @@ def write_bootimg(image_path):
         click.echo("ℹ️  Please manually eject the device.")
 
 
-def write_image(version: str, board: str, swtype: str, internal: bool = False, flavor: str = 'headless'):
+def write_image(version: str, board: str, swtype: str, internal: bool = False, flavor: str = 'headless', recovery: bool = False):
     """
     Download and write a bootable firmware image to a removable storage device.
 
@@ -309,13 +309,18 @@ def write_image(version: str, board: str, swtype: str, internal: bool = False, f
         swtype (str): Software image type, e.g., "yocto" or "elxr".
         internal (bool): Whether to use internal download sources. Defaults to False.
         flavor (str): Flavor of the software package - can be either headless or full.
+        recovery (bool): Write the raw eLxr image that automatically recovers eMMC.
 
     Raises:
         RuntimeError: If the download or write process fails.
     """
     try:
+        if recovery and (board != 'modalix' or swtype != 'elxr'):
+            raise ValueError("Recovery images require Modalix eLxr firmware.")
+        if recovery:
+            click.echo("Preparing recovery media: booting the DevKit from it automatically recovers eMMC.")
         click.echo(f"⬇️  Downloading boot image for version: {version}, board: {board}, swtype: {swtype}")
-        file_list = download_image(version, board, swtype, internal, update_type='bootimg', flavor=flavor)
+        file_list = download_image(version, board, swtype, internal, update_type='recovery' if recovery else 'bootimg', flavor=flavor)
         if not isinstance(file_list, list):
             raise ValueError("Expected list of extracted files, got something else.")
         

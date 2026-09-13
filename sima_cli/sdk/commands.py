@@ -28,7 +28,11 @@ from sima_cli.sdk.install import setup_and_start
 from sima_cli.sdk.cmdexec import SdkContainerUnavailable, exec_container_cmd
 from sima_cli.sdk.uninstall import remove_containers, remove_unused_images
 from sima_cli.sdk.stop import stop_containers
-from sima_cli.sdk.utils import get_all_containers, container_matches_sdk_keyword
+from sima_cli.sdk.utils import (
+    container_matches_sdk_keyword,
+    get_all_containers,
+    select_containers,
+)
 from sima_cli.sdk.utils import extract_short_name
 from sima_cli.discover.discover import discover_and_probe
 from rich.table import Table
@@ -93,6 +97,10 @@ def sdk(ctx, version_filter):
 # Helper functions 
 # ------------------------------------------------------------
 
+class NoDevkitsDiscovered(click.ClickException):
+    """Discovery completed without finding a device."""
+
+
 def _resolve_devkit_ip(devkit: Optional[str]) -> str:
     """
     Resolve --devkit value into a concrete IP.
@@ -122,7 +130,7 @@ def _resolve_devkit_ip(devkit: Optional[str]) -> str:
             ips.append(ip)
 
     if not ips:
-        raise click.ClickException(
+        raise NoDevkitsDiscovered(
             "Could not auto-discover devices. Please provide a connectable DevKit IP via --devkit <IP>."
         )
 
@@ -178,7 +186,7 @@ def _version_matches(container, version_filter: str) -> bool:
     return needle in name or needle in image
 
 
-def _start_stopped_neat_containers(ctx) -> None:
+def _start_stopped_neat_container(ctx) -> None:
     version_filter = None
     if ctx and getattr(ctx, "obj", None):
         version_filter = ctx.obj.get("version_filter")
@@ -198,24 +206,34 @@ def _start_stopped_neat_containers(ctx) -> None:
             message = f"No stopped Neat SDK containers found for version '{version_filter}'."
         raise click.ClickException(f"{message} Run: sima-cli sdk setup")
 
-    for container in matches:
-        name = _container_name(container)
-        if not name:
-            continue
+    if len(matches) > 1:
         try:
-            ensure_existing_neat_container_startable(name)
-            console.print(
-                f"[cyan]▶ Starting existing Neat SDK container:[/cyan] [bold]{name}[/bold] "
-                "[dim](this may take a moment)[/dim]"
-            )
-            subprocess.run(["docker", "start", name], check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as e:
-            raise click.ClickException(
-                f"Failed to start Neat SDK container '{name}' while running: {' '.join(e.cmd)}"
-            ) from e
-        except RuntimeError as e:
-            raise click.ClickException(str(e)) from e
-        console.print(f"[green]✅ Started Neat SDK container:[/green] [bold]{name}[/bold]")
+            name = select_containers(matches, single_select=True)
+        except (EOFError, KeyboardInterrupt):
+            name = None
+    else:
+        name = _container_name(matches[0])
+
+    if not name:
+        raise click.ClickException(
+            "No Neat SDK container selected. Use 'sima-cli sdk -v VERSION neat' "
+            "to select a version without a prompt."
+        )
+
+    try:
+        ensure_existing_neat_container_startable(name)
+        console.print(
+            f"[cyan]▶ Starting existing Neat SDK container:[/cyan] [bold]{name}[/bold] "
+            "[dim](this may take a moment)[/dim]"
+        )
+        subprocess.run(["docker", "start", name], check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        raise click.ClickException(
+            f"Failed to start Neat SDK container '{name}' while running: {' '.join(e.cmd)}"
+        ) from e
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+    console.print(f"[green]✅ Started Neat SDK container:[/green] [bold]{name}[/bold]")
 
 
 def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
@@ -253,7 +271,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     except SdkContainerUnavailable:
         if tool != "neat":
             raise
-        _start_stopped_neat_containers(ctx)
+        _start_stopped_neat_container(ctx)
         exec_container_cmd(ctx, tool, cmd_str)
 
 
@@ -270,7 +288,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
 @click.option(
     "-y", "--yes",
     is_flag=True,
-    help="Skip confirmation before starting the container."
+    help="Accept setup defaults; install Model Compiler from a local ZIP if available, otherwise online."
 )
 @click.option(
     "--devkit",
@@ -298,6 +316,25 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility.",
 )
 @click.option(
+    "--all-extensions",
+    is_flag=True,
+    help="Install Neat, Codex, and Claude VS Code extensions without prompting.",
+)
+@click.option(
+    "--edgematic-studio",
+    "--studio",
+    "edgematic_studio",
+    is_flag=True,
+    help="Install the Edgematic Studio extension and publish its port. Off by default.",
+)
+@click.option(
+    "--edgematic-studio-port",
+    "--studio-port",
+    "edgematic_studio_port",
+    is_flag=True,
+    help="Publish the Edgematic Studio port without installing it, for a manual install later.",
+)
+@click.option(
     "--minimal",
     is_flag=True,
     help="Skip optional Neat SDK container extras for CI compilation jobs.",
@@ -321,7 +358,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt.",
 )
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, minimal, workspace, persistent_network_profile, image_selectors):
+def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, edgematic_studio, edgematic_studio_port, minimal, workspace, persistent_network_profile, image_selectors, all_extensions):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
@@ -332,10 +369,13 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, 
             no_insight=no_insight,
             insight_video_channels=insight_video_channels,
             no_model_sdk=no_model_sdk,
+            edgematic_studio=edgematic_studio,
+            edgematic_studio_port=edgematic_studio_port,
             minimal=minimal,
             workspace=workspace,
             persistent_network_profile=persistent_network_profile,
             image_selectors=image_selectors,
+            all_extensions=all_extensions,
         )
     except subprocess.CalledProcessError as e:
         raise click.ClickException(f"SDK setup failed while running: {' '.join(e.cmd)}") from e
@@ -649,8 +689,9 @@ def neat(ctx, cmd):
     running container with bash -lc. If CMD is omitted, sima-cli opens an
     interactive login shell.
 
-    If no matching Neat SDK container is running, existing stopped Neat SDK
-    container(s) are started automatically and the command is retried.
+    If no matching Neat SDK container is running, one stopped Neat SDK
+    container is started and the command is retried. When several stopped
+    containers match, sima-cli prompts you to select one before starting it.
 
     \b
     Examples:

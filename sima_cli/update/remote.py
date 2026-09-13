@@ -14,44 +14,50 @@ from sima_cli.update.cleanlog import LineSquelcher
 DEFAULT_USER = "sima"
 DEFAULT_PASSWORD = "edgeai"
 
-def wait_for_ssh(ip: str, timeout: int = 120):
-    """
-    Show an animated spinner while waiting for SSH on the target IP to become available.
+def wait_for_ssh(ip: str, timeout: int = 120,
+                 cancel_event: Optional[threading.Event] = None) -> bool:
+    """Wait for SSH, returning False on timeout or cancellation.
 
-    Args:
-        ip (str): IP address of the target board.
-        timeout (int): Maximum seconds to wait.
+    Cancellation interrupts retry delays; an active connection attempt takes
+    at most three seconds. Always stop the spinner, including on Ctrl+C.
     """
     spinner = itertools.cycle(['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'])
     stop_event = threading.Event()
+    cancel_event = cancel_event if cancel_event is not None else threading.Event()
 
     def animate():
-        while not stop_event.is_set():
+        while not stop_event.is_set() and not cancel_event.is_set():
             sys.stdout.write(f"\r🔁 Waiting for board to reboot {next(spinner)} ")
             sys.stdout.flush()
-            time.sleep(0.1)
+            stop_event.wait(0.1)
 
     thread = threading.Thread(target=animate)
     thread.start()
-
-    start_time = time.time()
+    deadline = time.monotonic() + timeout
     success = False
-    while time.time() - start_time < timeout:
-        try:
-            sock = socket.create_connection((ip, 22), timeout=3)
-            sock.close()
-            success = True
-            break
-        except (socket.error, paramiko.ssh_exception.SSHException):
-            time.sleep(2)  # wait and retry
+    try:
+        while not cancel_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                with socket.create_connection((ip, 22), timeout=min(3, remaining)):
+                    success = not cancel_event.is_set()
+                break
+            except (socket.error, paramiko.ssh_exception.SSHException):
+                cancel_event.wait(max(0, min(2, deadline - time.monotonic())))
+    finally:
+        stop_event.set()
+        thread.join()
+        click.echo("\r" + " " * 60 + "\r", nl=False)
 
-    stop_event.set()
-    thread.join()
-
-    if not success:
-        print(f"❌ Timeout: SSH did not become available on {ip} within {timeout} seconds.")
+    if cancel_event.is_set():
+        return False
+    if success:
+        click.echo("✅ Board is online!\n")
     else:
-        print("\r✅ Board is online!           \n")
+        click.echo(f"❌ Timeout: SSH did not become available on {ip} within {timeout} seconds.")
+    return success
 
 
 def get_remote_board_info(ip: str, passwd: str = DEFAULT_PASSWORD) -> Tuple[str, str, str, bool, str]:
@@ -147,7 +153,8 @@ def _scp_file(sftp, local_path: str, remote_path: str):
 
 
 def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
-                       squelcher: Optional[LineSquelcher] = None):
+                       squelcher: Optional[LineSquelcher] = None, check: bool = False,
+                       command_label: Optional[str] = None):
     """
     Run a remote command over SSH and stream its output live to the console.
     If the command starts with 'sudo', pipe in the password.
@@ -156,10 +163,13 @@ def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
         ssh (paramiko.SSHClient): Active SSH connection.
         command (str): The command to run on the remote host.
         password (str): Password to use if the command requires sudo.
+        check (bool): Raise on a nonzero or unavailable remote exit status.
+        command_label (str): Display this description instead of the command source.
     """
     squelcher = squelcher or LineSquelcher()  # use defaults unless you pass a custom one
 
-    click.echo(f"🚀 Running on remote: {command}")
+    display_command = command if command_label is None else command_label
+    click.echo(f"🚀 Running on remote: {display_command}")
     needs_sudo = command.strip().startswith("sudo")
     if needs_sudo:
         command = f"sudo -S {command[len('sudo '):]}"
@@ -207,6 +217,11 @@ def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
     if suppressed:
         click.echo(f"🔇 suppressed {suppressed} noisy line(s)")
 
+    if check:
+        exit_code = stdout.channel.recv_exit_status()
+        if exit_code != 0:
+            raise RuntimeError(f"Remote command failed with exit status {exit_code}: {display_command}")
+
 
 def init_ssh_session(ip: str, password: str = DEFAULT_PASSWORD):
     ssh = paramiko.SSHClient()
@@ -232,7 +247,7 @@ def reboot_remote_board(ip: str, passwd: str):
         click.echo(f"⚠️  Unable to connect to the remote board")
 
 
-def run_remote_command_capture(ssh, command: str, password: str = DEFAULT_PASSWORD):
+def run_remote_command_capture(ssh, command: str, password: str = DEFAULT_PASSWORD, sudo_pty: bool = True):
     """
     Run a remote command over SSH and return (exit_status, stdout_str, stderr_str).
     Does not stream output to the console.
@@ -242,7 +257,7 @@ def run_remote_command_capture(ssh, command: str, password: str = DEFAULT_PASSWO
     if needs_sudo:
         command = f"sudo -S {command[len('sudo '):]}"
 
-    stdin, stdout, stderr = ssh.exec_command(command, get_pty=needs_sudo)
+    stdin, stdout, stderr = ssh.exec_command(command, get_pty=needs_sudo and sudo_pty)
     if needs_sudo:
         stdin.write(password + "\n")
         stdin.flush()
@@ -292,6 +307,7 @@ def copy_file_to_remote_board(ip: str, file_path: str, remote_dir: str, passwd: 
     
     from tqdm import tqdm
 
+    sftp = None
     try:
         ssh.connect(ip, username=DEFAULT_USER, password=passwd, timeout=10)
         sftp = ssh.open_sftp()
@@ -308,16 +324,20 @@ def copy_file_to_remote_board(ip: str, file_path: str, remote_dir: str, passwd: 
             def progress(transferred, total):
                 pbar.update(transferred - pbar.n)
 
-            sftp.put(file_path, remote_path, callback=progress)
+            from sima_cli.update.fast_upload import upload
+            upload(ssh, sftp, ip, passwd, file_path, remote_path, progress)
 
         click.echo("✅ Upload complete")
 
-        sftp.close()
-        ssh.close()
         return True
 
     except Exception as e:
         click.echo(f"❌ Remote file copy failed: {e}")
+
+    finally:
+        if sftp is not None:
+            sftp.close()
+        ssh.close()
 
     return False
 

@@ -1,5 +1,5 @@
 # utils.py
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple
 import hashlib
 import locale
 import os
@@ -16,14 +16,26 @@ import platform
 import shutil
 import tempfile
 from collections import defaultdict
+from contextlib import ExitStack
 from rich.console import Console
 from rich.panel import Panel
+
+from sima_cli.sdk.docker_staging import docker_cp_staging_dir as _docker_cp_staging_dir
+from sima_cli.sdk.model_compiler import discover_archive, normalize_arch, select_source, stage_archive
 
 from sima_cli.sdk.config import (
     IMAGE_NAMES,
     IMAGE_CONFIG,
     BASELINE_IMAGE,
     IMAGE_ALIASES,
+)
+from sima_cli.sdk.vscode_extensions import (
+    extension_install_command,
+    extension_install_progress,
+    load_extension_versions,
+    pin_extensions_command,
+    resolve_extension_target,
+    select_browser_extensions,
 )
 
 
@@ -45,6 +57,7 @@ CODEX_EXTENSION_ID_ENV = "SIMA_CLI_CODEX_EXTENSION_ID"
 CODEX_EXTENSION_INSTALL_ENV = "SIMA_CLI_INSTALL_CODEX_EXTENSION"
 CLAUDE_EXTENSION_DEFAULT_ID = "anthropic.claude-code"
 CLAUDE_EXTENSION_ID_ENV = "SIMA_CLI_CLAUDE_EXTENSION_ID"
+EDGEMATIC_STUDIO_INSTALL_REF = "main"
 
 def _devcontainer_metadata_label(remote_user: str, workspace_folder: str = "/workspace") -> str:
     """
@@ -834,8 +847,10 @@ def _model_sdk_extension_arch(base_version: str) -> str:
     return ""
 
 
-def _model_sdk_extension_install_args(base_version: str) -> List[str]:
-    arch = _model_sdk_extension_arch(base_version)
+def _model_sdk_extension_install_args(base_version: str, arch: str = None) -> List[str]:
+    arch = _model_sdk_extension_arch(base_version) if arch is None else arch
+    if arch == "arm64" and not _version_at_least(base_version, "2.1.1"):
+        return []
     if not arch:
         return []
     if _version_at_least(base_version, "2.1.3"):
@@ -845,12 +860,216 @@ def _model_sdk_extension_install_args(base_version: str) -> List[str]:
     return ["install", "-v", base_version, f"tools/model-compiler/{arch}"]
 
 
+def _edgematic_studio_arch() -> str:
+    if _is_x86_platform():
+        return "amd64"
+    if _is_arm64_platform():
+        return "arm64"
+    return ""
+
+
+def _edgematic_studio_install_args() -> List[str]:
+    arch = _edgematic_studio_arch()
+    if not arch:
+        return []
+    # Unauthenticated on Vulcan production: no login step, no --env.
+    return ["neat", "install", f"edgematic-studio/{arch}@{EDGEMATIC_STUDIO_INSTALL_REF}"]
+
+
+def resolve_edgematic_studio_choice(
+    install_requested: bool = False,
+    port_only: bool = False,
+    interactive: bool = True,
+) -> Tuple[bool, bool]:
+    """
+    Decide whether setup installs Edgematic Studio and publishes its port.
+
+    Only explicit flags enable Studio; default setup never advertises or asks
+    about it. The interactive argument is retained for caller compatibility
+    and does not change the choice.
+
+    Returns (install, publish_port).
+    """
+    if not install_requested and not port_only:
+        return False, False
+
+    extension_install_args = _edgematic_studio_install_args()
+    if not extension_install_args:
+        if install_requested or port_only:
+            print("ℹ️  Edgematic Studio is not available on this host platform; skipping.")
+        return False, False
+
+    if install_requested:
+        return True, True
+
+    if port_only:
+        print(
+            "ℹ️  Publishing Edgematic Studio's port without installing it "
+            "(--edgematic-studio-port). Install it from the SDK container shell with: "
+            f"sima-cli {shlex.join(extension_install_args)}"
+        )
+        return False, True
+
+    return False, False
+
+
+def ensure_edgematic_studio_installed(
+    sdk_container_name: str,
+    login_name: str,
+    uid: int = None,
+    gid: int = None,
+    neat_playbooks_installed: bool = False,
+) -> bool:
+    """
+    Install the Edgematic Studio extension for Neat SDK containers.
+
+    Whether to install is resolve_edgematic_studio_choice()'s call, not this one's.
+    """
+    image_ref = _get_container_image_ref(sdk_container_name)
+    if not image_ref or not is_neat_sdk_image(image_ref):
+        return False
+
+    extension_install_args = _edgematic_studio_install_args()
+    if not extension_install_args:
+        print("ℹ️  Edgematic Studio is not available on this host platform; skipping.")
+        return False
+
+    home_directory = f"/home/{login_name}"
+    owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
+    # Studio's installer reinstalls the upstream playbooks so its own skills can
+    # --force past them; skip that when they were just installed, or the second
+    # (unforced) install fails and reports the set as missing.
+    skip_playbooks = "export EDGEMATIC_SKIP_NEAT_PLAYBOOKS=true; " if neat_playbooks_installed else ""
+    user_install_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"export USER={shlex.quote(login_name)}; "
+        f"export LOGNAME={shlex.quote(login_name)}; "
+        f"{skip_playbooks}"
+        "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; "
+        "export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"; "
+        "mkdir -p \"$HOME/extension-installation\"; "
+        "cd \"$HOME/extension-installation\"; "
+        "if command -v sima-cli >/dev/null 2>&1; then "
+        "SIMA_CLI_BIN=\"$(command -v sima-cli)\"; "
+        "elif [ -x \"$HOME/.sima-cli/.venv/bin/sima-cli\" ]; then "
+        "SIMA_CLI_BIN=\"$HOME/.sima-cli/.venv/bin/sima-cli\"; "
+        "else "
+        "echo \"sima-cli was not found for user $USER. Expected $HOME/.sima-cli/.venv/bin/sima-cli.\" >&2; "
+        "exit 127; "
+        "fi; "
+        f"\"$SIMA_CLI_BIN\" {shlex.join(extension_install_args)}"
+    )
+    install_script = (
+        "set -e; "
+        f"export HOME={shlex.quote(home_directory)}; "
+        f"{_sudoers_drop_in_script(login_name)}; "
+        "cleanup_edgematic_studio_install() { "
+        f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
+        f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions || true; fi; "
+        f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\" || true; fi; "
+        "}; "
+        "trap cleanup_edgematic_studio_install EXIT; "
+        "mkdir -p \"$HOME/extension-installation\"; "
+        "cleanup_edgematic_studio_install; "
+        f"su -s /bin/bash {shlex.quote(login_name)} -c 'sudo -n true'; "
+        f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
+    )
+    print("ℹ️  Installing Edgematic Studio extension...")
+    run_command(
+        [
+            "docker",
+            "exec",
+            "-u",
+            "root",
+            sdk_container_name,
+            "bash",
+            "-lc",
+            install_script,
+        ]
+    )
+    print("✅ Edgematic Studio extension installed.")
+    _activate_edgematic_studio(sdk_container_name, login_name)
+    return True
+
+
+def _edgematic_studio_responds(sdk_container_name: str, login_name: str, attempts: int = 30) -> bool:
+    """
+    Poll Studio's /version inside the container until it answers.
+
+    The server daemonizes before it binds, so activate-edgematic-studio exits 0
+    on a fork that later fails to listen.
+    """
+    from sima_cli.sdk.neat import EDGEMATIC_STUDIO_CONTAINER_PORT
+
+    probe = (
+        f"for _ in $(seq 1 {attempts}); do "
+        f"curl -fsS -o /dev/null http://127.0.0.1:{EDGEMATIC_STUDIO_CONTAINER_PORT}/version && exit 0; "
+        "sleep 1; done; exit 1"
+    )
+    result = subprocess.run(
+        ["docker", "exec", "-u", login_name, sdk_container_name, "bash", "-lc", probe],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _activate_edgematic_studio(sdk_container_name: str, login_name: str) -> None:
+    """
+    Start the freshly installed Studio server so the printed URL is live.
+
+    `activate-edgematic-studio` is a shell function in the user's .bashrc, which
+    only an interactive shell reads — `bash -lc` silently does not see it. `-t`
+    supplies the PTY that keeps bash quiet about absent job control. HOME is set
+    explicitly because `docker exec -u` only falls back to the passwd entry when
+    the container itself carries no HOME.
+    """
+    home_directory = f"/home/{login_name}"
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-t",
+            "-u",
+            login_name,
+            "-e",
+            f"HOME={home_directory}",
+            "-e",
+            f"USER={login_name}",
+            "-e",
+            f"LOGNAME={login_name}",
+            sdk_container_name,
+            "bash",
+            "-ic",
+            "activate-edgematic-studio",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0 and _edgematic_studio_responds(sdk_container_name, login_name):
+        print("✅ Edgematic Studio started.")
+        return
+    if result.returncode == 0:
+        print("⚠️  Edgematic Studio was started but is not answering yet.")
+        print("   Its log is at /sdk-extensions/edgematic-studio/logs/studio.log")
+    else:
+        detail = ((result.stderr or result.stdout) or "").strip().splitlines()
+        print("⚠️  Could not start Edgematic Studio automatically.")
+        if detail:
+            print(f"   {detail[-1]}")
+    print("   Start it from the SDK container shell with: activate-edgematic-studio")
+
+
 def ensure_model_sdk_extension_installed(
     sdk_container_name: str,
     login_name: str,
     auto_install: bool = False,
     uid: int = None,
     gid: int = None,
+    noninteractive: bool = False,
 ):
     """
     Install the Model Compiler extension for Neat SDK containers.
@@ -874,9 +1093,14 @@ def ensure_model_sdk_extension_installed(
         print(f"⚠️  Could not determine SDK base version in '{sdk_container_name}'. Skipping Model Compiler extension install.")
         return
 
-    extension_install_args = _model_sdk_extension_install_args(base_version)
+    machine = subprocess.run(
+        ["docker", "exec", sdk_container_name, "uname", "-m"],
+        text=True, capture_output=True, check=False,
+    )
+    arch = normalize_arch(machine.stdout or "") if machine.returncode == 0 else ""
+    extension_install_args = _model_sdk_extension_install_args(base_version, arch)
     if not extension_install_args:
-        print("ℹ️  Model Compiler extension install is not available on this host platform for SDK versions older than 2.1.1; skipping.")
+        print("ℹ️  Model Compiler extension install is not available for this SDK architecture/version; skipping.")
         return
     uses_vulcan = extension_install_args[:2] == ["neat", "install"]
 
@@ -897,23 +1121,22 @@ def ensure_model_sdk_extension_installed(
             expand=False,
         )
     )
-    if auto_install:
-        print("ℹ️  Auto-installing Model Compiler extension.")
-    else:
-        if not yes_no_prompt("Install the Model Compiler extension now?"):
-            print("ℹ️  Skipping Model Compiler extension install.")
-            return
+    expected_version = "2.1.3" if _version_at_least(base_version, "2.1.3") else base_version
+    local_archive = discover_archive(arch, expected_version)
+    unattended = noninteractive or auto_install or not sys.stdin.isatty()
+    source = select_source(local_archive, noninteractive=unattended, yes=auto_install)
+    if source == "skip":
+        if unattended and not auto_install and not local_archive:
+            print("ℹ️  No local Model Compiler ZIP found; online auto-install requires -y.")
+        print("ℹ️  Skipping Model Compiler extension install.")
+        return
 
     internal_sima_cli_env = "export SIMA_CLI_AUTO_ACCEPT_UPDATE=1; "
-    if not uses_vulcan:
+    if source == "online" and not uses_vulcan and not unattended:
         print("ℹ️  Logging in to sima-cli before installing the Model Compiler extension...")
         run_command(
             _docker_exec_interactive_prefix() + [
-                "-u",
-                login_name,
-                sdk_container_name,
-                "bash",
-                "-lc",
+                "-u", login_name, sdk_container_name, "bash", "-lc",
                 f"{internal_sima_cli_env}sima-cli login",
             ]
         )
@@ -939,35 +1162,58 @@ def ensure_model_sdk_extension_installed(
         "fi; "
         f"\"$SIMA_CLI_BIN\" {shlex.join(extension_install_args)}"
     )
-    install_script = (
-        "set -e; "
-        f"export HOME={shlex.quote(home_directory)}; "
-        f"{_sudoers_drop_in_script(login_name)}; "
-        "cleanup_model_sdk_install() { "
-        f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
-        f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions || true; fi; "
-        f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\" || true; fi; "
-        "}; "
-        "trap cleanup_model_sdk_install EXIT; "
-        "mkdir -p \"$HOME/extension-installation\"; "
-        "cleanup_model_sdk_install; "
-        f"su -s /bin/bash {shlex.quote(login_name)} -c 'sudo -n true'; "
-        f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
-    )
-    print(f"ℹ️  Installing Model Compiler extension for SDK base version {base_version}...")
-    run_command(
-        [
-            "docker",
-            "exec",
-            "-u",
-            "root",
-            sdk_container_name,
-            "bash",
-            "-lc",
-            install_script,
-        ]
-    )
-    print(f"✅ Model Compiler extension installed for SDK base version {base_version}.")
+    if source == "online" and not uses_vulcan and unattended:
+        # Setup has already copied cached host credentials into the container.
+        # Do not start a browser login during unattended installation.
+        auth_check = (
+            f"if [ ! -s {shlex.quote(home_directory + '/.sima-cli/.tokens.json')} ] "
+            f"&& [ ! -s {shlex.quote(home_directory + '/.sima-cli/.sima-cli-cookies.txt')} ]; then "
+            "echo 'Online Model Compiler installation requires credentials. Run sima-cli login on the host and retry sdk setup -y.' >&2; "
+            "exit 1; fi; "
+        )
+        user_install_script = auth_check + user_install_script
+    with ExitStack() as stack:
+        if source == "local":
+            print("ℹ️  Installing local compiler package; system/Python prerequisites may still require network access.")
+            bundle = stack.enter_context(stage_archive(
+                local_archive, arch, expected_version, sdk_container_name, owner, run_command,
+            ))
+            user_install_script = (
+                "set -e; "
+                f"export HOME={shlex.quote(home_directory)}; "
+                f"export USER={shlex.quote(login_name)}; "
+                f"export LOGNAME={shlex.quote(login_name)}; "
+                f"cd {shlex.quote(bundle)}; bash ./install_modelsdk_wheels.sh"
+            )
+        install_script = (
+            "set -e; "
+            f"export HOME={shlex.quote(home_directory)}; "
+            f"{_sudoers_drop_in_script(login_name)}; "
+            "cleanup_model_sdk_install() { "
+            f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
+            f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions || true; fi; "
+            f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\" || true; fi; "
+            "}; "
+            "trap cleanup_model_sdk_install EXIT; "
+            "mkdir -p \"$HOME/extension-installation\"; "
+            "cleanup_model_sdk_install; "
+            f"su -s /bin/bash {shlex.quote(login_name)} -c 'sudo -n true'; "
+            f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
+        )
+        print(f"ℹ️  Installing Model Compiler extension for SDK base version {base_version}...")
+        run_command(
+            [
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                sdk_container_name,
+                "bash",
+                "-lc",
+                install_script,
+            ]
+        )
+        print(f"✅ Model Compiler extension installed for SDK base version {base_version}.")
 
 
 def ensure_codex_vscode_extension_installed(
@@ -977,6 +1223,7 @@ def ensure_codex_vscode_extension_installed(
     allow_prompt: bool = True,
     uid: int = None,
     gid: int = None,
+    all_extensions: bool = False,
 ) -> None:
     """
     Optionally install Neat, Claude, and Codex extensions into browser VS Code.
@@ -995,30 +1242,43 @@ def ensure_codex_vscode_extension_installed(
         check=False,
     )
     if server_check.returncode != 0:
-        if auto_install:
+        if auto_install or all_extensions:
             print("ℹ️  Browser VS Code is not available in this SDK image; skipping browser VS Code extension install.")
         return
 
     neat_extension_target = "sdk/vscode-extension"
-    extensions = []
-    claude_extension_id = os.environ.get(CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID).strip()
-    codex_extension_id = os.environ.get(CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID).strip()
-    if claude_extension_id:
-        extensions.append(("Claude", claude_extension_id))
-    else:
-        print(f"ℹ️  {CLAUDE_EXTENSION_ID_ENV} is empty; skipping Claude extension install.")
-    if codex_extension_id:
-        extensions.append(("Codex", codex_extension_id))
-    else:
-        print(f"ℹ️  {CODEX_EXTENSION_ID_ENV} is empty; skipping Codex extension install.")
+    selected_names = select_browser_extensions(auto_install or all_extensions, allow_prompt)
+    if not selected_names:
+        return
+    install_neat = "neat" in selected_names
 
-    if auto_install:
-        print("ℹ️  Auto-installing Neat, Claude, and Codex extensions for browser VS Code.")
-    elif allow_prompt:
-        if not yes_no_prompt("Do you want to install SiMa Neat, Claude, and Codex VSCode Extensions?", default_yes=False):
-            print("ℹ️  Skipping browser VS Code extension install.")
-            return
-    else:
+    extensions = []
+    try:
+        requested_extensions = [
+            ("codex", "Codex", CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID),
+            ("claude", "Claude", CLAUDE_EXTENSION_ID_ENV, CLAUDE_EXTENSION_DEFAULT_ID),
+        ]
+        selected = [
+            (label, env, (os.environ.get(env, default).strip() or default)
+             if all_extensions else os.environ.get(env, default).strip())
+            for name, label, env, default in requested_extensions
+            if name in selected_names
+        ]
+        versions = (
+            load_extension_versions(sdk_container_name)
+            if any(target for _, _, target in selected) else {}
+        )
+        for label, env, target in selected:
+            if target:
+                extensions.append((label, resolve_extension_target(target, versions)))
+            else:
+                print(f"ℹ️  {env} is empty; skipping {label} extension install.")
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        print(f"⚠️  Could not resolve browser VS Code extension pins: {exc}")
+        print("Skipping browser VS Code extension install; continuing SDK setup.")
+        return
+
+    if not install_neat and not extensions:
         return
 
     home_directory = f"/home/{login_name}"
@@ -1050,24 +1310,22 @@ def ensure_codex_vscode_extension_installed(
         "else "
         "exit 1; "
         "fi"
-    ]
+    ] if install_neat else []
     legacy_cleanup_steps = []
-    for label, extension_id in extensions:
-        quoted_extension_id = shlex.quote(extension_id)
-        install_steps.append(
-            f"echo 'Installing {label} extension: {extension_id}'; "
-            f"if {shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-            f"--list-extensions 2>/dev/null | grep -Fxq {quoted_extension_id}; then "
-            f"echo '{label} extension already installed: {extension_id}'; "
-            "else "
-            f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
-            f"--install-extension {quoted_extension_id} --force --accept-server-license-terms; "
-            "fi"
-        )
+    for label, extension_target in extensions:
+        extension_id = extension_target.split("@", 1)[0]
+        install_steps.append(extension_install_command(
+            OPENVSCODE_SERVER_BIN, extensions_dir, label, extension_target,
+        ))
         legacy_cleanup_steps.append(
             f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
             f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true"
         )
+
+    install_steps.append(pin_extensions_command(
+        extensions_dir,
+        dict(target.split("@", 1) for _, target in extensions),
+    ))
 
     user_extension_script = (
         "set -e; "
@@ -1099,47 +1357,51 @@ def ensure_codex_vscode_extension_installed(
         f"export HOME={shlex.quote(home_directory)}; "
         f"export USER={shlex.quote(login_name)}; "
         f"export LOGNAME={shlex.quote(login_name)}; "
-        + "; ".join(legacy_cleanup_steps)
-        + "; "
         f"mkdir -p {shlex.quote(neat_extension_install_dir)}; "
         f"mkdir -p {shlex.quote(extensions_dir)}; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(neat_extension_install_dir)} 2>/dev/null || true; "
         f"chown -R {shlex.quote(owner)} {shlex.quote(extensions_dir)} 2>/dev/null || true; "
         f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_extension_script)}; "
-        "if command -v supervisorctl >/dev/null 2>&1; then "
+        + ("; ".join(legacy_cleanup_steps) + "; " if legacy_cleanup_steps else "")
+        + "if command -v supervisorctl >/dev/null 2>&1; then "
         "supervisorctl restart openvscode-server >/dev/null 2>&1 || true; "
         "fi"
     )
 
     print("ℹ️  Installing browser VS Code extensions:")
-    print(f"   - SiMa Neat: {neat_extension_target}")
+    if install_neat:
+        print(f"   - SiMa Neat: {neat_extension_target}")
     for label, extension_id in extensions:
         print(f"   - {label}: {extension_id}")
-    result = subprocess.run(
-        [
-            "docker",
-            "exec",
-            "-u",
-            "root",
-            sdk_container_name,
-            "bash",
-            "-lc",
-            install_script,
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        print("⚠️  Could not install browser VS Code extensions; continuing SDK setup.")
-        details = (result.stderr or result.stdout or "").strip()
-        if details:
-            print(details)
-        return
-
+    progress_labels = (["Neat"] if install_neat else []) + [label for label, _ in extensions]
+    with extension_install_progress(progress_labels, console):
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                sdk_container_name,
+                "bash",
+                "-lc",
+                install_script,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    # Preserve both streams: stderr often contains progress bars while stdout
+    # carries the installer stage and its actionable failure details.
     if result.stdout:
         print(result.stdout.strip())
-    print("✅ Neat, Claude, and Codex extensions installed for browser VS Code.")
+    if result.stderr:
+        print(result.stderr.strip())
+    if result.returncode != 0:
+        print(f"⚠️  Browser VS Code extension installation failed (exit {result.returncode}); "
+              "later extensions may not have been installed. Continuing SDK setup.")
+        return
+
+    print("✅ Selected browser VS Code extensions installed; AI extension versions are pinned.")
 
 
 def _container_openvscode_available(sdk_container_name: str) -> bool:
@@ -1324,24 +1586,6 @@ def _prepare_log_host_dir(path: str) -> None:
         print(f"⚠️ Could not make log folder writable for container services: {path} ({e})")
 
 
-def _docker_cp_staging_dir():
-    """
-    Docker installed through Snap may not see host /tmp paths. Stage files under
-    a non-hidden user home directory so docker cp can access them across Docker
-    variants, including Snap confinement.
-    """
-    home = os.path.expanduser("~")
-    if home and os.path.isdir(home) and os.access(home, os.W_OK):
-        staging = tempfile.TemporaryDirectory(prefix="sima-cli-sdk-", dir=home)
-        try:
-            os.chmod(staging.name, 0o755)
-        except OSError:
-            staging.cleanup()
-            raise
-        return staging
-    return tempfile.TemporaryDirectory(prefix="sima-cli-sdk-")
-
-
 def configure_container_user(
     sdk_container_name: str,
     login_name: str,
@@ -1449,9 +1693,11 @@ def configure_container(
     noninteractive=False,
     yes_to_all=False,
     no_model_sdk=False,
+    install_edgematic_studio=False,
     minimal=False,
     user_and_workspace_only=False,
-):
+    all_extensions=False,
+) -> bool:
     """
     Configure container user mappings and permissions:
       - Detects current host user (uid, gid, login_name)
@@ -1459,9 +1705,12 @@ def configure_container(
       - Creates home directory inside container
       - Optionally saves port to container and updates rsyslog (if configure_network=True)
       - If configure_network=True, computes and stores .hash for /usr/local/simaai/plugins
+
+    Returns True when the Edgematic Studio extension was installed.
     """
     platform_os = check_os()
     no_model_sdk = no_model_sdk or minimal
+    install_edgematic_studio = install_edgematic_studio and not minimal
 
     # Detect current host user
     if platform_os in ["linux", "macos"]:
@@ -1483,7 +1732,7 @@ def configure_container(
 
     if user_and_workspace_only:
         print(f"✅ Workspace and sudo-enabled user '{login_name}' configured in '{sdk_container_name}'.")
-        return
+        return False
 
     run_command(
         [
@@ -1540,7 +1789,8 @@ def configure_container(
         ensure_model_sdk_extension_installed(
             sdk_container_name,
             login_name,
-            auto_install=(noninteractive or yes_to_all),
+            auto_install=yes_to_all,
+            noninteractive=noninteractive,
             uid=uid,
             gid=gid,
         )
@@ -1552,11 +1802,23 @@ def configure_container(
         ensure_codex_vscode_extension_installed(
             sdk_container_name,
             login_name,
-            auto_install=(noninteractive or yes_to_all or _env_truthy(CODEX_EXTENSION_INSTALL_ENV)),
+            auto_install=_env_truthy(CODEX_EXTENSION_INSTALL_ENV),
+            all_extensions=all_extensions,
             allow_prompt=not (noninteractive or yes_to_all),
             uid=uid,
             gid=gid,
         )
+
+    if install_edgematic_studio:
+        edgematic_studio_installed = ensure_edgematic_studio_installed(
+            sdk_container_name,
+            login_name,
+            uid=uid,
+            gid=gid,
+            neat_playbooks_installed=not minimal,
+        )
+    else:
+        edgematic_studio_installed = False
 
     # ---- Optional Network & Syslog Configuration ----
     if configure_network:
@@ -1612,6 +1874,7 @@ print(f'✅ Hash written to {{path}}/.hash → {{h}}')
         print("ℹ️  Skipping network and syslog configuration as requested.")
 
     print(f"✅ Container '{sdk_container_name}' configured successfully.")
+    return edgematic_studio_installed
 
 def ensure_simasdkbridge_network():
     """
@@ -1671,7 +1934,10 @@ def start_docker_container(
     no_insight=False,
     insight_video_channels=4,
     no_model_sdk=False,
+    install_edgematic_studio=False,
+    publish_edgematic_studio_port=False,
     minimal=False,
+    all_extensions=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -1684,6 +1950,10 @@ def start_docker_container(
     # Generate container name
     # ─────────────────────────────────────────────
     no_insight = no_insight or minimal
+    if no_insight:
+        # Studio drives the Insight APIs.
+        install_edgematic_studio = False
+        publish_edgematic_studio_port = False
     container_name = sanitize_container_name(image)
     hostname = sanitize_container_hostname(container_name)
     print(f"🚀 Starting container '{container_name}' using image '{image}'")
@@ -1813,6 +2083,7 @@ def start_docker_container(
                 insight_video_channels=insight_video_channels,
                 minimal=minimal,
                 reserved_ports=reserved_ports,
+                publish_edgematic_studio_port=publish_edgematic_studio_port,
             )
             launch_cmd = list(base_docker_cmd)
             append_neat_docker_args(launch_cmd, neat_run_config)
@@ -1863,15 +2134,17 @@ def start_docker_container(
             devkit_ip=(devkit_env or {}).get("devkit_ip", ""),
         )
 
-    configure_container(
+    edgematic_studio_installed = configure_container(
         container_name,
         port,
         port_mapping_required,
         noninteractive=noninteractive,
         yes_to_all=yes_to_all,
         no_model_sdk=no_model_sdk,
+        install_edgematic_studio=install_edgematic_studio,
         minimal=minimal,
         user_and_workspace_only=ros2_sdk_image,
+        all_extensions=all_extensions,
     )
 
     if devkit_env and neat_sdk_image:
@@ -1879,6 +2152,7 @@ def start_docker_container(
 
     if neat_sdk_image and neat_run_config is not None:
         neat_run_config.code_ui_supported = _container_openvscode_available(container_name)
+        neat_run_config.edgematic_studio_installed = bool(edgematic_studio_installed)
         print_neat_setup_summary(neat_run_config)
 
     return container_name
@@ -2136,13 +2410,13 @@ def is_docker_running():
 def yes_no_prompt(prompt: str, default_yes=True) -> bool:
     """
     Prompt user for a yes/no response.
-    Defaults to YES if Enter is pressed.
+    Enter takes the capitalized default the prompt shows: Y/n or y/N.
     """
     default_choice = "Y/n" if default_yes else "y/N"
     while True:
         choice = input(f"{prompt} ({default_choice}): ").strip().lower()
-        if choice == "" and default_yes:
-            return True
+        if choice == "":
+            return bool(default_yes)
         if choice in {"y", "yes"}:
             return True
         if choice in {"n", "no"}:

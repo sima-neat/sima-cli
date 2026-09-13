@@ -15,24 +15,135 @@ sima-cli sdk setup [OPTIONS]
 | Name | Description |
 | --- | --- |
 | `--noninteractive, --non-interactive, -n` | Run in non-interactive mode (auto-select defaults). |
-| `-y, --yes` | Skip confirmation before starting the container. |
+| `-y, --yes` | Accept setup defaults; install Model Compiler from a local ZIP if available, otherwise online. |
 | `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>'. |
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
+| `--all-extensions` | Install Neat, Codex, and Claude VS Code extensions without prompting. |
+| `--edgematic-studio, --studio` | Install the Edgematic Studio extension and publish its port. Off by default. |
+| `--edgematic-studio-port, --studio-port` | Publish the Edgematic Studio port without installing it, for a manual install later. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
 | `--persistent-network-profile` | Allow setup to install a persistent NetworkManager shared-network repair profile without prompting. |
 | `--image` | Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt. |
 
+## Edgematic Studio opt-in
+
+Default setup does not display an Edgematic Studio panel, ask about installing
+it, install it, or publish its port. This applies to interactive setup as well
+as `-y` and `--noninteractive`.
+
+Use `--edgematic-studio` to install Studio and publish its port. The explicit
+`--edgematic-studio-port` option publishes only the port for a later manual
+installation.
+
 ## Arguments
 
 None.
 
+## Choose browser VS Code extensions
+
+Neat Extension adds Neat SDK tools to VS Code, while Codex Extension and Claude
+Extension provide AI coding assistance.
+
+During interactive setup of a new SDK container, use Space to select any of
+**Neat Extension**, **Codex Extension**, and **Claude Extension**, then Enter to
+confirm. All three start unchecked; selecting none skips extension installation.
+Only selected extensions are installed, and existing unselected extensions are
+left in place.
+
+Interactive terminals show an animated activity bar with the selected extension
+names and elapsed time during installation. The installer does not report a
+download percentage. Redirected output and CI logs omit the animation; installer
+output and errors are printed when the command finishes.
+
+For automation, bypass the checklist and install all three with:
+
+```bash
+sima-cli sdk setup --noninteractive --all-extensions
+```
+
+`--all-extensions` bypasses only extension selection; use `--noninteractive` to
+skip the other setup questions. It also installs the extensions when reusing an
+existing SDK container. Without `--all-extensions`, `-y` and `--noninteractive`
+skip optional VS Code extensions unless the legacy
+`SIMA_CLI_INSTALL_CODEX_EXTENSION` environment setting requests installation.
+`--all-extensions` cannot be combined with `--minimal` and does not enable
+Edgematic Studio or change Model Compiler installation.
+
+## Browser VS Code extension versions
+
+When browser VS Code extensions are selected during setup, sima-cli installs
+exact versions of Codex and Claude and pins them against automatic extension
+updates. Rerunning setup replaces a different installed version, including a
+newer incompatible version. A matching version is retained and pinned without
+downloading it again. Updates for unrelated extensions are unaffected.
+
+SDK images can declare the versions validated with their bundled OpenVSCode
+Server in `/etc/sima-neat/vscode-extensions.json`:
+
+```json
+{
+  "schema_version": 1,
+  "extensions": {
+    "openai.chatgpt": "26.5825.51511",
+    "anthropic.claude-code": "2.1.266"
+  }
+}
+```
+
+The manifest does not install extensions or change the setup opt-in behavior.
+SDK publishers should ship it even when extensions are not preinstalled, and
+validate both versions with each SDK release. Schema version 1 requires exact
+versions for both IDs; additional extension entries do not cause installation.
+
+For older images without this file, including the existing SDK 2.1.3 image,
+sima-cli uses Codex `26.5825.51511` and Claude `2.1.266` as compatibility
+fallbacks. Codex `26.901.22334` was reported to fail activation with
+`Unexpected identifier 'p'` on the SDK 2.1.3 OpenVSCode Server `1.109.5`;
+downgrading to the fallback version restored functionality.
+
+An unreadable or invalid manifest reports an error and skips browser extension
+installation while the rest of SDK setup continues. An unavailable requested
+version also reports an installation error; sima-cli never retries with an
+unpinned latest release.
+
+Failed Codex or Claude install commands are retried up to three times, with
+2-second and 4-second waits. Every attempt uses the same exact version and
+normal TLS verification. If all attempts fail, installation stops and reports
+both output streams; later selected extensions may not have been installed.
+Rerun setup with `--all-extensions` to complete the remaining installations.
+
+The existing environment overrides take precedence over SDK/default versions:
+
+| Variable | Behavior |
+| --- | --- |
+| `SIMA_CLI_CODEX_EXTENSION_ID` | Override the Codex target with `publisher.extension@exact-version`. Empty disables Codex installation unless `--all-extensions` is supplied. |
+| `SIMA_CLI_CLAUDE_EXTENSION_ID` | Override the Claude target with `publisher.extension@exact-version`. Empty disables Claude installation unless `--all-extensions` is supplied. |
+| `SIMA_CLI_INSTALL_CODEX_EXTENSION` | A truthy value automatically selects browser extension installation without its checklist; retained for compatibility. |
+
+`--all-extensions` selects all three extensions even if a legacy extension-ID
+override is empty; nonempty exact version overrides are still honored.
+
+A bare `openai.chatgpt` or `anthropic.claude-code` override uses the corresponding
+SDK/default pin. Other extension IDs now require an explicit version rather
+than resolving to latest. Overrides still require a valid manifest when one
+is present. `--minimal` skips optional extension installation.
+
+Setup verifies the installed versions and writes each selected extension's
+`metadata.pinned` flag in the mapped user's
+`~/.openvscode-server/extensions/extensions.json`, then restarts the browser
+VS Code service. This also pins matching versions installed before this policy
+was introduced, which OpenVSCode's install command otherwise leaves unpinned.
+Reload an open browser VS Code tab after setup to load the selected versions.
+
 ## Full Help
 
 ```text
-Usage: sima-cli sdk setup [OPTIONS]
+🖥️  Detected platform: Mac
+✅ Docker daemon is running.
+Usage: sdk setup [OPTIONS]
 
   Initialize SDK environment and select components to start.
 
@@ -42,19 +153,26 @@ Options:
                                   defaults).
   -y, --yes                       Skip confirmation before starting the
                                   container.
-  --devkit TEXT                   Configure DevKit integration for setup. Use
-                                  '--devkit <IP>'.
-  --no-insight                    Start Neat SDK without Insight
-                                  UI/video/WebRTC port mappings.
+  --devkit TEXT                   Configure DevKit integration for setup. Use '
+                                  --devkit <IP>'.
+  --no-insight                    Start Neat SDK without Insight UI/video/WebRTC
+                                  port mappings.
   --insight-video-channels INTEGER RANGE
-                                  Number of Insight video channels to
-                                  configure (four exposed ports per channel).
-                                  [default: 4; 1<=x<=80]
+                                  Number of Insight video channels to configure
+                                  (four exposed ports per channel).  [default:
+                                  4; 1<=x<=80]
   --no-model-compiler, --no-model-sdk
                                   Skip Model Compiler extension setup. --no-
                                   model-sdk is kept for compatibility.
-  --minimal                       Skip optional Neat SDK container extras for
-                                  CI compilation jobs.
+  --all-extensions                Install Neat, Codex, and Claude VS Code
+                                  extensions without prompting.
+  --edgematic-studio, --studio    Install the Edgematic Studio extension and
+                                  publish its port. Off by default.
+  --edgematic-studio-port, --studio-port
+                                  Publish the Edgematic Studio port without
+                                  installing it, for a manual install later.
+  --minimal                       Skip optional Neat SDK container extras for CI
+                                  compilation jobs.
   --workspace DIRECTORY           Host workspace directory to mount into SDK
                                   containers instead of ~/workspace.
   --persistent-network-profile    Allow setup to install a persistent
@@ -66,3 +184,48 @@ Options:
                                   skips the selection prompt.
   --help                          Show this message and exit.
 ```
+
+## Model Compiler installation source
+
+Setup looks only in the **current working directory** for
+`model-compiler-arm64.zip` (ARM64 SDK) or `model-compiler-amd64.zip` (x86-64 SDK).
+The architecture comes from the SDK container, so it also works when the host
+and container architectures differ. Extracted folders, ZIPs in the workspace or
+parent directory, and ZIPs for the other architecture are not searched.
+
+When a valid local ZIP is found, setup displays its full path and offers:
+
+1. Install from local source
+2. Install from online source
+3. Skip
+
+Without a valid ZIP, the options are **1. Install from online source** and
+**2. Skip**. Pressing Enter skips. Invalid or incompatible ZIPs are reported
+and excluded from the local choice.
+
+| Flags | Local ZIP available | No valid local ZIP |
+| --- | --- | --- |
+| `--noninteractive` | Install local | Skip |
+| `--noninteractive -y` | Install local | Install online |
+| `-y` | Install local | Install online |
+
+Without a terminal, the same unattended rules apply. Online automatic
+installation requires `-y`. For legacy SDK sources, authenticate on the host
+with `sima-cli login` first. `--minimal`, `--no-model-compiler`, and its alias
+`--no-model-sdk` always skip Model Compiler installation.
+
+Use the official ZIP with `install_modelsdk_wheels.sh`, `source.json`,
+`manifest.txt`, and package payloads at its root. The local package must match
+the compiler version selected for the SDK: the SDK base version before 2.1.3,
+and compiler 2.1.3 for SDK 2.1.3 and later, matching online version selection.
+
+The local ZIP is extracted to temporary host storage and copied into temporary
+storage in the Linux SDK container. Allow space for both extracted copies in
+addition to the installed compiler. This works on Ubuntu, macOS with Docker
+Desktop, and WSL, including paths with spaces; the installer runs inside the
+container. Temporary files are cleaned up after success or failure, and the
+original ZIP is retained. A failed local installation never falls back online.
+
+Local installation bypasses the compiler download and its online login step.
+System packages or Python prerequisites may still need network access; this
+does not make all of SDK setup air-gapped.

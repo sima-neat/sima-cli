@@ -243,3 +243,28 @@ class TestPkgUpdateCheck(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_update_subprocess_does_not_contaminate_json_stdout(capfd):
+    import json
+    from contextlib import redirect_stdout
+
+    real_run = subprocess.run
+
+    def run_fake_installer(command, **kwargs):
+        # Exercise OS file descriptors, not Python print redirection. Never run pip.
+        return real_run([
+            sys.executable, "-c",
+            "import os; os.write(1, b'installer progress\\n'); os.write(2, b'installer warning\\n')",
+        ], **kwargs)
+
+    with patch("sima_cli.utils.pkg_update_check.subprocess.run", side_effect=run_fake_installer), \
+            patch("sima_cli.utils.pkg_update_check.cleanup_pip_leftovers"):
+        with redirect_stdout(sys.stderr):
+            assert update_package("sima-cli") is True
+        print(json.dumps({"models": []}))
+
+    captured = capfd.readouterr()
+    assert json.loads(captured.out) == {"models": []}
+    assert "installer progress" in captured.err
+    assert "installer warning" in captured.err

@@ -1,10 +1,13 @@
 from sima_cli.update.updater import download_image
 from sima_cli.utils.net import get_local_ip_candidates
-from sima_cli.update.remote import wait_for_ssh, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session
+from sima_cli.update.remote import wait_for_ssh, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session, get_remote_board_info
 from sima_cli.utils.env import get_environment_type
 import ipaddress
+import inspect
 import os
 import platform
+import re
+import shlex
 import subprocess
 import threading
 import socket
@@ -123,7 +126,20 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
     click.echo(f"📡 Selected client: {selected_ip}")
     remote_dir = "/tmp"
 
+    troot_command = None
     if troot_image_path:
+        _, running_version, _, _, _ = get_remote_board_info(
+            selected_ip, passwd=DEFAULT_PASSWORD
+        )
+        match = re.match(r"^(\d+)\.(\d+)(?=$|[._-])", running_version.strip().strip('"\''))
+        if not match:
+            click.echo("❌ Cannot determine the running firmware version. Aborting before tRoot programming.")
+            return
+        if tuple(map(int, match.groups())) >= (3, 0):
+            troot_command = "sudo sh -c 'cd /tmp && exec simaai-trootctl full-flash'"
+        else:
+            remote_blob = shlex.quote(f"/tmp/{os.path.basename(troot_image_path)}")
+            troot_command = f"sudo troot_upgrade {remote_blob}"
         click.echo(f"📤 Copying tRoot image {troot_image_path} to {selected_ip}:{remote_dir}")
         success = copy_file_to_remote_board(
             selected_ip, troot_image_path, remote_dir, passwd=DEFAULT_PASSWORD
@@ -148,19 +164,13 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
 
         if troot_image_path:
             _print_troot_programming_warning()
-            troot_remote_path = f"/tmp/{os.path.basename(troot_image_path)}"
-            run_remote_command(ssh, f"sudo troot_upgrade {troot_remote_path}")
+            run_remote_command(ssh, troot_command, check=True)
 
-        # Step a: Check if eMMC exists
-        check_cmd = "[ -e /dev/mmcblk0 ] || (echo '❌ /dev/mmcblk0 not found'; exit 1)"
-        run_remote_command(ssh, check_cmd)
-
-        # Step b: umount eMMC
-        pre_unmount_cmd = (
-            "sudo mount | grep mmcblk0 | awk '{print $3}' | while read mnt; do "
-            "sudo umount \"$mnt\"; done"
-        )
-        run_remote_command(ssh, pre_unmount_cmd)
+        # Match mounts through the entire block-device tree, including LVM.
+        from sima_cli.update.emmc import prepare_emmc
+        preparation = inspect.getsource(prepare_emmc) + '\nprepare_emmc()\n'
+        run_remote_command(ssh, 'sudo python3 -c ' + shlex.quote(preparation), check=True,
+                           command_label='Preparing eMMC for flashing')
 
         # Step c: Decide flashing method
         wic_path = next((p for p in emmc_image_paths if p.endswith(".wic.gz")), None)
@@ -168,19 +178,21 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
 
         if wic_path:
             filename = os.path.basename(wic_path)
-            remote_path = f"/tmp/{filename}"
+            remote_path = shlex.quote(f"/tmp/{filename}")
             flash_cmd = f"sudo bmaptool copy {remote_path} /dev/mmcblk0"
-            run_remote_command(ssh, flash_cmd)
+            run_remote_command(ssh, flash_cmd, check=True)
 
             # Step d: Fix GPT for Yocto
             fix_cmd = 'sudo printf "fix\n" | sudo parted ---pretend-input-tty /dev/mmcblk0 print'
-            run_remote_command(ssh, fix_cmd)
+            run_remote_command(ssh, fix_cmd, check=True)
 
         elif img_path:
             filename = os.path.basename(img_path)
-            remote_path = f"/tmp/{filename}"
-            flash_cmd = f"sudo gzip -dc {remote_path} | sudo dd of=/dev/mmcblk0 bs=16M status=progress"
-            run_remote_command(ssh, flash_cmd)
+            remote_path = shlex.quote(f"/tmp/{filename}")
+            flash_cmd = "sudo bash -o pipefail -c " + shlex.quote(
+                f"gzip -dc {remote_path} | dd of=/dev/mmcblk0 bs=16M conv=fsync status=progress"
+            )
+            run_remote_command(ssh, flash_cmd, check=True)
         else:
             click.echo("❌ No .wic.gz or .img image found in emmc_image_paths.")
             return
@@ -196,6 +208,7 @@ class ClientManager:
         self.clients = {}
         self.lock = threading.Lock()
         self.shutdown_event = threading.Event()
+        self.monitor_threads = []
 
     def add_client(self, ip, filename):
         """Add a new client with initial state."""
@@ -203,7 +216,7 @@ class ClientManager:
             if ip not in self.clients:
                 start_time = time.time()
                 self.clients[ip] = {
-                    'state': 'Booting',
+                    'state': 'SSH check stopped' if self.shutdown_event.is_set() else 'Booting',
                     'filename': filename,
                     'timestamp': start_time,
                     'board_info': None
@@ -211,12 +224,16 @@ class ClientManager:
                 click.echo(f"📥 New client connected: {ip}")
                 if filename:
                     click.echo(f"📄 Client {ip} requested file: {filename}")
+                if self.shutdown_event.is_set():
+                    return
                 # Start monitoring thread
-                threading.Thread(
+                thread = threading.Thread(
                     target=self.monitor_client,
                     args=(ip, start_time),
                     daemon=True
-                ).start()
+                )
+                self.monitor_threads.append(thread)
+                thread.start()
 
     def monitor_client(self, ip, start_time):
         """
@@ -232,8 +249,17 @@ class ClientManager:
             while not self.shutdown_event.is_set():
                 click.echo(f"🔍 Checking SSH availability for {ip}...")
                 try:
-                    wait_for_ssh(ip, timeout=120)
+                    if not wait_for_ssh(ip, timeout=120, cancel_event=self.shutdown_event):
+                        if not self.shutdown_event.is_set():
+                            with self.lock:
+                                self.clients[ip]['state'] = 'SSH unavailable'
+                            _print_ip_recovery_help()
+                        if self.shutdown_event.wait(timeout=10):
+                            break
+                        continue
                     with self.lock:
+                        if self.shutdown_event.is_set():
+                            break
                         self.clients[ip]['state'] = 'Connected'
                         self.clients[ip]['board_info'] = "SSH available"
                     click.echo(f"✅ SSH is available on {ip}")
@@ -254,9 +280,20 @@ class ClientManager:
         with self.lock:
             return sorted(self.clients.items(), key=lambda x: x[0])
 
+    def stop_monitoring(self):
+        """Stop automatic SSH checks while leaving the TFTP server running."""
+        self.shutdown_event.set()
+        with self.lock:
+            threads = list(self.monitor_threads)
+            for info in self.clients.values():
+                if info['state'] in {'Booting', 'SSH unavailable'}:
+                    info['state'] = 'SSH check stopped'
+        for thread in threads:
+            thread.join()
+
     def shutdown(self):
         """Signal monitoring threads to exit."""
-        self.shutdown_event.set()
+        self.stop_monitoring()
 
 class InteractiveTftpServer(TftpServer):
     """Custom TFTP server with client logging and monitoring."""
@@ -414,12 +451,38 @@ class InteractiveTftpServer(TftpServer):
         self.shutdown_gracefully = self.shutdown_immediately = False
         self.client_manager.shutdown()
 
+def _print_ip_recovery_help():
+    click.echo("The board may have received a different IP address during boot.")
+    click.echo("Type 'd' to discover devices on the local network.")
+    click.echo("Or connect the board's serial console, run 'sima-cli serial' in another terminal, "
+               "log in, and run 'ip -4 addr' (or 'ifconfig') on the device.")
+    click.echo("Identify your board's current IP, then type 'f <ip>' here to flash it "
+               "(for example: f 192.168.2.3).")
+
+
+def _discover_netboot_devices():
+    from sima_cli.discover.discover import discover_and_probe
+
+    try:
+        discover_and_probe(mdns_only=True)
+    except Exception as exc:
+        click.echo(f"❌ Device discovery failed: {exc}")
+    _print_ip_recovery_help()
+
+
 def run_cli(client_manager):
     """Run the interactive CLI for netboot commands."""
-    click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
+    click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'd' to discover devices, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
+    click.echo("Press Ctrl+C at the netboot prompt to stop SSH reboot checks if the board's IP changed.")
     while True:
         try:
-            user_input = input("netboot> ").strip()
+            try:
+                user_input = input("netboot> ").strip()
+            except KeyboardInterrupt:
+                client_manager.stop_monitoring()
+                click.echo("\nStopped SSH reboot checks. The TFTP server is still running.")
+                _print_ip_recovery_help()
+                continue
             parts = user_input.split()
             command = parts[0].lower() if parts else ""
             args = parts[1:]
@@ -441,6 +504,12 @@ def run_cli(client_manager):
                             click.echo(f"     Board Info: {board_info}")
                 else:
                     click.echo("📭 No TFTP client requests received yet.")
+            elif command == "d":
+                if args:
+                    click.echo("❌ Usage: d")
+                    continue
+                client_manager.stop_monitoring()
+                _discover_netboot_devices()
             elif command == "f":
                 if len(args) > 1:
                     click.echo("❌ Usage: f [ip]")
@@ -456,12 +525,38 @@ def run_cli(client_manager):
             elif command == "":
                 continue
             else:
-                click.echo("❓ Unknown command. Try 'c' to print client list, 'f [ip]' to flash emmc, or 'q'.")
+                click.echo("❓ Unknown command. Try 'c' to print client list, 'd' to discover devices, 'f [ip]' to flash emmc, or 'q'.")
         except (KeyboardInterrupt, EOFError):
             click.echo("\n🛑 Exiting netboot session.")
             return True
 
-def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto'):
+def auto_flash(client_manager, selected_ip, timeout=900):
+    """Flash only the confirmed device, once, after its network boot is ready."""
+    click.echo(f'Waiting for SSH on {selected_ip}; flashing will start automatically.')
+    deadline = time.monotonic() + timeout
+    while not client_manager.shutdown_event.is_set():
+        connected = any(ip == selected_ip and info.get('state') == 'Connected'
+                        for ip, info in client_manager.get_client_info())
+        if connected:
+            from sima_cli.update.remote import run_remote_command_capture
+            ssh = init_ssh_session(selected_ip, password=DEFAULT_PASSWORD)
+            try:
+                code, cmdline, _ = run_remote_command_capture(ssh, 'cat /proc/cmdline')
+            finally:
+                ssh.close()
+            if code != 0 or 'root=/dev/ram0' not in cmdline.split():
+                raise click.ClickException('Automatic flashing stopped: the selected DevKit is not confirmed '
+                                           'to be running the network boot image.')
+            click.echo(f'Starting automatic flash on {selected_ip}.')
+            flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
+                       troot_image_path=troot_image_path)
+            return
+        if time.monotonic() >= deadline:
+            raise click.ClickException(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')
+        client_manager.shutdown_event.wait(0.5)
+
+
+def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto', allow_daily_fallback: bool = False, devkit: str = None):
     """
     Download and serve a bootable image for network boot over TFTP with client monitoring.
 
@@ -492,7 +587,7 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
 
     try:
         click.echo(f"⬇️  Downloading netboot image for version: {version}, board: {board}, swtype: {swtype}")
-        file_list = download_image(version, board, swtype=swtype, internal=internal, update_type='netboot', flavor=flavor)
+        file_list = download_image(version, board, swtype=swtype, internal=internal, update_type='netboot', flavor=flavor, allow_daily_fallback=allow_daily_fallback)
         if not isinstance(file_list, list):
             raise ValueError("Expected list of extracted files, got something else.")
         extract_dir = os.path.dirname(file_list[0])
@@ -531,28 +626,81 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
     except Exception as e:
         raise RuntimeError(f"❌ Failed to download and extract netboot image: {e}")
 
+    from sima_cli.update.netboot_device import resolve_device, server_address, configure_and_reboot
+    if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
+        raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
+    selected_devkit = resolve_device(devkit)
+    server_ip = server_address(selected_devkit) if selected_devkit else None
+    server = None
+    client_manager = None
+    server_thread = None
+    tftp_ready = False
     try:
         click.echo(f"🚀 Starting TFTP server in: {extract_dir}")
         ip_candidates = get_local_ip_candidates()
-        if not ip_candidates:
-            click.echo("❌ No suitable local IP addresses found.")
-            exit(1)
-
-        click.echo("🌐 TFTP server is listening on these interfaces (UDP port 69):")
-        for iface, ip in ip_candidates:
-            click.echo(f"   🔹 {iface}: {ip}")
+        if server_ip and not any(ip == server_ip for _, ip in ip_candidates):
+            ip_candidates.append(('route to selected DevKit', server_ip))
 
         client_manager = ClientManager()
 
         server = InteractiveTftpServer(tftproot=extract_dir, client_manager=client_manager)
-        server_thread = threading.Thread(target=server.listen, args=('0.0.0.0', 69), daemon=True)
+        startup_errors = []
+
+        def serve():
+            try:
+                server.listen('0.0.0.0', 69)
+            except Exception as exc:
+                startup_errors.append(exc)
+
+        server_thread = threading.Thread(target=serve, daemon=True)
         server_thread.start()
 
-        if run_cli(client_manager):
-            server.stop(now=True)
-            client_manager.shutdown()
+        deadline = time.monotonic() + 5
+        while not server.is_running.wait(0.05):
+            if startup_errors:
+                raise startup_errors[0]
+            if not server_thread.is_alive() or time.monotonic() >= deadline:
+                raise RuntimeError('TFTP server did not become ready; the DevKit was not changed.')
 
-    except PermissionError:
-        raise RuntimeError("❌ Permission denied. You must run this command with sudo to bind to port 69.")
+        tftp_ready = True
+        click.echo("🌐 TFTP server is listening on these interfaces (UDP port 69):")
+        for iface, ip in ip_candidates:
+            click.echo(f"   🔹 {iface}: {ip}")
+
+        if selected_devkit:
+            reboot_scheduled = configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
+            if not reboot_scheduled:
+                click.echo(
+                    f'Skipped network boot setup and reboot for {selected_devkit}. '
+                    'The TFTP server is still running; waiting for a device to connect. '
+                    'Boot another device from the network using a reachable host IP listed above. '
+                    'Once "✅ SSH is available on <IP>" appears, type "f" to flash the device.'
+                )
+                if autoflash:
+                    click.echo('Automatic flashing is disabled because device setup was not confirmed.')
+            elif autoflash:
+                auto_flash(client_manager, selected_devkit)
+        else:
+            message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'
+                           'Configure the DevKit manually through its serial console to boot from the network, '
+                           'using a reachable host IP listed above as its TFTP server.\n'
+                           'Keep this program running. Once "✅ SSH is available on <IP>" appears, type "f" to flash the device.')
+            if autoflash:
+                message.append('\n\nAutomatic flashing is disabled because no DevKit was selected.', style='bold yellow')
+            console.print(Panel(message, title='Manual netboot setup', border_style='yellow'))
+        run_cli(client_manager)
+
     except OSError as e:
-        raise RuntimeError(f"❌ Failed to start TFTP server: {e}")
+        if tftp_ready:
+            raise RuntimeError(f"Netboot device setup or session failed after TFTP started: {e}") from e
+        if isinstance(e, PermissionError):
+            raise RuntimeError("❌ Permission denied. You must run this command with sudo to bind to port 69.") from e
+        raise RuntimeError(f"❌ Failed to start TFTP server: {e}") from e
+
+    finally:
+        if server is not None:
+            server.stop(now=True)
+        if client_manager is not None:
+            client_manager.shutdown()
+        if server_thread is not None:
+            server_thread.join(timeout=3)

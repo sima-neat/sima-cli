@@ -1,4 +1,5 @@
 import click
+import requests
 import os
 import re
 import time
@@ -7,13 +8,13 @@ import tarfile
 import gzip
 import subprocess
 import shutil
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from typing import List
 from sima_cli.utils.env import get_environment_type
 from sima_cli.download import download_file_from_url
 from sima_cli.utils.config_loader import load_resource_config
 from sima_cli.update.remote import push_and_update_remote_board, get_remote_board_info, reboot_remote_board
-from sima_cli.update.query import elxr_firmware_path, list_available_firmware_versions
+from sima_cli.update.query import elxr_firmware_path, list_available_firmware_versions, resolve_elxr_palette_image
 from sima_cli.utils.env import is_sima_board, is_devkit_running_elxr
 from sima_cli.update.elxr import update_elxr
 
@@ -73,7 +74,20 @@ def _resolve_firmware_url(
     if swtype == 'yocto':
         image_file = 'release.tar.gz' if flavor == 'headless' else 'graphics.tar.gz'
         download_url = url.rstrip("/") + f"/soc-images/{board}/{version_or_url}/artifacts/{image_file}"
+    elif swtype == 'elxr' and update_type == 'recovery':
+        base_version = version_or_url.split('_')[0]
+        image_file = f'elxr-recovery-palette-{board}-{base_version}-agate-arm64.img'
+        download_url = (
+            url.rstrip("/")
+            + f"/soc-images/{elxr_firmware_path(board, version_or_url)}/{version_or_url}/artifacts/palette/{image_file}"
+        )
     elif swtype == 'elxr' and update_type == 'bootimg':
+        if internal and elxr_firmware_path(board, version_or_url).startswith('elxr/bsp/'):
+            palette_url = (
+                url.rstrip('/')
+                + f"/soc-images/{elxr_firmware_path(board, version_or_url)}/{version_or_url}/artifacts/palette/"
+            )
+            return resolve_elxr_palette_image(palette_url, board)
         base_version = version_or_url.split('_')[0]
         image_file = f'elxr-palette-{board}-{base_version}-arm64.img.gz'
         download_url = (
@@ -136,18 +150,33 @@ def _pick_from_available_versions(
         return version_or_url
 
     available_versions = list_available_firmware_versions(
-        board, version_or_url, internal, flavor, swtype, update_type
+        board, version_or_url, internal, flavor, swtype, update_type,
+        with_metadata=True,
     )
 
+    choices = []
+    if available_versions:
+        version_width = max(48, max(
+            len(v['version'] if isinstance(v, dict) else v)
+            for v in available_versions
+        ))
+        for entry in available_versions:
+            version = entry['version'] if isinstance(entry, dict) else entry
+            name = (f"{version:<{version_width}}  {(entry['created'] or 'Unknown'):<23}"
+                    if isinstance(entry, dict) else version)
+            choices.append({'name': name, 'value': version})
+
     try:
-        if len(available_versions) > 1:
+        if len(choices) > 1:
             click.echo("Multiple firmware versions found matching your input:")
             
             from InquirerPy import inquirer
-            
+
+            if internal:
+                click.echo(f"  {'Version':<{version_width}}  Build time")
             selected_version = inquirer.fuzzy(
                 message="Select a version:",
-                choices=available_versions,
+                choices=choices,
                 max_height="70%",  # scrollable
                 instruction="(Use ↑↓ to navigate, / to search, Enter to select)"
             ).execute()
@@ -158,8 +187,8 @@ def _pick_from_available_versions(
 
             return selected_version
 
-        elif len(available_versions) == 1:
-            return available_versions[0]
+        elif len(choices) == 1:
+            return choices[0]['value']
 
         else:
             click.echo(
@@ -204,6 +233,10 @@ def _extract_required_files(tar_path: str, board: str, update_type: str = 'stand
     Returns:
         list: List of full paths to extracted files.
     """    
+    # Recovery media is already a raw disk image, not an archive.
+    if update_type == 'recovery' and tar_path.endswith('.img'):
+        return [tar_path]
+
     extract_dir = os.path.dirname(tar_path)
     _flavor = convert_flavor(flavor)
 
@@ -381,17 +414,18 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
         # If internal, netboot and elxr, we need to download some additional files to prepare for eMMC flash.
         if update_type == "netboot" and swtype == "elxr":
             base_url = os.path.dirname(image_url)
-            base_version = version_or_url.split('_')[0]
 
             if internal:
-                extra_files = [f"../palette/elxr-palette-{board}-{base_version}-arm64.img.gz"]
+                extra_urls = [resolve_elxr_palette_image(
+                    urljoin(image_url, '../palette/'), board
+                )]
             else:
                 match = re.search(r"SDK(\d+\.\d+\.\d+)", image_url)
                 version = match.group(1)
-                extra_files = [f"elxr-palette-{board}-{version}-arm64.img.gz"]
+                extra_urls = [f"{base_url}/elxr-palette-{board}-{version}-arm64.img.gz"]
 
-            for fname in extra_files:
-                extra_url = f"{base_url}/{fname}"
+            for extra_url in extra_urls:
+                fname = os.path.basename(urlparse(extra_url).path)
                 try:
                     click.echo(f"📥 Downloading extra file: {fname} from {extra_url} saving into {dest_path}")
                     netboot_file_path = download_file_from_url(extra_url, dest_path, internal=internal)
@@ -399,14 +433,27 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
                     extracted_files.extend([netboot_file_path])
                     click.echo(f"✅ Saved {fname} to {dest_path}")
                 except Exception as e:
-                    click.echo(f"⚠️ Failed to download {fname}: {e}")
+                    raise RuntimeError(f"Failed to download required eMMC image {fname}: {e}") from e
 
         click.echo(f"📦 Firmware downloaded to: {firmware_path}")
         return extracted_files
 
     except Exception as e:
+        if update_type == 'recovery':
+            # The downloader wraps HTTP failures; inspect the exception chain
+            # so auth/network failures are not mistaken for absent images.
+            cause = e
+            while cause is not None:
+                if (isinstance(cause, requests.HTTPError)
+                        and cause.response is not None
+                        and cause.response.status_code == 404):
+                    raise RuntimeError(
+                        f"The selected version '{version_or_url}' doesn't contain a recovery image."
+                    ) from e
+                cause = cause.__cause__ or cause.__context__
+            raise
         click.echo(f"❌ Host update failed: {e}")
-        exit(0)
+        raise SystemExit(1) from e
 
 def _update_host(script_path: str, board: str, boardip: str, passwd: str):
     """
@@ -547,7 +594,7 @@ def _update_remote(extracted_paths: List[str], ip: str, board: str, passwd: str,
 
     return script_path
 
-def download_image(version_or_url: str, board: str, swtype: str, internal: bool = False, update_type: str = 'standard', flavor: str = 'headless'):
+def download_image(version_or_url: str, board: str, swtype: str, internal: bool = False, update_type: str = 'standard', flavor: str = 'headless', allow_daily_fallback: bool = False):
     """
     Download and extract a firmware image for a specified board.
 
@@ -563,6 +610,11 @@ def download_image(version_or_url: str, board: str, swtype: str, internal: bool 
         List[str]: Paths to the extracted image files.
     """
     
+    if (internal and update_type == 'netboot' and swtype == 'elxr' and board == 'modalix'
+            and not version_or_url.startswith(('http://', 'https://')) and not os.path.exists(version_or_url)):
+        from sima_cli.update.netboot_artifacts import download_netboot_image
+        return download_netboot_image(version_or_url, board, flavor, allow_daily_fallback=allow_daily_fallback)
+
     if 'http' not in version_or_url and not os.path.exists(version_or_url): 
         version_or_url = _pick_from_available_versions(
             board, version_or_url, internal, flavor, swtype, update_type

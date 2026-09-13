@@ -1,5 +1,7 @@
 import json
+from datetime import datetime, timezone
 import re
+from urllib.parse import quote, urljoin
 import requests
 from sima_cli.utils.config_loader import load_resource_config, artifactory_url
 from sima_cli.utils.config import get_auth_token
@@ -13,7 +15,35 @@ def elxr_firmware_path(board: str, version: str) -> str:
     return f"elxr/bsp/{board}" if uses_bsp else f"elxr/{board}"
 
 
-def _list_available_firmware_versions_internal(board: str, match_keyword: str = None, flavor: str = 'headless', swtype: str = 'yocto'):
+def resolve_elxr_palette_image(palette_url: str, board: str) -> str:
+    """Find the actual disk image name in an internal build's palette directory."""
+    prefix = ARTIFACTORY_BASE_URL.rstrip('/') + '/'
+    if not palette_url.startswith(prefix):
+        raise ValueError("Palette directory is outside the configured Artifactory")
+    path = palette_url[len(prefix):].rstrip('/')
+    session = requests.Session()
+    session.trust_env = False
+    response = session.get(
+        f"{prefix}api/storage/{path}",
+        headers={"Authorization": f"Bearer {get_auth_token(internal=True)}"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    candidates = []
+    for item in response.json().get('children', []):
+        name = item.get('uri', '').lstrip('/')
+        if (not item.get('folder', False) and '/' not in name
+                and name.startswith(f'elxr-palette-{board}-')
+                and name.endswith('-arm64.img.gz')):
+            candidates.append(name)
+    if len(candidates) != 1:
+        raise RuntimeError(
+            f"Expected one palette disk image in {palette_url}; found {len(candidates)}"
+        )
+    return urljoin(palette_url.rstrip('/') + '/', quote(candidates[0]))
+
+
+def _list_available_firmware_versions_internal(board: str, match_keyword: str = None, flavor: str = 'headless', swtype: str = 'yocto', with_metadata: bool = False, strict: bool = False):
     if swtype == 'yocto':
         fw_path = f"{board}"
         aql_query = f"""
@@ -43,10 +73,14 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
             "type": "file",
         }
         aql_query = (
-            f'items.find({json.dumps(criteria)}).include("repo", "path", "name")'
+            f'items.find({json.dumps(criteria)}).include("repo", "path", "name", "created")'
         )
     else:
         raise ValueError(f"Unsupported swtype: {swtype}")
+
+    if strict:
+        from sima_cli.update.swu_artifacts import _internal_headers
+        _internal_headers()
 
     aql_url = f"{ARTIFACTORY_BASE_URL}/api/search/aql"
     headers = {
@@ -56,7 +90,9 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
 
     session = requests.Session()
     session.trust_env = False
-    response = session.post(aql_url, data=aql_query, headers=headers)
+    response = session.post(aql_url, data=aql_query, headers=headers, timeout=30)
+    if strict:
+        response.raise_for_status()
 
     if response.status_code == 401:
         print('❌ You are not authorized to access Artifactory, use `sima-cli -i login` with your Artifactory identity token to authenticate, then try the command again.')
@@ -74,13 +110,30 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
         }
         top_level_folders = sorted({path.split("/")[0] for path in full_paths})
     else:  # elxr
-        versions = set()
+        versions = {}
         for item in results:
             root, version, artifacts, flavor_dir = item['path'].rsplit('/', 3)
             if (root == elxr_firmware_path(board, version)
                     and artifacts == 'artifacts' and flavor_dir == 'palette'):
-                versions.add(version)
+                try:
+                    created = datetime.fromisoformat(item.get('created', '').replace('Z', '+00:00'))
+                    if created.tzinfo is None:
+                        created = None
+                    else:
+                        created = created.astimezone(timezone.utc)
+                except (TypeError, ValueError, AttributeError):
+                    created = None
+                # Legacy builds may have two archive names; use the newest one.
+                previous = versions.get(version)
+                if version not in versions or (created is not None
+                        and (previous is None or created > previous)):
+                    versions[version] = created
+        # Stable name ordering breaks timestamp ties; unknown dates sort last.
         top_level_folders = sorted(versions)
+        top_level_folders.sort(
+            key=lambda version: versions[version] or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
 
     if match_keyword:
         match_keyword = match_keyword.lower()
@@ -88,6 +141,14 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
             f for f in top_level_folders if match_keyword in f.lower()
         ]
 
+    if with_metadata and swtype == 'elxr':
+        return [
+            {"version": version, "created": (
+                versions[version].strftime('%Y-%m-%d %H:%M:%S UTC')
+                if versions[version] is not None else None
+            )}
+            for version in top_level_folders
+        ]
     return top_level_folders
 
 
@@ -131,6 +192,12 @@ def _list_available_firmware_versions_external(
             f'{download_url_base}SDK{match_keyword}/devkit/{board}/{swtype}/'
             f'simaai-devkit-fw-{board}-{swtype}-{flavor_str}{match_keyword}.tar.gz'
         )
+    elif update_type == 'recovery':
+        base_version = match_keyword.split('_')[0]
+        firmware_download_url = (
+            f'{download_url_base}SDK{match_keyword}/devkit/{board}/{swtype}/'
+            f'elxr-recovery-palette-{board}-{base_version}-agate-arm64.img'
+        )
     elif update_type == 'bootimg':
         firmware_download_url = (
             f'{download_url_base}SDK{match_keyword}/devkit/{board}/{swtype}/'
@@ -154,6 +221,7 @@ def list_available_firmware_versions(
     flavor: str = 'headless',
     swtype: str = 'yocto',
     update_type: str = 'standard',
+    with_metadata: bool = False,
 ):
     """
     Public interface to list available firmware versions.
@@ -166,11 +234,15 @@ def list_available_firmware_versions(
     - update_type: str – Operation being prepared (standard, bootimg, or netboot).
 
     Returns:
-    - List[str] of firmware version folder names, or None if access is not allowed
+    - List[str] of firmware version folder names, or None if access is not allowed.
+      With with_metadata=True, internal eLxr results contain version and created
+      fields instead. Creation dates are archive timestamps in UTC.
     """
     if not internal:
         return _list_available_firmware_versions_external(
             board, match_keyword, flavor, swtype, update_type
         )
 
-    return _list_available_firmware_versions_internal(board, match_keyword, flavor, swtype)
+    return _list_available_firmware_versions_internal(
+        board, match_keyword, flavor, swtype, with_metadata=with_metadata
+    )

@@ -79,6 +79,7 @@ pip install sima-cli
 
 | Guide | Description |
 | --- | --- |
+| [Interactive Shell](interactive-shell.md) | Run sima-cli interactively and see which commands are supported inside the shell. |
 | [Neat SDK Networking Setup](sdk-networking/index.md) | Understand how SDK, Docker, Insight, and DevKit networking are configured. |
 | [Troubleshoot SDK Networking](sdk-networking/troubleshooting.md) | Run network diagnostics, repair Linux shared-network routing, and collect support bundles. |
 | [Roll Back SDK Network Changes](sdk-networking/rollback.md) | Preview and undo Linux SDK network setup or repair changes. |
@@ -105,6 +106,7 @@ pip install sima-cli
 | [`sima-cli sdk`](commands/sima-cli-sdk.md) | Manage and launch SiMa SDK 2.0 container environments (Beta). |
 | [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md) | Update sima-cli manually from PyPI or a direct wheel URL. |
 | [`sima-cli serial`](commands/sima-cli-serial.md) | Connect to the UART serial console of the DevKit. |
+| [`sima-cli shell`](commands/sima-cli-shell.md) | Start an interactive sima-cli shell. |
 | [`sima-cli update`](commands/sima-cli-update.md) | Update the software on a SiMa DevKit or remote SiMa device. |
 
 ## Complete Command List
@@ -128,6 +130,7 @@ pip install sima-cli
 - [`sima-cli sdk`](commands/sima-cli-sdk.md)
 - [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md)
 - [`sima-cli serial`](commands/sima-cli-serial.md)
+- [`sima-cli shell`](commands/sima-cli-shell.md)
 - [`sima-cli update`](commands/sima-cli-update.md)
 - [`sima-cli appzoo clone`](commands/sima-cli-appzoo-clone.md)
 - [`sima-cli appzoo describe`](commands/sima-cli-appzoo-describe.md)

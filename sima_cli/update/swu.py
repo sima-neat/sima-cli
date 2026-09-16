@@ -289,7 +289,8 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
         key, key_directory = prepare_key(target, dryrun=dryrun, signing_cert=signing_cert, internal=internal)
         before = preflight(target, key)
         phase = "resolving the update bundle"
-        source = resolve_bundle(requested, board, internal, allow_external_fallback=allow_external_fallback)
+        source = resolve_bundle(requested, board, internal, allow_external_fallback=allow_external_fallback,
+                                auto_confirm=auto_confirm)
         if not source:
             raise click.Abort()
         click.echo(f'Full-system bundle: {source}')

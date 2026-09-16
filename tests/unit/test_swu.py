@@ -139,7 +139,7 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
         return ''
     target.run.side_effect = run
     with patch.object(swu, 'Target', return_value=target), patch.object(swu, 'preflight', return_value=parse_state(STATE)), \
-            patch.object(swu, 'resolve_bundle', return_value=str(bundle)), patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
+            patch.object(swu, 'resolve_bundle', return_value=str(bundle)) as resolve, patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
             patch.object(swu, '_select_staging_root', return_value=root), \
             patch.object(swu, 'prepare_key', return_value=(key_directory + '/public.pem' if key_directory else '/tmp/test-signing-cert.pem', key_directory)), \
             patch.object(swu.tempfile, 'TemporaryDirectory') as cache, \
@@ -151,6 +151,7 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
             reboot.assert_not_called()
         else:
             swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=True, dryrun=dryrun)
+    assert resolve.call_args.kwargs["auto_confirm"] is True
     return target
 
 

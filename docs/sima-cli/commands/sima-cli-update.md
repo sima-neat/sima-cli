@@ -56,7 +56,7 @@ applies only to eLxr 3.0+ SWUpdate, not bootimg or recovery-media creation.
 | --- | --- |
 | `-v, --version` | Specify version string (e.g., '1.7.0', 'ga', 'beta', or a direct firmware URL). Default is GA if not specifiedOverrides positional argument if both are given. |
 | `--ip` | Target device IP address for remote firmware update. |
-| `-y, --yes` | Assume yes for update confirmation prompts. |
+| `-y, --yes` | Assume yes for update confirmation prompts and select the newest matching full-system build. |
 | `-p, --passwd` | Password for remote board SSH or local ELXR sudo authentication. (default: edgeai) |
 | `--flavor` | Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above (default: auto) |
 | `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror (eLxr only). On 3.0+, signed-bundle verification remains required. The legacy 2.1 behavior is unchanged. |
@@ -160,7 +160,7 @@ Options:
                                  argument if both are given.
   --ip TEXT                      Target device IP address for remote firmware
                                  update.
-  -y, --yes                      Assume yes for update confirmation prompts.
+  -y, --yes                      Assume yes for update confirmation prompts and select the newest matching full-system build.
   -p, --passwd TEXT              Password for remote board SSH or local ELXR
                                  sudo authentication.  [default: edgeai]
   --flavor [headless|full|auto]  Firmware flavor: 'full' image supports NVMe

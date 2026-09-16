@@ -314,7 +314,7 @@ def download(ctx, url, dest):
 @click.option(
     "-y", "--yes",
     is_flag=True,
-    help="Assume yes for update confirmation prompts."
+    help="Assume yes for update confirmation prompts and select the newest matching full-system build."
 )
 @click.option(
     "-p", "--passwd",

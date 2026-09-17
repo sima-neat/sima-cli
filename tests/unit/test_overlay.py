@@ -255,7 +255,7 @@ def test_normal_summary_hides_package_version_details(capsys):
     assert 'future sima-cli update' not in output
 
 
-def test_review_panel_says_matching_metadata_keeps_overlay(capsys):
+def test_review_panel_says_selected_build_decides_overlay_reset(capsys):
     render_overlay({
         'status': 'enabled',
         'packages': {'additional': [], 'changed': [], 'removed': []},
@@ -264,7 +264,7 @@ def test_review_panel_says_matching_metadata_keeps_overlay(capsys):
     })
     output = capsys.readouterr().out
     assert 'Package metadata matches the running image' in output
-    assert 'no overlay reset is required for this update' in output
+    assert 'depends on the build selected for the update' in output
 
 
 def test_before_updating_panel_uses_warning_color():

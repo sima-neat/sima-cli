@@ -222,7 +222,7 @@ def test_preserve_overlay_info_redacts_bundle_url_credentials(tmp_path):
 def test_yes_auto_selects_remote_clean_overlay_update(tmp_path):
     report = {
         'package_builds': {'image': '1454', 'metadata': '1369'},
-        'packages': {}, 'entries': [],
+        'packages': {'changed': ['base:arm64 1454 -> 1369']}, 'entries': [],
     }
     backup = ('/data/.overlay-backup/test', ['git'], ['/opt/kerrigan'])
     with patch.object(swu, 'inspect_overlay', return_value=report), \
@@ -240,10 +240,55 @@ def test_yes_auto_selects_remote_clean_overlay_update(tmp_path):
                for call in target.run.call_args_list)
 
 
+def test_matching_selected_build_keeps_overlay_package_state(tmp_path):
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1454'},
+        'packages': {'additional': ['git:arm64 1']}, 'entries': [],
+    }
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu, 'preserve_overlay_info') as preserve:
+        target = run_install(tmp_path, auto_confirm=True,
+                             source_version='3.0.0_daily_develop_B1454')
+    preserve.assert_not_called()
+    assert not any('SWUPDATE_CLEAN_OVERLAY=1' in call.args[0]
+                   for call in target.run.call_args_list)
+
+
+def test_new_selected_build_resets_overlay_package_state(tmp_path):
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1454'},
+        'packages': {'additional': ['git:arm64 1']}, 'entries': [],
+    }
+    backup = ('/data/.overlay-backup/test', ['git'], [])
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu, 'bundle_supports_overlay_cleanup', return_value=True), \
+            patch.object(swu, 'preserve_overlay_info', return_value=backup) as preserve, \
+            patch.object(swu, 'print_overlay_recovery_guidance'):
+        target = run_install(tmp_path, auto_confirm=True,
+                             source_version='3.0.0_daily_develop_B1455')
+    preserve.assert_called_once()
+    assert any('SWUPDATE_CLEAN_OVERLAY=1' in call.args[0]
+               for call in target.run.call_args_list)
+
+
+def test_new_selected_build_prompts_for_overlay_reset(tmp_path):
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1454'},
+        'packages': {'additional': ['git:arm64 1']}, 'entries': [],
+    }
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu.click, 'confirm', return_value=False) as confirm:
+        run_install(tmp_path, auto_confirm=False,
+                    source_version='3.0.0_daily_develop_B1455')
+    reset_prompt = confirm.call_args_list[0].args[0]
+    assert 'selected image is B1455' in reset_prompt
+    assert 'reset OverlayFS' in reset_prompt
+
+
 def test_declining_mismatch_reset_keeps_normal_update(tmp_path):
     report = {
         'package_builds': {'image': '1454', 'metadata': '1369'},
-        'packages': {}, 'entries': [],
+        'packages': {'changed': ['base:arm64 1454 -> 1369']}, 'entries': [],
     }
     with patch.object(swu, 'inspect_overlay', return_value=report), \
             patch.object(swu.click, 'confirm', return_value=False), \
@@ -257,7 +302,7 @@ def test_declining_mismatch_reset_keeps_normal_update(tmp_path):
 def test_clean_reset_rejects_unsupported_bundle_before_backup(tmp_path):
     report = {
         'package_builds': {'image': '1454', 'metadata': '1369'},
-        'packages': {}, 'entries': [],
+        'packages': {'changed': ['base:arm64 1454 -> 1369']}, 'entries': [],
     }
     with patch.object(swu, 'inspect_overlay', return_value=report), \
             patch.object(swu.click, 'confirm', return_value=True), \
@@ -269,9 +314,11 @@ def test_clean_reset_rejects_unsupported_bundle_before_backup(tmp_path):
 
 
 def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2.1',
-                key_directory=None, auto_confirm=True):
+                key_directory=None, auto_confirm=True, source_version=None):
     bundle = tmp_path / 'bundle.swu'
     bundle.write_bytes(b'signed bundle fixture')
+    source = (swu_artifacts.BundleSource(str(bundle), source_version)
+              if source_version else str(bundle))
     target = MagicMock()
     def run(script, **kwargs):
         if 'MemAvailable:' in script:
@@ -285,7 +332,7 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
         return ''
     target.run.side_effect = run
     with patch.object(swu, 'Target', return_value=target), patch.object(swu, 'preflight', return_value=parse_state(STATE)), \
-            patch.object(swu, 'resolve_bundle', return_value=str(bundle)) as resolve, patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
+            patch.object(swu, 'resolve_bundle', return_value=source) as resolve, patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
             patch.object(swu, '_select_staging_root', return_value=root), \
             patch.object(swu, 'prepare_key', return_value=(key_directory + '/public.pem' if key_directory else '/tmp/test-signing-cert.pem', key_directory)), \
             patch.object(swu.tempfile, 'TemporaryDirectory') as cache, \

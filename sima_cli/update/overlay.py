@@ -300,10 +300,10 @@ def render_overlay(report, state=None, details=False, console=None):
                        (next_slot, next_version))
     if package_builds and package_builds['image'] == package_builds['metadata']:
         update_guidance = (
-            'Package metadata matches the running image. sima-cli will keep the overlay; '
-            'no overlay reset is required for this update.\n'
-            'A future update will offer to save an inventory and reset the overlay if a package '
-            'metadata mismatch is detected.'
+            'Package metadata matches the running image. Whether it is safe to keep the overlay '
+            'depends on the build selected for the update.\n'
+            'sima-cli will offer to save an inventory and reset the overlay when the selected image '
+            'does not match package metadata stored in the overlay.'
         )
     elif package_builds:
         update_guidance = (

@@ -57,6 +57,37 @@ fi
 ''' + command
 
 
+def _source_build_id(source):
+    """Return the numeric platform build carried by an artifact source, if known."""
+    version = getattr(source, 'version', '')
+    match = re.search(r'(?:^|[_-])B(\d+)(?:$|[_-])', version or '')
+    return match.group(1) if match else None
+
+
+def _overlay_has_package_state(report):
+    """Whether an upper layer can shadow the target image's dpkg database."""
+    packages = report.get('packages', {})
+    if any(packages.get(key) for key in ('additional', 'changed', 'removed')):
+        return True
+    return any(entry.get('path') == '/var/lib/dpkg/status'
+               for entry in report.get('entries', []))
+
+
+def _overlay_reset_reason(report, source):
+    """Explain why a selected image cannot safely share the overlay package state."""
+    metadata_build = report.get('package_builds', {}).get('metadata')
+    if not metadata_build or not _overlay_has_package_state(report):
+        return None
+    target_build = _source_build_id(source)
+    if target_build == metadata_build:
+        return None
+    if target_build:
+        return ('The selected image is B%s, but the overlay package metadata is B%s.' %
+                (target_build, metadata_build))
+    return ('The selected image build could not be identified, while the overlay contains '
+            'package metadata for B%s.' % metadata_build)
+
+
 def bundle_supports_overlay_cleanup(path):
     """Check the signed SWU payload for the platform cleanup contract."""
     with open(path, 'rb') as bundle:
@@ -406,35 +437,33 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
         key, key_directory = prepare_key(target, dryrun=dryrun, signing_cert=signing_cert, internal=internal)
         before = preflight(target, key)
         overlay_report = inspect_overlay(target, state=before, details=verbose)
-        package_builds = overlay_report.get('package_builds', {})
-        mismatch = (package_builds.get('image') and package_builds.get('metadata') and
-                    package_builds['image'] != package_builds['metadata'])
-        if mismatch and not dryrun:
-            if auto_confirm:
-                reset_overlay = True
-                click.echo(
-                    'Package metadata does not match the running image. --yes selected the '
-                    'clean-overlay update automatically.'
-                )
-            else:
-                reset_overlay = click.confirm(
-                    'Package metadata does not match the running image. Save an inventory under '
-                    '/data/.overlay-backup and reset OverlayFS as part of this update? '
-                    'The inventory does not copy file contents; software and settings stored in '
-                    'the overlay will be removed.',
-                    default=False,
-                )
-            if not reset_overlay:
-                click.echo('Continuing without an overlay reset. The package metadata mismatch will remain.')
-        elif mismatch:
-            selection = '--yes would select a clean-overlay update automatically' if auto_confirm else 'an overlay reset would require confirmation'
-            click.echo(f'Dry run: {selection}; no backup or reset was performed.')
         phase = "resolving the update bundle"
         source = resolve_bundle(requested, board, internal, allow_external_fallback=allow_external_fallback,
                                 auto_confirm=auto_confirm)
         if not source:
             raise click.Abort()
         click.echo(f'Full-system bundle: {source}')
+        reset_reason = _overlay_reset_reason(overlay_report, source)
+        if reset_reason and not dryrun:
+            if auto_confirm:
+                reset_overlay = True
+                click.echo(
+                    reset_reason + ' --yes selected the '
+                    'clean-overlay update automatically.'
+                )
+            else:
+                reset_overlay = click.confirm(
+                    reset_reason + ' Save an inventory under '
+                    '/data/.overlay-backup and reset OverlayFS as part of this update? '
+                    'The inventory does not copy file contents; software and settings stored in '
+                    'the overlay will be removed.',
+                    default=False,
+                )
+            if not reset_overlay:
+                click.echo('Continuing without an overlay reset. The selected image will use the existing package metadata.')
+        elif reset_reason:
+            selection = '--yes would select a clean-overlay update automatically' if auto_confirm else 'an overlay reset would require confirmation'
+            click.echo(f'Dry run: {reset_reason} {selection}; no backup or reset was performed.')
         local_source = urlparse(source).scheme not in ('http', 'https')
         phase = "checking the update bundle"
         try:

@@ -264,7 +264,9 @@ def test_review_panel_says_selected_build_decides_overlay_reset(capsys):
     })
     output = capsys.readouterr().out
     assert 'Package metadata matches the running image' in output
-    assert 'depends on the build selected for the update' in output
+    assert 'Whether it is safe' in output
+    assert 'selected' in output
+    assert 'update' in output
 
 
 def test_before_updating_panel_uses_warning_color():

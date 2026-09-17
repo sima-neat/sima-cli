@@ -207,7 +207,7 @@ def render_overlay(report, state=None, details=False, console=None):
     if next_slot in ('A', 'B') and next_slot != state.get('running slot'):
         heading += ('\nThe same overlay will apply when slot %s (%s) boots.' %
                     (next_slot, next_version))
-    console.print(Panel.fit(Text(heading), title='System customizations'))
+    console.print(Panel.fit(Text(heading), title='System customizations', width=68))
     packages = report.get('packages', {})
     package_builds = report.get('package_builds', {})
     if package_builds and package_builds['image'] != package_builds['metadata']:

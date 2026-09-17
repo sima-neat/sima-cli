@@ -189,7 +189,7 @@ def main(ctx, internal, yes):
     if internal:
         Console(stderr=True).print(Panel.fit(
             Text("Pre-release software may be unstable. Use at your own risk.", style="yellow"),
-            title="Pre-release software", border_style="yellow", width=68,
+            title="Pre-release software", border_style="yellow", width=72,
         ))
     if ctx.meta.get('update_inspect'):
         ctx.ensure_object(dict)

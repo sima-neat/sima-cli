@@ -286,7 +286,7 @@ def test_system_customizations_panel_fits_its_content():
     panel = next(call.args[0] for call in output.call_args_list
                  if getattr(call.args[0], 'title', None) == 'System customizations')
     assert panel.expand is False
-    assert panel.width == 68
+    assert panel.width == 72
 
 
 def test_overlay_section_headings_are_blue():

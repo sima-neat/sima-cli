@@ -52,6 +52,7 @@ def test_boot_state_panel_fits_its_content():
     panel = next(call.args[0] for call in output.call_args_list
                  if getattr(call.args[0], 'title', None) == 'Boot state')
     assert panel.expand is False
+    assert panel.width == 72
 
 
 def test_inspect_never_checks_for_self_update_or_installs():

@@ -1,4 +1,5 @@
 import json
+import shlex
 from unittest.mock import MagicMock, patch
 
 import click
@@ -7,7 +8,7 @@ from click.testing import CliRunner
 
 from sima_cli.cli import main
 from sima_cli.update import swu, swu_artifacts
-from sima_cli.update.ab_state import parse_state
+from sima_cli.update.ab_state import parse_state, render_state
 
 STATE = '''medium : /dev/mmcblk0
 active slot : A
@@ -31,6 +32,28 @@ def test_parse_state_keeps_running_next_boot_and_unknown_distinct():
     assert parse_state('unexpected')['running slot'] == 'unknown'
     assert parse_state('unexpected')['upgrade_available'] == 'unknown'
     assert parse_state('rollback boot')['rollback'] == 'rollback'
+
+
+def test_slot_table_colors_running_green_and_fallback_yellow():
+    state = parse_state(STATE)
+    state['bootcount'] = '0'
+    with patch('rich.console.Console.print') as output:
+        render_state(state)
+    table = output.call_args_list[0].args[0]
+    assert str(table.rows[0].style) == 'green'
+    assert str(table.rows[1].style) == 'yellow'
+
+
+def test_boot_state_panel_fits_its_content():
+    state = parse_state(STATE)
+    state['bootcount'] = '0'
+    with patch('rich.console.Console.print') as output:
+        render_state(state)
+    panel = next(call.args[0] for call in output.call_args_list
+                 if getattr(call.args[0], 'title', None) == 'Boot state')
+    assert panel.expand is True
+    assert panel.width == 72
+    assert panel.renderable.columns[1].justify == 'right'
 
 
 def test_inspect_never_checks_for_self_update_or_installs():
@@ -123,9 +146,202 @@ def test_installer_uses_signed_full_collection_and_progress_without_reboot():
     assert script.index('swupdate-progress -w') < script.index('swupdate -v')
 
 
-def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2.1', key_directory=None):
+def test_clean_overlay_installer_sets_platform_environment():
+    script = swu.install_script('/data/test/bundle.swu', '/etc/swupdate/public.pem',
+                                clean_overlay=True)
+    command = script.splitlines()[-1]
+    assert command.startswith('SWUPDATE_CLEAN_OVERLAY=1 swupdate ')
+    assert shlex.split(command.split('=', 1)[1]) == [
+        '1', 'swupdate', '-v', '-i', '/data/test/bundle.swu',
+        '-k', '/etc/swupdate/public.pem', '-e', 'update,full']
+
+
+def _newc_member(name, data=b''):
+    name_bytes = name.encode() + b'\0'
+    fields = [0, 0o100644, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name_bytes), 0]
+    header = b'070701' + b''.join(('%08x' % value).encode() for value in fields)
+    result = header + name_bytes
+    result += b'\0' * (-len(result) % 4)
+    result += data
+    result += b'\0' * (-len(data) % 4)
+    return result
+
+
+def test_bundle_overlay_cleanup_support_requires_platform_contract(tmp_path):
+    supported = tmp_path / 'supported.swu'
+    supported.write_bytes(
+        _newc_member('update_modalix.sh', b'test "$SWUPDATE_CLEAN_OVERLAY" = 1') +
+        _newc_member('TRAILER!!!'))
+    unsupported = tmp_path / 'unsupported.swu'
+    unsupported.write_bytes(
+        _newc_member('update_modalix.sh', b'echo ordinary update') +
+        _newc_member('TRAILER!!!'))
+    assert swu.bundle_supports_overlay_cleanup(supported)
+    assert not swu.bundle_supports_overlay_cleanup(unsupported)
+
+
+def test_preserve_overlay_info_writes_verified_inventory(tmp_path):
+    transferred = {}
+    target = MagicMock()
+
+    def transfer(local, remote, move=False):
+        transferred[remote] = open(local, encoding='utf-8').read()
+
+    target.transfer.side_effect = transfer
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1369'},
+        'packages': {'requested': ['git:arm64 1:2.47', 'jq:arm64 1.7']},
+        'entries': [
+            {'path': '/opt/kerrigan/file', 'category': 'local software candidates'},
+            {'path': '/usr/local/aws-cli/file', 'category': 'local software candidates'},
+        ],
+    }
+    with patch.object(swu.time, 'strftime', return_value='20260916T120000Z'), \
+            patch.object(swu.time, 'time_ns', return_value=123456789):
+        destination, requested, roots = swu.preserve_overlay_info(
+            target, report, {'running slot': 'B', 'raw': 'do not persist'}, 'bundle.swu')
+    assert destination == ('/data/.overlay-backup/'
+                           '20260916T120000Z-image-B1454-metadata-B1369-123456789')
+    manifest = json.loads(transferred[destination + '/manifest.json'])
+    assert manifest['contains_file_contents'] is False
+    assert manifest['boot_state'] == {'running slot': 'B'}
+    assert requested == ['git', 'jq']
+    assert roots == ['/opt/kerrigan', '/usr/local/aws-cli']
+    assert 'inventory metadata only' in transferred[destination + '/AFTER-REBOOT.txt']
+    assert any('sha256sum -c SHA256SUMS' in call.args[0]
+               for call in target.run.call_args_list)
+
+
+def test_preserve_overlay_info_redacts_bundle_url_credentials(tmp_path):
+    transferred = {}
+    target = MagicMock()
+
+    def transfer(local, remote, move=False):
+        transferred[remote] = open(local, encoding='utf-8').read()
+
+    target.transfer.side_effect = transfer
+    with patch.object(swu.time, 'strftime', return_value='20260916T120000Z'), \
+            patch.object(swu.time, 'time_ns', return_value=123456789):
+        destination, _, _ = swu.preserve_overlay_info(
+            target, {'package_builds': {}, 'packages': {}, 'entries': []}, {},
+            'https://user:password@example.test/build/bundle.swu?token=secret#fragment')
+    manifest = json.loads(transferred[destination + '/manifest.json'])
+    assert manifest['selected_bundle'] == 'https://example.test/build/bundle.swu'
+    assert 'password' not in transferred[destination + '/manifest.json']
+    assert 'secret' not in transferred[destination + '/manifest.json']
+
+
+def test_yes_auto_selects_remote_clean_overlay_update(tmp_path):
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1369'},
+        'packages': {'changed': ['base:arm64 1454 -> 1369']}, 'entries': [],
+    }
+    backup = ('/data/.overlay-backup/test', ['git'], ['/opt/kerrigan'])
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu.click, 'confirm') as confirm, \
+            patch.object(swu, 'bundle_supports_overlay_cleanup', return_value=True) as supported, \
+            patch.object(swu, 'preserve_overlay_info', return_value=backup) as preserve, \
+            patch.object(swu, 'print_overlay_recovery_guidance') as guidance:
+        target = run_install(tmp_path)
+    confirm.assert_not_called()
+    supported.assert_called_once()
+    preserve.assert_called_once()
+    assert preserve.call_args.args[0] is target
+    guidance.assert_called_once_with(*backup)
+    assert any('SWUPDATE_CLEAN_OVERLAY=1 swupdate ' in call.args[0]
+               for call in target.run.call_args_list)
+
+
+def test_matching_selected_build_keeps_overlay_package_state(tmp_path):
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1454'},
+        'packages': {'additional': ['git:arm64 1']}, 'entries': [],
+    }
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu, 'preserve_overlay_info') as preserve:
+        target = run_install(tmp_path, auto_confirm=True,
+                             source_version='3.0.0_daily_develop_B1454')
+    preserve.assert_not_called()
+    assert not any('SWUPDATE_CLEAN_OVERLAY=1' in call.args[0]
+                   for call in target.run.call_args_list)
+
+
+def test_new_selected_build_resets_overlay_package_state(tmp_path):
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1454'},
+        'packages': {'additional': ['git:arm64 1']}, 'entries': [],
+    }
+    backup = ('/data/.overlay-backup/test', ['git'], [])
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu, 'bundle_supports_overlay_cleanup', return_value=True), \
+            patch.object(swu, 'preserve_overlay_info', return_value=backup) as preserve, \
+            patch.object(swu, 'print_overlay_recovery_guidance'):
+        target = run_install(tmp_path, auto_confirm=True,
+                             source_version='3.0.0_daily_develop_B1455')
+    preserve.assert_called_once()
+    assert any('SWUPDATE_CLEAN_OVERLAY=1' in call.args[0]
+               for call in target.run.call_args_list)
+
+
+def test_new_selected_build_prompts_for_overlay_reset(tmp_path):
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1454'},
+        'packages': {'additional': ['git:arm64 1']}, 'entries': [],
+    }
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu.click, 'confirm', return_value=False) as confirm:
+        run_install(tmp_path, auto_confirm=False,
+                    source_version='3.0.0_daily_develop_B1455')
+    reset_prompt = confirm.call_args_list[0].args[0]
+    assert reset_prompt == 'Reset OverlayFS and continue?'
+    assert confirm.call_args_list[0].kwargs['default'] is True
+
+
+def test_overlay_reset_panel_is_compact():
+    with patch('rich.console.Console.print') as output:
+        swu._print_overlay_reset_panel(
+            'The selected image is B1455, but the overlay package metadata is B1454.')
+    panel = output.call_args.args[0]
+    assert panel.title == 'Overlay reset required'
+    assert panel.expand is True
+    assert panel.width == 72
+    assert 'After the upgrade, reinstall the packages and software' in str(panel.renderable)
+
+
+def test_declining_mismatch_reset_keeps_normal_update(tmp_path):
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1369'},
+        'packages': {'changed': ['base:arm64 1454 -> 1369']}, 'entries': [],
+    }
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu.click, 'confirm', return_value=False), \
+            patch.object(swu, 'preserve_overlay_info') as preserve:
+        target = run_install(tmp_path, auto_confirm=False)
+    preserve.assert_not_called()
+    assert not any('SWUPDATE_CLEAN_OVERLAY=1' in call.args[0]
+                   for call in target.run.call_args_list)
+
+
+def test_clean_reset_rejects_unsupported_bundle_before_backup(tmp_path):
+    report = {
+        'package_builds': {'image': '1454', 'metadata': '1369'},
+        'packages': {'changed': ['base:arm64 1454 -> 1369']}, 'entries': [],
+    }
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu.click, 'confirm', return_value=True), \
+            patch.object(swu, 'bundle_supports_overlay_cleanup', return_value=False), \
+            patch.object(swu, 'preserve_overlay_info') as preserve:
+        with pytest.raises(click.ClickException, match='does not support'):
+            run_install(tmp_path, auto_confirm=False)
+    preserve.assert_not_called()
+
+
+def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2.1',
+                key_directory=None, auto_confirm=True, source_version=None):
     bundle = tmp_path / 'bundle.swu'
     bundle.write_bytes(b'signed bundle fixture')
+    source = (swu_artifacts.BundleSource(str(bundle), source_version)
+              if source_version else str(bundle))
     target = MagicMock()
     def run(script, **kwargs):
         if 'MemAvailable:' in script:
@@ -139,7 +355,7 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
         return ''
     target.run.side_effect = run
     with patch.object(swu, 'Target', return_value=target), patch.object(swu, 'preflight', return_value=parse_state(STATE)), \
-            patch.object(swu, 'resolve_bundle', return_value=str(bundle)) as resolve, patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
+            patch.object(swu, 'resolve_bundle', return_value=source) as resolve, patch.object(swu, 'inspect_target', return_value=parse_state(STATE.replace('next-boot: A', 'next-boot: B').replace('upgrade_available: no', 'upgrade_available: yes'))), \
             patch.object(swu, '_select_staging_root', return_value=root), \
             patch.object(swu, 'prepare_key', return_value=(key_directory + '/public.pem' if key_directory else '/tmp/test-signing-cert.pem', key_directory)), \
             patch.object(swu.tempfile, 'TemporaryDirectory') as cache, \
@@ -147,11 +363,11 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
         cache.return_value.__enter__.return_value = str(tmp_path)
         if fail:
             with pytest.raises(click.ClickException, match='install failed'):
-                swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=True, reboot=True)
+                swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=auto_confirm, reboot=True)
             reboot.assert_not_called()
         else:
-            swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=True, dryrun=dryrun)
-    assert resolve.call_args.kwargs["auto_confirm"] is True
+            swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=auto_confirm, dryrun=dryrun)
+    assert resolve.call_args.kwargs["auto_confirm"] is auto_confirm
     return target
 
 

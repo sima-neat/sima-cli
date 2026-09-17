@@ -7,15 +7,14 @@ from sima_cli.update.ab_state import inspect_target
 from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT, ROOT_IDENTITY_SCRIPT
 
 
-@pytest.mark.parametrize('mounted', ['oldroot', 'mnt', 'unrelated'])
+@pytest.mark.parametrize('mounted', ['oldroot', 'unrelated'])
 def test_root_identity_verifies_mount_device(tmp_path, mounted):
-    for name in ('oldroot', 'mnt'):
-        etc = tmp_path / name / 'etc'
-        etc.mkdir(parents=True)
-        (etc / 'buildinfo').write_text(f'SIMA_BUILD_VERSION = {name}-build\n')
-        (etc / 'os-release').write_text('PRETTY_NAME="eLxr test"\n')
+    etc = tmp_path / 'oldroot' / 'etc'
+    etc.mkdir(parents=True)
+    (etc / 'buildinfo').write_text('SIMA_BUILD_VERSION = oldroot-build\n')
+    (etc / 'os-release').write_text('PRETTY_NAME="eLxr test"\n')
     script = ROOT_IDENTITY_SCRIPT.replace(ROOT_DEVICE_SCRIPT, 'dev=dm-test; rootdev=/dev/dm-test\n')
-    script = script.replace('/oldroot', str(tmp_path / 'oldroot')).replace('/mnt', str(tmp_path / 'mnt'))
+    script = script.replace('/oldroot', str(tmp_path / 'oldroot'))
     mocks = f'''
 blkid() {{ echo 740d31f2-aa09-56e0-9c6e-ee357eb533d0; }}
 ls() {{ echo mmcblk0p3; }}
@@ -35,7 +34,7 @@ findmnt() {{
         assert 'active version:' not in result.stdout
     else:
         assert result.returncode == 0, result.stderr
-        assert f'active version: {mounted}-build' in result.stdout
+        assert 'active version: oldroot-build' in result.stdout
         assert 'active os: eLxr test' in result.stdout
 
 

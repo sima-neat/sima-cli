@@ -1,6 +1,7 @@
 """Full signed A/B system updates on eLxr 3.0+, locally or through SSH."""
 import os
 import hashlib
+import json
 import re
 import shlex
 import tempfile
@@ -13,6 +14,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 
 from sima_cli.download import download_file_from_url
 from sima_cli.update.ab_state import inspect_target
+from sima_cli.update.overlay import inspect_overlay
 from sima_cli.update.swu_artifacts import (
     release_tuple, resolve_bundle, bundle_size, is_mirror_source, fallback_for_bundle,
 )
@@ -22,9 +24,11 @@ from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
 from sima_cli.update.swu_certificate import load_certificate, certificate_source
 
 
-def install_script(bundle, key):
+def install_script(bundle, key, clean_overlay=False):
     key_args = ['-k', key] if key else []
     command = shlex.join(['swupdate', '-v', '-i', bundle, *key_args, '-e', 'update,full'])
+    if clean_overlay:
+        command = 'SWUPDATE_CLEAN_OVERLAY=1 ' + command
     return r'''set -eu
 exec 9>/run/lock/sima-cli-swupdate.lock
 flock -n 9 || { echo 'Another sima-cli update is running'; exit 1; }
@@ -51,6 +55,162 @@ else
     echo 'SWUpdate progress monitor unavailable; streaming installer diagnostics'
 fi
 ''' + command
+
+
+def _source_build_id(source):
+    """Return the numeric platform build carried by an artifact source, if known."""
+    version = getattr(source, 'version', '')
+    match = re.search(r'(?:^|[_-])B(\d+)(?:$|[_-])', version or '')
+    return match.group(1) if match else None
+
+
+def _overlay_has_package_state(report):
+    """Whether an upper layer can shadow the target image's dpkg database."""
+    packages = report.get('packages', {})
+    if any(packages.get(key) for key in ('additional', 'changed', 'removed')):
+        return True
+    return any(entry.get('path') == '/var/lib/dpkg/status'
+               for entry in report.get('entries', []))
+
+
+def _overlay_reset_reason(report, source):
+    """Explain why a selected image cannot safely share the overlay package state."""
+    metadata_build = report.get('package_builds', {}).get('metadata')
+    if not metadata_build or not _overlay_has_package_state(report):
+        return None
+    target_build = _source_build_id(source)
+    if target_build == metadata_build:
+        return None
+    if target_build:
+        return ('The selected image is B%s, but the overlay package metadata is B%s.' %
+                (target_build, metadata_build))
+    return ('The selected image build could not be identified, while the overlay contains '
+            'package metadata for B%s.' % metadata_build)
+
+
+def _print_overlay_reset_panel(reason):
+    """Explain the clean-overlay choice before presenting its short confirmation."""
+    from rich.console import Console
+    from rich.panel import Panel
+
+    Console().print(Panel(
+        reason + '\n\n'
+        'The overlay contains APT/dpkg state from a different platform build. '
+        'Keeping it can make package management incorrect after reboot.\n\n'
+        'sima-cli will save an inventory under /data/.overlay-backup before resetting '
+        'OverlayFS. After the upgrade, reinstall the packages and software that were '
+        'previously stored in the overlay.',
+        title='Overlay reset required', style='yellow', border_style='yellow', width=72))
+
+
+def bundle_supports_overlay_cleanup(path):
+    """Check the signed SWU payload for the platform cleanup contract."""
+    with open(path, 'rb') as bundle:
+        while True:
+            header = bundle.read(110)
+            if len(header) != 110 or header[:6] not in (b'070701', b'070702'):
+                raise click.ClickException('Cannot inspect the SWU bundle for overlay-reset support.')
+            try:
+                size = int(header[54:62], 16)
+                name_size = int(header[94:102], 16)
+            except ValueError as exc:
+                raise click.ClickException('The SWU archive header is invalid.') from exc
+            name = bundle.read(name_size)
+            if len(name) != name_size:
+                raise click.ClickException('The SWU archive is truncated.')
+            bundle.seek((-((110 + name_size) % 4)) % 4, os.SEEK_CUR)
+            member = name[:-1].decode('utf-8', errors='replace')
+            if member.endswith('update_modalix.sh'):
+                data = bundle.read(size)
+                if len(data) != size:
+                    raise click.ClickException('The SWU archive is truncated.')
+            else:
+                data = b''
+                bundle.seek(size, os.SEEK_CUR)
+            bundle.seek((-(size % 4)) % 4, os.SEEK_CUR)
+            if member == 'TRAILER!!!':
+                return False
+            if member.endswith('update_modalix.sh') and b'SWUPDATE_CLEAN_OVERLAY' in data:
+                return True
+
+
+def preserve_overlay_info(target, report, state, source):
+    """Store a verified, content-free recovery inventory outside the overlay."""
+    image_id = str(report.get('package_builds', {}).get('image', 'unknown'))
+    metadata_id = str(report.get('package_builds', {}).get('metadata', 'unknown'))
+    timestamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+    backup_id = (f'{timestamp}-image-B{image_id}-metadata-B{metadata_id}-'
+                 f'{time.time_ns()}')
+    if not re.fullmatch(r'[A-Za-z0-9._-]+', backup_id):
+        raise click.ClickException('Cannot construct a safe overlay backup identifier.')
+    root = '/data/.overlay-backup'
+    destination = root + '/' + backup_id
+    source_text = str(source)
+    source_url = urlparse(source_text)
+    if source_url.scheme and source_url.netloc:
+        source_text = source_url._replace(
+            netloc=source_url.netloc.rsplit('@', 1)[-1], query='', fragment='').geturl()
+    target.run(
+        'set -eu; install -d -m 0700 -o "${SUDO_UID:-0}" -g "${SUDO_GID:-0}" '
+        + shlex.quote(root) + ' ' + shlex.quote(destination)
+    )
+    manifest = {
+        'schema': 1,
+        'created_utc': timestamp,
+        'purpose': 'sima-cli clean-overlay update inventory',
+        'selected_bundle': source_text,
+        'boot_state': {key: value for key, value in state.items() if key != 'raw'},
+        'overlay': report,
+        'contains_file_contents': False,
+    }
+    requested = [value.split()[0].split(':')[0]
+                 for value in report.get('packages', {}).get('requested', [])]
+    software_roots = sorted({
+        ('/'.join(entry['path'].split('/')[:3])
+         if entry['path'].startswith('/opt/') else
+         '/'.join(entry['path'].split('/')[:4]))
+        for entry in report.get('entries', [])
+        if entry.get('category') == 'local software candidates'
+    })
+    guide = (
+        'Overlay recovery inventory\n\n'
+        'After reboot:\n'
+        '1. Run sima-cli update --inspect and confirm image and package metadata agree.\n'
+        '2. Reinstall explicitly installed packages: %s\n'
+        '3. Reinstall software previously stored at: %s\n'
+        '4. Review manifest.json for configuration, services, and hidden paths.\n\n'
+        'This backup contains inventory metadata only; it does not contain file contents.\n'
+        % (', '.join(requested) or 'none recorded', ', '.join(software_roots) or 'none recorded')
+    )
+    with tempfile.TemporaryDirectory(prefix='sima-cli-overlay-backup-') as temporary:
+        manifest_path = os.path.join(temporary, 'manifest.json')
+        guide_path = os.path.join(temporary, 'AFTER-REBOOT.txt')
+        with open(manifest_path, 'w', encoding='utf-8') as output:
+            json.dump(manifest, output, indent=2, sort_keys=True)
+            output.write('\n')
+        with open(guide_path, 'w', encoding='utf-8') as output:
+            output.write(guide)
+        target.transfer(manifest_path, destination + '/manifest.json')
+        target.transfer(guide_path, destination + '/AFTER-REBOOT.txt')
+    target.run(
+        'set -eu; chmod 0600 ' + shlex.quote(destination + '/manifest.json') + ' '
+        + shlex.quote(destination + '/AFTER-REBOOT.txt') + '; cd ' + shlex.quote(destination)
+        + '; sha256sum manifest.json AFTER-REBOOT.txt > SHA256SUMS; sha256sum -c SHA256SUMS; '
+        + 'ln -sfn ' + shlex.quote(backup_id) + ' ' + shlex.quote(root + '/latest')
+    )
+    return destination, requested, software_roots
+
+
+def print_overlay_recovery_guidance(backup, requested, software_roots):
+    click.echo('\nOverlay reset inventory saved at: ' + backup)
+    click.echo('After reboot:')
+    click.echo('  1. Run `sima-cli update --inspect` and confirm image and package metadata agree.')
+    click.echo('  2. Reinstall explicitly installed packages: ' +
+               (', '.join(requested) or 'none recorded'))
+    click.echo('  3. Reinstall software previously stored at: ' +
+               (', '.join(software_roots) or 'none recorded'))
+    click.echo('  4. Review `AFTER-REBOOT.txt` and `manifest.json` in the backup directory.')
+    click.echo('The backup contains inventory metadata only; it does not contain file contents.')
 
 
 class InstallProgress:
@@ -276,24 +436,44 @@ def _artifact_request_error(error, internal):
 
 
 def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
-                  auto_confirm=False, dryrun=False, reboot=False, signing_cert=None, allow_external_fallback=False):
+                  auto_confirm=False, dryrun=False, reboot=False, signing_cert=None,
+                  allow_external_fallback=False, verbose=False):
     target = Target(ip, passwd)
     source = ''
     staging = None
     key_directory = None
     installing = False
     complete = False
+    reset_overlay = False
+    overlay_backup = None
     phase = "checking the target"
     try:
         click.echo('Checking target and A/B state...')
         key, key_directory = prepare_key(target, dryrun=dryrun, signing_cert=signing_cert, internal=internal)
         before = preflight(target, key)
+        overlay_report = inspect_overlay(target, state=before, details=verbose)
         phase = "resolving the update bundle"
         source = resolve_bundle(requested, board, internal, allow_external_fallback=allow_external_fallback,
                                 auto_confirm=auto_confirm)
         if not source:
             raise click.Abort()
         click.echo(f'Full-system bundle: {source}')
+        reset_reason = _overlay_reset_reason(overlay_report, source)
+        if reset_reason and not dryrun:
+            if auto_confirm:
+                reset_overlay = True
+                click.echo(
+                    reset_reason + ' --yes selected the '
+                    'clean-overlay update automatically.'
+                )
+            else:
+                _print_overlay_reset_panel(reset_reason)
+                reset_overlay = click.confirm('Reset OverlayFS and continue?', default=True)
+            if not reset_overlay:
+                click.echo('Continuing without an overlay reset. The selected image will use the existing package metadata.')
+        elif reset_reason:
+            selection = '--yes would select a clean-overlay update automatically' if auto_confirm else 'an overlay reset would require confirmation'
+            click.echo(f'Dry run: {reset_reason} {selection}; no backup or reset was performed.')
         local_source = urlparse(source).scheme not in ('http', 'https')
         phase = "checking the update bundle"
         try:
@@ -314,7 +494,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             click.echo('Dry run: ' + shlex.join(['sudo', 'swupdate', '-v', '-i', staging_root + '/<staged-bundle>.swu', *key_args, '-e', 'update,full']))
             click.echo('No bundle installed or reboot scheduled.')
             return
-        if not auto_confirm:
+        if not auto_confirm and not reset_overlay:
             click.confirm('Install the full system into the inactive slot?', default=False, abort=True)
         staging = target.run('set -eu; d=$(mktemp -d ' + shlex.quote(staging_root + '/sima-cli-update.XXXXXXXX') + '); chown "${SUDO_UID:-0}:${SUDO_GID:-0}" "$d"; printf "%s" "$d"').strip()
         if not re.fullmatch(STAGING_PATTERN, staging):
@@ -349,6 +529,17 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             size = os.path.getsize(local)
             if not size:
                 raise click.ClickException('The SWU bundle is empty.')
+            if reset_overlay:
+                if not bundle_supports_overlay_cleanup(local):
+                    raise click.ClickException(
+                        'The selected SWU bundle does not support the platform clean-overlay contract. '
+                        'No backup was created and no firmware was installed.'
+                    )
+                phase = 'preserving the overlay inventory'
+                click.echo('Preserving overlay recovery information...')
+                overlay_backup = preserve_overlay_info(
+                    target, overlay_report, before, source)
+                click.echo('Verified overlay inventory: ' + overlay_backup[0])
             _check_space(target, size if ip or local_source else 0, staging_root, allow_expand=True)
             remote = staging + '/bundle.swu'
             click.echo('Staging and verifying bundle integrity...')
@@ -358,7 +549,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             click.echo('Validating signature and installing the full inactive slot...')
             installing = True
             with InstallProgress() as progress:
-                target.run(install_script(remote, key), stream=progress)
+                target.run(install_script(remote, key, clean_overlay=reset_overlay), stream=progress)
             complete = True
         after = inspect_target(target)
         expected_slot = 'B' if before['running slot'] == 'A' else 'A'
@@ -378,6 +569,8 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                 target.run('rm -rf -- ' + shlex.quote(key_directory))
                 key_directory = None
             _reboot_and_verify(target, before, ip, passwd, expected=expected)
+        if overlay_backup:
+            print_overlay_recovery_guidance(*overlay_backup)
     except (KeyboardInterrupt, Exception) as exc:
         if isinstance(exc, click.ClickException):
             raise
@@ -412,7 +605,8 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
 
 def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_confirm=False,
                   dryrun=False, reboot=False, inspect=False,
-                  force=False, troot_only=False, flavor='auto', local_elxr=False, signing_cert=None):
+                  force=False, troot_only=False, flavor='auto', local_elxr=False,
+                  signing_cert=None, verbose=False):
     """Return False for legacy platforms; handle all eLxr 3.0+ operations here."""
     if not (ip or local_elxr or inspect):
         if signing_cert is not None:
@@ -433,7 +627,8 @@ def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_conf
             raise click.ClickException('A/B inspection requires a reachable eLxr 3.0+ board.')
         target = Target(ip, passwd)
         try:
-            inspect_target(target)
+            state = inspect_target(target)
+            inspect_overlay(target, state=state, details=verbose)
         finally:
             target.close()
         return True
@@ -459,5 +654,5 @@ def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_conf
         raise click.ClickException(f'eLxr SWUpdate is not supported for board {board or "unknown"}.')
     update_system(requested, board, ip=ip, passwd=passwd, internal=internal,
                   auto_confirm=auto_confirm, dryrun=dryrun, reboot=reboot, signing_cert=signing_cert,
-                  allow_external_fallback=force)
+                  allow_external_fallback=force, verbose=verbose)
     return True

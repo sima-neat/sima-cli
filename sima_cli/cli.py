@@ -188,8 +188,8 @@ def main(ctx, internal, yes):
     internal = internal or os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
     if internal:
         Console(stderr=True).print(Panel(
-            "Pre-release software may be unstable. Use at your own risk.",
-            title="Pre-release software", border_style="yellow",
+            Text("Pre-release software may be unstable. Use at your own risk.", style="yellow"),
+            title="Pre-release software", border_style="yellow", width=72,
         ))
     if ctx.meta.get('update_inspect'):
         ctx.ensure_object(dict)
@@ -350,11 +350,12 @@ def download(ctx, url, dest):
     default=False,
     help="For eLxr updates, validate the update path and show the command without installing."
 )
-@click.option("--inspect", "inspect_state", is_flag=True, help="Show eLxr 3.0+ A/B slot state without updating (local or --ip).")
+@click.option("--inspect", "inspect_state", is_flag=True, help="Show eLxr 3.0+ A/B slots and overlay customizations without updating (local or --ip).")
+@click.option("--verbose", is_flag=True, help="Show detailed overlay file categories during eLxr 3.0+ inspection or update.")
 @click.option("--signing-cert", metavar="URL_OR_FILE", help="SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the certificate for the selected channel when configured (eLxr 3.0+).")
 @click.option("--reboot", is_flag=True, help="Reboot after successful eLxr 3.0+ installation; verify remote boot health.")
 @click.pass_context
-def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, reboot, signing_cert):
+def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, verbose, reboot, signing_cert):
     """
     Update the software on a SiMa DevKit or remote SiMa device.
 
@@ -461,7 +462,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
                          internal=ctx.obj.get("internal", False),
                          auto_confirm=yes or ctx.obj.get("yes", False), dryrun=dryrun,
                          signing_cert=signing_cert, reboot=reboot, inspect=inspect_state, force=force,
-                         troot_only=troot_only, flavor=flavor, local_elxr=is_elxr):
+                         troot_only=troot_only, flavor=flavor, local_elxr=is_elxr, verbose=verbose):
             return
     except (click.ClickException, click.Abort):
         raise

@@ -53,6 +53,7 @@ def test_boot_state_panel_fits_its_content():
                  if getattr(call.args[0], 'title', None) == 'Boot state')
     assert panel.expand is True
     assert panel.width == 72
+    assert panel.renderable.columns[1].justify == 'right'
 
 
 def test_inspect_never_checks_for_self_update_or_installs():

@@ -316,9 +316,9 @@ def render_overlay(report, state=None, details=False, console=None):
             'Package metadata could not be compared. sima-cli will keep the overlay for this update.\n'
             'An overlay reset removes local changes; custom software and settings must be reinstalled.'
         )
-    console.print(Panel(
+    console.print(Panel.fit(
         conclusion + '\n' + update_guidance,
-        title='Review before updating', style='yellow', border_style='yellow'))
+        title='Review before updating', style='yellow', border_style='yellow', width=72))
     if details:
         if package_builds:
             console.print('Package build IDs are derived from %s in the image and overlay package databases.' %

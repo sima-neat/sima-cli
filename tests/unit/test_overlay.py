@@ -274,6 +274,8 @@ def test_before_updating_panel_uses_warning_color():
                  if getattr(call.args[0], 'title', None) == 'Review before updating')
     assert str(panel.style) == 'yellow'
     assert str(panel.border_style) == 'yellow'
+    assert panel.expand is False
+    assert panel.width == 72
 
 
 def test_system_customizations_panel_fits_its_content():

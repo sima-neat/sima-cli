@@ -187,9 +187,9 @@ def main(ctx, internal, yes):
     """
     internal = internal or os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
     if internal:
-        Console(stderr=True).print(Panel(
-            "Pre-release software may be unstable. Use at your own risk.",
-            title="Pre-release software", border_style="yellow",
+        Console(stderr=True).print(Panel.fit(
+            Text("Pre-release software may be unstable. Use at your own risk.", style="yellow"),
+            title="Pre-release software", border_style="yellow", width=68,
         ))
     if ctx.meta.get('update_inspect'):
         ctx.ensure_object(dict)

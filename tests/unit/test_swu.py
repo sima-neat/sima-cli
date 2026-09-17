@@ -388,9 +388,10 @@ def test_remote_install_stages_under_data_and_checks_transfer(tmp_path):
     assert any('rm -rf' in c.args[0] for c in target.run.call_args_list)
 
 
-def test_reboot_is_handed_off_to_the_successful_device_installer(tmp_path):
-    target = run_install(tmp_path, reboot=True)
+def test_remote_reboot_is_handed_off_to_the_successful_device_installer(tmp_path):
+    target = run_install(tmp_path, ip='192.0.2.1', reboot=True)
     installer = next(call.args[0] for call in target.run.call_args_list if 'swupdate -v' in call.args[0])
+    target.transfer.assert_called_once()
     assert "nohup sh -c 'sleep 3; /sbin/reboot'" in installer
 
 

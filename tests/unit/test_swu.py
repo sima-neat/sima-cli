@@ -281,8 +281,8 @@ def test_new_selected_build_prompts_for_overlay_reset(tmp_path):
         run_install(tmp_path, auto_confirm=False,
                     source_version='3.0.0_daily_develop_B1455')
     reset_prompt = confirm.call_args_list[0].args[0]
-    assert 'selected image is B1455' in reset_prompt
-    assert 'reset OverlayFS' in reset_prompt
+    assert reset_prompt == 'Reset OverlayFS and continue?'
+    assert confirm.call_args_list[0].kwargs['default'] is True
 
 
 def test_declining_mismatch_reset_keeps_normal_update(tmp_path):

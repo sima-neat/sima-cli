@@ -88,6 +88,21 @@ def _overlay_reset_reason(report, source):
             'package metadata for B%s.' % metadata_build)
 
 
+def _print_overlay_reset_panel(reason):
+    """Explain the clean-overlay choice before presenting its short confirmation."""
+    from rich.console import Console
+    from rich.panel import Panel
+
+    Console().print(Panel(
+        reason + '\n\n'
+        'The overlay contains APT/dpkg state from a different platform build. '
+        'Keeping it can make package management incorrect after reboot.\n\n'
+        'sima-cli will save an inventory under /data/.overlay-backup before resetting '
+        'OverlayFS. The inventory does not contain file contents; overlay software and '
+        'settings must be reinstalled.',
+        title='Overlay reset required', style='yellow', border_style='yellow'))
+
+
 def bundle_supports_overlay_cleanup(path):
     """Check the signed SWU payload for the platform cleanup contract."""
     with open(path, 'rb') as bundle:
@@ -452,13 +467,8 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                     'clean-overlay update automatically.'
                 )
             else:
-                reset_overlay = click.confirm(
-                    reset_reason + ' Save an inventory under '
-                    '/data/.overlay-backup and reset OverlayFS as part of this update? '
-                    'The inventory does not copy file contents; software and settings stored in '
-                    'the overlay will be removed.',
-                    default=False,
-                )
+                _print_overlay_reset_panel(reset_reason)
+                reset_overlay = click.confirm('Reset OverlayFS and continue?', default=True)
             if not reset_overlay:
                 click.echo('Continuing without an overlay reset. The selected image will use the existing package metadata.')
         elif reset_reason:

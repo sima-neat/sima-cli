@@ -44,6 +44,16 @@ def test_slot_table_colors_running_green_and_fallback_yellow():
     assert str(table.rows[1].style) == 'yellow'
 
 
+def test_boot_state_panel_fits_its_content():
+    state = parse_state(STATE)
+    state['bootcount'] = '0'
+    with patch('rich.console.Console.print') as output:
+        render_state(state)
+    panel = next(call.args[0] for call in output.call_args_list
+                 if getattr(call.args[0], 'title', None) == 'Boot state')
+    assert panel.expand is False
+
+
 def test_inspect_never_checks_for_self_update_or_installs():
     with patch('sima_cli.cli.check_for_update') as update, patch('sima_cli.cli.check_artifactory_reachability') as reach, \
             patch('sima_cli.cli.handle_update', return_value=True) as handle:

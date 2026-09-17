@@ -276,6 +276,14 @@ def test_before_updating_panel_uses_warning_color():
     assert str(panel.border_style) == 'yellow'
 
 
+def test_system_customizations_panel_fits_its_content():
+    with patch('rich.console.Console.print') as output:
+        render_overlay({'status': 'enabled', 'packages': {}, 'entries': []})
+    panel = next(call.args[0] for call in output.call_args_list
+                 if getattr(call.args[0], 'title', None) == 'System customizations')
+    assert panel.expand is False
+
+
 def test_overlay_section_headings_are_blue():
     from rich.text import Text
 

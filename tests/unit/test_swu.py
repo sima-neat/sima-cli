@@ -295,6 +295,16 @@ def test_new_selected_build_prompts_for_overlay_reset(tmp_path):
     assert confirm.call_args_list[0].kwargs['default'] is True
 
 
+def test_overlay_reset_panel_is_compact():
+    with patch('rich.console.Console.print') as output:
+        swu._print_overlay_reset_panel(
+            'The selected image is B1455, but the overlay package metadata is B1454.')
+    panel = output.call_args.args[0]
+    assert panel.title == 'Overlay reset required'
+    assert panel.expand is False
+    assert panel.width == 72
+
+
 def test_declining_mismatch_reset_keeps_normal_update(tmp_path):
     report = {
         'package_builds': {'image': '1454', 'metadata': '1369'},

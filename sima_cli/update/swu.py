@@ -93,7 +93,7 @@ def _print_overlay_reset_panel(reason):
     from rich.console import Console
     from rich.panel import Panel
 
-    Console().print(Panel.fit(
+    Console().print(Panel(
         reason + '\n\n'
         'The overlay contains APT/dpkg state from a different platform build. '
         'Keeping it can make package management incorrect after reboot.\n\n'

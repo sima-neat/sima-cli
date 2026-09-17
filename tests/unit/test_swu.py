@@ -51,7 +51,7 @@ def test_boot_state_panel_fits_its_content():
         render_state(state)
     panel = next(call.args[0] for call in output.call_args_list
                  if getattr(call.args[0], 'title', None) == 'Boot state')
-    assert panel.expand is False
+    assert panel.expand is True
     assert panel.width == 72
 
 
@@ -302,7 +302,7 @@ def test_overlay_reset_panel_is_compact():
             'The selected image is B1455, but the overlay package metadata is B1454.')
     panel = output.call_args.args[0]
     assert panel.title == 'Overlay reset required'
-    assert panel.expand is False
+    assert panel.expand is True
     assert panel.width == 72
 
 

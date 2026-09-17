@@ -89,4 +89,4 @@ def render_state(state):
         'Boot status: ' + state.get('rollback', 'unknown'),
         'Boot attempts: ' + state.get('bootcount', 'unknown'),
     ])
-    console.print(Panel.fit(Text(details), title='Boot state', width=72))
+    console.print(Panel(Text(details), title='Boot state', width=72))

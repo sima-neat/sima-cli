@@ -183,13 +183,13 @@ def render_overlay(report, state=None, details=False, console=None):
 
     console = console or Console()
     if report['status'] == 'disabled':
-        console.print(Panel.fit('Overlay is disabled. Changes made directly to the system are not analyzed by this report.',
-                                title='System customizations', width=72))
+        console.print(Panel('Overlay is disabled. Changes made directly to the system are not analyzed by this report.',
+                            title='System customizations', width=72))
         return
     if report['status'] == 'unavailable':
-        console.print(Panel.fit(Text('Could not analyze system customizations.\n' +
-                                    '\n'.join(report.get('warnings', []))),
-                                title='System customizations', width=72))
+        console.print(Panel(Text('Could not analyze system customizations.\n' +
+                                '\n'.join(report.get('warnings', []))),
+                            title='System customizations', width=72))
         return
 
     buildinfo = report.get('identity', {}).get('etc/buildinfo', '')
@@ -208,7 +208,7 @@ def render_overlay(report, state=None, details=False, console=None):
     if next_slot in ('A', 'B') and next_slot != state.get('running slot'):
         heading += ('\nThe same overlay will apply when slot %s (%s) boots.' %
                     (next_slot, next_version))
-    console.print(Panel.fit(Text(heading), title='System customizations', width=72))
+    console.print(Panel(Text(heading), title='System customizations', width=72))
     packages = report.get('packages', {})
     package_builds = report.get('package_builds', {})
     if package_builds and package_builds['image'] != package_builds['metadata']:
@@ -318,7 +318,7 @@ def render_overlay(report, state=None, details=False, console=None):
             'sima-cli will keep the overlay for this update.\n\n'
             'An overlay reset removes local changes; custom software and settings must be reinstalled.'
         )
-    console.print(Panel.fit(
+    console.print(Panel(
         conclusion + '\n\n' + update_guidance,
         title='Review before updating', style='yellow', border_style='yellow', width=72))
     if details:

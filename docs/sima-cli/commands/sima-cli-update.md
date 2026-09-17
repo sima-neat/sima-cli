@@ -239,7 +239,10 @@ NVMe is mounted or remounted
 read/write before checking it (except during `--dryrun`). If no location is
 usable, the update stops with a storage error. Local downloads use one staged
 copy. After successful installation, the downloaded bundle and its temporary
-staging directory are removed to free space, including for remote updates.
+staging directory are removed on the device immediately after SWUpdate succeeds,
+before checking activation or rebooting. Remote updates do not require a second
+SSH request to remove the device download. Failed installations retain their
+staged bundle for diagnosis; user-supplied source files are never removed.
 
 Remote updates download on the host, transfer to the selected board storage,
 verify the transfer checksum, and run SWUpdate there. Both modes verify the signed bundle

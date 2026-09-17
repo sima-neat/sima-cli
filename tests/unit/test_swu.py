@@ -1,4 +1,5 @@
 import json
+import re
 import shlex
 from unittest.mock import MagicMock, patch
 
@@ -380,7 +381,7 @@ def test_remote_install_stages_under_data_and_checks_transfer(tmp_path):
 
 def test_failed_installer_retains_staging_and_never_reboots(tmp_path):
     target = run_install(tmp_path, fail=True)
-    assert not any('rm -rf' in c.args[0] for c in target.run.call_args_list)
+    assert not any(c.args[0].startswith('rm -rf') for c in target.run.call_args_list)
 
 
 def test_dryrun_does_not_transfer_or_install(tmp_path):
@@ -788,3 +789,59 @@ def test_insufficient_extraction_space_prevents_swupdate(tmp_path):
         with pytest.raises(click.ClickException, match='SWUpdate extraction'):
             run_install(tmp_path)
     install.assert_not_called()
+
+
+@pytest.mark.parametrize('exit_code', [0, 1])
+def test_device_installer_cleans_only_its_download_after_success(tmp_path, exit_code):
+    """Execute the shell without a client cleanup call or a real firmware update."""
+    import os
+    import subprocess
+
+    staging = tmp_path / 'sima-cli-update.ABC12345'
+    staging.mkdir()
+    (staging / 'bundle.swu').write_bytes(b'firmware')
+    original = tmp_path / 'user-bundle.swu'
+    original.write_bytes(b'firmware')
+    other = tmp_path / 'sima-cli-update.OTHER123'
+    other.mkdir()
+    (other / 'bundle.swu').write_bytes(b'other update')
+    tools = tmp_path / 'bin'
+    tools.mkdir()
+    for name, body in {
+        'flock': 'exit 0',
+        'pgrep': 'exit 1',
+        'simaai-trootctl': "echo 'upgrade_available : no'",
+        'swupdate': 'exit ' + str(exit_code),
+        'swupdate-progress': 'exit 0',
+    }.items():
+        executable = tools / name
+        executable.write_text('#!/bin/sh\n' + body + '\n')
+        executable.chmod(0o755)
+    # Use an isolated filesystem fixture while exercising the real shell logic.
+    with patch.object(swu, 'STAGING_PATTERN', re.escape(str(staging))):
+        script = swu.install_script(str(staging / 'bundle.swu'), None, staging=str(staging))
+    script = script.replace('/run/lock/sima-cli-swupdate.lock', str(tmp_path / 'update.lock'))
+    result = subprocess.run(['sh', '-c', script], env={**os.environ, 'PATH': str(tools) + ':/usr/bin:/bin'},
+                            capture_output=True, text=True)
+    assert result.returncode == exit_code, result.stderr
+    assert staging.exists() is (exit_code != 0)
+    assert original.read_bytes() == b'firmware'
+    assert (other / 'bundle.swu').read_bytes() == b'other update'
+
+
+@pytest.mark.parametrize('directory,bundle', [
+    ('/data', '/data/bundle.swu'),
+    ('/data/sima-cli', '/data/sima-cli/bundle.swu'),
+    ('/data/sima-cli-update.ABC12345/..', '/data/sima-cli-update.ABC12345/../bundle.swu'),
+    ('/data/sima-cli-update.ABC12345', '/data/user-bundle.swu'),
+])
+def test_installer_rejects_cleanup_outside_owned_staging(directory, bundle):
+    with pytest.raises(ValueError, match='current update staging'):
+        swu.install_script(bundle, None, staging=directory)
+
+
+@pytest.mark.parametrize('ip', [None, '192.0.2.1'])
+def test_update_passes_owned_staging_to_device_cleanup(tmp_path, ip):
+    target = run_install(tmp_path, ip=ip)
+    install = next(c.args[0] for c in target.run.call_args_list if 'swupdate -v' in c.args[0])
+    assert install.index('swupdate -v') < install.index('rm -rf -- /data/sima-cli-update.ABC12345')

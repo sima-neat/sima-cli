@@ -24,7 +24,17 @@ from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
 from sima_cli.update.swu_certificate import load_certificate, certificate_source
 
 
-def install_script(bundle, key, clean_overlay=False):
+def install_script(bundle, key, clean_overlay=False, staging=None):
+    if staging is not None:
+        if not re.fullmatch(STAGING_PATTERN, staging) or bundle != staging + '/bundle.swu':
+            raise ValueError('Cleanup requires the current update staging directory')
+    cleanup = ''
+    if staging is not None:
+        cleanup = (
+            '\n# Remove the operation download before returning to the client.\n'
+            + 'rm -rf -- ' + shlex.quote(staging)
+            + " || printf '%s\\n' " + shlex.quote('Staging cleanup deferred: ' + staging) + ' >&2\n'
+        )
     key_args = ['-k', key] if key else []
     command = shlex.join(['swupdate', '-v', '-i', bundle, *key_args, '-e', 'update,full'])
     if clean_overlay:
@@ -54,7 +64,7 @@ if command -v swupdate-progress >/dev/null; then
 else
     echo 'SWUpdate progress monitor unavailable; streaming installer diagnostics'
 fi
-''' + command
+''' + command + cleanup
 
 
 def _source_build_id(source):
@@ -549,7 +559,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             click.echo('Validating signature and installing the full inactive slot...')
             installing = True
             with InstallProgress() as progress:
-                target.run(install_script(remote, key, clean_overlay=reset_overlay), stream=progress)
+                target.run(install_script(remote, key, clean_overlay=reset_overlay, staging=staging), stream=progress)
             complete = True
         after = inspect_target(target)
         expected_slot = 'B' if before['running slot'] == 'A' else 'A'

@@ -94,17 +94,43 @@ def test_update_analyzes_before_bundle_selection_even_with_yes():
 def test_elxr_pivot_paths_resolved_without_using_live_root():
     mounts = [
         {'filesystems': [{'fstype': 'overlay', 'options': 'lowerdir=/,upperdir=/run/data/overlay/upper'}]},
-        {'filesystems': [{'fstype': 'ext4', 'options': 'rw'}]},
+        {'filesystems': [{'source': '/dev/mapper/rootfs', 'fstype': 'ext4', 'options': 'rw'}]},
         {'filesystems': [{'fstype': 'ext4', 'options': 'rw'}]},
     ]
+    def read(path, *args, **kwargs):
+        if path == '/proc/cmdline':
+            from io import StringIO
+            return StringIO('console=ttyS0 root=/dev/mapper/rootfs ro')
+        raise OSError('unreadable ' + str(path))
+
     with patch('subprocess.check_output', side_effect=[json.dumps(m) for m in mounts]), \
-            patch('os.path.isdir', return_value=True), patch('builtins.open', side_effect=OSError('unreadable')), \
+            patch('os.path.isdir', return_value=True), patch('builtins.open', side_effect=read), \
             patch('os.walk', return_value=[]):
         report = collect_overlay()
     assert report['baseline'] == '/oldroot'
     assert report['upper'] == '/data/overlay/upper'
     assert report['packages'] == {}
     assert any('unavailable' in w for w in report['warnings'])
+
+
+def test_elxr_pivot_rejects_oldroot_from_another_device():
+    mounts = [
+        {'filesystems': [{'fstype': 'overlay', 'options': 'lowerdir=/,upperdir=/run/data/overlay/upper'}]},
+        {'filesystems': [{'source': '/dev/dm-9', 'fstype': 'ext4', 'options': 'rw'}]},
+        {'filesystems': [{'fstype': 'ext4', 'options': 'rw'}]},
+    ]
+
+    def read(path, *args, **kwargs):
+        from io import StringIO
+        if path == '/proc/cmdline':
+            return StringIO('root=/dev/dm-0 ro')
+        raise AssertionError(path)
+
+    with patch('subprocess.check_output', side_effect=[json.dumps(m) for m in mounts]), \
+            patch('builtins.open', side_effect=read):
+        report = collect_overlay()
+    assert report['status'] == 'unavailable'
+    assert any('not the running root device' in warning for warning in report['warnings'])
 
 
 def test_executes_self_contained_readonly_collector():

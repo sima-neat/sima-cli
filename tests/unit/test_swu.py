@@ -200,6 +200,25 @@ def test_preserve_overlay_info_writes_verified_inventory(tmp_path):
                for call in target.run.call_args_list)
 
 
+def test_preserve_overlay_info_redacts_bundle_url_credentials(tmp_path):
+    transferred = {}
+    target = MagicMock()
+
+    def transfer(local, remote, move=False):
+        transferred[remote] = open(local, encoding='utf-8').read()
+
+    target.transfer.side_effect = transfer
+    with patch.object(swu.time, 'strftime', return_value='20260916T120000Z'), \
+            patch.object(swu.time, 'time_ns', return_value=123456789):
+        destination, _, _ = swu.preserve_overlay_info(
+            target, {'package_builds': {}, 'packages': {}, 'entries': []}, {},
+            'https://user:password@example.test/build/bundle.swu?token=secret#fragment')
+    manifest = json.loads(transferred[destination + '/manifest.json'])
+    assert manifest['selected_bundle'] == 'https://example.test/build/bundle.swu'
+    assert 'password' not in transferred[destination + '/manifest.json']
+    assert 'secret' not in transferred[destination + '/manifest.json']
+
+
 def test_yes_auto_selects_remote_clean_overlay_update(tmp_path):
     report = {
         'package_builds': {'image': '1454', 'metadata': '1369'},

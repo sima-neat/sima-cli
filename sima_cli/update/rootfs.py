@@ -22,18 +22,12 @@ medium=$(lsblk -dno PKNAME "/dev/$slave")
 [ -z "$medium" ] || printf 'medium: /dev/%s\n' "$medium"
 base=
 if [ "$(findmnt -n -o FSTYPE /)" = overlay ]; then
-    # Current overlay-init reserves /oldroot; older images used /mnt.
-    # Match the actual root device so an NFS mount at /mnt is never trusted.
+    # The 3.0 overlay-init contract keeps the running lower root at /oldroot.
+    # Match the actual root device before reading image identity from it.
     expected=$(cat "/sys/class/block/$dev/dev")
-    base=
-    for candidate in /oldroot /mnt; do
-        mounted=$(findmnt -n -M "$candidate" -o MAJ:MIN | tr -d ' ')
-        if [ "$mounted" = "$expected" ]; then
-            base=$candidate
-            break
-        fi
-    done
-    [ -n "$base" ] || exit 1
+    mounted=$(findmnt -n -M /oldroot -o MAJ:MIN | tr -d ' ')
+    [ "$mounted" = "$expected" ] || exit 1
+    base=/oldroot
 fi
 printf 'active version: %s\n' "$(sed -n 's/^SIMA_BUILD_VERSION *= *//p' "$base/etc/buildinfo" 2>/dev/null)"
 printf 'active os: %s\n' "$(. "$base/etc/os-release"; echo "$PRETTY_NAME")"

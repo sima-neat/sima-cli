@@ -32,13 +32,19 @@ def collect_overlay():
         # the old namespace paths after / becomes /oldroot and data moves.
         if lower == '/' and upper == '/run/data/overlay/upper':
             oldroot = json.loads(subprocess.check_output(
-                ['findmnt', '--json', '--mountpoint', '/oldroot', '--output', 'FSTYPE,OPTIONS'],
+                ['findmnt', '--json', '--mountpoint', '/oldroot', '--output', 'SOURCE,FSTYPE,OPTIONS'],
                 universal_newlines=True))['filesystems'][0]
             data = json.loads(subprocess.check_output(
                 ['findmnt', '--json', '--mountpoint', '/data', '--output', 'FSTYPE,OPTIONS'],
                 universal_newlines=True))['filesystems'][0]
             if oldroot['fstype'] != 'ext4' or data['fstype'] != 'ext4':
                 raise ValueError('Cannot resolve eLxr overlay paths after pivot_root')
+            with open('/proc/cmdline') as source:
+                root_argument = next((value[5:] for value in source.read().split()
+                                      if value.startswith('root=')), '')
+            if (not root_argument.startswith('/dev/') or
+                    os.path.realpath(oldroot.get('source', '')) != os.path.realpath(root_argument)):
+                raise ValueError('/oldroot is not the running root device')
             lower, upper = '/oldroot', '/data/overlay/upper'
             report['warnings'].append('Using the eLxr lower root at /oldroot; this is an image baseline, not a cryptographically verified manifest.')
         report.update(upper=upper, lower=lower, status='enabled')

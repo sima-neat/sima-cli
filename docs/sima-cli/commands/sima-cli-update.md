@@ -270,8 +270,8 @@ Migration from an older layout to the 3.0 A/B layout requires provisioning/recov
 ### Inspection with a persistent root overlay
 
 On overlay-enabled images, `--inspect` reads the active slot version from the
-pristine root at `/oldroot` (or `/mnt` on older images), after verifying that the
-mount belongs to the running rootfs device. It does not use the overlay's package
+pristine root at `/oldroot`, after verifying that the mount belongs to the running
+rootfs device. It does not use the overlay's package
 database to identify the slot. If the platform inspector omits fallback metadata,
 the CLI temporarily mounts the peer rootfs read-only with journal replay disabled
 and restores its previous LVM activation state. Inspection does not switch slots

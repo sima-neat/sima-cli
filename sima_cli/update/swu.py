@@ -99,6 +99,11 @@ def preserve_overlay_info(target, report, state, source):
         raise click.ClickException('Cannot construct a safe overlay backup identifier.')
     root = '/data/.overlay-backup'
     destination = root + '/' + backup_id
+    source_text = str(source)
+    source_url = urlparse(source_text)
+    if source_url.scheme and source_url.netloc:
+        source_text = source_url._replace(
+            netloc=source_url.netloc.rsplit('@', 1)[-1], query='', fragment='').geturl()
     target.run(
         'set -eu; install -d -m 0700 -o "${SUDO_UID:-0}" -g "${SUDO_GID:-0}" '
         + shlex.quote(root) + ' ' + shlex.quote(destination)
@@ -107,7 +112,7 @@ def preserve_overlay_info(target, report, state, source):
         'schema': 1,
         'created_utc': timestamp,
         'purpose': 'sima-cli clean-overlay update inventory',
-        'selected_bundle': str(source),
+        'selected_bundle': source_text,
         'boot_state': {key: value for key, value in state.items() if key != 'raw'},
         'overlay': report,
         'contains_file_contents': False,

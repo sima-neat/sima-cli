@@ -62,6 +62,10 @@ applies only to eLxr 3.0+ SWUpdate, not bootimg or recovery-media creation.
 | `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror (eLxr only). On 3.0+, signed-bundle verification remains required. The legacy 2.1 behavior is unchanged. |
 | `-t, --troot_only` | Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion. |
 | `--dryrun` | For ELXR updates only, validate the update path and print the simaai-ota command without running it. |
+| `--inspect` | Show eLxr 3.0+ A/B slots and overlay customizations without updating, locally or through `--ip`. |
+| `--verbose` | Show detailed overlay package and file categories during eLxr 3.0+ inspection or update. |
+| `--signing-cert` | Use a specific SWUpdate PEM verification certificate URL or local file. |
+| `--reboot` | Reboot after a successful eLxr 3.0+ installation and verify remote boot health. |
 
 ## Arguments
 
@@ -178,6 +182,15 @@ Options:
   --dryrun                       For ELXR updates only, validate the update
                                  path and print the simaai-ota command without
                                  running it.
+  --inspect                      Show eLxr 3.0+ A/B slots and overlay
+                                 customizations without updating (local or
+                                 --ip).
+  --verbose                      Show detailed overlay file categories during
+                                 eLxr 3.0+ inspection or update.
+  --signing-cert URL_OR_FILE     SWUpdate PEM verification certificate: HTTP(S)
+                                 URL or local file.
+  --reboot                       Reboot after successful eLxr 3.0+
+                                 installation; verify remote boot health.
   --help                         Show this message and exit.
 ```
 
@@ -267,3 +280,70 @@ or clear boot flags. Missing or unverifiable metadata remains unknown.
 For eLxr 3.0+, `sima-cli -i update -f` tries Artifactory first and permits
 external pre-release fallback on supported discovery or artifact-download failures.
 Without `-f`, it stops instead of switching mirrors.
+
+### Overlay customization overview (3.0)
+
+Both `sima-cli update --inspect` and regular 3.0 full-system updates display a
+read-only overlay overview. Remote operations analyze the target device. Updates
+show it before build selection and installation confirmation, including with `-y`.
+An animated text indicator remains visible while package, configuration, and local
+software discovery is running.
+
+The report compares the effective dpkg database with the accessible lower layer's
+package database to list additional, changed, and removed packages. It also groups
+upper-layer entries into configuration/services, local software candidates,
+deletions/opaque directories, package state/caches/logs, and other files. The
+summary separates explicitly installed packages from supporting dependencies,
+lists software roots using the final path component and full path, and relates the
+shared overlay to an alternative slot already selected for the next boot. It
+identifies the baseline image and explains the consequences of keeping or clearing
+the overlay. Raw OS metadata and filesystem bookkeeping are omitted by default; use
+`--verbose` to include the complete package-version comparison, supporting
+dependencies, directory counts, and overlay-category counts for diagnosis. In
+the package comparison, `Image` is the pristine lower filesystem and `Overlay`
+is the effective package state retained in the persistent upper layer.
+
+When the `simaai-palette-*` package identifies different package-set build IDs in
+those two databases, the normal summary highlights both IDs and explains that the
+persistent overlay retained metadata from an earlier image. It warns that APT may
+then report or select incorrect versions and that image and overlay files may be
+mixed. It also explains that this commonly occurs when `apt install` was used on
+the previous platform version. The marker package used for this conclusion is
+shown with `--verbose`.
+
+Copied-up files are not necessarily intentional customizations. In particular,
+the effective dpkg database may itself be stale after an earlier update. This
+initial report does not determine file ownership or compare file contents, and it
+does not claim that every file under `/opt` or `/usr/local` is unmanaged software.
+Unavailable baselines, unreadable entries, and inventory limits are reported.
+Overlay-disabled systems are identified explicitly; direct-root customization
+analysis is not included.
+
+Inspection does not save files or change overlay/boot state. During a regular 3.0
+update, a package-build mismatch offers a separate clean-overlay confirmation.
+Accepting it makes sima-cli:
+
+1. Verify that the selected SWU implements the platform
+   `SWUPDATE_CLEAN_OVERLAY` contract.
+2. Save and checksum an inventory under a timestamped directory in
+   `/data/.overlay-backup`, with `latest` pointing to the newest inventory.
+3. Run SWUpdate with the platform cleanup environment enabled.
+4. Print post-reboot checks and reinstall guidance.
+
+With `-y`, a detected package-build mismatch automatically selects the clean-overlay
+update without prompting. Without `-y`, the user can decline the reset and continue
+with the existing overlay, leaving the mismatch in place. An SWU without the cleanup
+contract is rejected before firmware installation or backup.
+
+The saved inventory includes package selections, image and overlay identity,
+configuration/service paths, software roots, ownership, permissions, and an
+`AFTER-REBOOT.txt` guide. It deliberately contains no file contents and never
+archives or restores the old dpkg database, APT caches, or complete upper layer.
+It is therefore recovery information rather than automatic restoration.
+
+The same workflow applies with `--ip`. Analysis and cleanup run on the remote
+DevKit, and the initiating machine transfers the inventory into the remote
+`/data/.overlay-backup` before invoking SWUpdate there. With `--reboot`, the
+initiating CLI reconnects to verify the new slot and then prints the recovery
+guidance. Without `--reboot`, it prints guidance after installation and leaves the
+reboot to the user.

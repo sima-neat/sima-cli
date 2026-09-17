@@ -78,7 +78,8 @@ def render_state(state):
         prefix = 'active' if state.get('active slot') == slot else 'fallback' if state.get('fallback slot') == slot else None
         role = 'Running' if slot == running else 'Next boot' if slot == state.get('next-boot') else 'Fallback' if prefix == 'fallback' else 'Unknown'
         values = [slot, role, state.get(f'{prefix} version', 'unknown'), state.get(f'{prefix} os', 'unknown'), state.get('validity ' + slot, 'unknown')]
-        table.add_row(*(Text(value) for value in values))
+        row_style = 'green' if role == 'Running' else 'yellow' if role == 'Fallback' else None
+        table.add_row(*(Text(value) for value in values), style=row_style)
     console.print(table)
     details = '\n'.join([
         'Medium: ' + state.get('medium', 'unknown'),

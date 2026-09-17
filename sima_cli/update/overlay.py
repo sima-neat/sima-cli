@@ -301,8 +301,7 @@ def render_overlay(report, state=None, details=False, console=None):
     console.print(Panel(
         conclusion + '\n'
         'Keeping the overlay may carry old files and package records into the new image.\n'
-        'Clearing it removes local changes; custom software and settings must be reinstalled.\n'
-        'Automatic backup and recovery are not implemented yet.',
+        'Clearing it removes local changes; custom software and settings must be reinstalled.',
         title='Review before updating', style='yellow', border_style='yellow'))
     if details:
         if package_builds:

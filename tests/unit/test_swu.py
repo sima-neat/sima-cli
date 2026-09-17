@@ -147,6 +147,14 @@ def test_installer_uses_signed_full_collection_and_progress_without_reboot():
     assert script.index('swupdate-progress -w') < script.index('swupdate -v')
 
 
+def test_installer_schedules_reboot_only_after_successful_swupdate():
+    script = swu.install_script('/data/test/bundle.swu', '/etc/swupdate/public.pem', reboot=True)
+    install = script.index('swupdate -v')
+    reboot = script.index("nohup sh -c 'sleep 3; /sbin/reboot'")
+    assert install < reboot
+    assert 'set -eu' in script
+
+
 def test_clean_overlay_installer_sets_platform_environment():
     script = swu.install_script('/data/test/bundle.swu', '/etc/swupdate/public.pem',
                                 clean_overlay=True)
@@ -338,7 +346,7 @@ def test_clean_reset_rejects_unsupported_bundle_before_backup(tmp_path):
 
 
 def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2.1',
-                key_directory=None, auto_confirm=True, source_version=None):
+                key_directory=None, auto_confirm=True, source_version=None, reboot=False):
     bundle = tmp_path / 'bundle.swu'
     bundle.write_bytes(b'signed bundle fixture')
     source = (swu_artifacts.BundleSource(str(bundle), source_version)
@@ -360,14 +368,15 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
             patch.object(swu, '_select_staging_root', return_value=root), \
             patch.object(swu, 'prepare_key', return_value=(key_directory + '/public.pem' if key_directory else '/tmp/test-signing-cert.pem', key_directory)), \
             patch.object(swu.tempfile, 'TemporaryDirectory') as cache, \
-            patch.object(swu, '_reboot_and_verify') as reboot:
+            patch.object(swu, '_reboot_and_verify') as reboot_verify:
         cache.return_value.__enter__.return_value = str(tmp_path)
         if fail:
             with pytest.raises(click.ClickException, match='install failed'):
                 swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=auto_confirm, reboot=True)
-            reboot.assert_not_called()
+            reboot_verify.assert_not_called()
         else:
-            swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=auto_confirm, dryrun=dryrun)
+            swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=auto_confirm,
+                              dryrun=dryrun, reboot=reboot)
     assert resolve.call_args.kwargs["auto_confirm"] is auto_confirm
     return target
 
@@ -377,6 +386,12 @@ def test_remote_install_stages_under_data_and_checks_transfer(tmp_path):
     assert target.transfer.call_args.args[1] == '/data/sima-cli-update.ABC12345/bundle.swu'
     assert any('-e update,full' in c.args[0] for c in target.run.call_args_list)
     assert any('rm -rf' in c.args[0] for c in target.run.call_args_list)
+
+
+def test_reboot_is_handed_off_to_the_successful_device_installer(tmp_path):
+    target = run_install(tmp_path, reboot=True)
+    installer = next(call.args[0] for call in target.run.call_args_list if 'swupdate -v' in call.args[0])
+    assert "nohup sh -c 'sleep 3; /sbin/reboot'" in installer
 
 
 def test_failed_installer_retains_staging_and_never_reboots(tmp_path):
@@ -484,7 +499,8 @@ def test_reboot_checks_health_and_version_without_committing_it(outcome):
         else:
             with pytest.raises(click.ClickException):
                 swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_new')
-    assert 'reboot' in target.run.call_args.args[0]
+    target.run.assert_not_called()
+    target.close.assert_called_once()
     peer.run.assert_not_called()
 
 

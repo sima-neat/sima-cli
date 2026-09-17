@@ -24,7 +24,7 @@ from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
 from sima_cli.update.swu_certificate import load_certificate, certificate_source
 
 
-def install_script(bundle, key, clean_overlay=False, staging=None):
+def install_script(bundle, key, clean_overlay=False, staging=None, reboot=False):
     if staging is not None:
         if not re.fullmatch(STAGING_PATTERN, staging) or bundle != staging + '/bundle.swu':
             raise ValueError('Cleanup requires the current update staging directory')
@@ -39,6 +39,12 @@ def install_script(bundle, key, clean_overlay=False, staging=None):
     command = shlex.join(['swupdate', '-v', '-i', bundle, *key_args, '-e', 'update,full'])
     if clean_overlay:
         command = 'SWUPDATE_CLEAN_OVERLAY=1 ' + command
+    reboot_command = ''
+    if reboot:
+        # Schedule on the DevKit immediately after a successful installation. A
+        # clean overlay can remove the locally running CLI before it can issue a
+        # separate reboot command.
+        reboot_command = "\nnohup sh -c 'sleep 3; /sbin/reboot' >/dev/null 2>&1 </dev/null &\n"
     return r'''set -eu
 exec 9>/run/lock/sima-cli-swupdate.lock
 flock -n 9 || { echo 'Another sima-cli update is running'; exit 1; }
@@ -64,7 +70,7 @@ if command -v swupdate-progress >/dev/null; then
 else
     echo 'SWUpdate progress monitor unavailable; streaming installer diagnostics'
 fi
-''' + command + cleanup
+''' + command + reboot_command + cleanup
 
 
 def _source_build_id(source):
@@ -373,8 +379,8 @@ mkdir -p /media/nvme/swupdate''')
 
 
 def _reboot_and_verify(target, before, ip, passwd, expected=None):
-    # Delay reboot until the SSH acknowledgement has reached the caller.
-    target.run("nohup sh -c 'sleep 3; reboot' >/dev/null 2>&1 </dev/null &")
+    # The successful device-side installer already scheduled the reboot. Do not
+    # make it depend on the client surviving overlay cleanup.
     if not ip:
         click.echo('Reboot scheduled. Run sima-cli update --inspect after boot to check health confirmation.')
         return
@@ -559,7 +565,8 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             click.echo('Validating signature and installing the full inactive slot...')
             installing = True
             with InstallProgress() as progress:
-                target.run(install_script(remote, key, clean_overlay=reset_overlay, staging=staging), stream=progress)
+                target.run(install_script(remote, key, clean_overlay=reset_overlay,
+                                          staging=staging, reboot=reboot), stream=progress)
             complete = True
         after = inspect_target(target)
         expected_slot = 'B' if before['running slot'] == 'A' else 'A'

@@ -196,6 +196,7 @@ def test_summary_uses_software_roots_and_explains_counts(capsys):
     assert 'file counts' not in output
     assert 'This device has custom software' in output
     assert 'Review required' not in output
+    assert 'Package metadata could not be compared' in output
     assert 'B1371' in output
     assert 'slot B (B1454)' in output
 
@@ -252,6 +253,18 @@ def test_normal_summary_hides_package_version_details(capsys):
     assert 'versions' in output
     assert 'How to correct it:' not in output
     assert 'future sima-cli update' not in output
+
+
+def test_review_panel_says_matching_metadata_keeps_overlay(capsys):
+    render_overlay({
+        'status': 'enabled',
+        'packages': {'additional': [], 'changed': [], 'removed': []},
+        'package_builds': {'image': '1454', 'metadata': '1454'},
+        'entries': [],
+    })
+    output = capsys.readouterr().out
+    assert 'Package metadata matches the running image' in output
+    assert 'no overlay reset is required for this update' in output
 
 
 def test_before_updating_panel_uses_warning_color():

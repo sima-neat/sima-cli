@@ -298,10 +298,26 @@ def render_overlay(report, state=None, details=False, console=None):
     if next_slot in ('A', 'B') and next_slot != state.get('running slot'):
         conclusion += ('\nRebooting now will use slot %s (%s) with the current shared overlay.' %
                        (next_slot, next_version))
+    if package_builds and package_builds['image'] == package_builds['metadata']:
+        update_guidance = (
+            'Package metadata matches the running image. sima-cli will keep the overlay; '
+            'no overlay reset is required for this update.\n'
+            'A future update will offer to save an inventory and reset the overlay if a package '
+            'metadata mismatch is detected.'
+        )
+    elif package_builds:
+        update_guidance = (
+            'Package metadata does not match the running image. The update will offer to save an '
+            'inventory and reset the overlay.\n'
+            'Resetting removes local changes; custom software and settings must be reinstalled.'
+        )
+    else:
+        update_guidance = (
+            'Package metadata could not be compared. sima-cli will keep the overlay for this update.\n'
+            'An overlay reset removes local changes; custom software and settings must be reinstalled.'
+        )
     console.print(Panel(
-        conclusion + '\n'
-        'Keeping the overlay may carry old files and package records into the new image.\n'
-        'Clearing it removes local changes; custom software and settings must be reinstalled.',
+        conclusion + '\n' + update_guidance,
         title='Review before updating', style='yellow', border_style='yellow'))
     if details:
         if package_builds:

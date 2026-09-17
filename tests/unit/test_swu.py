@@ -304,6 +304,7 @@ def test_overlay_reset_panel_is_compact():
     assert panel.title == 'Overlay reset required'
     assert panel.expand is True
     assert panel.width == 72
+    assert 'After the upgrade, reinstall the packages and software' in str(panel.renderable)
 
 
 def test_declining_mismatch_reset_keeps_normal_update(tmp_path):

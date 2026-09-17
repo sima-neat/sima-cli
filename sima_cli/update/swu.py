@@ -98,8 +98,8 @@ def _print_overlay_reset_panel(reason):
         'The overlay contains APT/dpkg state from a different platform build. '
         'Keeping it can make package management incorrect after reboot.\n\n'
         'sima-cli will save an inventory under /data/.overlay-backup before resetting '
-        'OverlayFS. The inventory does not contain file contents; overlay software and '
-        'settings must be reinstalled.',
+        'OverlayFS. After the upgrade, reinstall the packages and software that were '
+        'previously stored in the overlay.',
         title='Overlay reset required', style='yellow', border_style='yellow', width=72))
 
 

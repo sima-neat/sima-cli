@@ -14,6 +14,7 @@ from rich.text import Text
 from sima_cli.update.remote import init_ssh_session, run_remote_command_capture
 
 LEGACY_LAYOUT_ERROR = 'Unsupported legacy 2.1 fw_env.config'
+MANUAL_FALLBACK_READY = 'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY'
 
 
 def resolve_device(devkit=None):
@@ -100,7 +101,9 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
         try:
             output = _checked(ssh, 'sudo sh -c ' + shlex.quote(script))
         except click.ClickException as exc:
-            if LEGACY_LAYOUT_ERROR not in str(exc):
+            error = str(exc)
+            if (LEGACY_LAYOUT_ERROR not in error or MANUAL_FALLBACK_READY not in error
+                    or 'ERROR:' in error):
                 raise
             _show_manual_legacy_setup(devkit, server_ip, network, autoflash)
             return False
@@ -177,6 +180,7 @@ def _uboot_script(devkit, server_ip, network):
         'backup=',
         'restore_ro=0',
         'backup_complete=0',
+        'cleanup_complete=1',
         'cleanup() {',
         '  status=$?',
         '  trap - EXIT',
@@ -186,17 +190,33 @@ def _uboot_script(devkit, server_ip, network):
         '      echo "Restored saved U-Boot environment after preparation failed."',
         '    else',
         '      echo "ERROR: Could not restore U-Boot environment. Backup: $backup. DevKit will not be rebooted." >&2',
+        '      status=1',
+        '      cleanup_complete=0',
         '    fi',
-        '    sync',
+        '    if ! sync; then',
+        '      echo "ERROR: Could not sync the restored U-Boot environment. DevKit will not be rebooted." >&2',
+        '      status=1',
+        '      cleanup_complete=0',
+        '    fi',
         '  fi',
-        '  rm -f "$config"',
+        '  if ! rm -f "$config"; then',
+        '    echo "ERROR: Could not remove the temporary U-Boot configuration." >&2',
+        '    status=1',
+        '    cleanup_complete=0',
+        '  fi',
         '  if [ "$restore_ro" = 1 ]; then',
-        '    sync',
+        '    if ! sync; then',
+        '      echo "ERROR: Could not sync /boot before restoring it read-only." >&2',
+        '      status=1',
+        '      cleanup_complete=0',
+        '    fi',
         '    if ! mount -o remount,ro /boot; then',
         '      echo "ERROR: Could not restore /boot to read-only. DevKit will not be rebooted." >&2',
         '      status=1',
+        '      cleanup_complete=0',
         '    fi',
         '  fi',
+        f'  if [ "$status" -ne 0 ] && [ "$backup_complete" = 1 ] && [ "$cleanup_complete" = 1 ]; then echo {MANUAL_FALLBACK_READY}; fi',
         '  exit "$status"',
         '}',
         'trap cleanup EXIT',

@@ -87,6 +87,34 @@ def test_remote_failure_prevents_reboot(failed_call):
     connect.return_value.close.assert_called_once()
 
 
+def test_unsupported_legacy_layout_continues_with_manual_instructions(capsys):
+    failure = click.ClickException(
+        'Remote netboot preparation failed: Restored saved U-Boot environment. '
+        'RuntimeError: Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout.',
+    )
+    with patch.object(device, 'init_ssh_session') as connect, \
+            patch.object(device, '_checked', side_effect=['', failure]) as command, \
+            patch.object(click, 'confirm', return_value=True):
+        assert device.configure_and_reboot(
+            '192.0.2.1', '192.0.2.10', autoflash=True,
+        ) is False
+
+    assert len(command.call_args_list) == 2
+    assert not any('systemd-run' in call.args[1] for call in command.call_args_list)
+    connect.return_value.close.assert_called_once()
+    output = capsys.readouterr().out
+    assert 'Manual netboot setup required' in output
+    assert 'saved environment was restored' in output
+    assert 'setenv ipaddr 192.0.2.1' in output
+    assert 'setenv serverip 192.0.2.10' in output
+    assert 'setenv netmask 255.255.255.0' in output
+    assert 'setenv nfs_linux_intf end0' in output
+    assert 'setenv boot_targets net' in output
+    assert 'saveenv' in output
+    assert 'reset' in output
+    assert 'Automatic flashing is disabled' in output
+
+
 @pytest.mark.parametrize('bind_failure', [False, True])
 @pytest.mark.parametrize('selected', ['192.0.2.1', None])
 def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_failure, selected):

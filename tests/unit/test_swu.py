@@ -147,6 +147,14 @@ def test_installer_uses_signed_full_collection_and_progress_without_reboot():
     assert script.index('swupdate-progress -w') < script.index('swupdate -v')
 
 
+def test_installer_schedules_reboot_only_after_successful_swupdate():
+    script = swu.install_script('/data/test/bundle.swu', '/etc/swupdate/public.pem', reboot=True)
+    install = script.index('swupdate -v')
+    reboot = script.index("nohup sh -c 'sleep 3; /sbin/reboot'")
+    assert install < reboot
+    assert 'set -eu' in script
+
+
 def test_clean_overlay_installer_sets_platform_environment():
     script = swu.install_script('/data/test/bundle.swu', '/etc/swupdate/public.pem',
                                 clean_overlay=True)
@@ -338,7 +346,7 @@ def test_clean_reset_rejects_unsupported_bundle_before_backup(tmp_path):
 
 
 def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2.1',
-                key_directory=None, auto_confirm=True, source_version=None):
+                key_directory=None, auto_confirm=True, source_version=None, reboot=False):
     bundle = tmp_path / 'bundle.swu'
     bundle.write_bytes(b'signed bundle fixture')
     source = (swu_artifacts.BundleSource(str(bundle), source_version)
@@ -360,14 +368,15 @@ def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2
             patch.object(swu, '_select_staging_root', return_value=root), \
             patch.object(swu, 'prepare_key', return_value=(key_directory + '/public.pem' if key_directory else '/tmp/test-signing-cert.pem', key_directory)), \
             patch.object(swu.tempfile, 'TemporaryDirectory') as cache, \
-            patch.object(swu, '_reboot_and_verify') as reboot:
+            patch.object(swu, '_reboot_and_verify') as reboot_verify:
         cache.return_value.__enter__.return_value = str(tmp_path)
         if fail:
             with pytest.raises(click.ClickException, match='install failed'):
                 swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=auto_confirm, reboot=True)
-            reboot.assert_not_called()
+            reboot_verify.assert_not_called()
         else:
-            swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=auto_confirm, dryrun=dryrun)
+            swu.update_system('3.0', 'modalix', ip=ip, auto_confirm=auto_confirm,
+                              dryrun=dryrun, reboot=reboot)
     assert resolve.call_args.kwargs["auto_confirm"] is auto_confirm
     return target
 
@@ -377,6 +386,13 @@ def test_remote_install_stages_under_data_and_checks_transfer(tmp_path):
     assert target.transfer.call_args.args[1] == '/data/sima-cli-update.ABC12345/bundle.swu'
     assert any('-e update,full' in c.args[0] for c in target.run.call_args_list)
     assert any('rm -rf' in c.args[0] for c in target.run.call_args_list)
+
+
+def test_remote_reboot_is_handed_off_to_the_successful_device_installer(tmp_path):
+    target = run_install(tmp_path, ip='192.0.2.1', reboot=True)
+    installer = next(call.args[0] for call in target.run.call_args_list if 'swupdate -v' in call.args[0])
+    target.transfer.assert_called_once()
+    assert "nohup sh -c 'sleep 3; /sbin/reboot'" in installer
 
 
 def test_failed_installer_retains_staging_and_never_reboots(tmp_path):
@@ -484,7 +500,8 @@ def test_reboot_checks_health_and_version_without_committing_it(outcome):
         else:
             with pytest.raises(click.ClickException):
                 swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_new')
-    assert 'reboot' in target.run.call_args.args[0]
+    target.run.assert_not_called()
+    target.close.assert_called_once()
     peer.run.assert_not_called()
 
 
@@ -845,3 +862,49 @@ def test_update_passes_owned_staging_to_device_cleanup(tmp_path, ip):
     target = run_install(tmp_path, ip=ip)
     install = next(c.args[0] for c in target.run.call_args_list if 'swupdate -v' in c.args[0])
     assert install.index('swupdate -v') < install.index('rm -rf -- /data/sima-cli-update.ABC12345')
+
+
+@pytest.mark.parametrize('running', ['A', 'B'])
+@pytest.mark.parametrize('layout', ['compact', 'current'])
+@pytest.mark.parametrize('outcome', ['pending', 'wrong-slot', 'not-pending', 'unknown', 'query-failed', 'install-failed'])
+def test_device_reboot_requires_verified_pending_activation(tmp_path, running, layout, outcome):
+    """Run the device shell with fake firmware tools; never invoke a real reboot."""
+    import os
+    import shlex
+    import subprocess
+
+    expected = 'B' if running == 'A' else 'A'
+    next_slot = running if outcome == 'wrong-slot' else expected
+    flag = 'no' if outcome == 'not-pending' else 'yes'
+    before = f'running slot : {running}\nupgrade_available : no\n'
+    after = (f'control block: valid A, valid B, upgrade_available: {flag}, next-boot: {next_slot}\n'
+             if layout == 'compact' else
+             f'next-boot slot (CB) : {next_slot}\nupgrade_available : {flag}\n')
+    if outcome == 'unknown':
+        after = 'unrecognized state\n'
+    installed = tmp_path / 'installed'
+    scheduled = tmp_path / 'scheduled'
+    tools = tmp_path / 'bin'
+    tools.mkdir()
+    for name, body in {
+        'flock': 'exit 0',
+        'pgrep': 'exit 1',
+        'swupdate-progress': 'exit 0',
+        'simaai-trootctl': (
+            f'if [ -f {shlex.quote(str(installed))} ]; then\n'
+            + ('exit 7' if outcome == 'query-failed' else "printf '%s' " + shlex.quote(after))
+            + '\nelse\nprintf \'%s\' ' + shlex.quote(before) + '\nfi'),
+        'swupdate': 'exit 23' if outcome == 'install-failed' else 'touch ' + shlex.quote(str(installed)),
+        # Intercept the handoff itself, including its absolute reboot command.
+        'nohup': 'touch ' + shlex.quote(str(scheduled)),
+    }.items():
+        executable = tools / name
+        executable.write_text('#!/bin/sh\n' + body + '\n')
+        executable.chmod(0o755)
+    script = swu.install_script('/data/bundle.swu', None, clean_overlay=True, reboot=True)
+    script = script.replace('/run/lock/sima-cli-swupdate.lock', str(tmp_path / 'lock'))
+    result = subprocess.run(['sh', '-c', script + '\nwait\n'],
+                            env={**os.environ, 'PATH': str(tools) + ':/usr/bin:/bin'},
+                            capture_output=True, text=True, timeout=5)
+    assert (result.returncode == 0) is (outcome == 'pending'), result.stdout + result.stderr
+    assert scheduled.exists() is (outcome == 'pending')

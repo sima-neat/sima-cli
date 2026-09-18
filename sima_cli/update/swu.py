@@ -39,12 +39,28 @@ def install_script(bundle, key, clean_overlay=False, staging=None, reboot=False)
     command = shlex.join(['swupdate', '-v', '-i', bundle, *key_args, '-e', 'update,full'])
     if clean_overlay:
         command = 'SWUPDATE_CLEAN_OVERLAY=1 ' + command
+    activation_setup = ''
     reboot_command = ''
     if reboot:
-        # Schedule on the DevKit immediately after a successful installation. A
-        # clean overlay can remove the locally running CLI before it can issue a
-        # separate reboot command.
-        reboot_command = "\nnohup sh -c 'sleep 3; /sbin/reboot' >/dev/null 2>&1 </dev/null &\n"
+        # Keep the activation gate on the device: cleaning the overlay may
+        # remove the local CLI before it can inspect state or request a reboot.
+        activation_setup = r'''
+running=$(printf '%s\n' "$state" | sed -n 's/^[[:space:]]*running slot[[:space:]]*:[[:space:]]*\([AB]\)[[:space:]]*$/\1/p')
+case "$running" in
+    A) expected_slot=B ;;
+    B) expected_slot=A ;;
+    *) echo 'Running slot is unknown; refusing automatic restart'; exit 1 ;;
+esac
+'''
+        reboot_command = r'''
+pending=$(simaai-trootctl get-active-slot)
+if ! printf '%s\n' "$pending" | grep -Eq 'upgrade_available[[:space:]]*:[[:space:]]*yes([,[:space:]]|$)' ||
+   ! printf '%s\n' "$pending" | grep -Eq "next-boot( slot)?( \(CB\))?[[:space:]]*:[[:space:]]*$expected_slot([,[:space:]]|$)"; then
+    echo 'SWUpdate exited successfully, but pending activation could not be verified. Run update --inspect before rebooting.'
+    exit 1
+fi
+nohup sh -c 'sleep 3; /sbin/reboot' >/dev/null 2>&1 </dev/null &
+'''
     return r'''set -eu
 exec 9>/run/lock/sima-cli-swupdate.lock
 flock -n 9 || { echo 'Another sima-cli update is running'; exit 1; }
@@ -70,7 +86,7 @@ if command -v swupdate-progress >/dev/null; then
 else
     echo 'SWUpdate progress monitor unavailable; streaming installer diagnostics'
 fi
-''' + command + reboot_command + cleanup
+''' + activation_setup + command + reboot_command + cleanup
 
 
 def _source_build_id(source):

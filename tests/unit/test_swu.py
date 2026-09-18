@@ -862,3 +862,49 @@ def test_update_passes_owned_staging_to_device_cleanup(tmp_path, ip):
     target = run_install(tmp_path, ip=ip)
     install = next(c.args[0] for c in target.run.call_args_list if 'swupdate -v' in c.args[0])
     assert install.index('swupdate -v') < install.index('rm -rf -- /data/sima-cli-update.ABC12345')
+
+
+@pytest.mark.parametrize('running', ['A', 'B'])
+@pytest.mark.parametrize('layout', ['compact', 'current'])
+@pytest.mark.parametrize('outcome', ['pending', 'wrong-slot', 'not-pending', 'unknown', 'query-failed', 'install-failed'])
+def test_device_reboot_requires_verified_pending_activation(tmp_path, running, layout, outcome):
+    """Run the device shell with fake firmware tools; never invoke a real reboot."""
+    import os
+    import shlex
+    import subprocess
+
+    expected = 'B' if running == 'A' else 'A'
+    next_slot = running if outcome == 'wrong-slot' else expected
+    flag = 'no' if outcome == 'not-pending' else 'yes'
+    before = f'running slot : {running}\nupgrade_available : no\n'
+    after = (f'control block: valid A, valid B, upgrade_available: {flag}, next-boot: {next_slot}\n'
+             if layout == 'compact' else
+             f'next-boot slot (CB) : {next_slot}\nupgrade_available : {flag}\n')
+    if outcome == 'unknown':
+        after = 'unrecognized state\n'
+    installed = tmp_path / 'installed'
+    scheduled = tmp_path / 'scheduled'
+    tools = tmp_path / 'bin'
+    tools.mkdir()
+    for name, body in {
+        'flock': 'exit 0',
+        'pgrep': 'exit 1',
+        'swupdate-progress': 'exit 0',
+        'simaai-trootctl': (
+            f'if [ -f {shlex.quote(str(installed))} ]; then\n'
+            + ('exit 7' if outcome == 'query-failed' else "printf '%s' " + shlex.quote(after))
+            + '\nelse\nprintf \'%s\' ' + shlex.quote(before) + '\nfi'),
+        'swupdate': 'exit 23' if outcome == 'install-failed' else 'touch ' + shlex.quote(str(installed)),
+        # Intercept the handoff itself, including its absolute reboot command.
+        'nohup': 'touch ' + shlex.quote(str(scheduled)),
+    }.items():
+        executable = tools / name
+        executable.write_text('#!/bin/sh\n' + body + '\n')
+        executable.chmod(0o755)
+    script = swu.install_script('/data/bundle.swu', None, clean_overlay=True, reboot=True)
+    script = script.replace('/run/lock/sima-cli-swupdate.lock', str(tmp_path / 'lock'))
+    result = subprocess.run(['sh', '-c', script + '\nwait\n'],
+                            env={**os.environ, 'PATH': str(tools) + ':/usr/bin:/bin'},
+                            capture_output=True, text=True, timeout=5)
+    assert (result.returncode == 0) is (outcome == 'pending'), result.stdout + result.stderr
+    assert scheduled.exists() is (outcome == 'pending')

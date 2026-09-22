@@ -546,12 +546,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # A nonzero exit is the expected native-Windows contract. Capture it
+          # without letting PowerShell promote native stderr into a step error.
+          $ErrorActionPreference = "Continue"
+          $output = (& "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" cloudex update 2>&1 | Out-String)
+          $exitCode = $LASTEXITCODE
           $ErrorActionPreference = "Stop"
-          $output = & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" cloudex update 2>&1
-          if ($LASTEXITCODE -eq 0) {
+          if ($exitCode -eq 0) {
             throw "CloudEx forwarder update unexpectedly succeeded on native Windows"
           }
-          if (($output -join "`n") -notmatch "packages are unavailable for Windows") {
+          if ($output -notmatch "packages are unavailable for Windows") {
             throw "CloudEx returned an unexpected native Windows error: $output"
           }
 

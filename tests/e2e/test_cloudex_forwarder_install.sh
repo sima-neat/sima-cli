@@ -71,7 +71,16 @@ for value in "$@"; do
 done
 exec /bin/ln "${args[@]}"
 SH
-chmod 0755 "${SHIM_DIR}/sudo" "${SHIM_DIR}/id" "${SHIM_DIR}/install" "${SHIM_DIR}/ln"
+
+# The Linux package installer may install WireGuard prerequisites. This test
+# covers the downloaded forwarder layout and replacement behavior, not APT;
+# avoid modifying the hosted runner while exercising the installer path.
+cat >"${SHIM_DIR}/apt-get" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+SH
+chmod 0755 "${SHIM_DIR}/sudo" "${SHIM_DIR}/id" "${SHIM_DIR}/install" "${SHIM_DIR}/ln" "${SHIM_DIR}/apt-get"
 
 fail_with_command_output() {
   local message="$1"

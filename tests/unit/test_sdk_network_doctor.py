@@ -29,6 +29,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
             "codeUI": {"protocol": "tcp", "host": 19999, "container": 9999},
             "codeUIHttps": {"protocol": "tcp", "host": 20000, "container": 10000},
             "videoUI": {"protocol": "tcp", "host": 18081, "container": 8081},
+            "webrtcWhip": {"protocol": "tcp", "host": 18889, "container": 8889},
             "rtsp": {"tcp": {"host": 18554, "container": 8554}},
             "videoUDP": {
                 "protocol": "udp",
@@ -45,6 +46,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
         self.assertIn(net.PortSpec("codeUI", "tcp", 19999, 19999, 9999, 9999), specs)
         self.assertIn(net.PortSpec("codeUIHttps", "tcp", 20000, 20000, 10000, 10000), specs)
         self.assertIn(net.PortSpec("videoUI", "tcp", 18081, 18081, 8081, 8081), specs)
+        self.assertIn(net.PortSpec("webrtcWhip", "tcp", 18889, 18889, 8889, 8889), specs)
         self.assertIn(net.PortSpec("rtsp.tcp", "tcp", 18554, 18554, 8554, 8554), specs)
         self.assertIn(net.PortSpec("videoUDP", "udp", 19000, 19001, 9000, 9001), specs)
 

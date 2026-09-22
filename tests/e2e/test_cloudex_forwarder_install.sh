@@ -73,6 +73,16 @@ exec /bin/ln "${args[@]}"
 SH
 chmod 0755 "${SHIM_DIR}/sudo" "${SHIM_DIR}/id" "${SHIM_DIR}/install" "${SHIM_DIR}/ln"
 
+fail_with_command_output() {
+  local message="$1"
+  local output="$2"
+  printf '%s\n' "${message}" >&2
+  printf '%s\n' '--- command output ---' >&2
+  printf '%s\n' "${output}" >&2
+  printf '%s\n' '--- end command output ---' >&2
+  exit 1
+}
+
 export CLOUDEX_TEST_ROOT="${INSTALL_ROOT}"
 export SIMA_CLOUDEX_FORWARDER="${INSTALL_ROOT}/usr/local/bin/kerrigan-p2p-forwarder"
 export PATH="${SHIM_DIR}:${PATH}"
@@ -107,11 +117,20 @@ CONNECT_OUTPUT="$(printf '%s\n' "${PAIRING_CODE}" | "${SIMA_CLI}" cloudex connec
 CONNECT_STATUS=$?
 set -e
 if [[ "${CONNECT_STATUS}" -eq 0 ]]; then
-  echo "synthetic CloudEx connection unexpectedly succeeded" >&2
-  exit 1
+  fail_with_command_output \
+    "synthetic CloudEx connection unexpectedly succeeded" \
+    "${CONNECT_OUTPUT}"
 fi
-grep -F "CloudEx API is unavailable" <<<"${CONNECT_OUTPUT}" >/dev/null
-test -x "${SIMA_CLOUDEX_FORWARDER}"
+if ! grep -F "CloudEx API is unavailable" <<<"${CONNECT_OUTPUT}" >/dev/null; then
+  fail_with_command_output \
+    "synthetic CloudEx connection did not reach the expected API failure" \
+    "${CONNECT_OUTPUT}"
+fi
+if [[ ! -x "${SIMA_CLOUDEX_FORWARDER}" ]]; then
+  fail_with_command_output \
+    "CloudEx forwarder was not installed during synthetic connection" \
+    "${CONNECT_OUTPUT}"
+fi
 INITIAL_VERSION="$("${SIMA_CLOUDEX_FORWARDER}" --version)"
 test -n "${INITIAL_VERSION}"
 
@@ -127,8 +146,18 @@ printf '#!/usr/bin/env bash\necho stale-forwarder\n' >"${INSTALLED_BINARY}"
 chmod 0755 "${INSTALLED_BINARY}"
 test "$("${SIMA_CLOUDEX_FORWARDER}" --version)" = "stale-forwarder"
 
+set +e
 UPDATE_OUTPUT="$("${SIMA_CLI}" cloudex update 2>&1)"
-grep -F "updated from develop" <<<"${UPDATE_OUTPUT}" >/dev/null
+UPDATE_STATUS=$?
+set -e
+if [[ "${UPDATE_STATUS}" -ne 0 ]]; then
+  fail_with_command_output "CloudEx forwarder update failed" "${UPDATE_OUTPUT}"
+fi
+if ! grep -F "updated from develop" <<<"${UPDATE_OUTPUT}" >/dev/null; then
+  fail_with_command_output \
+    "CloudEx forwarder update did not report the expected branch" \
+    "${UPDATE_OUTPUT}"
+fi
 UPDATED_VERSION="$("${SIMA_CLOUDEX_FORWARDER}" --version)"
 test -n "${UPDATED_VERSION}"
 test "${UPDATED_VERSION}" != "stale-forwarder"

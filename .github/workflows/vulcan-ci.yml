@@ -558,6 +558,7 @@ jobs:
           if ($output -notmatch "packages are unavailable for Windows") {
             throw "CloudEx returned an unexpected native Windows error: $output"
           }
+          exit 0
 
   promote-latest:
     name: Promote Tested Latest

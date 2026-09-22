@@ -26,18 +26,53 @@ def test_cloudex_discovery_includes_only_connected_sessions(monkeypatch):
             {"connected": False, "path": "unknown"},
         ]),
     )
+    probe = Mock(return_value=("modalix", "3.0.0_develop_B1454", "modalix-som", True, "elxr"))
+    monkeypatch.setattr(discover, "get_remote_board_info", probe)
 
     assert discover.discover_cloudex_devices() == [{
         "ip": "10.252.7.2",
         "mac": "—",
-        "board": "DevKit ll2",
+        "device": "DevKit ll2",
+        "board": "modalix",
+        "version": "3.0.0_develop_B1454",
+        "model": "modalix-som",
+        "full_image": True,
+        "fwtype": "elxr",
+        "source": "CloudEx",
+        "path": "relayed",
+        "connection": "CloudEx (relayed)",
+    }]
+    probe.assert_called_once_with("10.252.7.2")
+
+
+def test_cloudex_discovery_keeps_session_identity_when_probe_fails(monkeypatch):
+    session = {
+        "session_id": "a" * 32,
+        "allocation_id": "b" * 32,
+        "device": "DevKit ll2",
+        "target": "10.252.7.2",
+    }
+    store = Mock()
+    store.list.return_value = [session]
+    monkeypatch.setattr("sima_cli.cloudex.client.SessionStore", Mock(return_value=store))
+    monkeypatch.setattr(
+        "sima_cli.cloudex.client.inspect_session",
+        Mock(return_value={"connected": True, "path": "direct"}),
+    )
+    monkeypatch.setattr(discover, "get_remote_board_info", Mock(return_value=("", "", "", False, "")))
+
+    assert discover.discover_cloudex_devices() == [{
+        "ip": "10.252.7.2",
+        "mac": "—",
+        "device": "DevKit ll2",
+        "board": "—",
         "version": "—",
         "model": "—",
         "full_image": None,
         "fwtype": "—",
         "source": "CloudEx",
-        "path": "relayed",
-        "connection": "CloudEx (relayed)",
+        "path": "direct",
+        "connection": "CloudEx (direct)",
     }]
 
 
@@ -65,9 +100,14 @@ def test_device_table_keeps_multiple_cloudex_endpoints(monkeypatch):
     monkeypatch.setattr(discover, "console", console)
 
     discover.render_device_table([
-        {"ip": "10.252.7.2", "mac": "—", "source": "CloudEx", "path": "direct"},
-        {"ip": "10.252.8.2", "mac": "—", "source": "CloudEx", "path": "relayed"},
+        {"ip": "10.252.7.2", "mac": "—", "source": "CloudEx", "path": "direct", "connection": "CloudEx (direct)"},
+        {"ip": "10.252.8.2", "mac": "—", "source": "CloudEx", "path": "relayed", "connection": "CloudEx (relayed)"},
     ])
 
     assert table.add_row.call_count == 2
+    columns = [call.args[0] for call in table.add_column.call_args_list]
+    assert columns == [
+        "Connection", "Device", "IP", "MAC", "Board Type", "Build Version",
+        "DevKit Model", "Full Image", "FW Type",
+    ]
     console.print.assert_called_once_with(table)

@@ -129,7 +129,14 @@ def _read_key_file(path):
 
 
 def _session_table(rows, show_benchmark=False):
-    table = Table(title="CloudEx connections", header_style="bold cyan", border_style="bright_black")
+    stream_counts = {
+        measurement.get("parallel_streams") for _session, _status, measurement in rows
+        if measurement.get("parallel_streams")
+    }
+    title = "CloudEx connections"
+    if show_benchmark and len(stream_counts) == 1:
+        title += " · {} parallel streams/direction".format(next(iter(stream_counts)))
+    table = Table(title=title, header_style="bold cyan", border_style="bright_black")
     table.add_column("State")
     table.add_column("Device", style="bold")
     if not show_benchmark:
@@ -310,7 +317,7 @@ def disconnect_command(session_id, disconnect_all):
 
 
 @cloudex_group.command("list")
-@click.option("--benchmark", is_flag=True, help="Measure RTT and bidirectional throughput for each connection.")
+@click.option("--benchmark", is_flag=True, help="Stress-test RTT and maximum bidirectional throughput for each connection.")
 @click.option("--duration", type=click.IntRange(1, 60), default=10, show_default=True,
               help="Throughput measurement window in seconds.")
 def list_command(benchmark, duration):
@@ -350,7 +357,7 @@ def list_command(benchmark, duration):
         rows.append((session, status, measurement))
     console.print(_session_table(rows, show_benchmark=benchmark))
     if benchmark and any(row[2].get("error") for row in rows):
-        console.print("[yellow]Some benchmarks were unavailable; verify the DevKit is running a forwarder with bidirectional benchmark support. Existing tunnels were left connected.[/yellow]")
+        console.print("[yellow]Some benchmarks were unavailable; verify the DevKit is running a forwarder with parallel bidirectional benchmark support. Existing tunnels were left connected.[/yellow]")
 
 
 def register_cloudex_commands(main):

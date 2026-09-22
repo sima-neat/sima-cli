@@ -742,6 +742,7 @@ def run_benchmark(forwarder, target, duration_seconds):
     try:
         report = json.loads(completed.stdout)
         result = {
+            "parallel_streams": int(report["parallel_streams"]),
             "latency_ms": float(report["latency_ms"]),
             "host_to_device_throughput_mbps": float(report["host_to_device_throughput_mbps"]),
             "host_to_device_transferred_bytes": int(report["host_to_device_transferred_bytes"]),
@@ -750,6 +751,6 @@ def run_benchmark(forwarder, target, duration_seconds):
         }
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise CloudExError("benchmark returned an invalid bidirectional report") from exc
-    if any(value <= 0 for value in result.values()):
+    if result["parallel_streams"] < 2 or any(value <= 0 for value in result.values()):
         raise CloudExError("benchmark returned an invalid bidirectional report")
     return result

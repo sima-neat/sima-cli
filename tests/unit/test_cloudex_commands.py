@@ -226,6 +226,7 @@ def test_list_benchmark_reports_both_directions_and_leaves_failed_tunnel_connect
     )
     benchmark = Mock(side_effect=[
         {
+            "parallel_streams": 8,
             "latency_ms": 8.5,
             "host_to_device_throughput_mbps": 51.2,
             "host_to_device_transferred_bytes": 6400000,
@@ -241,6 +242,7 @@ def test_list_benchmark_reports_both_directions_and_leaves_failed_tunnel_connect
     assert result.exit_code == 0, result.output
     assert "H→D" in result.output
     assert "D→H" in result.output
+    assert "8 parallel" in result.output
     assert "51.2 Mbps" in result.output
     assert "47.3 Mbps" in result.output
     assert "Connection benchmarks" not in result.output

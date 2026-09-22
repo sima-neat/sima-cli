@@ -183,27 +183,13 @@ def render_device_table(devices):
         console.print("[yellow]⚠️  No unique SiMa devices found after filtering duplicates.[/yellow]")
         return
 
-    cloudex_only = all(device.get("source") == "CloudEx" for device in unique_devices)
-    if cloudex_only:
-        table = Table(title="Discovered SiMa Devices")
-        table.add_column("Source", justify="center")
-        table.add_column("Device")
-        table.add_column("Endpoint", justify="center")
-        table.add_column("Path", justify="center")
-        for device in unique_devices:
-            table.add_row(
-                "CloudEx",
-                device.get("board", "DevKit"),
-                device.get("ip", "—"),
-                device.get("path", "unknown"),
-            )
-        console.print(table)
-        return
-
     has_connection_source = any(device.get("connection") for device in unique_devices)
+    has_cloudex = any(device.get("source") == "CloudEx" for device in unique_devices)
     table = Table(title="Discovered SiMa Devices" if has_connection_source else "SiMa Devices on the local network")
     if has_connection_source:
         table.add_column("Connection", justify="center")
+    if has_cloudex:
+        table.add_column("Device")
     table.add_column("IP", justify="center")
     table.add_column("MAC", justify="center")
     table.add_column("Board Type", justify="center")
@@ -222,6 +208,8 @@ def render_device_table(devices):
             "—" if dev.get("full_image") is None else "✅" if dev.get("full_image") else "❌",
             dev.get("fwtype", "-"),
         ]
+        if has_cloudex:
+            values.insert(0, dev.get("device", "—"))
         if has_connection_source:
             values.insert(0, dev.get("connection", "local"))
         table.add_row(*values)
@@ -229,7 +217,7 @@ def render_device_table(devices):
 
 
 def discover_cloudex_devices():
-    """Return currently connected CloudEx endpoints without probing multicast."""
+    """Return connected CloudEx endpoints enriched through the normal SSH probe."""
     try:
         # CloudEx remains experimental, so keep its state dependency lazy and
         # let ordinary LAN discovery work even when that state is unavailable.
@@ -241,7 +229,7 @@ def discover_cloudex_devices():
         console.print(f"[yellow]⚠️  CloudEx connection state could not be read: {exc}[/yellow]")
         return []
 
-    devices = []
+    sessions_to_probe = []
     for session in sessions:
         try:
             status = inspect_session(session, store)
@@ -252,10 +240,11 @@ def discover_cloudex_devices():
             continue
         path = status.get("path", "unknown")
         path_label = "relayed" if path == "relay" else path
-        devices.append({
+        sessions_to_probe.append({
             "ip": target,
             "mac": "—",
-            "board": session.get("device", "DevKit " + str(session.get("allocation_id", ""))[:8]),
+            "device": session.get("device", "DevKit " + str(session.get("allocation_id", ""))[:8]),
+            "board": "—",
             "version": "—",
             "model": "—",
             "full_image": None,
@@ -264,9 +253,23 @@ def discover_cloudex_devices():
             "path": path_label,
             "connection": "CloudEx ({})".format(path_label),
         })
+
+    if sessions_to_probe:
+        console.print("[cyan]🔍 Probing CloudEx-connected devices via SSH...[/cyan]")
+    devices = []
+    for device in sessions_to_probe:
+        board, version, model, full, fw = get_remote_board_info(device["ip"])
+        identified = any((board, version, model, fw))
+        devices.append({
+            **device,
+            "board": board or "—",
+            "version": version or "—",
+            "model": model or "—",
+            "full_image": full if identified else None,
+            "fwtype": fw or "—",
+        })
     return devices
 
-    console.print(table)
 
 def discover_and_render_pcie_devices():
     # ------------------------------------------------------------------

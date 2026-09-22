@@ -381,6 +381,7 @@ def test_stop_does_not_signal_reused_non_forwarder_pid(monkeypatch):
 
 def test_benchmark_requires_bidirectional_metrics(monkeypatch):
     report = {
+        "parallel_streams": 8,
         "latency_ms": 8.5,
         "host_to_device_throughput_mbps": 51.2,
         "host_to_device_transferred_bytes": 6400000,

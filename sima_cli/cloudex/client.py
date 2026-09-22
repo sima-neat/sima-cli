@@ -518,6 +518,17 @@ def disconnect_session(session, store, progress, authorize=True):
             candidate = active.get("session_id")
             if not isinstance(candidate, str) or len(candidate) != 32:
                 raise CloudExError("the active CloudEx session has an invalid identifier")
+            recorded_ids = {
+                recorded.get("session_id")
+                for recorded in store.list()
+                if recorded.get("session_id") != session_id
+            }
+            if candidate in recorded_ids:
+                # This record is stale, but the allocation has since been
+                # reconnected and that newer owner is also known locally.
+                # Removing it would violate the user's explicit selection.
+                store.delete(session_id)
+                return "stale"
             try:
                 api.call("DELETE", "/v1/p2p/ice-sessions/" + candidate)
                 closed_id = candidate
@@ -546,6 +557,7 @@ def disconnect_session(session, store, progress, authorize=True):
             store.write(session)
             raise CloudExError("remote tunnel cleanup is still pending")
     store.delete(session_id)
+    return "disconnected"
 
 
 def inspect_session(session, store):

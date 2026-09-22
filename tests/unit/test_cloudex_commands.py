@@ -94,8 +94,8 @@ def test_connect_reads_key_from_stdin_for_automation(monkeypatch):
     decode.assert_called_once_with("encoded")
 
 
-def test_update_defaults_to_develop_and_reports_installed_version(tmp_path, monkeypatch):
-    forwarder = tmp_path / "kerrigan-p2p-forwarder"
+def test_update_defaults_to_develop_and_reports_installed_version(monkeypatch):
+    forwarder = "/usr/local/bin/kerrigan-p2p-forwarder"
     update = Mock(return_value={
         "branch": "develop",
         "version": "0.1.0+abc1234",
@@ -109,7 +109,7 @@ def test_update_defaults_to_develop_and_reports_installed_version(tmp_path, monk
     assert result.exit_code == 0, result.output
     assert "updated from develop" in result.output
     assert "0.1.0+abc1234" in result.output
-    assert forwarder.name in result.output
+    assert forwarder in result.output
     assert update.call_args.args[0] == "develop"
 
 

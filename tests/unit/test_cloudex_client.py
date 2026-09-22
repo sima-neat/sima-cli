@@ -168,6 +168,41 @@ def test_forwarder_failure_explains_sudo_terminal_requirement(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    ("detail", "expected"),
+    [
+        (
+            "kernel WireGuard is unavailable and wireguard-go is unavailable",
+            "this kernel lacks WireGuard support and the wireguard-go fallback is not installed",
+        ),
+        (
+            "assign WireGuard address",
+            "the host could not assign the CloudEx tunnel address",
+        ),
+        (
+            "add WireGuard route",
+            "the host could not add the CloudEx device route",
+        ),
+        (
+            "configure WireGuard peer",
+            "the host could not configure the CloudEx WireGuard peer",
+        ),
+    ],
+)
+def test_forwarder_failure_preserves_safe_linux_tunnel_diagnostic(
+    tmp_path, detail, expected
+):
+    log = tmp_path / "forwarder.log"
+    log.write_text(
+        "kerrigan-p2p-forwarder: starting WireGuard tunnel\n"
+        "kerrigan-p2p-forwarder: {}\n".format(detail)
+    )
+
+    assert client._forwarder_failure(log) == (
+        expected + "; last stage: starting WireGuard tunnel"
+    )
+
+
 def test_wait_forwarder_preserves_path_when_handshake_log_wins_report_race(tmp_path):
     session_id = "b" * 32
     report = tmp_path / "report.json"

@@ -151,9 +151,8 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     assert store.list()[0]["api_secret"] == allocation_profile()["allocation_secret"]
     assert not store.runtime_paths(result["session_id"])[1].exists()
     command = popen.call_args.args[0]
-    assert command[:2] == ["sudo", "--"]
-    assert "-n" not in command
-    assert "stdin" not in popen.call_args.kwargs
+    assert command[:3] == ["sudo", "-n", "--"]
+    assert popen.call_args.kwargs["stdin"] is client.subprocess.DEVNULL
     api.call.assert_called_once_with(
         "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]}
     )

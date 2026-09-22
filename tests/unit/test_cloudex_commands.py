@@ -9,7 +9,9 @@ from sima_cli.cloudex import commands
 
 @pytest.fixture(autouse=True)
 def _authorize_cloudex(monkeypatch):
-    monkeypatch.setattr(commands, "authorize_admin", Mock())
+    authorize = Mock()
+    monkeypatch.setattr(commands, "authorize_admin", authorize)
+    return authorize
 
 
 def _session(session_id, device):
@@ -151,6 +153,25 @@ def test_update_accepts_explicit_branch(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert update.call_args.args[0] == "release/test"
+
+
+def test_update_on_native_windows_skips_sudo_and_reports_unsupported_package(
+    monkeypatch, _authorize_cloudex
+):
+    monkeypatch.setattr(commands.os, "name", "nt")
+    monkeypatch.setattr(
+        commands,
+        "install_forwarder",
+        Mock(side_effect=commands.CloudExError(
+            "CloudEx forwarder packages are unavailable for Windows amd64"
+        )),
+    )
+
+    result = invoke_main(["cloudex", "update"])
+
+    assert result.exit_code == 1
+    assert "packages are unavailable for Windows" in result.output
+    _authorize_cloudex.assert_not_called()
 
 
 def test_disconnect_requires_selection_for_multiple_noninteractive_sessions(monkeypatch):

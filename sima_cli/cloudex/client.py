@@ -522,9 +522,10 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             with log_path.open("x", encoding="utf-8") as log:
                 process = subprocess.Popen(
                     [
-                        "sudo", "--", str(forwarder), "session", "--role", "user",
+                        "sudo", "-n", "--", str(forwarder), "session", "--role", "user",
                         "--config", str(config_path), "--report", str(report_path),
                     ],
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=log,
                     text=True,
@@ -606,7 +607,11 @@ def _stop_forwarder(session):
     pid = session.get("forwarder_pid")
     if not _forwarder_running(pid):
         return
-    result = subprocess.run(["sudo", "kill", "-TERM", str(pid)], check=False)
+    result = subprocess.run(
+        ["sudo", "-n", "kill", "-TERM", str(pid)],
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
     if result.returncode:
         raise CloudExError("the local tunnel process could not be stopped")
     deadline = time.monotonic() + 10

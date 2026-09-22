@@ -27,6 +27,12 @@ from .installer import DEFAULT_BRANCH, install_forwarder
 console = Console()
 
 
+def _authorize_supported_host():
+    """Prompt only where the native forwarder package can run."""
+    if os.name != "nt":
+        authorize_admin()
+
+
 class StageProgress:
     """A compact spinner for terminals and readable milestones for logs."""
 
@@ -205,7 +211,7 @@ def connect_command(key_file, key_stdin, transport, attempts, verbose):
             key = click.prompt("CloudEx allocation key", hide_input=True).strip()
         profile = decode_key(key)
         console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
-        authorize_admin()
+        _authorize_supported_host()
         with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:
             session = connect(profile, _store(), progress, attempts=attempts, transport=transport)
             progress.success("Connected to {}".format(session["device"]))
@@ -229,7 +235,7 @@ def update_command(branch):
     """Install or update the native CloudEx forwarder."""
     try:
         console.print("[cyan]→[/cyan] Authorizing CloudEx forwarder installation")
-        authorize_admin()
+        _authorize_supported_host()
         with StageProgress("Updating CloudEx forwarder from {}".format(branch)) as progress:
             result = install_forwarder(branch, progress=progress)
             progress.success("CloudEx forwarder updated from {}".format(result["branch"]))
@@ -286,7 +292,7 @@ def disconnect_command(session_id, disconnect_all):
         selected = _choose_sessions(sessions)
     console.print("[cyan]→[/cyan] Authorizing encrypted tunnel cleanup")
     try:
-        authorize_admin()
+        _authorize_supported_host()
     except CloudExError as exc:
         raise click.ClickException(str(exc)) from exc
     failures = []

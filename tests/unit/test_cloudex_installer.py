@@ -73,8 +73,9 @@ def test_install_forwarder_resolves_branch_verifies_and_runs_as_root(monkeypatch
     assert resolve.call_args.kwargs["package_type"] == "linux-amd64"
     authorize.assert_called_once_with()
     command = run.call_args.args[0]
-    assert command[:2] == ["sudo", "--"]
-    assert command[2].endswith("/linux-amd64/p2p-forwarder/install_kerrigan_p2p_forwarder.sh")
+    assert command[:3] == ["sudo", "-n", "--"]
+    assert command[3].endswith("/linux-amd64/p2p-forwarder/install_kerrigan_p2p_forwarder.sh")
+    assert run.call_args.kwargs["stdin"] is installer.subprocess.DEVNULL
 
 
 @pytest.mark.parametrize("branch", ["", "../main", "feature//name", "main:deadbee", "name@{1}"])

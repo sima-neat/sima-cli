@@ -142,8 +142,9 @@ def install_forwarder(branch=DEFAULT_BRANCH, progress=None, client=None):
             progress.update("Installing CloudEx forwarder")
         try:
             completed = subprocess.run(
-                ["sudo", "--", str(script)],
+                ["sudo", "-n", "--", str(script)],
                 check=False,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

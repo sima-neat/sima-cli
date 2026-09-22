@@ -239,8 +239,11 @@ def test_list_benchmark_reports_both_directions_and_leaves_failed_tunnel_connect
     result = invoke_main(["cloudex", "list", "--benchmark", "--duration", "3"])
 
     assert result.exit_code == 0, result.output
-    assert "Host → DevKit" in result.output
-    assert "DevKit → Host" in result.output
+    assert "H→D" in result.output
+    assert "D→H" in result.output
     assert "51.2 Mbps" in result.output
     assert "47.3 Mbps" in result.output
+    assert "Connection benchmarks" not in result.output
+    assert "Operation failed" not in result.output
+    assert "Benchmark unavailable for two" in result.output
     assert "Some benchmarks were unavailable" in result.output

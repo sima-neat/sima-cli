@@ -80,6 +80,11 @@ class StageProgress:
         self._finished = True
         console.print("[bold red]✗[/bold red] " + label, style="red")
 
+    def warning(self, label):
+        self._finish()
+        self._finished = True
+        console.print("[bold yellow]![/bold yellow] " + label)
+
     def _finish(self):
         if self._progress:
             self._progress.stop()
@@ -123,13 +128,18 @@ def _read_key_file(path):
             os.close(descriptor)
 
 
-def _session_table(rows):
+def _session_table(rows, show_benchmark=False):
     table = Table(title="CloudEx connections", header_style="bold cyan", border_style="bright_black")
     table.add_column("State")
     table.add_column("Device", style="bold")
-    table.add_column("Session")
+    if not show_benchmark:
+        table.add_column("Session")
     table.add_column("Path")
     table.add_column("Endpoint")
+    if show_benchmark:
+        table.add_column("RTT", justify="right")
+        table.add_column("H→D", justify="right")
+        table.add_column("D→H", justify="right")
     for session, status, _measurement in rows:
         state = "[green]● connected[/green]" if status["connected"] else "[red]● {}[/red]".format(status["status"])
         path = status["path"]
@@ -142,33 +152,21 @@ def _session_table(rows):
         values = [
             state,
             session.get("device", "DevKit " + _short(session.get("allocation_id"))),
-            _short(session.get("session_id")),
-            path,
-            session.get("target", "—"),
         ]
-        table.add_row(*values)
-    return table
-
-
-def _benchmark_table(rows):
-    table = Table(title="Connection benchmarks", header_style="bold cyan", border_style="bright_black")
-    table.add_column("Device", style="bold")
-    table.add_column("RTT median", justify="right")
-    table.add_column("Host → DevKit", justify="right")
-    table.add_column("DevKit → Host", justify="right")
-    for session, status, measurement in rows:
-        device = session.get("device", "DevKit " + _short(session.get("allocation_id")))
-        if not status["connected"]:
-            values = [device, "[dim]not connected[/dim]", "—", "—"]
-        elif measurement.get("error"):
-            values = [device, "[red]unavailable[/red]", "—", "—"]
-        else:
-            values = [
-                device,
-                "{:.1f} ms".format(measurement["latency_ms"]),
-                "{:.1f} Mbps".format(measurement["host_to_device_throughput_mbps"]),
-                "{:.1f} Mbps".format(measurement["device_to_host_throughput_mbps"]),
-            ]
+        if not show_benchmark:
+            values.append(_short(session.get("session_id")))
+        values.extend([path, session.get("target", "—")])
+        if show_benchmark:
+            if not status["connected"]:
+                values.extend(["—", "—", "—"])
+            elif _measurement.get("error"):
+                values.extend(["[yellow]n/a[/yellow]", "—", "—"])
+            else:
+                values.extend([
+                    "{:.1f} ms".format(_measurement["latency_ms"]),
+                    "{:.1f} Mbps".format(_measurement["host_to_device_throughput_mbps"]),
+                    "{:.1f} Mbps".format(_measurement["device_to_host_throughput_mbps"]),
+                ])
         table.add_row(*values)
     return table
 
@@ -341,19 +339,18 @@ def list_command(benchmark, duration):
         status = inspect_session(session, store)
         measurement = {}
         if benchmark and status["connected"]:
-            try:
-                device = session.get("device", _short(session["session_id"]))
-                with StageProgress("Benchmarking {}".format(device)) as progress:
+            device = session.get("device", _short(session["session_id"]))
+            with StageProgress("Benchmarking {}".format(device)) as progress:
+                try:
                     measurement = run_benchmark(forwarder, session["target"], duration)
                     progress.success("Benchmark complete")
-            except CloudExError as exc:
-                measurement = {"error": str(exc)}
+                except CloudExError as exc:
+                    measurement = {"error": str(exc)}
+                    progress.warning("Benchmark unavailable for {}".format(device))
         rows.append((session, status, measurement))
-    console.print(_session_table(rows))
-    if benchmark:
-        console.print(_benchmark_table(rows))
+    console.print(_session_table(rows, show_benchmark=benchmark))
     if benchmark and any(row[2].get("error") for row in rows):
-        console.print("[yellow]Some benchmarks were unavailable; existing tunnels were left connected.[/yellow]")
+        console.print("[yellow]Some benchmarks were unavailable; verify the DevKit is running a forwarder with bidirectional benchmark support. Existing tunnels were left connected.[/yellow]")
 
 
 def register_cloudex_commands(main):

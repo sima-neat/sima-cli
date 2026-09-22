@@ -429,6 +429,42 @@ def _creation_definitely_rejected(error):
     return detail == "an ICE session is already active for this allocation"
 
 
+def _valid_session_id(value):
+    return isinstance(value, str) and len(value) == 32 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
+def _remote_session_id(session, store):
+    """Resolve the service session ID, including records from older clients."""
+    candidate = session.get("remote_session_id")
+    if _valid_session_id(candidate):
+        return candidate
+    _runtime, _config, report_path, _log = store.runtime_paths(session["session_id"])
+    candidate = _read_report(report_path).get("session_id")
+    return candidate if _valid_session_id(candidate) else session["session_id"]
+
+
+def _reconcile_existing_connection(profile, store, progress):
+    """Reuse a live allocation owner or clean stale state before reconnecting."""
+    existing = [
+        session for session in store.list()
+        if session.get("allocation_id") == profile["allocation_id"]
+    ]
+    inspected = [(session, inspect_session(session, store)) for session in existing]
+    for session, status in inspected:
+        if status["connected"]:
+            progress.update("Existing CloudEx tunnel is already connected")
+            session["ice_path"] = status["path"]
+            session["remote_session_id"] = _remote_session_id(session, store)
+            store.write(session)
+            return session
+    for session, _status in inspected:
+        progress.update("Cleaning up a previous CloudEx tunnel")
+        disconnect_session(session, store, progress, authorize=False)
+    return None
+
+
 def connect(profile, store, progress, attempts=3, transport="auto"):
     """Create a session and return its durable local record."""
     try:
@@ -442,6 +478,9 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
         forwarder = install_forwarder(DEFAULT_BRANCH, progress=progress)["path"]
     authorize_admin()
     api = CloudExAPI.from_profile(profile)
+    existing = _reconcile_existing_connection(profile, store, progress)
+    if existing:
+        return existing
     choices = (["p2p"] * attempts + ["routed"] if transport == "auto"
                else ["routed"] if transport == "turn" else ["p2p"] * attempts)
     last_error = None
@@ -464,6 +503,11 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             allocated = api.call("POST", "/v1/p2p/ice-sessions", {"request_id": session_id})
             if not isinstance(allocated, dict):
                 raise CloudExError("CloudEx API returned an invalid session configuration")
+            remote_session_id = allocated.get("session_id")
+            if not _valid_session_id(remote_session_id):
+                raise CloudExError("CloudEx API returned an invalid session identifier")
+            session["remote_session_id"] = remote_session_id
+            store.write_recovery(session)
             try:
                 expires_at = float(allocated["expires_at"])
             except (KeyError, TypeError, ValueError) as exc:
@@ -489,7 +533,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             session.update(status="connecting", forwarder_pid=process.pid)
             store.write_recovery(session)
             report = _wait_forwarder(
-                session_id,
+                remote_session_id,
                 process,
                 report_path,
                 log_path,
@@ -581,11 +625,12 @@ def disconnect_session(session, store, progress, authorize=True):
     _stop_forwarder(session)
     progress.update("Requesting DevKit tunnel cleanup")
     session_id = session["session_id"]
+    remote_session_id = _remote_session_id(session, store)
     recovery_record = store.recovery_path(session_id).exists()
     closed_id = None
     try:
-        api.call("DELETE", "/v1/p2p/ice-sessions/" + session_id)
-        closed_id = session_id
+        api.call("DELETE", "/v1/p2p/ice-sessions/" + remote_session_id)
+        closed_id = remote_session_id
     except APIError as exc:
         if exc.status != 404:
             raise
@@ -595,7 +640,7 @@ def disconnect_session(session, store, progress, authorize=True):
             if not isinstance(candidate, str) or len(candidate) != 32:
                 raise CloudExError("the active CloudEx session has an invalid identifier")
             recorded_ids = {
-                recorded.get("session_id")
+                _remote_session_id(recorded, store)
                 for recorded in store.list()
                 if recorded.get("session_id") != session_id
             }
@@ -646,8 +691,9 @@ def inspect_session(session, store):
     running = _forwarder_running(session.get("forwarder_pid"))
     remote_status = "unavailable"
     try:
+        remote_session_id = _remote_session_id(session, store)
         remote = CloudExAPI.from_session(session).call(
-            "GET", "/v1/p2p/ice-sessions/" + session["session_id"]
+            "GET", "/v1/p2p/ice-sessions/" + remote_session_id
         )
         remote_status = str(remote.get("status", "unknown"))
     except APIError as exc:

@@ -121,6 +121,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     forwarder.chmod(0o755)
     process = Mock(pid=123, poll=Mock(return_value=None))
     allocated = {
+        "session_id": "d" * 32,
         "expires_at": 9999999999,
         "target_id": "ll2",
         "wireguard": {"remote_address": "10.252.1.2/32"},
@@ -156,6 +157,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     api.call.assert_called_once_with(
         "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]}
     )
+    assert result["remote_session_id"] == "d" * 32
 
 
 def test_forwarder_failure_explains_sudo_terminal_requirement(tmp_path):
@@ -212,6 +214,42 @@ def test_connect_installs_develop_forwarder_when_missing(tmp_path, monkeypatch):
 
     assert install.call_args.args[0] == "develop"
     assert install.call_args.kwargs["progress"] is not None
+
+
+def test_connect_reuses_live_tunnel_for_same_allocation(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path / "cloudex")
+    session = session_record()
+    session["ice_path"] = "unknown"
+    store.write(session)
+    monkeypatch.setattr(client, "find_forwarder", Mock(return_value=tmp_path / "forwarder"))
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(
+        client,
+        "inspect_session",
+        Mock(return_value={"connected": True, "status": "connected", "path": "direct"}),
+    )
+    api = Mock()
+    monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
+
+    result = client.connect(allocation_profile(), store, Mock(), attempts=1, transport="p2p")
+
+    assert result["session_id"] == session["session_id"]
+    assert result["ice_path"] == "direct"
+    api.call.assert_not_called()
+
+
+def test_remote_session_id_migrates_from_forwarder_report(tmp_path):
+    store = client.SessionStore(tmp_path / "cloudex")
+    session = session_record()
+    _runtime, _config, report, _log = store.runtime_paths(session["session_id"])
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps({
+        "session_id": "e" * 32,
+        "status": "connected",
+        "path": "direct",
+    }))
+
+    assert client._remote_session_id(session, store) == "e" * 32
 
 
 def test_rejected_create_does_not_disconnect_existing_owner(tmp_path, monkeypatch):

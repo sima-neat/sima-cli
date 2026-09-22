@@ -364,7 +364,15 @@ def _creation_definitely_rejected(error):
 
 def connect(profile, store, progress, attempts=3, transport="auto"):
     """Create a session and return its durable local record."""
-    forwarder = find_forwarder()
+    try:
+        forwarder = find_forwarder()
+    except CloudExError:
+        # Import lazily: the installer reuses this module's privilege and error
+        # handling, while ordinary CloudEx commands should remain quick to load.
+        from .installer import DEFAULT_BRANCH, install_forwarder
+
+        progress.update("CloudEx forwarder is missing; installing from {}".format(DEFAULT_BRANCH))
+        forwarder = install_forwarder(DEFAULT_BRANCH, progress=progress)["path"]
     authorize_admin()
     api = CloudExAPI.from_profile(profile)
     choices = (["p2p"] * attempts + ["routed"] if transport == "auto"

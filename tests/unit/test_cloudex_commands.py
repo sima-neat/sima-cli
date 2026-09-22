@@ -31,6 +31,7 @@ def test_cloudex_is_hidden_from_root_help_but_directly_available():
     assert "connect" in direct.output
     assert "disconnect" in direct.output
     assert "list" in direct.output
+    assert "update" in direct.output
 
 
 def test_connect_prompts_for_backend_key_without_putting_it_in_argv(monkeypatch):
@@ -91,6 +92,40 @@ def test_connect_reads_key_from_stdin_for_automation(monkeypatch):
 
     assert result.exit_code == 0, result.output
     decode.assert_called_once_with("encoded")
+
+
+def test_update_defaults_to_develop_and_reports_installed_version(tmp_path, monkeypatch):
+    forwarder = tmp_path / "kerrigan-p2p-forwarder"
+    update = Mock(return_value={
+        "branch": "develop",
+        "version": "0.1.0+abc1234",
+        "artifact": "abc1234",
+        "path": forwarder,
+    })
+    monkeypatch.setattr(commands, "install_forwarder", update)
+
+    result = invoke_main(["cloudex", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert "updated from develop" in result.output
+    assert "0.1.0+abc1234" in result.output
+    assert forwarder.name in result.output
+    assert update.call_args.args[0] == "develop"
+
+
+def test_update_accepts_explicit_branch(monkeypatch):
+    update = Mock(return_value={
+        "branch": "release/test",
+        "version": "1.0",
+        "artifact": "abc1234",
+        "path": "/usr/local/bin/kerrigan-p2p-forwarder",
+    })
+    monkeypatch.setattr(commands, "install_forwarder", update)
+
+    result = invoke_main(["cloudex", "update", "--branch", "release/test"])
+
+    assert result.exit_code == 0, result.output
+    assert update.call_args.args[0] == "release/test"
 
 
 def test_disconnect_requires_selection_for_multiple_noninteractive_sessions(monkeypatch):

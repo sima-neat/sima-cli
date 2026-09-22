@@ -20,6 +20,7 @@ from .client import (
     inspect_session,
     run_benchmark,
 )
+from .installer import DEFAULT_BRANCH, install_forwarder
 
 
 console = Console()
@@ -208,6 +209,25 @@ def connect_command(key_file, key_stdin, transport, attempts):
         raise click.ClickException(str(exc)) from exc
 
 
+@cloudex_group.command("update")
+@click.option(
+    "--branch",
+    default=DEFAULT_BRANCH,
+    show_default=True,
+    help="Kerrigan branch whose latest forwarder should be installed.",
+)
+def update_command(branch):
+    """Install or update the native CloudEx forwarder."""
+    try:
+        with StageProgress("Updating CloudEx forwarder from {}".format(branch)) as progress:
+            result = install_forwarder(branch, progress=progress)
+            progress.success("CloudEx forwarder updated from {}".format(result["branch"]))
+        console.print("  [dim]Version[/dim]  {}".format(result["version"]))
+        console.print("  [dim]Path[/dim]     {}".format(result["path"]))
+    except CloudExError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 def _resolve_session(sessions, selector):
     matches = [
         session for session in sessions
@@ -284,8 +304,16 @@ def list_command(benchmark, duration):
     if benchmark:
         try:
             forwarder = find_forwarder()
-        except CloudExError as exc:
-            raise click.ClickException(str(exc)) from exc
+        except CloudExError:
+            try:
+                with StageProgress(
+                    "CloudEx forwarder is missing; installing from {}".format(DEFAULT_BRANCH)
+                ) as progress:
+                    result = install_forwarder(DEFAULT_BRANCH, progress=progress)
+                    forwarder = result["path"]
+                    progress.success("CloudEx forwarder installed")
+            except CloudExError as exc:
+                raise click.ClickException(str(exc)) from exc
     rows = []
     for session in sessions:
         status = inspect_session(session, store)

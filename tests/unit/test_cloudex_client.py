@@ -129,6 +129,31 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     )
 
 
+def test_connect_installs_develop_forwarder_when_missing(tmp_path, monkeypatch):
+    from sima_cli.cloudex import installer
+
+    store = client.SessionStore(tmp_path / "cloudex")
+    forwarder = tmp_path / "kerrigan-p2p-forwarder"
+    api = Mock(
+        url=allocation_profile()["api_url"],
+        requester=allocation_profile()["requester"],
+        secret=allocation_profile()["allocation_secret"],
+        allocation_id=allocation_profile()["allocation_id"],
+    )
+    api.call.side_effect = client.APIError(403, "rejected")
+    monkeypatch.setattr(client, "find_forwarder", Mock(side_effect=client.CloudExError("missing")))
+    install = Mock(return_value={"path": forwarder})
+    monkeypatch.setattr(installer, "install_forwarder", install)
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
+
+    with pytest.raises(client.APIError, match="rejected"):
+        client.connect(allocation_profile(), store, Mock(), attempts=1, transport="p2p")
+
+    assert install.call_args.args[0] == "develop"
+    assert install.call_args.kwargs["progress"] is not None
+
+
 def test_rejected_create_does_not_disconnect_existing_owner(tmp_path, monkeypatch):
     store = client.SessionStore(tmp_path / "cloudex")
     api = Mock(

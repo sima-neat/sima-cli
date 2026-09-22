@@ -207,6 +207,7 @@ def allocate_neat_ports(
         code_ui_https = _allocate_single_port(10000, "tcp", reserved)
         video_ui = _allocate_single_port(8081, "tcp", reserved)
         webrtc_whip = _allocate_single_port(8889, "tcp", reserved)
+        webrtc_whip_ice = _allocate_single_port(8189, "udp", reserved)
         video_udp_start, video_udp_end = _allocate_port_range(9000, video_container_end, "udp", reserved)
         metadata_udp_start, metadata_udp_end = _allocate_port_range(9100, metadata_container_end, "udp", reserved)
         webrtc_udp_start, webrtc_udp_end = _allocate_first_available_port_range(
@@ -225,6 +226,7 @@ def allocate_neat_ports(
                 "codeUIHttps": {"protocol": "tcp", "host": code_ui_https, "container": 10000, "scheme": "https"},
                 "videoUI": {"protocol": "tcp", "host": video_ui, "container": 8081},
                 "webrtcWhip": {"protocol": "tcp", "host": webrtc_whip, "container": 8889},
+                "webrtcWhipIce": {"protocol": "udp", "host": webrtc_whip_ice, "container": 8189},
                 "webSSH": {"protocol": "tcp", "host": web_ssh, "container": 8022},
                 "rtsp": {
                     "tcp": {"host": rtsp_tcp, "container": 8554},
@@ -260,6 +262,7 @@ def allocate_neat_ports(
                 f"{code_ui_https}:10000/tcp",
                 f"{video_ui}:8081/tcp",
                 f"{webrtc_whip}:8889/tcp",
+                f"{webrtc_whip_ice}:8189/udp",
                 f"{rtsp_tcp}:8554/tcp",
                 f"{video_udp_start}-{video_udp_end}:9000-{video_container_end}/udp",
                 f"{metadata_udp_start}-{metadata_udp_end}:9100-{metadata_container_end}/udp",

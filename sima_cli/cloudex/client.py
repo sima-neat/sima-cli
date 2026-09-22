@@ -637,8 +637,12 @@ def disconnect_session(session, store, progress, authorize=True):
         api.call("DELETE", "/v1/p2p/ice-sessions/" + remote_session_id)
         closed_id = remote_session_id
     except APIError as exc:
-        if exc.status != 404:
+        if exc.status != 404 and not _cleanup_pending(exc):
             raise
+        # A terminal session can remain allocation-owned while the DevKit
+        # finishes cleanup.  The service reports that state as 409 rather
+        # than accepting another DELETE, so reconcile through the
+        # allocation-scoped endpoint before attempting a new connection.
         active = _active_allocation_session(api, progress)
         if active:
             candidate = active.get("session_id")

@@ -302,6 +302,31 @@ def test_disconnect_stale_id_closes_allocation_active_session(tmp_path, monkeypa
     assert store.list() == []
 
 
+def test_disconnect_closed_session_waits_for_allocation_cleanup(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path / "cloudex")
+    session = session_record()
+    store.write(session)
+    api = Mock()
+    api.call.side_effect = [
+        client.APIError(409, '{"error":"session closed or expired"}'),
+        client.APIError(409, '{"error":"session closed or expired"}'),
+        client.APIError(404, "not found"),
+    ]
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(client, "_stop_forwarder", Mock())
+    monkeypatch.setattr(client.time, "sleep", Mock())
+
+    client.disconnect_session(session, store, Mock())
+
+    assert [call.args[:2] for call in api.call.call_args_list] == [
+        ("DELETE", "/v1/p2p/ice-sessions/" + session["session_id"]),
+        ("GET", "/v1/p2p/ice-sessions"),
+        ("GET", "/v1/p2p/ice-sessions"),
+    ]
+    assert store.list() == []
+
+
 def test_disconnect_stale_record_preserves_newer_recorded_session(tmp_path, monkeypatch):
     store = client.SessionStore(tmp_path / "cloudex")
     stale = session_record("b" * 32)

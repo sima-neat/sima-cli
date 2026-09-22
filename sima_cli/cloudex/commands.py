@@ -13,6 +13,7 @@ from rich.table import Table
 from .client import (
     CloudExError,
     SessionStore,
+    authorize_admin,
     connect,
     decode_key,
     disconnect_session,
@@ -203,6 +204,8 @@ def connect_command(key_file, key_stdin, transport, attempts, verbose):
         else:
             key = click.prompt("CloudEx allocation key", hide_input=True).strip()
         profile = decode_key(key)
+        console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
+        authorize_admin()
         with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:
             session = connect(profile, _store(), progress, attempts=attempts, transport=transport)
             progress.success("Connected to {}".format(session["device"]))
@@ -225,6 +228,8 @@ def connect_command(key_file, key_stdin, transport, attempts, verbose):
 def update_command(branch):
     """Install or update the native CloudEx forwarder."""
     try:
+        console.print("[cyan]→[/cyan] Authorizing CloudEx forwarder installation")
+        authorize_admin()
         with StageProgress("Updating CloudEx forwarder from {}".format(branch)) as progress:
             result = install_forwarder(branch, progress=progress)
             progress.success("CloudEx forwarder updated from {}".format(result["branch"]))
@@ -279,6 +284,11 @@ def disconnect_command(session_id, disconnect_all):
         raise click.ClickException("Multiple sessions are recorded; use --session ID or --all.")
     else:
         selected = _choose_sessions(sessions)
+    console.print("[cyan]→[/cyan] Authorizing encrypted tunnel cleanup")
+    try:
+        authorize_admin()
+    except CloudExError as exc:
+        raise click.ClickException(str(exc)) from exc
     failures = []
     for session in selected:
         label = session.get("device", "DevKit " + _short(session.get("allocation_id")))

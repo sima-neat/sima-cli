@@ -1,9 +1,15 @@
 from unittest.mock import Mock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from sima_cli.cli import main
 from sima_cli.cloudex import commands
+
+
+@pytest.fixture(autouse=True)
+def _authorize_cloudex(monkeypatch):
+    monkeypatch.setattr(commands, "authorize_admin", Mock())
 
 
 def _session(session_id, device):

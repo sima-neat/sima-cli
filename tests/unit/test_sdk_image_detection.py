@@ -1818,6 +1818,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["videoUI"]["host"], 8081)
         self.assertEqual(port_map["webrtcWhip"]["host"], 8889)
         self.assertEqual(port_map["webrtcWhipIce"]["host"], 8189)
+        self.assertEqual(
+            port_map["webrtcWhipIce"]["container"],
+            port_map["webrtcWhipIce"]["host"],
+            "the ICE port is written into SDP, so it cannot be remapped",
+        )
         self.assertEqual(port_map["webSSH"]["host"], 8022)
         self.assertEqual(port_map["rtsp"]["tcp"]["host"], 8554)
         self.assertNotIn("udp", port_map["rtsp"])

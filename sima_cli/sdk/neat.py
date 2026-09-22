@@ -226,7 +226,12 @@ def allocate_neat_ports(
                 "codeUIHttps": {"protocol": "tcp", "host": code_ui_https, "container": 10000, "scheme": "https"},
                 "videoUI": {"protocol": "tcp", "host": video_ui, "container": 8081},
                 "webrtcWhip": {"protocol": "tcp", "host": webrtc_whip, "container": 8889},
-                "webrtcWhipIce": {"protocol": "udp", "host": webrtc_whip_ice, "container": 8189},
+                # Identity-mapped on purpose, like webRTC below: MediaMTX writes
+                # this port into the ICE candidate in its SDP answer and Docker
+                # forwards a remapped port without rewriting it, so the browser
+                # would send media to a host port nothing had opened. Insight
+                # reads this value back and binds the same number.
+                "webrtcWhipIce": {"protocol": "udp", "host": webrtc_whip_ice, "container": webrtc_whip_ice},
                 "webSSH": {"protocol": "tcp", "host": web_ssh, "container": 8022},
                 "rtsp": {
                     "tcp": {"host": rtsp_tcp, "container": 8554},
@@ -262,7 +267,7 @@ def allocate_neat_ports(
                 f"{code_ui_https}:10000/tcp",
                 f"{video_ui}:8081/tcp",
                 f"{webrtc_whip}:8889/tcp",
-                f"{webrtc_whip_ice}:8189/udp",
+                f"{webrtc_whip_ice}:{webrtc_whip_ice}/udp",
                 f"{rtsp_tcp}:8554/tcp",
                 f"{video_udp_start}-{video_udp_end}:9000-{video_container_end}/udp",
                 f"{metadata_udp_start}-{metadata_udp_end}:9100-{metadata_container_end}/udp",

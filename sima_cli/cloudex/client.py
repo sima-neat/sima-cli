@@ -165,24 +165,29 @@ class SessionStore:
     def __init__(self, root=None):
         self.root = Path(root or DEFAULT_ROOT).expanduser()
         self.sessions_dir = self.root / "sessions"
+        self.recovery_dir = self.root / "recovery"
         self.runtime_dir = self.root / "runtime"
 
     def ensure(self):
         self.sessions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.recovery_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.sessions_dir.chmod(0o700)
+        self.recovery_dir.chmod(0o700)
         self.runtime_dir.chmod(0o700)
 
     def path(self, session_id):
         return self.sessions_dir / (session_id + ".json")
 
+    def recovery_path(self, session_id):
+        return self.recovery_dir / (session_id + ".json")
+
     def runtime_paths(self, session_id):
         directory = self.runtime_dir / session_id
         return directory, directory / "config.json", directory / "report.json", directory / "forwarder.log"
 
-    def write(self, session):
+    def _write(self, session, path):
         self.ensure()
-        path = self.path(session["session_id"])
         temporary = path.with_suffix(".tmp")
         descriptor = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -190,8 +195,19 @@ class SessionStore:
         os.replace(str(temporary), str(path))
         path.chmod(0o600)
 
+    def write(self, session):
+        self._write(session, self.path(session["session_id"]))
+
+    def write_recovery(self, session):
+        """Retain cleanup evidence without presenting it as a connection."""
+        self._write(session, self.recovery_path(session["session_id"]))
+
+    def clear_recovery(self, session_id):
+        self.recovery_path(session_id).unlink(missing_ok=True)
+
     def delete(self, session_id):
         self.path(session_id).unlink(missing_ok=True)
+        self.clear_recovery(session_id)
         directory, config, report, log = self.runtime_paths(session_id)
         for path in (config, report, log):
             path.unlink(missing_ok=True)
@@ -200,9 +216,10 @@ class SessionStore:
         except (FileNotFoundError, OSError):
             pass
 
-    def list(self):
+    @staticmethod
+    def _read_records(directory):
         try:
-            paths = sorted(self.sessions_dir.glob("*.json"))
+            paths = sorted(directory.glob("*.json"))
         except OSError as exc:
             raise CloudExError("CloudEx session state cannot be read") from exc
         sessions = []
@@ -214,6 +231,24 @@ class SessionStore:
             except (OSError, ValueError, AttributeError):
                 continue
         return sessions
+
+    def list(self):
+        """List established connections, migrating old incomplete rows."""
+        sessions = self._read_records(self.sessions_dir)
+        visible = []
+        for session in sessions:
+            target = session.get("target")
+            if isinstance(target, str) and target:
+                visible.append(session)
+                continue
+            self.write_recovery(session)
+            self.path(session["session_id"]).unlink(missing_ok=True)
+        return visible
+
+    def list_recovery(self):
+        # Trigger migration of records written by older sima-cli builds.
+        self.list()
+        return self._read_records(self.recovery_dir)
 
 
 def find_forwarder():
@@ -423,7 +458,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             "created_at": int(time.time()),
             "status": "creating",
         }
-        store.write(session)
+        store.write_recovery(session)
         progress.update("Requesting a DevKit session ({}/{})".format(number, len(choices)))
         try:
             allocated = api.call("POST", "/v1/p2p/ice-sessions", {"request_id": session_id})
@@ -452,7 +487,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
                 )
             log_path.chmod(0o600)
             session.update(status="connecting", forwarder_pid=process.pid)
-            store.write(session)
+            store.write_recovery(session)
             report = _wait_forwarder(
                 session_id,
                 process,
@@ -474,6 +509,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
                 device=_device_label(allocated, api.allocation_id),
             )
             store.write(session)
+            store.clear_recovery(session_id)
             config_path.unlink(missing_ok=True)
             return session
         except BaseException as exc:
@@ -486,7 +522,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
                 disconnect_session(session, store, progress, authorize=False)
             except Exception as cleanup_error:
                 session["status"] = "cleanup-pending"
-                store.write(session)
+                store.write_recovery(session)
                 raise CloudExError(
                     "Connection failed and cleanup is pending: {}. Run cloudex disconnect again.".format(cleanup_error)
                 ) from exc
@@ -545,6 +581,7 @@ def disconnect_session(session, store, progress, authorize=True):
     _stop_forwarder(session)
     progress.update("Requesting DevKit tunnel cleanup")
     session_id = session["session_id"]
+    recovery_record = store.recovery_path(session_id).exists()
     closed_id = None
     try:
         api.call("DELETE", "/v1/p2p/ice-sessions/" + session_id)
@@ -593,7 +630,10 @@ def disconnect_session(session, store, progress, authorize=True):
             time.sleep(1)
         else:
             session["status"] = "cleanup-pending"
-            store.write(session)
+            if recovery_record:
+                store.write_recovery(session)
+            else:
+                store.write(session)
             raise CloudExError("remote tunnel cleanup is still pending")
     store.delete(session_id)
     return "disconnected"

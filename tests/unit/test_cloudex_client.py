@@ -73,6 +73,19 @@ def test_session_store_keeps_independent_secure_records(tmp_path):
     assert stat.S_IMODE(store.sessions_dir.stat().st_mode) == 0o700
 
 
+def test_session_store_migrates_incomplete_rows_out_of_connection_list(tmp_path):
+    store = client.SessionStore(tmp_path / "cloudex")
+    incomplete = session_record("c" * 32)
+    incomplete.pop("target")
+    incomplete["status"] = "cleanup-pending"
+    store.write(incomplete)
+
+    assert store.list() == []
+    assert not store.path(incomplete["session_id"]).exists()
+    assert store.list_recovery() == [incomplete]
+    assert stat.S_IMODE(store.recovery_path(incomplete["session_id"]).stat().st_mode) == 0o600
+
+
 def test_forwarder_override_is_authoritative(tmp_path, monkeypatch):
     override = tmp_path / "missing-forwarder"
     monkeypatch.setenv("SIMA_CLOUDEX_FORWARDER", str(override))

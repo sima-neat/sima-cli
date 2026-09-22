@@ -512,6 +512,13 @@ jobs:
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --minimal
 
+      - name: Test CloudEx forwarder install and update
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          bash tests/e2e/test_cloudex_forwarder_install.sh \
+            "$HOME/.sima-cli/.venv/bin/sima-cli"
+
       - name: Install candidate in WSL2
         if: runner.os == 'Windows'
         shell: wsl-bash {0}
@@ -527,6 +534,26 @@ jobs:
           "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --minimal
+
+      - name: Test CloudEx forwarder install and update in WSL2
+        if: runner.os == 'Windows'
+        shell: wsl-bash {0}
+        run: |
+          bash tests/e2e/test_cloudex_forwarder_install.sh \
+            "$HOME/.sima-cli/.venv/bin/sima-cli"
+
+      - name: Verify CloudEx forwarder is unsupported on native Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $output = & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" cloudex update 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            throw "CloudEx forwarder update unexpectedly succeeded on native Windows"
+          }
+          if (($output -join "`n") -notmatch "packages are unavailable for Windows") {
+            throw "CloudEx returned an unexpected native Windows error: $output"
+          }
 
   promote-latest:
     name: Promote Tested Latest

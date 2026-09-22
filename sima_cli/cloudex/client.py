@@ -218,11 +218,16 @@ class SessionStore:
 
 def find_forwarder():
     override = os.environ.get("SIMA_CLOUDEX_FORWARDER")
-    candidates = [override] if override else []
-    discovered = shutil.which(FORWARDER_NAME)
-    if discovered:
-        candidates.append(discovered)
-    candidates.extend(["/usr/local/bin/" + FORWARDER_NAME, "/usr/bin/" + FORWARDER_NAME])
+    # An explicit path is authoritative. This supports controlled installations
+    # and avoids silently using a different system binary after a bad override.
+    if override:
+        candidates = [override]
+    else:
+        candidates = []
+        discovered = shutil.which(FORWARDER_NAME)
+        if discovered:
+            candidates.append(discovered)
+        candidates.extend(["/usr/local/bin/" + FORWARDER_NAME, "/usr/bin/" + FORWARDER_NAME])
     for candidate in candidates:
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return Path(candidate)

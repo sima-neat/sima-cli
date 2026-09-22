@@ -29,15 +29,16 @@ console = Console()
 class StageProgress:
     """A compact spinner for terminals and readable milestones for logs."""
 
-    def __init__(self, label):
+    def __init__(self, label, verbose=False):
         self.label = label
+        self.verbose = verbose
         self._progress = None
         self._task = None
         self._last = None
         self._finished = False
 
     def __enter__(self):
-        if console.is_interactive:
+        if console.is_interactive and not self.verbose:
             self._progress = Progress(
                 SpinnerColumn(style="bold cyan"),
                 TextColumn("[cyan]{task.description}[/cyan]"),
@@ -183,7 +184,12 @@ def cloudex_group():
 )
 @click.option("--transport", type=click.Choice(["auto", "p2p", "turn"]), default="auto", hidden=True)
 @click.option("--attempts", type=click.IntRange(1, 5), default=3, hidden=True)
-def connect_command(key_file, key_stdin, transport, attempts):
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Print each sanitized connection stage for troubleshooting.",
+)
+def connect_command(key_file, key_stdin, transport, attempts, verbose):
     """Connect to an allocated DevKit using a securely supplied key."""
     if key_file and key_stdin:
         raise click.UsageError("Use either --key-file or --key-stdin, not both.")
@@ -197,7 +203,7 @@ def connect_command(key_file, key_stdin, transport, attempts):
         else:
             key = click.prompt("CloudEx allocation key", hide_input=True).strip()
         profile = decode_key(key)
-        with StageProgress("Preparing CloudEx connection") as progress:
+        with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:
             session = connect(profile, _store(), progress, attempts=attempts, transport=transport)
             progress.success("Connected to {}".format(session["device"]))
         path = session.get("ice_path", "unknown")

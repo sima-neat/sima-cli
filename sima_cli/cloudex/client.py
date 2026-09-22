@@ -267,6 +267,23 @@ def _safe_last_stage(log_path):
     return stages[-1] if stages else ""
 
 
+def _safe_selected_path(log_path):
+    """Recover the non-sensitive selected path from forwarder lifecycle logs."""
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    selected = ""
+    for line in lines:
+        prefix = "kerrigan-p2p-forwarder:"
+        stage = line[len(prefix):].strip() if line.startswith(prefix) else line.strip()
+        if stage == "selected ICE path direct":
+            selected = "direct"
+        elif stage == "selected ICE path relay":
+            selected = "relay"
+    return selected
+
+
 def _forwarder_failure(log_path):
     stage = _safe_last_stage(log_path)
     suffix = "; last stage: " + stage if stage else ""
@@ -275,6 +292,9 @@ def _forwarder_failure(log_path):
     except OSError:
         detail = ""
     mappings = {
+        "a password is required": "administrator authorization is required; run CloudEx from an interactive terminal",
+        "a terminal is required": "administrator authorization is required; run CloudEx from an interactive terminal",
+        "no tty present": "administrator authorization is required; run CloudEx from an interactive terminal",
         "receive wireguard public key": "WireGuard peer-key exchange timed out",
         "wireguard handshake timed out": "WireGuard handshake timed out after ICE connected",
         "join signaling": "the native forwarder could not join the signaling session",
@@ -332,7 +352,14 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
             if report.get("status") == "failed":
                 raise CloudExError(_forwarder_failure(log_path))
         if stage == "WireGuard handshake confirmed":
-            return {"session_id": session_id, "status": "connected", "path": "unknown"}
+            # The handshake log is emitted immediately before the final report
+            # write. The preceding "checking" report already carries the
+            # selected path; use it (or the sanitized selection stage) rather
+            # than racing the write and presenting a connected path as unknown.
+            path = report.get("path")
+            if path not in {"direct", "relay"}:
+                path = _safe_selected_path(log_path) or "unknown"
+            return {"session_id": session_id, "status": "connected", "path": path}
         if process.poll() is not None:
             raise CloudExError(_forwarder_failure(log_path))
         time.sleep(0.2)
@@ -416,10 +443,9 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             with log_path.open("x", encoding="utf-8") as log:
                 process = subprocess.Popen(
                     [
-                        "sudo", "-n", "--", str(forwarder), "session", "--role", "user",
+                        "sudo", "--", str(forwarder), "session", "--role", "user",
                         "--config", str(config_path), "--report", str(report_path),
                     ],
-                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=log,
                     text=True,
@@ -500,7 +526,7 @@ def _stop_forwarder(session):
     pid = session.get("forwarder_pid")
     if not _forwarder_running(pid):
         return
-    result = subprocess.run(["sudo", "-n", "kill", "-TERM", str(pid)], check=False)
+    result = subprocess.run(["sudo", "kill", "-TERM", str(pid)], check=False)
     if result.returncode:
         raise CloudExError("the local tunnel process could not be stopped")
     deadline = time.monotonic() + 10

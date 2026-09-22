@@ -49,6 +49,25 @@ def test_connect_prompts_for_backend_key_without_putting_it_in_argv(monkeypatch)
     assert connect.call_args.kwargs == {"attempts": 3, "transport": "auto"}
 
 
+def test_connect_verbose_prints_sanitized_connection_stages(monkeypatch):
+    session = _session("b" * 32, "ll2")
+    monkeypatch.setattr(commands, "decode_key", Mock(return_value={"profile": True}))
+
+    def staged_connect(_profile, _store, progress, **_kwargs):
+        progress.update("joined authenticated signaling session")
+        progress.update("ICE connectivity established")
+        return session
+
+    monkeypatch.setattr(commands, "connect", staged_connect)
+
+    result = invoke_main(["cloudex", "connect", "--verbose"], input="encoded\n")
+
+    assert result.exit_code == 0, result.output
+    assert "joined authenticated signaling session" in result.output
+    assert "ICE connectivity established" in result.output
+    assert "encoded" not in result.output
+
+
 def test_connect_does_not_accept_allocation_key_in_argv():
     result = invoke_main(["cloudex", "connect", "--key", "encoded"])
 

@@ -121,7 +121,8 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     monkeypatch.setattr(client, "find_forwarder", Mock(return_value=forwarder))
     monkeypatch.setattr(client, "authorize_admin", Mock())
     monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
-    monkeypatch.setattr(client.subprocess, "Popen", Mock(return_value=process))
+    popen = Mock(return_value=process)
+    monkeypatch.setattr(client.subprocess, "Popen", popen)
     monkeypatch.setattr(
         client,
         "_wait_forwarder",
@@ -135,9 +136,44 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     assert result["ice_path"] == "direct"
     assert store.list()[0]["api_secret"] == allocation_profile()["allocation_secret"]
     assert not store.runtime_paths(result["session_id"])[1].exists()
+    command = popen.call_args.args[0]
+    assert command[:2] == ["sudo", "--"]
+    assert "-n" not in command
+    assert "stdin" not in popen.call_args.kwargs
     api.call.assert_called_once_with(
         "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]}
     )
+
+
+def test_forwarder_failure_explains_sudo_terminal_requirement(tmp_path):
+    log = tmp_path / "forwarder.log"
+    log.write_text("sudo: a password is required\n")
+
+    assert client._forwarder_failure(log) == (
+        "administrator authorization is required; run CloudEx from an interactive terminal"
+    )
+
+
+def test_wait_forwarder_preserves_path_when_handshake_log_wins_report_race(tmp_path):
+    session_id = "b" * 32
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({
+        "session_id": session_id,
+        "status": "checking",
+        "path": "direct",
+    }))
+    log = tmp_path / "forwarder.log"
+    log.write_text(
+        "kerrigan-p2p-forwarder: selected ICE path direct\n"
+        "kerrigan-p2p-forwarder: WireGuard handshake confirmed\n"
+    )
+    process = Mock(poll=Mock(return_value=None))
+
+    result = client._wait_forwarder(
+        session_id, process, report, log, 9999999999, Mock()
+    )
+
+    assert result == {"session_id": session_id, "status": "connected", "path": "direct"}
 
 
 def test_connect_installs_develop_forwarder_when_missing(tmp_path, monkeypatch):

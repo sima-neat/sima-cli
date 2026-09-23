@@ -21,6 +21,7 @@ def _session(session_id, device):
         "device": device,
         "target": "10.252.1.2",
         "ice_path": "direct",
+        "expires_at": 2_000_000_000,
     }
 
 
@@ -211,6 +212,31 @@ def test_disconnect_reports_when_stale_record_preserves_newer_session(monkeypatc
 
     assert result.exit_code == 0, result.output
     assert "newer connection retained" in result.output
+
+
+def test_list_shows_relative_and_absolute_allocation_expiry(monkeypatch):
+    store = Mock()
+    store.list.return_value = [_session("a" * 32, "one")]
+    monkeypatch.setattr(commands, "_store", Mock(return_value=store))
+    monkeypatch.setattr(commands.time, "time", lambda: 1_999_996_300)
+    monkeypatch.setattr(
+        commands,
+        "inspect_session",
+        Mock(return_value={"connected": True, "status": "connected", "path": "direct"}),
+    )
+
+    result = invoke_main(["cloudex", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "Expires" in result.output
+    assert "in 1h 1m" in result.output
+    assert "2033-05-18 03:33 UTC" in result.output
+
+
+def test_expiry_text_marks_expired_sessions():
+    assert commands._expiry_text(2_000_000_000, now=2_000_000_125) == (
+        "expired 2m ago\n2033-05-18 03:33 UTC"
+    )
 
 
 def test_list_benchmark_reports_both_directions_and_leaves_failed_tunnel_connected(monkeypatch):

@@ -73,6 +73,26 @@ def test_session_store_keeps_independent_secure_records(tmp_path):
     assert stat.S_IMODE(store.sessions_dir.stat().st_mode) == 0o700
 
 
+def test_session_store_preserves_only_failed_forwarder_log(tmp_path):
+    store = client.SessionStore(tmp_path / "cloudex")
+    session_id = "f" * 32
+    runtime, config, report, log = store.runtime_paths(session_id)
+    runtime.mkdir(parents=True)
+    config.write_text('{"signaling_token":"secret"}')
+    report.write_text('{"status":"failed"}')
+    log.write_text("kerrigan-p2p-forwarder: session configuration accepted\n")
+    log.chmod(0o600)
+    store.write_recovery({"session_id": session_id, "status": "creating"})
+
+    store.delete(session_id, preserve_log=True)
+
+    assert log.read_text().startswith("kerrigan-p2p-forwarder")
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert not config.exists()
+    assert not report.exists()
+    assert not store.recovery_path(session_id).exists()
+
+
 def test_session_store_migrates_incomplete_rows_out_of_connection_list(tmp_path):
     store = client.SessionStore(tmp_path / "cloudex")
     incomplete = session_record("c" * 32)
@@ -157,6 +177,56 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
         "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]}
     )
     assert result["remote_session_id"] == "d" * 32
+
+
+def test_failed_connect_keeps_the_reported_host_diagnostics(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path / "cloudex")
+    forwarder = tmp_path / "forwarder"
+    forwarder.write_text("binary")
+    forwarder.chmod(0o755)
+    process = Mock(pid=123, poll=Mock(return_value=None))
+    allocated = {
+        "session_id": "d" * 32,
+        "expires_at": 9999999999,
+        "target_id": "ll2",
+        "wireguard": {"remote_address": "10.252.1.2/32"},
+    }
+    api = Mock()
+    api.url = allocation_profile()["api_url"]
+    api.requester = allocation_profile()["requester"]
+    api.secret = allocation_profile()["allocation_secret"]
+    api.allocation_id = allocation_profile()["allocation_id"]
+
+    def api_call(method, _path, _data=None):
+        if method == "POST":
+            return allocated
+        if method == "DELETE":
+            return {"status": "closing"}
+        return {"status": "closed", "cleanup_confirmed": True}
+
+    api.call.side_effect = api_call
+    monkeypatch.setattr(client, "find_forwarder", Mock(return_value=forwarder))
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+    monkeypatch.setattr(client.subprocess, "Popen", Mock(return_value=process))
+    monkeypatch.setattr(client, "_stop_forwarder", Mock())
+
+    def fail_after_start(_session_id, _process, _report, log_path, *_args, **_kwargs):
+        log_path.write_text("kerrigan-p2p-forwarder: joined authenticated signaling session\n")
+        raise client.CloudExError("DevKit ICE startup failed; host diagnostics: " + str(log_path))
+
+    monkeypatch.setattr(client, "_wait_forwarder", fail_after_start)
+
+    with pytest.raises(client.CloudExError, match="host diagnostics") as raised:
+        client.connect(allocation_profile(), store, Mock(), attempts=1, transport="p2p")
+
+    log_path = store.runtime_paths(next(store.runtime_dir.iterdir()).name)[3]
+    assert str(log_path) in str(raised.value)
+    assert log_path.exists()
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+    assert not store.runtime_paths(log_path.parent.name)[1].exists()
+    assert not store.runtime_paths(log_path.parent.name)[2].exists()
 
 
 def test_forwarder_failure_explains_sudo_terminal_requirement(tmp_path):

@@ -225,6 +225,32 @@ def test_wait_forwarder_preserves_path_when_handshake_log_wins_report_race(tmp_p
     assert result == {"session_id": session_id, "status": "connected", "path": "direct"}
 
 
+def test_wait_forwarder_surfaces_devkit_failure_and_diagnostic_paths(tmp_path):
+    session_id = "b" * 32
+    report = tmp_path / "report.json"
+    log = tmp_path / "forwarder.log"
+    log.write_text("kerrigan-p2p-forwarder: joined authenticated signaling session\n")
+    process = Mock(poll=Mock(return_value=None))
+    device_log = "/var/lib/kerrigan/ice-diagnostics/" + session_id + ".forwarder.log"
+
+    with pytest.raises(client.CloudExError, match="DevKit ICE startup failed") as raised:
+        client._wait_forwarder(
+            session_id,
+            process,
+            report,
+            log,
+            9999999999,
+            Mock(),
+            remote_status=lambda: {
+                "status": "failed",
+                "last_error": "DevKit ICE startup failed; device diagnostics: " + device_log,
+            },
+        )
+
+    assert device_log in str(raised.value)
+    assert str(log) in str(raised.value)
+
+
 def test_connect_installs_develop_forwarder_when_missing(tmp_path, monkeypatch):
     from sima_cli.cloudex import installer
 

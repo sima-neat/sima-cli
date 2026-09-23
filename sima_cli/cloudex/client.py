@@ -385,13 +385,38 @@ def _forwarder_running(pid):
     return result.returncode == 0 and FORWARDER_NAME in result.stdout
 
 
-def _wait_forwarder(session_id, process, report_path, log_path, deadline, progress):
+def _wait_forwarder(session_id, process, report_path, log_path, deadline, progress,
+                    remote_status=None):
     previous = None
+    next_remote_check = 0.0
     while time.time() < deadline:
         stage = _safe_last_stage(log_path)
         if stage and stage != previous:
-            progress.update(stage)
+            progress.update({
+                "joined authenticated signaling session": "Host joined signaling; waiting for DevKit",
+                "local ICE credentials sent": "Host ICE credentials sent; waiting for DevKit",
+                "remote ICE credentials received": "DevKit joined; checking ICE paths",
+            }.get(stage, stage))
             previous = stage
+        if remote_status is not None and time.monotonic() >= next_remote_check:
+            next_remote_check = time.monotonic() + 1
+            try:
+                remote = remote_status()
+            except CloudExError:
+                remote = None
+            if isinstance(remote, dict):
+                remote_state = remote.get("status")
+                if remote_state == "failed":
+                    detail = remote.get("last_error")
+                    if not isinstance(detail, str) or not detail.strip():
+                        detail = "DevKit ICE startup failed"
+                    raise CloudExError(
+                        detail.replace("\n", " ")[:300] + "; host diagnostics: " + str(log_path)
+                    )
+                if remote_state == "waiting_for_device":
+                    progress.update("Host joined signaling; waiting for DevKit startup")
+                elif remote_state == "gathering_candidates":
+                    progress.update("Both peers joined; exchanging ICE candidates")
         report = _read_report(report_path)
         if report.get("session_id") == session_id:
             if report.get("status") == "connected":
@@ -408,9 +433,12 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
                 path = _safe_selected_path(log_path) or "unknown"
             return {"session_id": session_id, "status": "connected", "path": path}
         if process.poll() is not None:
-            raise CloudExError(_forwarder_failure(log_path))
+            raise CloudExError(_forwarder_failure(log_path) + "; host diagnostics: " + str(log_path))
         time.sleep(0.2)
-    raise DirectHandshakeError("WireGuard handshake timed out")
+    last_stage = "; last host stage: " + previous if previous else ""
+    raise DirectHandshakeError(
+        "WireGuard handshake timed out" + last_stage + "; host diagnostics: " + str(log_path)
+    )
 
 
 def _device_label(allocated, allocation_id):
@@ -552,6 +580,9 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
                 log_path,
                 expires_at,
                 progress,
+                remote_status=lambda: api.call(
+                    "GET", "/v1/p2p/ice-sessions/" + remote_session_id
+                ),
             )
             wireguard = allocated.get("wireguard") or {}
             target = str(wireguard.get("remote_address") or "").partition("/")[0]

@@ -205,12 +205,20 @@ class SessionStore:
     def clear_recovery(self, session_id):
         self.recovery_path(session_id).unlink(missing_ok=True)
 
-    def delete(self, session_id):
+    def delete(self, session_id, preserve_log=False):
+        """Delete session credentials and state, optionally retaining safe evidence.
+
+        Forwarder logs contain lifecycle stages and packet counters, not the
+        signaling credentials stored in config.json. Failed connects may cite
+        this path to the user, so the log must outlive successful cleanup.
+        """
         self.path(session_id).unlink(missing_ok=True)
         self.clear_recovery(session_id)
         directory, config, report, log = self.runtime_paths(session_id)
-        for path in (config, report, log):
+        for path in (config, report):
             path.unlink(missing_ok=True)
+        if not preserve_log:
+            log.unlink(missing_ok=True)
         try:
             directory.rmdir()
         except (FileNotFoundError, OSError):
@@ -607,7 +615,9 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
                 raise
             progress.update("Cleaning up the failed connection attempt")
             try:
-                disconnect_session(session, store, progress, authorize=False)
+                disconnect_session(
+                    session, store, progress, authorize=False, preserve_log=True
+                )
             except Exception as cleanup_error:
                 session["status"] = "cleanup-pending"
                 store.write_recovery(session)
@@ -664,7 +674,7 @@ def _stop_forwarder(session):
         time.sleep(0.1)
 
 
-def disconnect_session(session, store, progress, authorize=True):
+def disconnect_session(session, store, progress, authorize=True, preserve_log=False):
     """Remove one local and remote session, preserving state until confirmed."""
     if authorize:
         authorize_admin()
@@ -700,7 +710,7 @@ def disconnect_session(session, store, progress, authorize=True):
                 # This record is stale, but the allocation has since been
                 # reconnected and that newer owner is also known locally.
                 # Removing it would violate the user's explicit selection.
-                store.delete(session_id)
+                store.delete(session_id, preserve_log=preserve_log)
                 return "stale"
             try:
                 api.call("DELETE", "/v1/p2p/ice-sessions/" + candidate)
@@ -732,7 +742,7 @@ def disconnect_session(session, store, progress, authorize=True):
             else:
                 store.write(session)
             raise CloudExError("remote tunnel cleanup is still pending")
-    store.delete(session_id)
+    store.delete(session_id, preserve_log=preserve_log)
     return "disconnected"
 
 

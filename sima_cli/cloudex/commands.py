@@ -3,6 +3,8 @@
 import os
 import stat
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -104,6 +106,27 @@ def _short(value):
     return value[:8] if isinstance(value, str) else "—"
 
 
+def _expiry_text(value, now=None):
+    """Render the allocation deadline as both relative and unambiguous UTC time."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    current = time.time() if now is None else now
+    remaining = int(value - current)
+    elapsed = remaining < 0
+    duration = abs(remaining)
+    if duration < 60:
+        relative = "{}s".format(duration)
+    elif duration < 3600:
+        relative = "{}m".format(duration // 60)
+    elif duration < 86400:
+        relative = "{}h {}m".format(duration // 3600, duration % 3600 // 60)
+    else:
+        relative = "{}d {}h".format(duration // 86400, duration % 86400 // 3600)
+    label = "expired {} ago".format(relative) if elapsed else "in {}".format(relative)
+    absolute = datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return label + "\n" + absolute
+
+
 def _read_key_file(path):
     """Read a protected regular file without following a replaced symlink."""
     descriptor = None
@@ -143,6 +166,8 @@ def _session_table(rows, show_benchmark=False):
         table.add_column("Session")
     table.add_column("Path")
     table.add_column("Endpoint")
+    if not show_benchmark:
+        table.add_column("Expires")
     if show_benchmark:
         table.add_column("RTT", justify="right")
         table.add_column("H→D", justify="right")
@@ -163,6 +188,8 @@ def _session_table(rows, show_benchmark=False):
         if not show_benchmark:
             values.append(_short(session.get("session_id")))
         values.extend([path, session.get("target", "—")])
+        if not show_benchmark:
+            values.append(_expiry_text(session.get("expires_at")))
         if show_benchmark:
             if not status["connected"]:
                 values.extend(["—", "—", "—"])
@@ -356,6 +383,11 @@ def list_command(benchmark, duration):
                     progress.warning("Benchmark unavailable for {}".format(device))
         rows.append((session, status, measurement))
     console.print(_session_table(rows, show_benchmark=benchmark))
+    if benchmark:
+        console.print("[bold cyan]Allocation expiry[/bold cyan]")
+        for session in sessions:
+            label = session.get("device", "DevKit " + _short(session.get("allocation_id")))
+            console.print("  {}: {}".format(label, _expiry_text(session.get("expires_at")).replace("\n", " · ")))
     if benchmark and any(row[2].get("error") for row in rows):
         console.print("[yellow]Some benchmarks were unavailable; verify the DevKit is running a forwarder with parallel bidirectional benchmark support. Existing tunnels were left connected.[/yellow]")
 

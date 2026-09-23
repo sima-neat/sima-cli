@@ -4,7 +4,7 @@ import os
 import stat
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -123,7 +123,7 @@ def _expiry_text(value, now=None):
     else:
         relative = "{}d {}h".format(duration // 86400, duration % 86400 // 3600)
     label = "expired {} ago".format(relative) if elapsed else "in {}".format(relative)
-    absolute = datetime.fromtimestamp(value, UTC).strftime("%Y-%m-%d %H:%M UTC")
+    absolute = datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return label + "\n" + absolute
 
 

@@ -84,19 +84,34 @@ def _require_one_candidate(role: str, preferred: List[Path], fallback: List[Path
     return candidates[0]
 
 
-def _discover_local_netboot_sources(images: str, board: str, swtype: str):
+def _discover_local_netboot_sources(
+    images: str,
+    board: str,
+    swtype: str,
+    archive_path: Optional[str] = None,
+):
     images_dir = Path(images).expanduser().resolve()
-    files = sorted(path for path in images_dir.rglob("*") if path.is_file())
+    if archive_path:
+        selected_archive = Path(archive_path).expanduser().resolve()
+        if not selected_archive.is_file() or not _is_archive(selected_archive):
+            raise RuntimeError(f"Local netboot source is not an archive: {selected_archive}")
+        files = sorted(path for path in selected_archive.parent.iterdir() if path.is_file())
+    else:
+        selected_archive = None
+        files = sorted(path for path in images_dir.rglob("*") if path.is_file())
     archives = [path for path in files if _is_archive(path)]
 
     if swtype == "elxr":
-        tftp_archives = [path for path in archives if "tftp-boot" in path.name.lower()]
-        board_archives = [
-            path for path in tftp_archives if board.lower() in path.name.lower()
-        ]
-        archive = _require_one_candidate(
-            "eLxr minimal TFTP archive", board_archives or tftp_archives, archives
-        )
+        if selected_archive:
+            archive = selected_archive
+        else:
+            tftp_archives = [path for path in archives if "tftp-boot" in path.name.lower()]
+            board_archives = [
+                path for path in tftp_archives if board.lower() in path.name.lower()
+            ]
+            archive = _require_one_candidate(
+                "eLxr minimal TFTP archive", board_archives or tftp_archives, archives
+            )
         emmc_candidates = [
             path for path in files
             if path.name.lower().endswith(".img.gz")
@@ -110,15 +125,18 @@ def _discover_local_netboot_sources(images: str, board: str, swtype: str):
         )
         return archive, [emmc]
 
-    preferred_archives = [
-        path for path in archives
-        if path.name.lower() in {"release.tar.gz", "graphics.tar.gz"}
-    ]
-    archive = _require_one_candidate(
-        "Yocto release archive",
-        preferred_archives,
-        archives if len(archives) == 1 else [],
-    )
+    if selected_archive:
+        archive = selected_archive
+    else:
+        preferred_archives = [
+            path for path in archives
+            if path.name.lower() in {"release.tar.gz", "graphics.tar.gz"}
+        ]
+        archive = _require_one_candidate(
+            "Yocto release archive",
+            preferred_archives,
+            archives if len(archives) == 1 else [],
+        )
     return archive, []
 
 
@@ -299,9 +317,16 @@ def _classify_prepared_assets(
     )
 
 
-def _prepare_local_netboot_assets(images: str, board: str, swtype: str,
-                                  flavor: str) -> NetbootAssets:
-    archive, external_emmc = _discover_local_netboot_sources(images, board, swtype)
+def _prepare_local_netboot_assets(
+    images: str,
+    board: str,
+    swtype: str,
+    flavor: str,
+    archive_path: Optional[str] = None,
+) -> NetbootAssets:
+    archive, external_emmc = _discover_local_netboot_sources(
+        images, board, swtype, archive_path=archive_path
+    )
     identity = {
         "mode": "local",
         "board": board,
@@ -318,10 +343,18 @@ def _prepare_local_netboot_assets(images: str, board: str, swtype: str,
         )
         if not extracted:
             raise RuntimeError(f"No netboot files could be extracted from {archive}.")
+        legacy_tftp_root = Path(os.path.dirname(extracted[0])).resolve()
+        try:
+            legacy_tftp_root.relative_to(content_root.resolve())
+        except ValueError as error:
+            raise RuntimeError(
+                f"Extracted TFTP root escaped the managed cache: {legacy_tftp_root}"
+            ) from error
         _classify_prepared_assets(
-            content_root.parent, board, swtype, external_emmc, tftp_root=content_root
+            content_root.parent, board, swtype, external_emmc,
+            tftp_root=legacy_tftp_root,
         )
-        return content_root
+        return legacy_tftp_root
 
     cache_dir, tftp_root, reused = _prepare_cache_entry(identity, build)
     assets = _classify_prepared_assets(
@@ -449,7 +482,8 @@ def _prepare_netboot_assets(
         raise RuntimeError("A firmware version or --images directory is required for netboot.")
     if os.path.isfile(version):
         return _prepare_local_netboot_assets(
-            os.path.dirname(os.path.abspath(version)), board, swtype, flavor
+            os.path.dirname(os.path.abspath(version)), board, swtype, flavor,
+            archive_path=version,
         )
     return _prepare_downloaded_netboot_assets(
         version, board, swtype, internal, flavor,

@@ -80,6 +80,56 @@ def test_yocto_images_directory_finds_release_bundle(tmp_path):
     assert Path(assets.tftp_root, "netboot.scr.uimg").is_file()
 
 
+def test_local_archive_preserves_nested_tftp_root(tmp_path):
+    images = tmp_path / "images"
+    images.mkdir()
+    _write_tar(
+        images / "modalix-tftp-boot-minimal.tar.gz",
+        {
+            "boot/netboot.scr.uimg": b"script",
+            "boot/Image": b"kernel",
+        },
+    )
+    (images / "elxr-palette-modalix-3.0.0-arm64.img.gz").write_bytes(b"image")
+
+    with patch.object(netboot.tempfile, "gettempdir", return_value=str(tmp_path / "tmp")):
+        assets = netboot._prepare_local_netboot_assets(
+            str(images), "modalix", "elxr", "headless"
+        )
+
+    assert Path(assets.tftp_root).name == "boot"
+    assert Path(assets.tftp_root, "netboot.scr.uimg").is_file()
+
+
+def test_explicit_local_archive_is_not_replaced_by_sibling(tmp_path):
+    images = tmp_path / "images"
+    images.mkdir()
+    selected = images / "custom-netboot.tar.gz"
+    _write_tar(
+        selected,
+        {
+            "netboot.scr.uimg": b"selected",
+            "simaai-image-palette-modalix.wic.gz": b"selected-wic",
+            "simaai-image-palette-modalix.wic.bmap": b"selected-bmap",
+        },
+    )
+    _write_tar(
+        images / "release.tar.gz",
+        {
+            "netboot.scr.uimg": b"sibling",
+            "simaai-image-palette-modalix.wic.gz": b"sibling-wic",
+            "simaai-image-palette-modalix.wic.bmap": b"sibling-bmap",
+        },
+    )
+
+    with patch.object(netboot.tempfile, "gettempdir", return_value=str(tmp_path / "tmp")):
+        assets = netboot._prepare_netboot_assets(
+            str(selected), "modalix", "yocto", False, "headless"
+        )
+
+    assert Path(assets.tftp_root, "netboot.scr.uimg").read_bytes() == b"selected"
+
+
 def test_images_directory_rejects_ambiguous_elxr_emmc_images(tmp_path):
     images = tmp_path / "images"
     images.mkdir()

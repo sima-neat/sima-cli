@@ -149,6 +149,22 @@ def _source_file_identity(path: Path):
     }
 
 
+def _tftp_root_from_files(paths) -> Path:
+    boot_scripts = [
+        Path(path).resolve()
+        for path in paths
+        if Path(path).name == "netboot.scr.uimg"
+    ]
+    if len(boot_scripts) > 1:
+        raise RuntimeError(
+            "Expected exactly one netboot.scr.uimg; found "
+            f"{len(boot_scripts)}: {_describe_candidates(boot_scripts)}"
+        )
+    if boot_scripts:
+        return boot_scripts[0].parent
+    return Path(os.path.dirname(paths[0])).resolve()
+
+
 def _cache_key(identity) -> str:
     encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:24]
@@ -343,7 +359,7 @@ def _prepare_local_netboot_assets(
         )
         if not extracted:
             raise RuntimeError(f"No netboot files could be extracted from {archive}.")
-        legacy_tftp_root = Path(os.path.dirname(extracted[0])).resolve()
+        legacy_tftp_root = _tftp_root_from_files(extracted)
         try:
             legacy_tftp_root.relative_to(content_root.resolve())
         except ValueError as error:
@@ -435,7 +451,7 @@ def _prepare_downloaded_netboot_assets(
             )
         if not isinstance(file_list, list) or not file_list:
             raise RuntimeError("Netboot download did not produce any files.")
-        legacy_tftp_root = Path(os.path.dirname(file_list[0])).resolve()
+        legacy_tftp_root = _tftp_root_from_files(file_list)
         try:
             legacy_tftp_root.relative_to(content_root.resolve())
         except ValueError:

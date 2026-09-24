@@ -86,6 +86,7 @@ def test_local_archive_preserves_nested_tftp_root(tmp_path):
     _write_tar(
         images / "modalix-tftp-boot-minimal.tar.gz",
         {
+            "README.txt": b"metadata before the boot directory",
             "boot/netboot.scr.uimg": b"script",
             "boot/Image": b"kernel",
         },
@@ -172,11 +173,16 @@ def test_downloaded_netboot_assets_are_prepared_once(tmp_path):
 
 def test_downloaded_tftp_only_assets_keep_legacy_nested_root(tmp_path):
     def fake_download(_version, _board, **kwargs):
+        destination = Path(kwargs["destination_dir"])
+        readme = destination / "README.txt"
+        readme.write_bytes(b"metadata")
         nested = Path(kwargs["destination_dir"]) / "boot"
         nested.mkdir()
+        script = nested / "netboot.scr.uimg"
+        script.write_bytes(b"script")
         image = nested / "Image"
         image.write_bytes(b"kernel")
-        return [str(image)]
+        return [str(readme), str(script), str(image)]
 
     with patch.object(netboot.tempfile, "gettempdir", return_value=str(tmp_path)), \
             patch.object(netboot, "download_image", side_effect=fake_download):

@@ -46,10 +46,11 @@ def _mirror_files(requested, board, reason, exact=False):
     return _choose(builds, mirror=True)['artifacts']
 
 
-def _download_set(urls, board, flavor, mirror):
+def _download_set(urls, board, flavor, mirror, destination_dir=None):
     from sima_cli.update.updater import _extract_required_files
     # Keep different attempts/builds separate; never reuse unverified extracted files.
-    directory = tempfile.mkdtemp(prefix='sima-cli-netboot-')
+    directory = destination_dir or tempfile.mkdtemp(prefix='sima-cli-netboot-')
+    os.makedirs(directory, exist_ok=True)
     try:
         paths = []
         for url in urls:
@@ -71,11 +72,13 @@ def _download_set(urls, board, flavor, mirror):
         # Use the explicitly selected tRoot blob, not a similarly named archive member.
         return [p for p in extracted if os.path.basename(p) != 'troot_blob.be'] + paths[1:]
     except BaseException:
-        shutil.rmtree(directory, ignore_errors=True)
+        if destination_dir is None:
+            shutil.rmtree(directory, ignore_errors=True)
         raise
 
 
-def download_netboot_image(requested, board, flavor='headless', allow_daily_fallback=False):
+def download_netboot_image(requested, board, flavor='headless', allow_daily_fallback=False,
+                           destination_dir=None):
     from sima_cli.update.updater import _download_image
     selected = None
     try:
@@ -83,12 +86,16 @@ def download_netboot_image(requested, board, flavor='headless', allow_daily_fall
             board, requested, flavor, 'elxr', with_metadata=True, strict=True)
         selected = _choose(_matching_builds(builds, requested))['version']
         if release_tuple(selected) < (3, 0, 0):
-            return _download_image(selected, board, True, 'netboot', flavor, 'elxr')
+            kwargs = ({'destination_dir': destination_dir}
+                      if destination_dir is not None else {})
+            return _download_image(
+                selected, board, True, 'netboot', flavor, 'elxr', **kwargs
+            )
         base = f'{ARTIFACTORY_BASE_URL}/soc-images/{elxr_firmware_path(board, selected)}/{selected}/artifacts/'
         urls = [base + f'minimal/{board}-tftp-boot-minimal.tar.gz',
                 resolve_elxr_palette_image(base + 'palette/', board),
                 base + 'minimal/troot_blob.be']
-        return _download_set(urls, board, flavor, mirror=False)
+        return _download_set(urls, board, flavor, mirror=False, destination_dir=destination_dir)
     except Exception as exc:
         reason = artifactory_failure_reason(exc, post_selection=selected is not None)
         if not reason:
@@ -102,4 +109,4 @@ def download_netboot_image(requested, board, flavor='headless', allow_daily_fall
                 'TFTP was not started.'
             ) from exc
         urls = _mirror_files(selected or requested, board, reason, exact=selected is not None)
-        return _download_set(urls, board, flavor, mirror=True)
+        return _download_set(urls, board, flavor, mirror=True, destination_dir=destination_dir)

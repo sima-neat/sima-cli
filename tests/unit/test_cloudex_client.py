@@ -433,6 +433,26 @@ def test_disconnect_stale_id_closes_allocation_active_session(tmp_path, monkeypa
     assert store.list() == []
 
 
+def test_disconnect_expired_record_deletes_locally_without_api_request(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path / "cloudex")
+    session = session_record()
+    session["expires_at"] = 1
+    store.write(session)
+    api = Mock()
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+    authorize = Mock()
+    monkeypatch.setattr(client, "authorize_admin", authorize)
+    monkeypatch.setattr(client, "_forwarder_running", Mock(return_value=False))
+    monkeypatch.setattr(client, "_stop_forwarder", Mock())
+
+    result = client.disconnect_session(session, store, Mock())
+
+    assert result == "expired"
+    api.call.assert_not_called()
+    authorize.assert_not_called()
+    assert store.list() == []
+
+
 def test_disconnect_closed_session_waits_for_allocation_cleanup(tmp_path, monkeypatch):
     store = client.SessionStore(tmp_path / "cloudex")
     session = session_record()

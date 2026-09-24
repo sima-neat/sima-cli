@@ -22,7 +22,6 @@ from .client import (
     find_forwarder,
     inspect_session,
     run_benchmark,
-    session_expired,
 )
 from .installer import DEFAULT_BRANCH, install_forwarder
 

@@ -348,21 +348,12 @@ def disconnect_command(session_id, disconnect_all):
     if not selected:
         console.print("[dim]No CloudEx connections selected.[/dim]")
         return
-    requires_remote_cleanup = any(not session_expired(session) for session in selected)
-    if requires_remote_cleanup:
-        console.print("[cyan]→[/cyan] Authorizing encrypted tunnel cleanup")
-        try:
-            _authorize_supported_host()
-        except CloudExError as exc:
-            raise click.ClickException(str(exc)) from exc
     failures = []
     for session in selected:
         label = session.get("device", "DevKit " + _short(session.get("allocation_id")))
         try:
             with StageProgress("Disconnecting {}".format(label)) as progress:
-                result = disconnect_session(
-                    session, store, progress, authorize=not requires_remote_cleanup
-                )
+                result = disconnect_session(session, store, progress)
                 if result == "stale":
                     progress.success("Removed stale record for {}; newer connection retained".format(label))
                 elif result == "expired":

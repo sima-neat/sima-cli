@@ -599,7 +599,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             session.update(
                 status="connected",
                 connected_at=int(time.time()),
-                expires_at=allocated.get("expires_at"),
+                expires_at=expires_at,
                 ice_path=report.get("path", "unknown"),
                 target=target,
                 device=_device_label(allocated, api.allocation_id),
@@ -677,9 +677,13 @@ def _stop_forwarder(session):
 def session_expired(session, now=None):
     """Whether a recorded allocation has passed its locally signed deadline."""
     expires_at = session.get("expires_at")
-    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+    if isinstance(expires_at, bool):
         return False
-    return expires_at <= (time.time() if now is None else now)
+    try:
+        deadline = float(expires_at)
+    except (TypeError, ValueError):
+        return False
+    return deadline <= (time.time() if now is None else now)
 
 
 def disconnect_session(session, store, progress, authorize=True, preserve_log=False):

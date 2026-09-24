@@ -161,6 +161,51 @@ def test_mutable_version_selector_uses_resolved_source_for_cache_key(tmp_path):
     assert [call.args[0] for call in download.call_args_list] == ["3.0.0_B1", "3.0.0_B2"]
 
 
+def test_internal_complete_set_selector_uses_concrete_build_for_cache_key(tmp_path):
+    from sima_cli.update.netboot_artifacts import NetbootImageSelection
+
+    selections = [
+        NetbootImageSelection("3.0.0_B1", urls=("https://example/B1",)),
+        NetbootImageSelection("3.0.0_B2", urls=("https://example/B2",)),
+    ]
+
+    def fake_download(selection, _board, _flavor, **kwargs):
+        destination = Path(kwargs["destination_dir"])
+        image = destination / "Image"
+        image.write_bytes(selection.version.encode())
+        return [str(image)]
+
+    with patch.object(netboot.tempfile, "gettempdir", return_value=str(tmp_path)), \
+            patch("sima_cli.update.netboot_artifacts.resolve_netboot_image_selection",
+                  side_effect=selections) as resolve, \
+            patch("sima_cli.update.netboot_artifacts.download_selected_netboot_image",
+                  side_effect=fake_download) as download:
+        first = netboot._prepare_downloaded_netboot_assets(
+            "daily", "modalix", "elxr", True, "headless"
+        )
+        second = netboot._prepare_downloaded_netboot_assets(
+            "daily", "modalix", "elxr", True, "headless"
+        )
+
+    assert first.cache_dir != second.cache_dir
+    assert resolve.call_count == 2
+    assert [call.args[0].version for call in download.call_args_list] == [
+        "3.0.0_B1", "3.0.0_B2"
+    ]
+
+
+def test_cache_staging_is_removed_when_builder_exits(tmp_path):
+    with patch.object(netboot.tempfile, "gettempdir", return_value=str(tmp_path)):
+        with pytest.raises(SystemExit):
+            netboot._prepare_cache_entry(
+                {"source": "failing"},
+                lambda _content_root: (_ for _ in ()).throw(SystemExit(1)),
+            )
+
+    cache_root = tmp_path / "sima-cli" / "netboot"
+    assert not list(cache_root.glob(".*"))
+
+
 def test_delete_cache_removes_only_managed_entry(tmp_path):
     images = tmp_path / "images"
     images.mkdir()

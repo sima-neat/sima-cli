@@ -239,7 +239,7 @@ def _prepare_cache_entry(identity, builder):
             if cache_dir.exists():
                 shutil.rmtree(cache_dir)
             os.replace(staging_dir, cache_dir)
-        except Exception:
+        except BaseException:
             shutil.rmtree(staging_dir, ignore_errors=True)
             raise
 
@@ -344,9 +344,20 @@ def _prepare_downloaded_netboot_assets(
         and not version.startswith(("http://", "https://"))
         and not os.path.exists(version)
     )
+    internal_selection = None
     if uses_complete_internal_set:
-        resolved_reference = version
-        source_identity = f"internal-complete-set:{version}"
+        from sima_cli.update.netboot_artifacts import resolve_netboot_image_selection
+
+        internal_selection = resolve_netboot_image_selection(
+            version,
+            board,
+            flavor,
+            allow_daily_fallback=allow_daily_fallback,
+        )
+        resolved_reference = internal_selection.version
+        source_identity = {
+            "internal_complete_set": internal_selection.cache_identity(),
+        }
     else:
         resolved_reference = resolve_image_reference(
             version, board, swtype, internal=internal,
@@ -371,13 +382,24 @@ def _prepare_downloaded_netboot_assets(
             f"⬇️  Downloading netboot image for version: {resolved_reference}, "
             f"board: {board}, swtype: {swtype}"
         )
-        file_list = download_image(
-            resolved_reference, board, swtype=swtype, internal=internal,
-            update_type="netboot", flavor=flavor,
-            allow_daily_fallback=allow_daily_fallback,
-            destination_dir=str(content_root),
-            reference_is_resolved=not uses_complete_internal_set,
-        )
+        if internal_selection is not None:
+            from sima_cli.update.netboot_artifacts import download_selected_netboot_image
+
+            file_list = download_selected_netboot_image(
+                internal_selection,
+                board,
+                flavor,
+                allow_daily_fallback=allow_daily_fallback,
+                destination_dir=str(content_root),
+            )
+        else:
+            file_list = download_image(
+                resolved_reference, board, swtype=swtype, internal=internal,
+                update_type="netboot", flavor=flavor,
+                allow_daily_fallback=allow_daily_fallback,
+                destination_dir=str(content_root),
+                reference_is_resolved=True,
+            )
         if not isinstance(file_list, list) or not file_list:
             raise RuntimeError("Netboot download did not produce any files.")
         legacy_tftp_root = Path(os.path.dirname(file_list[0])).resolve()

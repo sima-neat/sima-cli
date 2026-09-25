@@ -142,7 +142,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     process = Mock(pid=123, poll=Mock(return_value=None))
     allocated = {
         "session_id": "d" * 32,
-        "expires_at": 9999999999,
+        "expires_at": "9999999999",
         "target_id": "ll2",
         "wireguard": {"remote_address": "10.252.1.2/32"},
     }
@@ -168,6 +168,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     assert result["device"] == "ll2"
     assert result["target"] == "10.252.1.2"
     assert result["ice_path"] == "direct"
+    assert result["expires_at"] == 9999999999.0
     assert store.list()[0]["api_secret"] == allocation_profile()["allocation_secret"]
     assert not store.runtime_paths(result["session_id"])[1].exists()
     command = popen.call_args.args[0]
@@ -430,6 +431,41 @@ def test_disconnect_stale_id_closes_allocation_active_session(tmp_path, monkeypa
         ("DELETE", "/v1/p2p/ice-sessions/" + active_id),
         ("GET", "/v1/p2p/ice-sessions/" + active_id),
     ]
+    assert store.list() == []
+
+
+def test_disconnect_expired_record_deletes_locally_without_api_request(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path / "cloudex")
+    session = session_record()
+    session["expires_at"] = 1
+    store.write(session)
+    api = Mock()
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+    authorize = Mock()
+    monkeypatch.setattr(client, "authorize_admin", authorize)
+    monkeypatch.setattr(client, "_forwarder_running", Mock(return_value=False))
+    monkeypatch.setattr(client, "_stop_forwarder", Mock())
+
+    result = client.disconnect_session(session, store, Mock())
+
+    assert result == "expired"
+    api.call.assert_not_called()
+    authorize.assert_not_called()
+    assert store.list() == []
+
+
+def test_disconnect_recognizes_legacy_numeric_string_expiration(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path / "cloudex")
+    session = session_record()
+    session["expires_at"] = "1"
+    store.write(session)
+    api = Mock()
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+    monkeypatch.setattr(client, "_forwarder_running", Mock(return_value=False))
+
+    assert client.disconnect_session(session, store, Mock()) == "expired"
+
+    api.call.assert_not_called()
     assert store.list() == []
 
 

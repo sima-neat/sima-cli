@@ -599,7 +599,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             session.update(
                 status="connected",
                 connected_at=int(time.time()),
-                expires_at=allocated.get("expires_at"),
+                expires_at=expires_at,
                 ice_path=report.get("path", "unknown"),
                 target=target,
                 device=_device_label(allocated, api.allocation_id),
@@ -674,8 +674,32 @@ def _stop_forwarder(session):
         time.sleep(0.1)
 
 
+def session_expired(session, now=None):
+    """Whether a recorded allocation has passed its locally signed deadline."""
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, bool):
+        return False
+    try:
+        deadline = float(expires_at)
+    except (TypeError, ValueError):
+        return False
+    return deadline <= (time.time() if now is None else now)
+
+
 def disconnect_session(session, store, progress, authorize=True, preserve_log=False):
     """Remove one local and remote session, preserving state until confirmed."""
+    if session_expired(session):
+        # The allocation cannot be revived after its signed deadline.  Avoid a
+        # remote cleanup request which will only fail once the service has
+        # already discarded the session, but still stop a surviving local
+        # forwarder before removing its credentials and runtime state.
+        progress.update("Removing expired local CloudEx record")
+        if _forwarder_running(session.get("forwarder_pid")):
+            if authorize:
+                authorize_admin()
+            _stop_forwarder(session)
+        store.delete(session["session_id"], preserve_log=preserve_log)
+        return "expired"
     if authorize:
         authorize_admin()
     api = CloudExAPI.from_session(session)

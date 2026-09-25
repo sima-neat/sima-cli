@@ -202,6 +202,42 @@ def test_disconnect_all_handles_each_session(monkeypatch):
     assert "Disconnected two" in result.output
 
 
+def test_disconnect_interactive_uses_checkbox_for_multiple_sessions(monkeypatch):
+    store = Mock()
+    sessions = [_session("a" * 32, "one"), _session("b" * 32, "two")]
+    store.list.return_value = sessions
+    monkeypatch.setattr(commands, "_store", Mock(return_value=store))
+    checkbox = Mock()
+    checkbox.return_value.execute.return_value = [sessions[1]["session_id"]]
+    monkeypatch.setattr("InquirerPy.inquirer.checkbox", checkbox)
+    disconnect = Mock(return_value="disconnected")
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+    monkeypatch.setattr(commands, "_interactive_session_selection_available", lambda: True)
+
+    result = invoke_main(["cloudex", "disconnect"])
+
+    assert result.exit_code == 0, result.output
+    assert disconnect.call_args.args[0] == sessions[1]
+    assert "Disconnected two" in result.output
+    choices = checkbox.call_args.kwargs["choices"]
+    assert [choice["value"] for choice in choices] == [session["session_id"] for session in sessions]
+
+
+def test_disconnect_interactive_allows_no_checkbox_selection(monkeypatch):
+    store = Mock()
+    store.list.return_value = [_session("a" * 32, "one"), _session("b" * 32, "two")]
+    monkeypatch.setattr(commands, "_store", Mock(return_value=store))
+    checkbox = Mock()
+    checkbox.return_value.execute.return_value = []
+    monkeypatch.setattr("InquirerPy.inquirer.checkbox", checkbox)
+    monkeypatch.setattr(commands, "_interactive_session_selection_available", lambda: True)
+
+    result = invoke_main(["cloudex", "disconnect"])
+
+    assert result.exit_code == 0, result.output
+    assert "No CloudEx connections selected" in result.output
+
+
 def test_disconnect_reports_when_stale_record_preserves_newer_session(monkeypatch):
     store = Mock()
     store.list.return_value = [_session("a" * 32, "one")]
@@ -212,6 +248,20 @@ def test_disconnect_reports_when_stale_record_preserves_newer_session(monkeypatc
 
     assert result.exit_code == 0, result.output
     assert "newer connection retained" in result.output
+
+
+def test_disconnect_expired_record_does_not_request_admin_authorization(monkeypatch, _authorize_cloudex):
+    store = Mock()
+    session = _session("a" * 32, "one")
+    session["expires_at"] = 1
+    store.list.return_value = [session]
+    monkeypatch.setattr(commands, "_store", Mock(return_value=store))
+    monkeypatch.setattr(commands, "disconnect_session", Mock(return_value="expired"))
+
+    result = invoke_main(["cloudex", "disconnect"])
+
+    assert result.exit_code == 0, result.output
+    _authorize_cloudex.assert_not_called()
 
 
 def test_list_shows_relative_and_absolute_allocation_expiry(monkeypatch):

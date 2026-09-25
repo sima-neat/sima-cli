@@ -289,15 +289,37 @@ def _resolve_session(sessions, selector):
     return matches[0]
 
 
+def _interactive_session_selection_available():
+    return sys.stdin.isatty()
+
+
 def _choose_sessions(sessions):
-    console.print(_session_table([(session, inspect_session(session, _store()), {}) for session in sessions]))
-    choices = [str(index) for index in range(1, len(sessions) + 1)] + ["all"]
-    choice = click.prompt(
-        "Disconnect which connection",
-        type=click.Choice(choices, case_sensitive=False),
-        show_choices=True,
-    )
-    return sessions if choice.lower() == "all" else [sessions[int(choice) - 1]]
+    """Select one or more local connection records without probing them."""
+    from InquirerPy import inquirer
+
+    choices = []
+    for session in sessions:
+        device = session.get("device", "DevKit " + _short(session.get("allocation_id")))
+        session_label = _short(session.get("session_id"))
+        target = session.get("target", "unknown endpoint")
+        expiry = _expiry_text(session.get("expires_at")).replace("\n", " · ")
+        choices.append({
+            "name": "{} · {} · {} · {}".format(device, session_label, target, expiry),
+            "value": session["session_id"],
+        })
+    selected_ids = inquirer.checkbox(
+        message="Select CloudEx connections to disconnect:",
+        choices=choices,
+        instruction="Space to select, Enter to disconnect selected connections",
+        enabled_symbol="[x]",
+        disabled_symbol="[ ]",
+        pointer="❯",
+        transformer=lambda selected: (
+            "{} selected".format(len(selected)) if selected else "None selected"
+        ),
+    ).execute() or []
+    selected = set(selected_ids)
+    return [session for session in sessions if session["session_id"] in selected]
 
 
 @cloudex_group.command("disconnect")
@@ -318,15 +340,13 @@ def disconnect_command(session_id, disconnect_all):
         selected = [_resolve_session(sessions, session_id)]
     elif len(sessions) == 1:
         selected = sessions
-    elif not sys.stdin.isatty():
+    elif not _interactive_session_selection_available():
         raise click.ClickException("Multiple sessions are recorded; use --session ID or --all.")
     else:
         selected = _choose_sessions(sessions)
-    console.print("[cyan]→[/cyan] Authorizing encrypted tunnel cleanup")
-    try:
-        _authorize_supported_host()
-    except CloudExError as exc:
-        raise click.ClickException(str(exc)) from exc
+    if not selected:
+        console.print("[dim]No CloudEx connections selected.[/dim]")
+        return
     failures = []
     for session in selected:
         label = session.get("device", "DevKit " + _short(session.get("allocation_id")))
@@ -335,6 +355,8 @@ def disconnect_command(session_id, disconnect_all):
                 result = disconnect_session(session, store, progress)
                 if result == "stale":
                     progress.success("Removed stale record for {}; newer connection retained".format(label))
+                elif result == "expired":
+                    progress.success("Removed expired local record for {}".format(label))
                 else:
                     progress.success("Disconnected {}".format(label))
         except CloudExError as exc:

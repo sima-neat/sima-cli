@@ -91,6 +91,7 @@ loop and CI presubmit jobs. End-to-end tests are explicit:
 ```bash
 ./scripts/run-tests.sh unit
 ./scripts/run-tests.sh e2e
+./scripts/run-tests.sh e2e -m local_only
 ./scripts/run-tests.sh compat
 ./scripts/run-tests.sh all
 ```
@@ -99,7 +100,13 @@ Extra arguments are passed through to pytest:
 
 ```bash
 ./scripts/run-tests.sh unit -q
+./scripts/run-tests.sh e2e -m local_only -q
 ```
+
+Use the `local_only` marker for e2e smoke tests that do not require Docker,
+credentials, network services, or SiMa hardware. Tests that require external
+state should use a more specific marker such as `docker`, `device`, or
+`credentials`.
 
 The compatibility suite builds and installs a `sima-cli` wheel on any installed
 Python interpreters from 3.8 through 3.14, then validates the installed package

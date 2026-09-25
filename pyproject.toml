@@ -49,4 +49,8 @@ python_files = ["test_*.py"]
 markers = [
     "unit: fast tests that mock external dependencies",
     "e2e: tests that require real external services, containers, devices, or credentials",
+    "local_only: end-to-end tests that run without Docker, devices, credentials, or network access",
+    "docker: end-to-end tests that require Docker",
+    "device: end-to-end tests that require SiMa device hardware or network access",
+    "credentials: end-to-end tests that require authenticated external services",
 ]

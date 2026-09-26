@@ -359,8 +359,14 @@ def test_configured_session_records_and_restores_exact_backup(capsys):
         device.restore_environment(configuration)
 
     restore_script = shlex.split(command.call_args_list[-1].args[1])[3]
+    subprocess.run(['sh', '-n'], input=restore_script, text=True, check=True)
     assert '/tmp/sima-cli-netboot-uboot-restore/uboot.env' in restore_script
     assert '/tmp/sima-cli-netboot-uboot-restore/uboot-redund.env' in restore_script
+    assert 'boot_target:$boot_source' in restore_script
+    assert '/boot:/dev/mmcblk0p*' in restore_script
+    assert 'for part in /dev/mmcblk0p*' in restore_script
+    assert 'Cannot locate the eMMC boot partition' in restore_script
+    assert '"$boot_root/uboot.env"' in restore_script
     assert 'cmp ' in restore_script
     assert configuration.changed is False
     assert configuration.local_backup_dir is None

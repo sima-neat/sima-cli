@@ -1816,6 +1816,13 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["codeUI"]["host"], 9999)
         self.assertEqual(port_map["codeUIHttps"]["host"], 10000)
         self.assertEqual(port_map["videoUI"]["host"], 8081)
+        self.assertEqual(port_map["webrtcWhip"]["host"], 8889)
+        self.assertEqual(port_map["webrtcWhipIce"]["host"], 8189)
+        self.assertEqual(
+            port_map["webrtcWhipIce"]["container"],
+            port_map["webrtcWhipIce"]["host"],
+            "the ICE port is written into SDP, so it cannot be remapped",
+        )
         self.assertEqual(port_map["webSSH"]["host"], 8022)
         self.assertEqual(port_map["rtsp"]["tcp"]["host"], 8554)
         self.assertNotIn("udp", port_map["rtsp"])
@@ -1827,6 +1834,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["webRTC"]["hostStart"], 40000)
         self.assertEqual(port_map["webRTC"]["hostEnd"], 40007)
         self.assertIn("8022:8022/tcp", port_args)
+        self.assertIn("8889:8889/tcp", port_args)
+        self.assertIn("8189:8189/udp", port_args)
         self.assertIn("9999:9999/tcp", port_args)
         self.assertIn("10000:10000/tcp", port_args)
         self.assertIn("9000-9003:9000-9003/udp", port_args)
@@ -1855,6 +1864,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("mainUI", port_map)
         self.assertNotIn("codeUI", port_map)
         self.assertNotIn("videoUI", port_map)
+        self.assertNotIn("webrtcWhip", port_map)
+        self.assertNotIn("webrtcWhipIce", port_map)
         self.assertNotIn("videoUDP", port_map)
         self.assertNotIn("metadataUDP", port_map)
         self.assertNotIn("webRTC", port_map)
@@ -1913,6 +1924,30 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(port_map["edgematicStudio"]["host"], 18500)
         self.assertEqual(port_map["edgematicStudio"]["container"], 8088)
         self.assertIn("18500:8088/tcp", port_args)
+
+    def test_neat_port_allocator_moves_webrtc_whip_ice_and_keeps_it_identity_mapped_when_busy(self):
+        # The port-conflict case: when the default ICE port 8189 is already taken
+        # on the host, it must move to a free port — but host and container must
+        # stay equal, because MediaMTX writes this port into its SDP answer and
+        # Docker does not rewrite it, so a drifted mapping would advertise a port
+        # nothing is listening on. Unlike edgematicStudio above, which may drift.
+        def is_available(port, protocol):
+            return not (protocol == "udp" and port == 8189)
+
+        with patch("sima_cli.sdk.neat._is_port_available", side_effect=is_available), \
+             patch("sima_cli.sdk.neat.random.randint", return_value=18189):
+            port_map, port_args = allocate_neat_ports()
+
+        self.assertNotEqual(port_map["webrtcWhipIce"]["host"], 8189, "moved off the busy default")
+        self.assertEqual(port_map["webrtcWhipIce"]["host"], 18189)
+        self.assertEqual(
+            port_map["webrtcWhipIce"]["container"],
+            port_map["webrtcWhipIce"]["host"],
+            "identity must survive the remap or the advertised SDP port breaks",
+        )
+        self.assertIn("18189:18189/udp", port_args)
+        # The WHIP signalling port (8889) was free, so it is unaffected.
+        self.assertEqual(port_map["webrtcWhip"]["host"], 8889)
 
     def test_reserved_ports_include_edgematic_studio_after_collision(self):
         with patch("sima_cli.sdk.neat._is_port_available", return_value=True):

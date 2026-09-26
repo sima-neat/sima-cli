@@ -206,6 +206,8 @@ def allocate_neat_ports(
         code_ui = _allocate_single_port(9999, "tcp", reserved)
         code_ui_https = _allocate_single_port(10000, "tcp", reserved)
         video_ui = _allocate_single_port(8081, "tcp", reserved)
+        webrtc_whip = _allocate_single_port(8889, "tcp", reserved)
+        webrtc_whip_ice = _allocate_single_port(8189, "udp", reserved)
         video_udp_start, video_udp_end = _allocate_port_range(9000, video_container_end, "udp", reserved)
         metadata_udp_start, metadata_udp_end = _allocate_port_range(9100, metadata_container_end, "udp", reserved)
         webrtc_udp_start, webrtc_udp_end = _allocate_first_available_port_range(
@@ -223,6 +225,13 @@ def allocate_neat_ports(
                 "codeUI": {"protocol": "tcp", "host": code_ui, "container": 9999},
                 "codeUIHttps": {"protocol": "tcp", "host": code_ui_https, "container": 10000, "scheme": "https"},
                 "videoUI": {"protocol": "tcp", "host": video_ui, "container": 8081},
+                "webrtcWhip": {"protocol": "tcp", "host": webrtc_whip, "container": 8889},
+                # Identity-mapped on purpose, like webRTC below: MediaMTX writes
+                # this port into the ICE candidate in its SDP answer and Docker
+                # forwards a remapped port without rewriting it, so the browser
+                # would send media to a host port nothing had opened. Insight
+                # reads this value back and binds the same number.
+                "webrtcWhipIce": {"protocol": "udp", "host": webrtc_whip_ice, "container": webrtc_whip_ice},
                 "webSSH": {"protocol": "tcp", "host": web_ssh, "container": 8022},
                 "rtsp": {
                     "tcp": {"host": rtsp_tcp, "container": 8554},
@@ -257,6 +266,8 @@ def allocate_neat_ports(
                 f"{code_ui}:9999/tcp",
                 f"{code_ui_https}:10000/tcp",
                 f"{video_ui}:8081/tcp",
+                f"{webrtc_whip}:8889/tcp",
+                f"{webrtc_whip_ice}:{webrtc_whip_ice}/udp",
                 f"{rtsp_tcp}:8554/tcp",
                 f"{video_udp_start}-{video_udp_end}:9000-{video_container_end}/udp",
                 f"{metadata_udp_start}-{metadata_udp_end}:9100-{metadata_container_end}/udp",

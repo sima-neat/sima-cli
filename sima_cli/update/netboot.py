@@ -623,8 +623,14 @@ def flash_emmc(
     selected_ip = _select_flash_target(client_manager, override_ip=override_ip)
     if not selected_ip:
         return
-    if configuration is not None and configuration.changed:
-        configuration.devkit = selected_ip
+    if (configuration is not None and configuration.changed
+            and selected_ip != configuration.devkit):
+        click.echo(
+            f"❌ Refusing to flash {selected_ip}: this netboot session saved "
+            f"the U-Boot environment for {configuration.devkit}. Start a separate "
+            "netboot session for the other device."
+        )
+        return
 
     click.echo(f"📡 Selected client: {selected_ip}")
     remote_dir = "/tmp"
@@ -1250,7 +1256,7 @@ def setup_netboot(
         if configuration is not None and configuration.changed:
             try:
                 restore_environment(configuration)
-            except Exception as exc:
+            except (Exception, KeyboardInterrupt) as exc:
                 recovery_backup = (
                     configuration.local_backup_dir or configuration.backup_dir
                 )

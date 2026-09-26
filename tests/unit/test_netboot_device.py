@@ -340,19 +340,55 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
     manager.shutdown.assert_called_once()
 
 
-def test_explicit_flash_ip_becomes_restoration_target():
+def test_explicit_flash_ip_cannot_retarget_saved_environment(capsys):
     configuration = device.NetbootConfiguration(
         '192.0.2.1', backup_dir='/boot/backup', changed=True
     )
     with patch.object(netboot, '_validate_override_ip', return_value=True), \
-            patch.object(netboot, 'copy_file_to_remote_board', return_value=False):
+            patch.object(netboot, 'copy_file_to_remote_board') as copy:
         netboot.flash_emmc(
             MagicMock(),
             ['/images/root.img.gz'],
             override_ip='192.0.2.99',
             configuration=configuration,
         )
-    assert configuration.devkit == '192.0.2.99'
+    assert configuration.devkit == '192.0.2.1'
+    copy.assert_not_called()
+    assert 'saved the U-Boot environment for 192.0.2.1' in capsys.readouterr().out
+
+
+def test_restore_interrupt_still_shuts_down_session(tmp_path, capsys):
+    boot = tmp_path / 'netboot.scr.uimg'
+    boot.write_bytes(b'boot')
+    server = MagicMock()
+    server.is_running.wait.return_value = True
+    manager = MagicMock()
+
+    def configure(*args, configuration=None, **kwargs):
+        configuration.backup_dir = '/boot/sima-cli-netboot-backup.test'
+        configuration.local_backup_dir = '/tmp/host-backup'
+        configuration.changed = True
+        return True
+
+    with patch.object(netboot, 'get_environment_type', return_value=('host', 'mac')), \
+            patch.object(netboot, 'download_image', return_value=[str(boot)]), \
+            patch.object(netboot, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
+            patch.object(netboot, 'InteractiveTftpServer', return_value=server), \
+            patch.object(netboot, 'ClientManager', return_value=manager), \
+            patch.object(netboot.threading, 'Thread') as thread, \
+            patch.object(netboot, 'run_cli'), \
+            patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
+            patch.object(device, 'server_address', return_value='192.0.2.10'), \
+            patch.object(device, 'configure_and_reboot', side_effect=configure), \
+            patch.object(device, 'restore_environment', side_effect=KeyboardInterrupt):
+        thread.return_value.is_alive.return_value = False
+        with pytest.raises(RuntimeError, match='U-Boot restoration failed'):
+            netboot.setup_netboot('3.0', 'modalix')
+
+    server.stop.assert_called_once_with(now=True)
+    manager.shutdown.assert_called_once()
+    output = capsys.readouterr()
+    assert '/tmp/host-backup' in output.err
 
 
 def test_configured_session_records_and_restores_exact_backup(capsys):

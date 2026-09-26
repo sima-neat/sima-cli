@@ -26,6 +26,7 @@ BACKUP_EXPORT_MARKER = 'SIMA_CLI_NETBOOT_EXPORT='
 @dataclass
 class NetbootConfiguration:
     devkit: str
+    hardware_address: str = None
     backup_dir: str = None
     export_dir: str = None
     local_backup_dir: str = None
@@ -94,7 +95,12 @@ def network_settings(ssh, devkit, server_ip):
                        if addr.get('family') == 'inet' and addr.get('local') == devkit)
         network = ipaddress.IPv4Interface(f"{devkit}/{address['prefixlen']}")
         gateway = str(ipaddress.IPv4Address(route.get('gateway', '0.0.0.0')))
-        return {'interface': interface['ifname'], 'netmask': str(network.netmask), 'gateway': gateway}
+        return {
+            'interface': interface['ifname'],
+            'hardware_address': interface.get('address'),
+            'netmask': str(network.netmask),
+            'gateway': gateway,
+        }
     except (ValueError, KeyError, IndexError, StopIteration, TypeError) as exc:
         raise click.ClickException('Cannot determine the DevKit interface, subnet, and return route. '
                                    'U-Boot was not changed.') from exc
@@ -120,6 +126,8 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
                  "|| { echo 'Missing /boot/u-boot.bin; cannot identify the bootloader environment format for this platform.' >&2; exit 1; }; "
                  "test -f /etc/fw_env.config || { echo 'Missing /etc/fw_env.config for legacy 2.1 environment validation.' >&2; exit 1; }; fi")
         network = network_settings(ssh, devkit, server_ip)
+        if configuration is not None:
+            configuration.hardware_address = network.get('hardware_address')
         message = Text()
         message.append(f"DevKit: {devkit} ({network['interface']})\nTFTP server: {server_ip}\n"
                        f"Netmask: {network['netmask']}  Gateway: {network['gateway']}\n\n", style='bold cyan')

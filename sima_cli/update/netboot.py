@@ -606,6 +606,27 @@ def _print_troot_programming_warning():
     )
 
 
+def _same_netboot_device(configuration, candidate_ip):
+    """Verify an address change against the NIC used before netboot."""
+    expected = (configuration.hardware_address or '').strip().lower()
+    if not expected:
+        return False
+    ssh = None
+    try:
+        from sima_cli.update.remote import run_remote_command_capture
+        ssh = init_ssh_session(candidate_ip, password=DEFAULT_PASSWORD)
+        code, output, _ = run_remote_command_capture(
+            ssh, 'cat /sys/class/net/*/address', sudo_pty=False
+        )
+        addresses = {line.strip().lower() for line in output.splitlines()}
+        return code == 0 and expected in addresses
+    except Exception:
+        return False
+    finally:
+        if ssh is not None:
+            ssh.close()
+
+
 def flash_emmc(
     client_manager,
     emmc_image_paths,
@@ -625,12 +646,13 @@ def flash_emmc(
         return
     if (configuration is not None and configuration.changed
             and selected_ip != configuration.devkit):
-        click.echo(
-            f"❌ Refusing to flash {selected_ip}: this netboot session saved "
-            f"the U-Boot environment for {configuration.devkit}. Start a separate "
-            "netboot session for the other device."
-        )
-        return
+        if not _same_netboot_device(configuration, selected_ip):
+            click.echo(
+                f"❌ Refusing to flash {selected_ip}: it could not be verified as "
+                f"the device whose U-Boot environment was saved at {configuration.devkit}."
+            )
+            return
+        configuration.devkit = selected_ip
 
     click.echo(f"📡 Selected client: {selected_ip}")
     remote_dir = "/tmp"

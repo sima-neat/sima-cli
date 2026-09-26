@@ -11,7 +11,12 @@ from sima_cli.sdk import commands as sdk
 
 READ_NETWORK = device.network_settings
 
-NETWORK = {"interface": "end0", "netmask": "255.255.255.0", "gateway": "0.0.0.0"}
+NETWORK = {
+    "interface": "end0",
+    "hardware_address": "02:00:00:00:00:01",
+    "netmask": "255.255.255.0",
+    "gateway": "0.0.0.0",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -176,14 +181,19 @@ def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_f
 @pytest.mark.parametrize('gateway', [None, '192.0.2.254'])
 def test_network_settings_reuses_selected_interface_and_route(gateway):
     import json
-    addresses = [{'ifname': 'end1', 'addr_info': [{'family': 'inet', 'local': '192.0.2.1', 'prefixlen': 24}]},
+    addresses = [{'ifname': 'end1', 'address': '02:00:00:00:00:02', 'addr_info': [{'family': 'inet', 'local': '192.0.2.1', 'prefixlen': 24}]},
                  {'ifname': 'end0', 'addr_info': [{'family': 'inet', 'local': '10.0.0.1', 'prefixlen': 8}]}]
     route = {'dev': 'end1'}
     if gateway:
         route['gateway'] = gateway
     with patch.object(device, '_checked', side_effect=[json.dumps(addresses), json.dumps([route])]):
         result = READ_NETWORK(MagicMock(), '192.0.2.1', '192.0.2.10')
-    assert result == dict(NETWORK, interface='end1', gateway=gateway or '0.0.0.0')
+    assert result == dict(
+        NETWORK,
+        interface='end1',
+        hardware_address='02:00:00:00:00:02',
+        gateway=gateway or '0.0.0.0',
+    )
 
 
 def test_host_address_uses_route_to_selected_devkit():
@@ -342,9 +352,11 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
 
 def test_explicit_flash_ip_cannot_retarget_saved_environment(capsys):
     configuration = device.NetbootConfiguration(
-        '192.0.2.1', backup_dir='/boot/backup', changed=True
+        '192.0.2.1', hardware_address='02:00:00:00:00:01',
+        backup_dir='/boot/backup', changed=True
     )
     with patch.object(netboot, '_validate_override_ip', return_value=True), \
+            patch.object(netboot, '_same_netboot_device', return_value=False), \
             patch.object(netboot, 'copy_file_to_remote_board') as copy:
         netboot.flash_emmc(
             MagicMock(),
@@ -354,7 +366,42 @@ def test_explicit_flash_ip_cannot_retarget_saved_environment(capsys):
         )
     assert configuration.devkit == '192.0.2.1'
     copy.assert_not_called()
-    assert 'saved the U-Boot environment for 192.0.2.1' in capsys.readouterr().out
+    assert 'could not be verified' in capsys.readouterr().out
+
+
+def test_verified_changed_ip_becomes_restoration_target():
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1', hardware_address='02:00:00:00:00:01',
+        backup_dir='/boot/backup', changed=True
+    )
+    with patch.object(netboot, '_validate_override_ip', return_value=True), \
+            patch.object(netboot, '_same_netboot_device', return_value=True), \
+            patch.object(netboot, 'copy_file_to_remote_board', return_value=False):
+        netboot.flash_emmc(
+            MagicMock(),
+            ['/images/root.img.gz'],
+            override_ip='192.0.2.99',
+            configuration=configuration,
+        )
+    assert configuration.devkit == '192.0.2.99'
+
+
+@pytest.mark.parametrize('reported,expected', [
+    ('02:00:00:00:00:02\n02:00:00:00:00:01\n', True),
+    ('02:00:00:00:00:02\n', False),
+])
+def test_changed_ip_is_verified_by_hardware_address(reported, expected):
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1', hardware_address='02:00:00:00:00:01', changed=True
+    )
+    with patch.object(netboot, 'init_ssh_session') as connect, \
+            patch('sima_cli.update.remote.run_remote_command_capture',
+                  return_value=(0, reported, '')) as command:
+        assert netboot._same_netboot_device(configuration, '192.0.2.99') is expected
+    command.assert_called_once_with(
+        connect.return_value, 'cat /sys/class/net/*/address', sudo_pty=False
+    )
+    connect.return_value.close.assert_called_once()
 
 
 def test_restore_interrupt_still_shuts_down_session(tmp_path, capsys):

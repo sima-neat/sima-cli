@@ -1238,27 +1238,6 @@ def setup_netboot(
 
     finally:
         shutdown_error = None
-        if server is not None:
-            server.stop(now=True)
-        if server_thread is not None:
-            server_thread.join(timeout=5)
-            if server_thread.is_alive():
-                cache_can_delete = False
-                click.echo(
-                    "⚠️  TFTP server did not stop within 5 seconds; preserving its cache.",
-                    err=True,
-                )
-        if client_manager is not None:
-            client_manager.shutdown()
-        _release_cache_lease(cache_lease)
-        if delete_cache and cache_dir and cache_can_delete:
-            try:
-                _delete_netboot_cache(cache_dir)
-            except OSError as cleanup_error:
-                click.echo(
-                    f"⚠️  Failed to delete netboot cache {cache_dir}: {cleanup_error}",
-                    err=True,
-                )
         if configuration is not None and configuration.changed:
             try:
                 restore_environment(configuration)
@@ -1270,10 +1249,35 @@ def setup_netboot(
                     fg='red',
                     err=True,
                 )
-                if shutdown_error is None:
-                    shutdown_error = RuntimeError(
-                        f'Netboot ended, but U-Boot restoration failed on '
-                        f'{configuration.devkit}.'
-                    )
+                shutdown_error = RuntimeError(
+                    f'Netboot ended, but U-Boot restoration failed on '
+                    f'{configuration.devkit}.'
+                )
+        if server is not None:
+            server.stop(now=True)
+        if client_manager is not None:
+            client_manager.shutdown()
+        if server_thread is not None:
+            server_thread.join(timeout=5)
+            if tftp_ready and server_thread.is_alive():
+                cache_can_delete = False
+                click.echo(
+                    "⚠️  TFTP server did not stop within 5 seconds; preserving its cache.",
+                    err=True,
+                )
+                shutdown_error = RuntimeError(
+                    'TFTP server did not stop; UDP port 69 may still be active.'
+                )
+        _release_cache_lease(cache_lease)
+        if delete_cache and cache_dir and cache_can_delete:
+            try:
+                _delete_netboot_cache(cache_dir)
+            except OSError as cleanup_error:
+                click.echo(
+                    f"⚠️  Failed to delete netboot cache {cache_dir}: {cleanup_error}",
+                    err=True,
+                )
+        if configuration is not None:
+            configuration.cleanup()
         if shutdown_error is not None:
             raise shutdown_error

@@ -2,8 +2,11 @@
 import ipaddress
 import inspect
 import json
+import os
 import shlex
+import shutil
 import socket
+import tempfile
 from dataclasses import dataclass
 
 import click
@@ -12,7 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from sima_cli.update.remote import init_ssh_session, run_remote_command_capture
+from sima_cli.update.remote import init_ssh_session, run_remote_command_capture, wait_for_ssh
 
 LEGACY_LAYOUT_ERROR = 'Unsupported legacy 2.1 fw_env.config'
 MANUAL_FALLBACK_READY = 'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY'
@@ -23,7 +26,31 @@ BACKUP_MARKER = 'SIMA_CLI_NETBOOT_BACKUP='
 class NetbootConfiguration:
     devkit: str
     backup_dir: str = None
+    local_backup_dir: str = None
     changed: bool = False
+
+    def cleanup(self):
+        if self.local_backup_dir:
+            shutil.rmtree(self.local_backup_dir, ignore_errors=True)
+            self.local_backup_dir = None
+
+
+def _capture_environment_backup(ssh, configuration):
+    """Copy the backup off the eMMC before a whole-device flash can erase it."""
+    local_dir = tempfile.mkdtemp(prefix='sima-cli-netboot-uboot-')
+    sftp = ssh.open_sftp()
+    try:
+        for name in ('uboot.env', 'uboot-redund.env'):
+            sftp.get(
+                configuration.backup_dir + '/' + name,
+                os.path.join(local_dir, name),
+            )
+    except Exception:
+        shutil.rmtree(local_dir, ignore_errors=True)
+        raise
+    finally:
+        sftp.close()
+    configuration.local_backup_dir = local_dir
 
 
 def resolve_device(devkit=None):
@@ -127,6 +154,7 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
                 )
             configuration.backup_dir = match[len(BACKUP_MARKER):]
             configuration.changed = True
+            _capture_environment_backup(ssh, configuration)
         # A delayed systemd job acknowledges scheduling before SSH disconnects.
         _checked(ssh, 'sudo systemd-run --on-active=3s /sbin/reboot')
         click.secho(
@@ -145,7 +173,29 @@ def restore_environment(configuration):
     """Restore the exact U-Boot files saved before this netboot session."""
     if not configuration or not configuration.changed or not configuration.backup_dir:
         return True
-    backup = shlex.quote(configuration.backup_dir)
+    if not wait_for_ssh(configuration.devkit, timeout=180):
+        raise click.ClickException(
+            f'DevKit {configuration.devkit} did not return to SSH for U-Boot restoration.'
+        )
+    ssh = init_ssh_session(configuration.devkit)
+    remote_stage = None
+    source_dir = configuration.backup_dir
+    local_files = [
+        os.path.join(configuration.local_backup_dir or '', name)
+        for name in ('uboot.env', 'uboot-redund.env')
+    ]
+    if all(os.path.isfile(path) for path in local_files):
+        remote_stage = '/tmp/sima-cli-netboot-uboot-restore'
+        _checked(ssh, 'sudo rm -rf ' + shlex.quote(remote_stage)
+                 + ' && mkdir -m 700 ' + shlex.quote(remote_stage))
+        sftp = ssh.open_sftp()
+        try:
+            for local_path in local_files:
+                sftp.put(local_path, remote_stage + '/' + os.path.basename(local_path))
+        finally:
+            sftp.close()
+        source_dir = remote_stage
+    backup = shlex.quote(source_dir)
     script = '\n'.join([
         'set -eu',
         'restore_ro=0',
@@ -153,6 +203,7 @@ def restore_environment(configuration):
         '  status=$?',
         '  trap - EXIT',
         '  if [ "$restore_ro" = 1 ]; then sync; mount -o remount,ro /boot || status=1; fi',
+        *(([f'  rm -rf {shlex.quote(remote_stage)} || status=1'] if remote_stage else [])),
         '  exit "$status"',
         '}',
         'trap cleanup EXIT',
@@ -165,12 +216,12 @@ def restore_environment(configuration):
         f'cmp {backup}/uboot-redund.env /boot/uboot-redund.env',
         'sync',
     ])
-    ssh = init_ssh_session(configuration.devkit)
     try:
         _checked(ssh, 'sudo sh -c ' + shlex.quote(script))
     finally:
         ssh.close()
     configuration.changed = False
+    configuration.cleanup()
     click.secho(
         f'Restored the saved U-Boot environment on {configuration.devkit}.',
         fg='green',

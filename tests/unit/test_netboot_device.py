@@ -308,6 +308,9 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
             patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
             patch.object(device, 'server_address', return_value='192.0.2.10'), \
             patch.object(device, 'init_ssh_session', side_effect=TimeoutError('timed out') if confirmed is None else None) as connect, \
+            patch.object(device, 'wait_for_ssh', side_effect=lambda *a, **k: (
+                server.stop.assert_not_called() or True
+            )), \
             patch.object(device, '_checked', return_value=(
                 device.BACKUP_MARKER + '/boot/sima-cli-netboot-backup.test'
             )) as command, \
@@ -333,14 +336,21 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
 def test_configured_session_records_and_restores_exact_backup(capsys):
     configuration = device.NetbootConfiguration('192.0.2.1')
     backup = '/boot/sima-cli-netboot-backup.ABC123'
+    def download(_remote, local):
+        with open(local, 'wb') as output:
+            output.write(b'preserved environment')
+
     with patch.object(device, 'init_ssh_session') as connect, \
+            patch.object(device, 'wait_for_ssh', return_value=True), \
             patch.object(device, '_checked', side_effect=[
                 '',
                 device.BACKUP_MARKER + backup,
                 '',
                 '',
+                '',
             ]) as command, \
             patch.object(click, 'confirm', return_value=True):
+        connect.return_value.open_sftp.return_value.get.side_effect = download
         assert device.configure_and_reboot(
             '192.0.2.1', '192.0.2.10', configuration=configuration
         ) is True
@@ -349,11 +359,13 @@ def test_configured_session_records_and_restores_exact_backup(capsys):
         device.restore_environment(configuration)
 
     restore_script = shlex.split(command.call_args_list[-1].args[1])[3]
-    assert backup + '/uboot.env' in restore_script
-    assert backup + '/uboot-redund.env' in restore_script
+    assert '/tmp/sima-cli-netboot-uboot-restore/uboot.env' in restore_script
+    assert '/tmp/sima-cli-netboot-uboot-restore/uboot-redund.env' in restore_script
     assert 'cmp ' in restore_script
     assert configuration.changed is False
+    assert configuration.local_backup_dir is None
     assert connect.return_value.close.call_count == 2
+    assert connect.return_value.open_sftp.return_value.put.call_count == 2
     assert 'Restored the saved U-Boot environment' in capsys.readouterr().out
 
 

@@ -20,12 +20,14 @@ from sima_cli.update.remote import init_ssh_session, run_remote_command_capture,
 LEGACY_LAYOUT_ERROR = 'Unsupported legacy 2.1 fw_env.config'
 MANUAL_FALLBACK_READY = 'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY'
 BACKUP_MARKER = 'SIMA_CLI_NETBOOT_BACKUP='
+BACKUP_EXPORT_MARKER = 'SIMA_CLI_NETBOOT_EXPORT='
 
 
 @dataclass
 class NetbootConfiguration:
     devkit: str
     backup_dir: str = None
+    export_dir: str = None
     local_backup_dir: str = None
     changed: bool = False
 
@@ -42,7 +44,7 @@ def _capture_environment_backup(ssh, configuration):
     try:
         for name in ('uboot.env', 'uboot-redund.env'):
             sftp.get(
-                configuration.backup_dir + '/' + name,
+                configuration.export_dir + '/' + name,
                 os.path.join(local_dir, name),
             )
     except Exception:
@@ -51,6 +53,8 @@ def _capture_environment_backup(ssh, configuration):
     finally:
         sftp.close()
     configuration.local_backup_dir = local_dir
+    _checked(ssh, 'sudo rm -rf ' + shlex.quote(configuration.export_dir))
+    configuration.export_dir = None
 
 
 def resolve_device(devkit=None):
@@ -154,6 +158,14 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
                 )
             configuration.backup_dir = match[len(BACKUP_MARKER):]
             configuration.changed = True
+            export = next((line for line in output.splitlines()
+                           if line.startswith(BACKUP_EXPORT_MARKER)), None)
+            if not export:
+                raise click.ClickException(
+                    'Remote netboot preparation did not report its readable U-Boot export; '
+                    'the DevKit will not be rebooted.'
+                )
+            configuration.export_dir = export[len(BACKUP_EXPORT_MARKER):]
             _capture_environment_backup(ssh, configuration)
         # A delayed systemd job acknowledges scheduling before SSH disconnects.
         _checked(ssh, 'sudo systemd-run --on-active=3s /sbin/reboot')
@@ -366,6 +378,13 @@ def _uboot_script(devkit, server_ip, network):
         'python3 -c ' + shlex.quote(helper) + ' "$config"',
         'fw_printenv -c "$config" > "$backup/environment.txt"',
         f'echo "{BACKUP_MARKER}$backup"',
+        'export_dir=$(mktemp -d /tmp/sima-cli-netboot-export.XXXXXX)',
+        'cp -p "$backup/uboot.env" "$backup/uboot-redund.env" "$export_dir/"',
+        'owner=${SUDO_USER:-sima}',
+        'chown -R "$owner" "$export_dir"',
+        'chmod 700 "$export_dir"',
+        'chmod 600 "$export_dir/uboot.env" "$export_dir/uboot-redund.env"',
+        f'echo "{BACKUP_EXPORT_MARKER}$export_dir"',
         'fw_setenv -c "$config" bootfile netboot.scr.uimg',
         'fw_setenv -c "$config" netcfg static',
         'fw_setenv -c "$config" forcenetcfg static',

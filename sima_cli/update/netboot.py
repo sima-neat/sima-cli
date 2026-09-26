@@ -1251,10 +1251,13 @@ def setup_netboot(
             try:
                 restore_environment(configuration)
             except Exception as exc:
+                recovery_backup = (
+                    configuration.local_backup_dir or configuration.backup_dir
+                )
                 click.secho(
                     f'Could not restore the saved U-Boot environment on '
                     f'{configuration.devkit}: {exc}. Use serial recovery before rebooting again. '
-                    f'Backup: {configuration.backup_dir}',
+                    f'Backup: {recovery_backup}',
                     fg='red',
                     err=True,
                 )
@@ -1286,7 +1289,7 @@ def setup_netboot(
                     f"⚠️  Failed to delete netboot cache {cache_dir}: {cleanup_error}",
                     err=True,
                 )
-        if configuration is not None:
+        if configuration is not None and not configuration.changed:
             configuration.cleanup()
         if shutdown_error is not None:
             raise shutdown_error

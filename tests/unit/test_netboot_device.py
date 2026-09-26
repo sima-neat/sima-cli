@@ -245,7 +245,8 @@ elif name == 'fw_printenv':
         path.chmod(0o755)
     script = device._uboot_script('192.0.2.1', '192.0.2.10', NETWORK).replace('/boot', str(boot))
     env = dict(os.environ, PATH=str(binary) + ':' + os.environ['PATH'],
-               TEST_BOOT=str(boot), TEST_MODE=str(state), TEST_LOG=str(log), TEST_FAILURE=failure or '')
+               SUDO_USER=os.environ['USER'], TEST_BOOT=str(boot), TEST_MODE=str(state),
+               TEST_LOG=str(log), TEST_FAILURE=failure or '')
     result = subprocess.run(['sh', '-c', script], env=env, capture_output=True, text=True)
     commands = log.read_text()
     assert (result.returncode == 0) == (failure is None), result.stdout + result.stderr
@@ -314,6 +315,7 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
             )), \
             patch.object(device, '_checked', return_value=(
                 device.BACKUP_MARKER + '/boot/sima-cli-netboot-backup.test'
+                + '\n' + device.BACKUP_EXPORT_MARKER + '/tmp/export'
             )) as command, \
             patch.object(click, 'confirm', return_value=confirmed):
         thread.return_value.is_alive.return_value = False
@@ -364,7 +366,9 @@ def test_configured_session_records_and_restores_exact_backup(capsys):
             patch.object(device, 'wait_for_ssh', return_value=True), \
             patch.object(device, '_checked', side_effect=[
                 '',
-                device.BACKUP_MARKER + backup,
+                device.BACKUP_MARKER + backup + '\n'
+                + device.BACKUP_EXPORT_MARKER + '/tmp/export',
+                '',
                 '',
                 '',
                 '',

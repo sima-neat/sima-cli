@@ -606,7 +606,34 @@ def _print_troot_programming_warning():
     )
 
 
-def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_path=None):
+def _same_netboot_device(configuration, candidate_ip):
+    """Verify an address change against the NIC used before netboot."""
+    expected = (configuration.hardware_address or '').strip().lower()
+    if not expected:
+        return False
+    ssh = None
+    try:
+        from sima_cli.update.remote import run_remote_command_capture
+        ssh = init_ssh_session(candidate_ip, password=DEFAULT_PASSWORD)
+        code, output, _ = run_remote_command_capture(
+            ssh, 'cat /sys/class/net/*/address', sudo_pty=False
+        )
+        addresses = {line.strip().lower() for line in output.splitlines()}
+        return code == 0 and expected in addresses
+    except Exception:
+        return False
+    finally:
+        if ssh is not None:
+            ssh.close()
+
+
+def flash_emmc(
+    client_manager,
+    emmc_image_paths,
+    override_ip=None,
+    troot_image_path=None,
+    configuration=None,
+):
     """Flash eMMC on a selected client device."""
     if not emmc_image_paths:
         click.echo(
@@ -617,6 +644,15 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
     selected_ip = _select_flash_target(client_manager, override_ip=override_ip)
     if not selected_ip:
         return
+    if (configuration is not None and configuration.changed
+            and selected_ip != configuration.devkit):
+        if not _same_netboot_device(configuration, selected_ip):
+            click.echo(
+                f"❌ Refusing to flash {selected_ip}: it could not be verified as "
+                f"the device whose U-Boot environment was saved at {configuration.devkit}."
+            )
+            return
+        configuration.devkit = selected_ip
 
     click.echo(f"📡 Selected client: {selected_ip}")
     remote_dir = "/tmp"
@@ -796,6 +832,21 @@ class InteractiveTftpServer(TftpServer):
         super().__init__(tftproot)
         self.client_manager = client_manager
 
+    def stop(self, now=False):
+        """Request shutdown and wake the receive loop so no later RRQ is served."""
+        super().stop(now=now)
+        sock = getattr(self, 'sock', None)
+        if sock is None:
+            return
+        try:
+            address, port = sock.getsockname()
+            if address in ('', '0.0.0.0'):
+                address = '127.0.0.1'
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as wake:
+                wake.sendto(b'\0', (address, port))
+        except OSError:
+            log.debug('Unable to wake TFTP receive loop during shutdown', exc_info=True)
+
     def listen(self, listenip="", listenport=DEF_TFTP_PORT, timeout=SOCK_TIMEOUT, retries=DEF_TIMEOUT_RETRIES):
         """Override listen to log client IPs and filenames."""
         tftp_factory = TftpPacketFactory()
@@ -848,6 +899,9 @@ class InteractiveTftpServer(TftpServer):
                     continue
                 else:
                     raise
+
+            if self.shutdown_immediately:
+                continue
 
             deletion_list = []
             for readysock in readyinput:
@@ -965,7 +1019,7 @@ def _discover_netboot_devices():
     _print_ip_recovery_help()
 
 
-def run_cli(client_manager):
+def run_cli(client_manager, configuration=None):
     """Run the interactive CLI for netboot commands."""
     click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'd' to discover devices, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
     click.echo("Press Ctrl+C at the netboot prompt to stop SSH reboot checks if the board's IP changed.")
@@ -1016,6 +1070,7 @@ def run_cli(client_manager):
                     emmc_image_paths,
                     override_ip=override_ip,
                     troot_image_path=troot_image_path,
+                    configuration=configuration,
                 )
             elif command == "":
                 continue
@@ -1025,7 +1080,7 @@ def run_cli(client_manager):
             click.echo("\n🛑 Exiting netboot session.")
             return True
 
-def auto_flash(client_manager, selected_ip, timeout=900):
+def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
     """Flash only the confirmed device, once, after its network boot is ready."""
     click.echo(f'Waiting for SSH on {selected_ip}; flashing will start automatically.')
     deadline = time.monotonic() + timeout
@@ -1044,7 +1099,7 @@ def auto_flash(client_manager, selected_ip, timeout=900):
                                            'to be running the network boot image.')
             click.echo(f'Starting automatic flash on {selected_ip}.')
             flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
-                       troot_image_path=troot_image_path)
+                       troot_image_path=troot_image_path, configuration=configuration)
             return
         if time.monotonic() >= deadline:
             raise click.ClickException(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')
@@ -1133,18 +1188,25 @@ def setup_netboot(
     except Exception as e:
         raise RuntimeError(f"❌ Failed to download and extract netboot image: {e}")
 
+    from sima_cli.update.netboot_device import (
+        NetbootConfiguration,
+        configure_and_reboot,
+        resolve_device,
+        restore_environment,
+        server_address,
+    )
+    if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
+        raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
+    selected_devkit = resolve_device(devkit)
+    server_ip = server_address(selected_devkit) if selected_devkit else None
     cache_lease = _acquire_cache_lease(cache_dir)
     server = None
     client_manager = None
     server_thread = None
     tftp_ready = False
     cache_can_delete = True
+    configuration = NetbootConfiguration(selected_devkit) if selected_devkit else None
     try:
-        from sima_cli.update.netboot_device import resolve_device, server_address, configure_and_reboot
-        if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
-            raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
-        selected_devkit = resolve_device(devkit)
-        server_ip = server_address(selected_devkit) if selected_devkit else None
         click.echo(f"🚀 Starting TFTP server in: {extract_dir}")
         ip_candidates = get_local_ip_candidates()
         if server_ip and not any(ip == server_ip for _, ip in ip_candidates):
@@ -1177,7 +1239,12 @@ def setup_netboot(
             click.echo(f"   🔹 {iface}: {ip}")
 
         if selected_devkit:
-            reboot_scheduled = configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
+            reboot_scheduled = configure_and_reboot(
+                selected_devkit,
+                server_ip,
+                autoflash=autoflash,
+                configuration=configuration,
+            )
             if not reboot_scheduled:
                 click.echo(
                     f'Skipped network boot setup and reboot for {selected_devkit}. '
@@ -1188,7 +1255,7 @@ def setup_netboot(
                 if autoflash:
                     click.echo('Automatic flashing is disabled because device setup was not confirmed.')
             elif autoflash:
-                auto_flash(client_manager, selected_devkit)
+                auto_flash(client_manager, selected_devkit, configuration=configuration)
         else:
             message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'
                            'Configure the DevKit manually through its serial console to boot from the network, '
@@ -1197,7 +1264,7 @@ def setup_netboot(
             if autoflash:
                 message.append('\n\nAutomatic flashing is disabled because no DevKit was selected.', style='bold yellow')
             console.print(Panel(message, title='Manual netboot setup', border_style='yellow'))
-        run_cli(client_manager)
+        run_cli(client_manager, configuration=configuration)
 
     except OSError as e:
         if tftp_ready:
@@ -1207,18 +1274,40 @@ def setup_netboot(
         raise RuntimeError(f"❌ Failed to start TFTP server: {e}") from e
 
     finally:
+        shutdown_error = None
+        if configuration is not None and configuration.changed:
+            try:
+                restore_environment(configuration)
+            except (Exception, KeyboardInterrupt) as exc:
+                recovery_backup = (
+                    configuration.local_backup_dir or configuration.backup_dir
+                )
+                click.secho(
+                    f'Could not restore the saved U-Boot environment on '
+                    f'{configuration.devkit}: {exc}. Use serial recovery before rebooting again. '
+                    f'Backup: {recovery_backup}',
+                    fg='red',
+                    err=True,
+                )
+                shutdown_error = RuntimeError(
+                    f'Netboot ended, but U-Boot restoration failed on '
+                    f'{configuration.devkit}.'
+                )
         if server is not None:
             server.stop(now=True)
+        if client_manager is not None:
+            client_manager.shutdown()
         if server_thread is not None:
             server_thread.join(timeout=5)
-            if server_thread.is_alive():
+            if tftp_ready and server_thread.is_alive():
                 cache_can_delete = False
                 click.echo(
                     "⚠️  TFTP server did not stop within 5 seconds; preserving its cache.",
                     err=True,
                 )
-        if client_manager is not None:
-            client_manager.shutdown()
+                shutdown_error = RuntimeError(
+                    'TFTP server did not stop; UDP port 69 may still be active.'
+                )
         _release_cache_lease(cache_lease)
         if delete_cache and cache_dir and cache_can_delete:
             try:
@@ -1228,3 +1317,7 @@ def setup_netboot(
                     f"⚠️  Failed to delete netboot cache {cache_dir}: {cleanup_error}",
                     err=True,
                 )
+        if configuration is not None and not configuration.changed:
+            configuration.cleanup()
+        if shutdown_error is not None:
+            raise shutdown_error

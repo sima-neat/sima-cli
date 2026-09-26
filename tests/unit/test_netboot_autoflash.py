@@ -15,7 +15,8 @@ def test_autoflash_requires_selected_netboot_device(cmdline, expected):
         if expected:
             netboot.auto_flash(manager, '192.0.2.2')
             flash.assert_called_once_with(manager, netboot.emmc_image_paths, override_ip='192.0.2.2',
-                                          troot_image_path=netboot.troot_image_path)
+                                          troot_image_path=netboot.troot_image_path,
+                                          configuration=None)
         else:
             with pytest.raises(click.ClickException, match='not confirmed'):
                 netboot.auto_flash(manager, '192.0.2.2')

@@ -747,7 +747,7 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
                 rootfs=rootfs, swtype=fwtype, allow_daily_fallback=force,
                 devkit=devkit_ip, **netboot_options,
             )
-            click.echo("✅ Netboot image prepared and TFTP server is running.")
+            click.echo("✅ Netboot session ended and the TFTP server is stopped.")
         else:
             write_image(version, boardtype, fwtype, internal, flavor='headless', recovery=recovery)
             click.echo("✅ Boot image successfully written.")

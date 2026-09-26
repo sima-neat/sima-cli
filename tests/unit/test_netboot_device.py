@@ -147,6 +147,7 @@ def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_f
     def start_thread(*args, **kwargs):
         thread = MagicMock()
         thread.start.side_effect = kwargs['target']
+        thread.is_alive.return_value = False
         return thread
 
     with patch.object(netboot, 'get_environment_type', return_value=('host', 'mac')), \
@@ -301,18 +302,21 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
             patch.object(netboot, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
             patch.object(netboot, 'InteractiveTftpServer', return_value=server), \
             patch.object(netboot, 'ClientManager', return_value=manager), \
-            patch.object(netboot.threading, 'Thread'), \
+            patch.object(netboot.threading, 'Thread') as thread, \
             patch.object(netboot, 'run_cli', side_effect=interact) as cli, \
             patch.object(netboot, 'auto_flash') as flash, \
             patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
             patch.object(device, 'server_address', return_value='192.0.2.10'), \
             patch.object(device, 'init_ssh_session', side_effect=TimeoutError('timed out') if confirmed is None else None) as connect, \
-            patch.object(device, '_checked', return_value='') as command, \
+            patch.object(device, '_checked', return_value=(
+                device.BACKUP_MARKER + '/boot/sima-cli-netboot-backup.test'
+            )) as command, \
             patch.object(click, 'confirm', return_value=confirmed):
+        thread.return_value.is_alive.return_value = False
         netboot.setup_netboot('3.0', 'modalix', autoflash=autoflash)
     cli.assert_called_once_with(manager)
     if confirmed is not None:
-        connect.return_value.close.assert_called_once()
+        assert connect.return_value.close.call_count == (2 if confirmed else 1)
     if confirmed:
         assert any('systemd-run' in call.args[1] for call in command.call_args_list)
     else:
@@ -324,6 +328,59 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
         flash.assert_not_called()
     server.stop.assert_called_once_with(now=True)
     manager.shutdown.assert_called_once()
+
+
+def test_configured_session_records_and_restores_exact_backup(capsys):
+    configuration = device.NetbootConfiguration('192.0.2.1')
+    backup = '/boot/sima-cli-netboot-backup.ABC123'
+    with patch.object(device, 'init_ssh_session') as connect, \
+            patch.object(device, '_checked', side_effect=[
+                '',
+                device.BACKUP_MARKER + backup,
+                '',
+                '',
+            ]) as command, \
+            patch.object(click, 'confirm', return_value=True):
+        assert device.configure_and_reboot(
+            '192.0.2.1', '192.0.2.10', configuration=configuration
+        ) is True
+        assert configuration.changed is True
+        assert configuration.backup_dir == backup
+        device.restore_environment(configuration)
+
+    restore_script = shlex.split(command.call_args_list[-1].args[1])[3]
+    assert backup + '/uboot.env' in restore_script
+    assert backup + '/uboot-redund.env' in restore_script
+    assert 'cmp ' in restore_script
+    assert configuration.changed is False
+    assert connect.return_value.close.call_count == 2
+    assert 'Restored the saved U-Boot environment' in capsys.readouterr().out
+
+
+def test_tftp_stop_wakes_listener_and_rejects_late_requests(tmp_path):
+    import socket
+    import threading
+
+    manager = MagicMock()
+    server = netboot.InteractiveTftpServer(str(tmp_path), manager)
+    thread = threading.Thread(
+        target=server.listen,
+        args=('127.0.0.1', 0),
+        daemon=True,
+    )
+    thread.start()
+    assert server.is_running.wait(1)
+    port = server.listenport
+
+    server.stop(now=True)
+    thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+        client.settimeout(0.1)
+        client.sendto(b'\x00\x01netboot.scr.uimg\x00octet\x00', ('127.0.0.1', port))
+        with pytest.raises((socket.timeout, ConnectionRefusedError)):
+            client.recvfrom(1024)
 
 
 @pytest.mark.parametrize('error', [TimeoutError('timed out'), device.paramiko.SSHException('SSH negotiation failed')])

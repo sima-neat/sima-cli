@@ -4,6 +4,7 @@ import inspect
 import json
 import shlex
 import socket
+from dataclasses import dataclass
 
 import click
 import paramiko
@@ -15,6 +16,14 @@ from sima_cli.update.remote import init_ssh_session, run_remote_command_capture
 
 LEGACY_LAYOUT_ERROR = 'Unsupported legacy 2.1 fw_env.config'
 MANUAL_FALLBACK_READY = 'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY'
+BACKUP_MARKER = 'SIMA_CLI_NETBOOT_BACKUP='
+
+
+@dataclass
+class NetbootConfiguration:
+    devkit: str
+    backup_dir: str = None
+    changed: bool = False
 
 
 def resolve_device(devkit=None):
@@ -60,7 +69,7 @@ def network_settings(ssh, devkit, server_ip):
                                    'U-Boot was not changed.') from exc
 
 
-def configure_and_reboot(devkit, server_ip, autoflash=False):
+def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None):
     """Return whether the user confirmed and the DevKit reboot was scheduled."""
     try:
         ssh = init_ssh_session(devkit)
@@ -108,6 +117,16 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
             _show_manual_legacy_setup(devkit, server_ip, network, autoflash)
             return False
         click.echo(output)
+        if configuration is not None:
+            match = next((line for line in output.splitlines()
+                          if line.startswith(BACKUP_MARKER)), None)
+            if not match:
+                raise click.ClickException(
+                    'Remote netboot preparation did not report its U-Boot backup; '
+                    'the DevKit will not be rebooted.'
+                )
+            configuration.backup_dir = match[len(BACKUP_MARKER):]
+            configuration.changed = True
         # A delayed systemd job acknowledges scheduling before SSH disconnects.
         _checked(ssh, 'sudo systemd-run --on-active=3s /sbin/reboot')
         click.secho(
@@ -120,6 +139,43 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
         return True
     finally:
         ssh.close()
+
+
+def restore_environment(configuration):
+    """Restore the exact U-Boot files saved before this netboot session."""
+    if not configuration or not configuration.changed or not configuration.backup_dir:
+        return True
+    backup = shlex.quote(configuration.backup_dir)
+    script = '\n'.join([
+        'set -eu',
+        'restore_ro=0',
+        'cleanup() {',
+        '  status=$?',
+        '  trap - EXIT',
+        '  if [ "$restore_ro" = 1 ]; then sync; mount -o remount,ro /boot || status=1; fi',
+        '  exit "$status"',
+        '}',
+        'trap cleanup EXIT',
+        f'test -f {backup}/uboot.env && test -f {backup}/uboot-redund.env',
+        'options=$(findmnt -n -o OPTIONS -T /boot)',
+        'case ",$options," in *,ro,*) mount -o remount,rw /boot; restore_ro=1 ;; esac',
+        f'cp -p {backup}/uboot.env /boot/uboot.env',
+        f'cp -p {backup}/uboot-redund.env /boot/uboot-redund.env',
+        f'cmp {backup}/uboot.env /boot/uboot.env',
+        f'cmp {backup}/uboot-redund.env /boot/uboot-redund.env',
+        'sync',
+    ])
+    ssh = init_ssh_session(configuration.devkit)
+    try:
+        _checked(ssh, 'sudo sh -c ' + shlex.quote(script))
+    finally:
+        ssh.close()
+    configuration.changed = False
+    click.secho(
+        f'Restored the saved U-Boot environment on {configuration.devkit}.',
+        fg='green',
+    )
+    return True
 
 
 def _manual_netboot_commands(devkit, server_ip, network):
@@ -233,7 +289,7 @@ def _uboot_script(devkit, server_ip, network):
         'backup_complete=1',
         'python3 -c ' + shlex.quote(helper) + ' "$config"',
         'fw_printenv -c "$config" > "$backup/environment.txt"',
-        'echo "Saved U-Boot environment to $backup"',
+        f'echo "{BACKUP_MARKER}$backup"',
         'fw_setenv -c "$config" bootfile netboot.scr.uimg',
         'fw_setenv -c "$config" netcfg static',
         'fw_setenv -c "$config" forcenetcfg static',

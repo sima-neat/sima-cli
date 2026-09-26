@@ -796,6 +796,21 @@ class InteractiveTftpServer(TftpServer):
         super().__init__(tftproot)
         self.client_manager = client_manager
 
+    def stop(self, now=False):
+        """Request shutdown and wake the receive loop so no later RRQ is served."""
+        super().stop(now=now)
+        sock = getattr(self, 'sock', None)
+        if sock is None:
+            return
+        try:
+            address, port = sock.getsockname()
+            if address in ('', '0.0.0.0'):
+                address = '127.0.0.1'
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as wake:
+                wake.sendto(b'\0', (address, port))
+        except OSError:
+            log.debug('Unable to wake TFTP receive loop during shutdown', exc_info=True)
+
     def listen(self, listenip="", listenport=DEF_TFTP_PORT, timeout=SOCK_TIMEOUT, retries=DEF_TIMEOUT_RETRIES):
         """Override listen to log client IPs and filenames."""
         tftp_factory = TftpPacketFactory()
@@ -848,6 +863,9 @@ class InteractiveTftpServer(TftpServer):
                     continue
                 else:
                     raise
+
+            if self.shutdown_immediately:
+                continue
 
             deletion_list = []
             for readysock in readyinput:
@@ -1133,18 +1151,25 @@ def setup_netboot(
     except Exception as e:
         raise RuntimeError(f"❌ Failed to download and extract netboot image: {e}")
 
+    from sima_cli.update.netboot_device import (
+        NetbootConfiguration,
+        configure_and_reboot,
+        resolve_device,
+        restore_environment,
+        server_address,
+    )
+    if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
+        raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
+    selected_devkit = resolve_device(devkit)
+    server_ip = server_address(selected_devkit) if selected_devkit else None
     cache_lease = _acquire_cache_lease(cache_dir)
     server = None
     client_manager = None
     server_thread = None
     tftp_ready = False
     cache_can_delete = True
+    configuration = NetbootConfiguration(selected_devkit) if selected_devkit else None
     try:
-        from sima_cli.update.netboot_device import resolve_device, server_address, configure_and_reboot
-        if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
-            raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
-        selected_devkit = resolve_device(devkit)
-        server_ip = server_address(selected_devkit) if selected_devkit else None
         click.echo(f"🚀 Starting TFTP server in: {extract_dir}")
         ip_candidates = get_local_ip_candidates()
         if server_ip and not any(ip == server_ip for _, ip in ip_candidates):
@@ -1177,7 +1202,12 @@ def setup_netboot(
             click.echo(f"   🔹 {iface}: {ip}")
 
         if selected_devkit:
-            reboot_scheduled = configure_and_reboot(selected_devkit, server_ip, autoflash=autoflash)
+            reboot_scheduled = configure_and_reboot(
+                selected_devkit,
+                server_ip,
+                autoflash=autoflash,
+                configuration=configuration,
+            )
             if not reboot_scheduled:
                 click.echo(
                     f'Skipped network boot setup and reboot for {selected_devkit}. '
@@ -1207,6 +1237,7 @@ def setup_netboot(
         raise RuntimeError(f"❌ Failed to start TFTP server: {e}") from e
 
     finally:
+        shutdown_error = None
         if server is not None:
             server.stop(now=True)
         if server_thread is not None:
@@ -1228,3 +1259,21 @@ def setup_netboot(
                     f"⚠️  Failed to delete netboot cache {cache_dir}: {cleanup_error}",
                     err=True,
                 )
+        if configuration is not None and configuration.changed:
+            try:
+                restore_environment(configuration)
+            except Exception as exc:
+                click.secho(
+                    f'Could not restore the saved U-Boot environment on '
+                    f'{configuration.devkit}: {exc}. Use serial recovery before rebooting again. '
+                    f'Backup: {configuration.backup_dir}',
+                    fg='red',
+                    err=True,
+                )
+                if shutdown_error is None:
+                    shutdown_error = RuntimeError(
+                        f'Netboot ended, but U-Boot restoration failed on '
+                        f'{configuration.devkit}.'
+                    )
+        if shutdown_error is not None:
+            raise shutdown_error

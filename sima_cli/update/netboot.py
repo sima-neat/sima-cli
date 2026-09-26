@@ -1,19 +1,32 @@
-from sima_cli.update.updater import download_image
+from sima_cli.update.updater import (
+    _extract_required_files,
+    _resolve_firmware_url,
+    download_image,
+    resolve_image_reference,
+)
 from sima_cli.utils.net import get_local_ip_candidates
 from sima_cli.update.remote import wait_for_ssh, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session, get_remote_board_info
 from sima_cli.utils.env import get_environment_type
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional
+import hashlib
 import ipaddress
 import inspect
+import json
 import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import threading
 import socket
 import select
 import time
 import logging
+import uuid
 import click
 from errno import EINTR
 from rich.console import Console
@@ -32,6 +45,482 @@ emmc_image_paths = []
 troot_image_path = None
 custom_rootfs = ''
 console = Console()
+
+NETBOOT_CACHE_SCHEMA = 2
+NETBOOT_CACHE_MANIFEST = "manifest.json"
+
+
+@dataclass
+class NetbootAssets:
+    """Prepared paths used by the TFTP server and optional eMMC flashing."""
+
+    tftp_root: str
+    emmc_image_paths: List[str]
+    troot_image_path: Optional[str]
+    cache_dir: str
+    reused_cache: bool = False
+
+
+def _netboot_cache_root() -> Path:
+    return Path(tempfile.gettempdir()) / "sima-cli" / "netboot"
+
+
+def _is_archive(path: Path) -> bool:
+    name = path.name.lower()
+    return name.endswith((".tar", ".tar.gz", ".tgz"))
+
+
+def _describe_candidates(paths: List[Path]) -> str:
+    return ", ".join(str(path) for path in paths) if paths else "none"
+
+
+def _require_one_candidate(role: str, preferred: List[Path], fallback: List[Path]) -> Path:
+    candidates = preferred or fallback
+    if len(candidates) != 1:
+        raise RuntimeError(
+            f"Expected exactly one {role}; found {len(candidates)}: "
+            f"{_describe_candidates(candidates)}"
+        )
+    return candidates[0]
+
+
+def _discover_local_netboot_sources(
+    images: str,
+    board: str,
+    swtype: str,
+    archive_path: Optional[str] = None,
+):
+    images_dir = Path(images).expanduser().resolve()
+    if archive_path:
+        selected_archive = Path(archive_path).expanduser().resolve()
+        if not selected_archive.is_file() or not _is_archive(selected_archive):
+            raise RuntimeError(f"Local netboot source is not an archive: {selected_archive}")
+        files = sorted(path for path in selected_archive.parent.iterdir() if path.is_file())
+    else:
+        selected_archive = None
+        files = sorted(path for path in images_dir.rglob("*") if path.is_file())
+    archives = [path for path in files if _is_archive(path)]
+
+    if swtype == "elxr":
+        if selected_archive:
+            archive = selected_archive
+        else:
+            tftp_archives = [path for path in archives if "tftp-boot" in path.name.lower()]
+            board_archives = [
+                path for path in tftp_archives if board.lower() in path.name.lower()
+            ]
+            archive = _require_one_candidate(
+                "eLxr minimal TFTP archive", board_archives or tftp_archives, archives
+            )
+        emmc_candidates = [
+            path for path in files
+            if path.name.lower().endswith(".img.gz")
+            and "recovery" not in path.name.lower()
+        ]
+        board_emmc = [
+            path for path in emmc_candidates if board.lower() in path.name.lower()
+        ]
+        emmc = _require_one_candidate(
+            "eLxr eMMC .img.gz image", board_emmc, emmc_candidates
+        )
+        return archive, [emmc]
+
+    if selected_archive:
+        archive = selected_archive
+    else:
+        preferred_archives = [
+            path for path in archives
+            if path.name.lower() in {"release.tar.gz", "graphics.tar.gz"}
+        ]
+        archive = _require_one_candidate(
+            "Yocto release archive",
+            preferred_archives,
+            archives if len(archives) == 1 else [],
+        )
+    return archive, []
+
+
+def _source_file_identity(path: Path):
+    stat = path.stat()
+    return {
+        "path": str(path.resolve()),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _tftp_root_from_files(paths) -> Path:
+    boot_scripts = [
+        Path(path).resolve()
+        for path in paths
+        if Path(path).name == "netboot.scr.uimg"
+    ]
+    if len(boot_scripts) > 1:
+        raise RuntimeError(
+            "Expected exactly one netboot.scr.uimg; found "
+            f"{len(boot_scripts)}: {_describe_candidates(boot_scripts)}"
+        )
+    if boot_scripts:
+        return boot_scripts[0].parent
+    return Path(os.path.dirname(paths[0])).resolve()
+
+
+def _cache_key(identity) -> str:
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _cache_lock_path(cache_dir: Path) -> Path:
+    return cache_dir.parent / f"{cache_dir.name}.lock"
+
+
+def _acquire_cache_lease(cache_dir: str):
+    import fcntl
+
+    lock_file = _cache_lock_path(Path(cache_dir)).open("a+")
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+    return lock_file
+
+
+def _release_cache_lease(lock_file):
+    import fcntl
+
+    if lock_file is not None:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+
+
+def _cached_tftp_root(cache_dir: Path, manifest) -> Optional[Path]:
+    relative = manifest.get("tftp_root")
+    if not isinstance(relative, str):
+        return None
+    root = (cache_dir / relative).resolve()
+    try:
+        root.relative_to(cache_dir.resolve())
+    except ValueError:
+        return None
+    return root if root.is_dir() else None
+
+
+def _read_valid_cache_manifest(cache_dir: Path, identity):
+    def file_matches(item) -> bool:
+        path = (cache_dir / item["path"]).resolve()
+        try:
+            path.relative_to(cache_dir.resolve())
+        except ValueError:
+            return False
+        return path.is_file() and path.stat().st_size == item["size"]
+
+    try:
+        manifest = json.loads(
+            (cache_dir / NETBOOT_CACHE_MANIFEST).read_text(encoding="utf-8")
+        )
+        if manifest.get("schema") != NETBOOT_CACHE_SCHEMA:
+            return None
+        if manifest.get("identity") != identity:
+            return None
+        if _cached_tftp_root(cache_dir, manifest) is None:
+            return None
+        prepared_files = manifest.get("files", [])
+        if not prepared_files or not all(file_matches(item) for item in prepared_files):
+            return None
+        return manifest
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _prepare_cache_entry(identity, builder):
+    import fcntl
+
+    cache_root = _netboot_cache_root()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    cache_dir = cache_root / _cache_key(identity)
+
+    with _cache_lock_path(cache_dir).open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        manifest = _read_valid_cache_manifest(cache_dir, identity)
+        if manifest is not None:
+            click.echo(f"♻️  Reusing prepared netboot cache: {cache_dir}")
+            return cache_dir, _cached_tftp_root(cache_dir, manifest), True
+
+        staging_dir = cache_root / f".{cache_dir.name}.{uuid.uuid4().hex}"
+        content_root = staging_dir / "content"
+        content_root.mkdir(parents=True)
+        try:
+            staged_tftp_root = Path(builder(content_root)).resolve()
+            staged_tftp_root.relative_to(staging_dir.resolve())
+            if not staged_tftp_root.is_dir():
+                raise RuntimeError(f"Prepared TFTP root does not exist: {staged_tftp_root}")
+            prepared_files = sorted(
+                ({
+                    "path": str(path.relative_to(staging_dir)),
+                    "size": path.stat().st_size,
+                } for path in content_root.rglob("*") if path.is_file()),
+                key=lambda item: item["path"],
+            )
+            if not prepared_files:
+                raise RuntimeError("Netboot preparation produced no TFTP files.")
+            manifest = {
+                "schema": NETBOOT_CACHE_SCHEMA,
+                "identity": identity,
+                "files": prepared_files,
+                "tftp_root": str(staged_tftp_root.relative_to(staging_dir.resolve())),
+            }
+            (staging_dir / NETBOOT_CACHE_MANIFEST).write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+            os.replace(staging_dir, cache_dir)
+        except BaseException:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
+
+        click.echo(f"✅ Prepared netboot cache: {cache_dir}")
+        return cache_dir, cache_dir / manifest["tftp_root"], False
+
+
+def _classify_prepared_assets(
+    cache_dir: Path,
+    board: str,
+    swtype: str,
+    external_emmc_paths: Optional[List[Path]] = None,
+    require_emmc: bool = True,
+    tftp_root: Optional[Path] = None,
+) -> NetbootAssets:
+    tftp_root = tftp_root or cache_dir / "content"
+    files = sorted(path for path in (cache_dir / "content").rglob("*") if path.is_file())
+    troot_candidates = [path for path in files if path.name == "troot_blob.be"]
+    troot = str(troot_candidates[0]) if troot_candidates else None
+
+    if external_emmc_paths:
+        emmc_paths = [str(path) for path in external_emmc_paths]
+    elif swtype == "elxr":
+        candidates = [path for path in files if path.name.lower().endswith(".img.gz")]
+        preferred = [path for path in candidates if board.lower() in path.name.lower()]
+        if require_emmc:
+            emmc_paths = [str(_require_one_candidate(
+                "eLxr eMMC .img.gz image", preferred, candidates
+            ))]
+        else:
+            selected = preferred or candidates
+            emmc_paths = [str(selected[0])] if len(selected) == 1 else []
+    else:
+        wic_candidates = [path for path in files if path.name.lower().endswith(".wic.gz")]
+        bmap_candidates = [path for path in files if path.name.lower().endswith(".wic.bmap")]
+        preferred_wic = [path for path in wic_candidates if board.lower() in path.name.lower()]
+        preferred_bmap = [path for path in bmap_candidates if board.lower() in path.name.lower()]
+        if require_emmc:
+            emmc_paths = [
+                str(_require_one_candidate("Yocto eMMC .wic.gz image", preferred_wic, wic_candidates)),
+                str(_require_one_candidate("Yocto eMMC .wic.bmap file", preferred_bmap, bmap_candidates)),
+            ]
+        else:
+            selected_wic = preferred_wic or wic_candidates
+            selected_bmap = preferred_bmap or bmap_candidates
+            emmc_paths = []
+            if len(selected_wic) == 1:
+                emmc_paths.append(str(selected_wic[0]))
+            if len(selected_bmap) == 1:
+                emmc_paths.append(str(selected_bmap[0]))
+
+    return NetbootAssets(
+        tftp_root=str(tftp_root),
+        emmc_image_paths=emmc_paths,
+        troot_image_path=troot,
+        cache_dir=str(cache_dir),
+    )
+
+
+def _prepare_local_netboot_assets(
+    images: str,
+    board: str,
+    swtype: str,
+    flavor: str,
+    archive_path: Optional[str] = None,
+) -> NetbootAssets:
+    archive, external_emmc = _discover_local_netboot_sources(
+        images, board, swtype, archive_path=archive_path
+    )
+    identity = {
+        "mode": "local",
+        "board": board,
+        "swtype": swtype,
+        "flavor": flavor,
+        "sources": [_source_file_identity(path) for path in [archive] + external_emmc],
+    }
+
+    def build(content_root: Path):
+        staged_archive = content_root / archive.name
+        shutil.copy2(archive, staged_archive)
+        extracted = _extract_required_files(
+            str(staged_archive), board, update_type="netboot", flavor=flavor
+        )
+        if not extracted:
+            raise RuntimeError(f"No netboot files could be extracted from {archive}.")
+        legacy_tftp_root = _tftp_root_from_files(extracted)
+        try:
+            legacy_tftp_root.relative_to(content_root.resolve())
+        except ValueError as error:
+            raise RuntimeError(
+                f"Extracted TFTP root escaped the managed cache: {legacy_tftp_root}"
+            ) from error
+        _classify_prepared_assets(
+            content_root.parent, board, swtype, external_emmc,
+            tftp_root=legacy_tftp_root,
+        )
+        return legacy_tftp_root
+
+    cache_dir, tftp_root, reused = _prepare_cache_entry(identity, build)
+    assets = _classify_prepared_assets(
+        cache_dir, board, swtype, external_emmc, tftp_root=tftp_root
+    )
+    assets.reused_cache = reused
+    return assets
+
+
+def _prepare_downloaded_netboot_assets(
+    version: str,
+    board: str,
+    swtype: str,
+    internal: bool,
+    flavor: str,
+    allow_daily_fallback: bool = False,
+) -> NetbootAssets:
+    uses_complete_internal_set = (
+        internal and swtype == "elxr" and board == "modalix"
+        and not version.startswith(("http://", "https://"))
+        and not os.path.exists(version)
+    )
+    internal_selection = None
+    if uses_complete_internal_set:
+        from sima_cli.update.netboot_artifacts import resolve_netboot_image_selection
+
+        internal_selection = resolve_netboot_image_selection(
+            version,
+            board,
+            flavor,
+            allow_daily_fallback=allow_daily_fallback,
+        )
+        resolved_reference = internal_selection.version
+        source_identity = {
+            "internal_complete_set": internal_selection.cache_identity(),
+        }
+    else:
+        resolved_reference = resolve_image_reference(
+            version, board, swtype, internal=internal,
+            update_type="netboot", flavor=flavor,
+        )
+        source_identity = _resolve_firmware_url(
+            resolved_reference, board, internal=internal,
+            flavor=flavor, swtype=swtype, update_type="netboot",
+        )
+    identity = {
+        "mode": "download",
+        "source": source_identity,
+        "board": board,
+        "swtype": swtype,
+        "flavor": flavor,
+        "internal": internal,
+        "allow_daily_fallback": allow_daily_fallback,
+    }
+
+    def build(content_root: Path):
+        click.echo(
+            f"⬇️  Downloading netboot image for version: {resolved_reference}, "
+            f"board: {board}, swtype: {swtype}"
+        )
+        if internal_selection is not None:
+            from sima_cli.update.netboot_artifacts import download_selected_netboot_image
+
+            file_list = download_selected_netboot_image(
+                internal_selection,
+                board,
+                flavor,
+                allow_daily_fallback=allow_daily_fallback,
+                destination_dir=str(content_root),
+            )
+        else:
+            file_list = download_image(
+                resolved_reference, board, swtype=swtype, internal=internal,
+                update_type="netboot", flavor=flavor,
+                allow_daily_fallback=allow_daily_fallback,
+                destination_dir=str(content_root),
+                reference_is_resolved=True,
+            )
+        if not isinstance(file_list, list) or not file_list:
+            raise RuntimeError("Netboot download did not produce any files.")
+        legacy_tftp_root = _tftp_root_from_files(file_list)
+        try:
+            legacy_tftp_root.relative_to(content_root.resolve())
+        except ValueError:
+            # Keep compatibility with download implementations (and test doubles)
+            # that ignore destination_dir: copy only their returned files into
+            # the managed entry before serving them.
+            for returned in map(Path, file_list):
+                if not returned.is_file():
+                    continue
+                try:
+                    relative = returned.resolve().relative_to(legacy_tftp_root)
+                except ValueError:
+                    relative = Path(returned.name)
+                destination = content_root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(returned, destination)
+            legacy_tftp_root = content_root.resolve()
+        _classify_prepared_assets(
+            content_root.parent, board, swtype,
+            require_emmc=False, tftp_root=legacy_tftp_root,
+        )
+        return legacy_tftp_root
+
+    cache_dir, tftp_root, reused = _prepare_cache_entry(identity, build)
+    assets = _classify_prepared_assets(
+        cache_dir, board, swtype, require_emmc=False, tftp_root=tftp_root
+    )
+    assets.reused_cache = reused
+    return assets
+
+
+def _prepare_netboot_assets(
+    version: Optional[str],
+    board: str,
+    swtype: str,
+    internal: bool,
+    flavor: str,
+    images: Optional[str] = None,
+    allow_daily_fallback: bool = False,
+) -> NetbootAssets:
+    if images:
+        return _prepare_local_netboot_assets(images, board, swtype, flavor)
+    if not version:
+        raise RuntimeError("A firmware version or --images directory is required for netboot.")
+    if os.path.isfile(version):
+        return _prepare_local_netboot_assets(
+            os.path.dirname(os.path.abspath(version)), board, swtype, flavor,
+            archive_path=version,
+        )
+    return _prepare_downloaded_netboot_assets(
+        version, board, swtype, internal, flavor,
+        allow_daily_fallback=allow_daily_fallback,
+    )
+
+
+def _delete_netboot_cache(cache_dir: str):
+    import fcntl
+
+    cache_root = _netboot_cache_root().resolve()
+    target = Path(cache_dir).resolve()
+    if target.parent != cache_root:
+        raise RuntimeError(f"Refusing to delete unmanaged cache path: {target}")
+    with _cache_lock_path(target).open("a+") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise OSError("cache is in use by another netboot session") from error
+        shutil.rmtree(target)
+    click.echo(f"🧹 Deleted netboot cache: {target}")
 
 
 def _ping_host(ip, timeout_seconds=3):
@@ -119,6 +608,12 @@ def _print_troot_programming_warning():
 
 def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_path=None):
     """Flash eMMC on a selected client device."""
+    if not emmc_image_paths:
+        click.echo(
+            "⚠️  No eMMC image was prepared. TFTP netboot is available, "
+            "but eMMC flashing is disabled for this session."
+        )
+        return
     selected_ip = _select_flash_target(client_manager, override_ip=override_ip)
     if not selected_ip:
         return
@@ -556,7 +1051,19 @@ def auto_flash(client_manager, selected_ip, timeout=900):
         client_manager.shutdown_event.wait(0.5)
 
 
-def setup_netboot(version: str, board: str, internal: bool = False, autoflash: bool = False, flavor: str = 'headless', rootfs: str = '', swtype: str = 'yocto', allow_daily_fallback: bool = False, devkit: str = None):
+def setup_netboot(
+    version: Optional[str],
+    board: str,
+    internal: bool = False,
+    autoflash: bool = False,
+    flavor: str = 'headless',
+    rootfs: str = '',
+    swtype: str = 'yocto',
+    allow_daily_fallback: bool = False,
+    devkit: str = None,
+    images: Optional[str] = None,
+    delete_cache: bool = False,
+):
     """
     Download and serve a bootable image for network boot over TFTP with client monitoring.
 
@@ -568,6 +1075,8 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
         flavor (str): The software flavor, can be either headless or full.
         rootfs (str): The root fs folder, which contains the .wic.gz file and the .bmap file, for custom image writing.
         swtype (str): The software type, either yocto or elxr.
+        images (str): Optional read-only directory containing local netboot source artifacts.
+        delete_cache (bool): Delete the managed cache entry after the netboot session exits.
 
     Raises:
         RuntimeError: If the download or TFTP setup fails.
@@ -585,20 +1094,18 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
         click.secho("❌ Netboot is not supported on the DevKit, use macOS or Linux host instead.", fg="red")
         exit(1)
 
+    cache_dir = None
+    cache_lease = None
     try:
-        click.echo(f"⬇️  Downloading netboot image for version: {version}, board: {board}, swtype: {swtype}")
-        file_list = download_image(version, board, swtype=swtype, internal=internal, update_type='netboot', flavor=flavor, allow_daily_fallback=allow_daily_fallback)
-        if not isinstance(file_list, list):
-            raise ValueError("Expected list of extracted files, got something else.")
-        extract_dir = os.path.dirname(file_list[0])
-        click.echo(f"📁 Image extracted to: {extract_dir}")
-        
-        # Extract specific image paths
-        wic_gz_file = next((f for f in file_list if f.endswith(".wic.gz")), None)
-        bmap_file = next((f for f in file_list if f.endswith(".wic.bmap")), None)
-        elxr_img_file = next((f for f in file_list if f.endswith(".img.gz")), None)
-        troot_image_path = next((f for f in file_list if os.path.basename(f) == "troot_blob.be"), None)
-        emmc_image_paths = [p for p in [wic_gz_file, bmap_file, elxr_img_file] if p]
+        assets = _prepare_netboot_assets(
+            version, board, swtype, internal, flavor, images=images,
+            allow_daily_fallback=allow_daily_fallback,
+        )
+        cache_dir = assets.cache_dir
+        extract_dir = assets.tftp_root
+        emmc_image_paths = assets.emmc_image_paths
+        troot_image_path = assets.troot_image_path
+        click.echo(f"📁 TFTP image prepared in: {extract_dir}")
 
         # Check global custom_rootfs before doing anything else
         custom_rootfs = rootfs
@@ -617,7 +1124,7 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
                     f"❌ custom_rootfs '{custom_rootfs}' must contain both .wic.gz and .wic.bmap files."
                 )
 
-            emmc_image_paths = [wic_gz_file, bmap_file, exlr_file]
+            emmc_image_paths = [path for path in [wic_gz_file, bmap_file, exlr_file] if path]
             click.echo(f"📁 Using custom_rootfs: {custom_rootfs}")
 
         click.echo(f"📁 eMMC image paths are: {emmc_image_paths}")
@@ -626,16 +1133,18 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
     except Exception as e:
         raise RuntimeError(f"❌ Failed to download and extract netboot image: {e}")
 
-    from sima_cli.update.netboot_device import resolve_device, server_address, configure_and_reboot
-    if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
-        raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
-    selected_devkit = resolve_device(devkit)
-    server_ip = server_address(selected_devkit) if selected_devkit else None
+    cache_lease = _acquire_cache_lease(cache_dir)
     server = None
     client_manager = None
     server_thread = None
     tftp_ready = False
+    cache_can_delete = True
     try:
+        from sima_cli.update.netboot_device import resolve_device, server_address, configure_and_reboot
+        if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
+            raise RuntimeError('The netboot archive is missing netboot.scr.uimg; the DevKit was not changed.')
+        selected_devkit = resolve_device(devkit)
+        server_ip = server_address(selected_devkit) if selected_devkit else None
         click.echo(f"🚀 Starting TFTP server in: {extract_dir}")
         ip_candidates = get_local_ip_candidates()
         if server_ip and not any(ip == server_ip for _, ip in ip_candidates):
@@ -700,7 +1209,22 @@ def setup_netboot(version: str, board: str, internal: bool = False, autoflash: b
     finally:
         if server is not None:
             server.stop(now=True)
+        if server_thread is not None:
+            server_thread.join(timeout=5)
+            if server_thread.is_alive():
+                cache_can_delete = False
+                click.echo(
+                    "⚠️  TFTP server did not stop within 5 seconds; preserving its cache.",
+                    err=True,
+                )
         if client_manager is not None:
             client_manager.shutdown()
-        if server_thread is not None:
-            server_thread.join(timeout=3)
+        _release_cache_lease(cache_lease)
+        if delete_cache and cache_dir and cache_can_delete:
+            try:
+                _delete_netboot_cache(cache_dir)
+            except OSError as cleanup_error:
+                click.echo(
+                    f"⚠️  Failed to delete netboot cache {cache_dir}: {cleanup_error}",
+                    err=True,
+                )

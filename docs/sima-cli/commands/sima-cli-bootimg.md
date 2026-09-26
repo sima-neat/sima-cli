@@ -18,10 +18,12 @@ sima-cli bootimg [OPTIONS]
 
 | Name | Description |
 | --- | --- |
-| `-v, --version` | Firmware version to download and write (e.g., 1.6.0) (required) |
+| `-v, --version` | Firmware version to download and write (e.g., 1.6.0) |
 | `-b, --boardtype` | Target board type. (default: modalix) |
 | `-t, --fwtype` | Target firmware type. (default: elxr) |
 | `-n, --netboot` | Prepare image for network boot and launch TFTP server. |
+| `--images` | Directory containing local netboot source images. |
+| `--delete-cache` | Delete the managed netboot cache after the session exits. |
 | `-f, --force` | Allow daily mirror fallback if Artifactory is unavailable (internal Modalix eLxr netboot only). |
 | `--recovery` | Write eLxr Modalix recovery media for automatic eMMC recovery. |
 | `--devkit, --devkit-ip` | DevKit IP for remote netboot; discover and select a DevKit when omitted. |
@@ -69,6 +71,17 @@ Usage: sima-cli bootimg [OPTIONS]
 
       • Automating eMMC flashing over the network
 
+  Local Images and Cache:
+
+    • Use ``--images DIRECTORY`` to recursively discover local netboot
+    artifacts. eLxr requires a minimal TFTP archive and an eMMC
+    ``.img.gz``; Yocto requires a release archive.
+
+    • The supplied directory remains read-only. Prepared content is cached
+    under the platform temporary directory in ``sima-cli/netboot`` and is
+    reused by default. ``--delete-cache`` removes only the managed cache
+    entry after the session exits.
+
   Examples:
 
       # Write an SD card image for an MLSoC DevKit
@@ -93,18 +106,27 @@ Usage: sima-cli bootimg [OPTIONS]
 
       sima-cli bootimg -v 2.0.0 --netboot
 
+      # Prepare netboot from images already downloaded to a local directory
+
+      sima-cli bootimg --netboot --boardtype modalix --fwtype elxr --images
+      /path/to/images
+
       # Prepare USB/SD recovery media that automatically recovers eMMC
 
       sima-cli bootimg -v 3.0.0 --recovery
 
 Options:
   -v, --version TEXT              Firmware version to download and write
-                                  (e.g., 1.6.0)  [required]
+                                  (e.g., 1.6.0)
   -b, --boardtype [modalix|mlsoc]
                                   Target board type.  [default: modalix]
   -t, --fwtype [yocto|elxr]       Target firmware type.  [default: elxr]
   -n, --netboot                   Prepare image for network boot and launch
                                   TFTP server.
+  --images DIRECTORY              Directory containing local netboot source
+                                  images.
+  --delete-cache                  Delete the managed netboot cache after the
+                                  session exits.
   -f, --force                     Allow daily mirror fallback if Artifactory
                                   is unavailable (internal Modalix eLxr
                                   netboot only).
@@ -118,6 +140,23 @@ Options:
                                   once SSH is ready.
   --help                          Show this message and exit.
 ```
+
+### Local images and cache reuse
+
+Use `--images DIRECTORY` with `--netboot` or `--autoflash` to prepare a
+netboot session from artifacts already present on the host. The directory is
+searched recursively. eLxr requires one minimal TFTP archive and one matching
+non-recovery `.img.gz` eMMC image. Yocto requires one release archive containing
+the TFTP files and its `.wic.gz` and `.wic.bmap` images. Ambiguous or incomplete
+sets stop before the TFTP server starts.
+
+The source directory is never modified. sima-cli copies and extracts the TFTP
+content into a managed cache under the platform temporary directory at
+`sima-cli/netboot`. The cache is reused by default when its source identity and
+prepared file sizes still match. Downloaded netboot images use the same cache,
+so repeated sessions avoid another download and extraction. Add
+`--delete-cache` to remove only that session's managed cache entry after the
+TFTP server has stopped. A cache in use by another netboot session is preserved.
 
 ### Daily netboot fallback
 

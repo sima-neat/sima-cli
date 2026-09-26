@@ -2,6 +2,7 @@ import os
 import shutil
 import sys
 from contextlib import nullcontext, redirect_stdout
+from pathlib import Path
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -601,17 +602,24 @@ def show_mla_memory_usage(ctx):
 # bootimg Command
 # ----------------------
 @main.command(name="bootimg")
-@click.option("-v", "--version", required=True, help="Firmware version to download and write (e.g., 1.6.0)")
+@click.option("-v", "--version", required=False, help="Firmware version to download and write (e.g., 1.6.0)")
 @click.option("-b", "--boardtype", type=click.Choice(["modalix",  "mlsoc"], case_sensitive=False), default="modalix", show_default=True, help="Target board type.")
 @click.option("-t", "--fwtype", type=click.Choice(["yocto",  "elxr"], case_sensitive=False), default="elxr", show_default=True, help="Target firmware type.")
 @click.option("-n", "--netboot", is_flag=True, default=False, show_default=True, help="Prepare image for network boot and launch TFTP server.")
+@click.option(
+    "--images",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, readable=True, path_type=Path),
+    help="Directory containing local netboot source images.",
+)
+@click.option("--delete-cache", is_flag=True, help="Delete the managed netboot cache after the session exits.")
 @click.option("-f", "--force", is_flag=True, help="Allow daily mirror fallback if Artifactory is unavailable (internal Modalix eLxr netboot only).")
 @click.option("--recovery", is_flag=True, help="Write eLxr Modalix recovery media for automatic eMMC recovery.")
 @click.option("--devkit", "--devkit-ip", "devkit_ip", required=False, help="DevKit IP for remote netboot; discover and select a DevKit when omitted.")
 @click.option("-r", "--rootfs", required=False, help="Custom root fs folders (internal use only)")
 @click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Network boot the selected DevKit, then automatically flash its internal storage once SSH is ready.")
 @click.pass_context
-def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, rootfs, recovery=False, force=False):
+def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_ip,
+                autoflash, fwtype, rootfs, recovery=False, force=False):
     """
     Prepare a bootable image for the SiMa DevKit.
 
@@ -644,6 +652,17 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
         • Automating eMMC flashing over the network
 
+    Local Images and Cache:
+
+      • Use ``--images DIRECTORY`` to recursively discover local netboot
+        artifacts. eLxr requires a minimal TFTP archive and an eMMC
+        ``.img.gz``; Yocto requires a release archive.
+
+      • The supplied directory remains read-only. Prepared content is cached
+        under the platform temporary directory in ``sima-cli/netboot`` and is
+        reused by default. ``--delete-cache`` removes only the managed cache
+        entry after the session exits.
+
     \b
     Examples:
 
@@ -667,11 +686,27 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
 
         sima-cli bootimg -v 2.0.0 --netboot
 
+        # Prepare netboot from images already downloaded to a local directory
+
+        sima-cli bootimg --netboot --boardtype modalix --fwtype elxr --images /path/to/images
+
         # Prepare USB/SD recovery media that automatically recovers eMMC
 
         sima-cli bootimg -v 3.0.0 --recovery
 
     """
+
+    uses_netboot = netboot or autoflash
+    if images and not uses_netboot:
+        raise click.UsageError("--images requires --netboot or --autoflash.")
+    if delete_cache and not uses_netboot:
+        raise click.UsageError("--delete-cache requires --netboot or --autoflash.")
+    if images and version:
+        raise click.UsageError("--images and --version cannot be used together.")
+    if images and rootfs:
+        raise click.UsageError("--images and --rootfs cannot be used together.")
+    if not version and not images:
+        raise click.UsageError("Provide --version, or use --images for netboot.")
 
     if recovery:
         if netboot or autoflash or rootfs or devkit_ip:
@@ -696,12 +731,22 @@ def bootimg_cmd(ctx, version, boardtype, netboot, devkit_ip, autoflash, fwtype, 
     click.echo(f"   🔹 F/W Type  : {fwtype}")
     click.echo(f"   🔹 F/W Flavor: headless")
     click.echo(f"   🔹 Custom RootFS: {rootfs}")
+    click.echo(f"   🔹 Local Images: {images}")
     click.echo(f"   🔹 DevKit IP : {devkit_ip}")
     
     try:
         boardtype = boardtype if boardtype != 'mlsoc' else 'davinci'
         if netboot or autoflash:
-            setup_netboot(version, boardtype, internal, autoflash, flavor='headless', rootfs=rootfs, swtype=fwtype, allow_daily_fallback=force, devkit=devkit_ip)
+            netboot_options = {}
+            if images:
+                netboot_options["images"] = str(images)
+            if delete_cache:
+                netboot_options["delete_cache"] = True
+            setup_netboot(
+                version, boardtype, internal, autoflash, flavor='headless',
+                rootfs=rootfs, swtype=fwtype, allow_daily_fallback=force,
+                devkit=devkit_ip, **netboot_options,
+            )
             click.echo("✅ Netboot image prepared and TFTP server is running.")
         else:
             write_image(version, boardtype, fwtype, internal, flavor='headless', recovery=recovery)

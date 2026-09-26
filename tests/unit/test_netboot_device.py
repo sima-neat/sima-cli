@@ -156,7 +156,7 @@ def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_f
             patch.object(netboot, 'InteractiveTftpServer', return_value=server), \
             patch.object(netboot, 'ClientManager') as manager, \
             patch.object(netboot.threading, 'Thread', side_effect=start_thread), \
-            patch.object(netboot, 'run_cli', side_effect=lambda *a: events.append('cli')), \
+            patch.object(netboot, 'run_cli', side_effect=lambda *a, **k: events.append('cli')), \
             patch.object(device, 'resolve_device', return_value=selected), \
             patch.object(device, 'server_address', return_value='192.0.2.10'), \
             patch.object(device, 'configure_and_reboot', side_effect=lambda *a, **k: events.append('reboot')) as reboot:
@@ -292,8 +292,9 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
     server.is_running.wait.return_value = True
     manager = MagicMock()
 
-    def interact(client_manager):
+    def interact(client_manager, configuration=None):
         assert client_manager is manager
+        assert configuration is not None
         server.stop.assert_not_called()
         manager.shutdown.assert_not_called()
 
@@ -317,7 +318,9 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
             patch.object(click, 'confirm', return_value=confirmed):
         thread.return_value.is_alive.return_value = False
         netboot.setup_netboot('3.0', 'modalix', autoflash=autoflash)
-    cli.assert_called_once_with(manager)
+    cli.assert_called_once()
+    assert cli.call_args.args == (manager,)
+    assert cli.call_args.kwargs['configuration'].devkit == '192.0.2.1'
     if confirmed is not None:
         assert connect.return_value.close.call_count == (2 if confirmed else 1)
     if confirmed:
@@ -326,11 +329,28 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
         assert command.call_count == (0 if confirmed is None else 1)  # No writes or reboot.
         assert 'waiting for a device to connect' in capsys.readouterr().out
     if confirmed and autoflash:
-        flash.assert_called_once_with(manager, '192.0.2.1')
+        flash.assert_called_once()
+        assert flash.call_args.args == (manager, '192.0.2.1')
+        assert flash.call_args.kwargs['configuration'].devkit == '192.0.2.1'
     else:
         flash.assert_not_called()
     server.stop.assert_called_once_with(now=True)
     manager.shutdown.assert_called_once()
+
+
+def test_explicit_flash_ip_becomes_restoration_target():
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1', backup_dir='/boot/backup', changed=True
+    )
+    with patch.object(netboot, '_validate_override_ip', return_value=True), \
+            patch.object(netboot, 'copy_file_to_remote_board', return_value=False):
+        netboot.flash_emmc(
+            MagicMock(),
+            ['/images/root.img.gz'],
+            override_ip='192.0.2.99',
+            configuration=configuration,
+        )
+    assert configuration.devkit == '192.0.2.99'
 
 
 def test_configured_session_records_and_restores_exact_backup(capsys):

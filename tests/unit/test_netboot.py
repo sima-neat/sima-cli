@@ -90,6 +90,7 @@ class NetbootFlashTests(unittest.TestCase):
                 ["/images/modalix.img.gz"],
                 override_ip="192.168.4.20",
                 troot_image_path="/images/troot_blob.be",
+                configuration=None,
             )
         finally:
             netboot.emmc_image_paths = old_emmc

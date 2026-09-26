@@ -606,7 +606,13 @@ def _print_troot_programming_warning():
     )
 
 
-def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_path=None):
+def flash_emmc(
+    client_manager,
+    emmc_image_paths,
+    override_ip=None,
+    troot_image_path=None,
+    configuration=None,
+):
     """Flash eMMC on a selected client device."""
     if not emmc_image_paths:
         click.echo(
@@ -617,6 +623,8 @@ def flash_emmc(client_manager, emmc_image_paths, override_ip=None, troot_image_p
     selected_ip = _select_flash_target(client_manager, override_ip=override_ip)
     if not selected_ip:
         return
+    if configuration is not None and configuration.changed:
+        configuration.devkit = selected_ip
 
     click.echo(f"📡 Selected client: {selected_ip}")
     remote_dir = "/tmp"
@@ -983,7 +991,7 @@ def _discover_netboot_devices():
     _print_ip_recovery_help()
 
 
-def run_cli(client_manager):
+def run_cli(client_manager, configuration=None):
     """Run the interactive CLI for netboot commands."""
     click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'd' to discover devices, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
     click.echo("Press Ctrl+C at the netboot prompt to stop SSH reboot checks if the board's IP changed.")
@@ -1034,6 +1042,7 @@ def run_cli(client_manager):
                     emmc_image_paths,
                     override_ip=override_ip,
                     troot_image_path=troot_image_path,
+                    configuration=configuration,
                 )
             elif command == "":
                 continue
@@ -1043,7 +1052,7 @@ def run_cli(client_manager):
             click.echo("\n🛑 Exiting netboot session.")
             return True
 
-def auto_flash(client_manager, selected_ip, timeout=900):
+def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
     """Flash only the confirmed device, once, after its network boot is ready."""
     click.echo(f'Waiting for SSH on {selected_ip}; flashing will start automatically.')
     deadline = time.monotonic() + timeout
@@ -1062,7 +1071,7 @@ def auto_flash(client_manager, selected_ip, timeout=900):
                                            'to be running the network boot image.')
             click.echo(f'Starting automatic flash on {selected_ip}.')
             flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
-                       troot_image_path=troot_image_path)
+                       troot_image_path=troot_image_path, configuration=configuration)
             return
         if time.monotonic() >= deadline:
             raise click.ClickException(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')
@@ -1218,7 +1227,7 @@ def setup_netboot(
                 if autoflash:
                     click.echo('Automatic flashing is disabled because device setup was not confirmed.')
             elif autoflash:
-                auto_flash(client_manager, selected_devkit)
+                auto_flash(client_manager, selected_devkit, configuration=configuration)
         else:
             message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'
                            'Configure the DevKit manually through its serial console to boot from the network, '
@@ -1227,7 +1236,7 @@ def setup_netboot(
             if autoflash:
                 message.append('\n\nAutomatic flashing is disabled because no DevKit was selected.', style='bold yellow')
             console.print(Panel(message, title='Manual netboot setup', border_style='yellow'))
-        run_cli(client_manager)
+        run_cli(client_manager, configuration=configuration)
 
     except OSError as e:
         if tftp_ready:

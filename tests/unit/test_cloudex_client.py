@@ -173,7 +173,8 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     assert command[:3] == ["sudo", "-n", "--"]
     assert popen.call_args.kwargs["stdin"] is client.subprocess.DEVNULL
     api.call.assert_called_once_with(
-        "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]}
+        "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]},
+        deadline=1060,
     )
     assert result["remote_session_id"] == "d" * 32
     assert wait_forwarder.call_args.args[4] == 1060
@@ -200,7 +201,7 @@ def test_wait_forwarder_timeout_prints_sanitized_diagnostic_log(tmp_path, monkey
     process = Mock(poll=Mock(return_value=None))
     monkeypatch.setattr(client.time, "time", Mock(return_value=2000))
 
-    with pytest.raises(client.DirectHandshakeError, match="timed out after 60 seconds") as raised:
+    with pytest.raises(client.DirectHandshakeError, match="deadline expired") as raised:
         client._wait_forwarder(
             session_id, process, report, log, 1999, Mock()
         )
@@ -229,7 +230,7 @@ def test_failed_connect_keeps_the_reported_host_diagnostics(tmp_path, monkeypatc
     api.secret = allocation_profile()["allocation_secret"]
     api.allocation_id = allocation_profile()["allocation_id"]
 
-    def api_call(method, _path, _data=None):
+    def api_call(method, _path, _data=None, **_kwargs):
         if method == "POST":
             return allocated
         if method == "DELETE":

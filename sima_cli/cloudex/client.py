@@ -122,9 +122,12 @@ class CloudExAPI:
             session["allocation_id"],
         )
 
-    def call(self, method, path, data=None):
+    def call(self, method, path, data=None, deadline=None):
         body = json.dumps(data, separators=(",", ":")).encode() if data is not None else b""
         for attempt in range(4):
+            remaining = deadline - time.time() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                raise CloudExError("CloudEx API request timed out during connection setup")
             timestamp = str(int(time.time()))
             nonce = uuid.uuid4().hex
             headers = {
@@ -143,7 +146,7 @@ class CloudExAPI:
                     self.url + path,
                     data=body or None,
                     headers=headers,
-                    timeout=15,
+                    timeout=min(15, remaining) if remaining is not None else 15,
                 )
             except requests.RequestException as exc:
                 if attempt == 3:
@@ -157,7 +160,12 @@ class CloudExAPI:
                 detail = response.text[:4096]
                 if attempt == 3 or response.status_code not in {409, 429, 500, 502, 503, 504}:
                     raise APIError(response.status_code, detail)
-            time.sleep(0.5 * (attempt + 1))
+            delay = 0.5 * (attempt + 1)
+            if deadline is not None:
+                delay = min(delay, max(0, deadline - time.time()))
+                if delay <= 0:
+                    raise CloudExError("CloudEx API request timed out during connection setup")
+            time.sleep(delay)
         raise AssertionError("unreachable")
 
 
@@ -475,9 +483,8 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
     diagnostics = _diagnostic_log_excerpt(log_path)
     log_output = "\nForwarder log ({}):\n{}".format(log_path, diagnostics) if diagnostics else ""
     raise DirectHandshakeError(
-        "CloudEx connection setup timed out after {} seconds".format(
-            CONNECTION_SETUP_TIMEOUT_SECONDS
-        ) + last_stage + "; host diagnostics: " + str(log_path) + log_output
+        "CloudEx connection setup deadline expired" + last_stage
+        + "; host diagnostics: " + str(log_path) + log_output
     )
 
 
@@ -566,8 +573,10 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
     last_error = None
     connection_deadline = time.time() + CONNECTION_SETUP_TIMEOUT_SECONDS
     for number, selected_transport in enumerate(choices, 1):
-        if time.time() >= connection_deadline:
+        now = time.time()
+        if now >= connection_deadline:
             break
+        attempt_deadline = now + (connection_deadline - now) / (len(choices) - number + 1)
         session_id = uuid.uuid4().hex
         session = {
             "version": 1,
@@ -583,7 +592,10 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
         store.write_recovery(session)
         progress.update("Requesting a DevKit session ({}/{})".format(number, len(choices)))
         try:
-            allocated = api.call("POST", "/v1/p2p/ice-sessions", {"request_id": session_id})
+            allocated = api.call(
+                "POST", "/v1/p2p/ice-sessions", {"request_id": session_id},
+                deadline=attempt_deadline,
+            )
             if not isinstance(allocated, dict):
                 raise CloudExError("CloudEx API returned an invalid session configuration")
             remote_session_id = allocated.get("session_id")
@@ -621,10 +633,11 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
                 process,
                 report_path,
                 log_path,
-                _connection_deadline(allocated, connection_deadline),
+                _connection_deadline(allocated, attempt_deadline),
                 progress,
                 remote_status=lambda: api.call(
-                    "GET", "/v1/p2p/ice-sessions/" + remote_session_id
+                    "GET", "/v1/p2p/ice-sessions/" + remote_session_id,
+                    deadline=attempt_deadline,
                 ),
             )
             wireguard = allocated.get("wireguard") or {}

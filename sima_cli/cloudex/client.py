@@ -17,6 +17,8 @@ import requests
 
 DEFAULT_ROOT = Path.home() / ".sima-cli" / "cloudex"
 FORWARDER_NAME = "kerrigan-p2p-forwarder"
+CONNECTION_SETUP_TIMEOUT_SECONDS = 60
+DIAGNOSTIC_LOG_LINES = 50
 SAFE_FORWARDER_STAGES = {
     "session configuration accepted",
     "joined authenticated signaling session",
@@ -120,9 +122,12 @@ class CloudExAPI:
             session["allocation_id"],
         )
 
-    def call(self, method, path, data=None):
+    def call(self, method, path, data=None, deadline=None):
         body = json.dumps(data, separators=(",", ":")).encode() if data is not None else b""
         for attempt in range(4):
+            remaining = deadline - time.time() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                raise CloudExError("CloudEx API request timed out during connection setup")
             timestamp = str(int(time.time()))
             nonce = uuid.uuid4().hex
             headers = {
@@ -141,7 +146,7 @@ class CloudExAPI:
                     self.url + path,
                     data=body or None,
                     headers=headers,
-                    timeout=15,
+                    timeout=min(15, remaining) if remaining is not None else 15,
                 )
             except requests.RequestException as exc:
                 if attempt == 3:
@@ -155,7 +160,12 @@ class CloudExAPI:
                 detail = response.text[:4096]
                 if attempt == 3 or response.status_code not in {409, 429, 500, 502, 503, 504}:
                     raise APIError(response.status_code, detail)
-            time.sleep(0.5 * (attempt + 1))
+            delay = 0.5 * (attempt + 1)
+            if deadline is not None:
+                delay = min(delay, max(0, deadline - time.time()))
+                if delay <= 0:
+                    raise CloudExError("CloudEx API request timed out during connection setup")
+            time.sleep(delay)
         raise AssertionError("unreachable")
 
 
@@ -327,6 +337,32 @@ def _safe_selected_path(log_path):
     return selected
 
 
+def _diagnostic_log_excerpt(log_path):
+    """Return bounded, credential-free native diagnostics for terminal output."""
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    prefix = "kerrigan-p2p-forwarder:"
+    safe = [line.strip() for line in lines if line.startswith(prefix)]
+    if not safe:
+        return ""
+    return "\n".join(safe[-DIAGNOSTIC_LOG_LINES:])
+
+
+def _connection_deadline(allocated, overall_deadline=None):
+    """Bound connection establishment independently from the session lifetime."""
+    deadline = (overall_deadline if overall_deadline is not None
+                else time.time() + CONNECTION_SETUP_TIMEOUT_SECONDS)
+    for field in ("setup_expires_at", "expires_at"):
+        try:
+            candidate = float(allocated[field])
+        except (KeyError, TypeError, ValueError):
+            continue
+        deadline = min(deadline, candidate)
+    return deadline
+
+
 def _forwarder_failure(log_path):
     stage = _safe_last_stage(log_path)
     suffix = "; last stage: " + stage if stage else ""
@@ -444,8 +480,11 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
             raise CloudExError(_forwarder_failure(log_path) + "; host diagnostics: " + str(log_path))
         time.sleep(0.2)
     last_stage = "; last host stage: " + previous if previous else ""
+    diagnostics = _diagnostic_log_excerpt(log_path)
+    log_output = "\nForwarder log ({}):\n{}".format(log_path, diagnostics) if diagnostics else ""
     raise DirectHandshakeError(
-        "WireGuard handshake timed out" + last_stage + "; host diagnostics: " + str(log_path)
+        "CloudEx connection setup deadline expired" + last_stage
+        + "; host diagnostics: " + str(log_path) + log_output
     )
 
 
@@ -532,7 +571,12 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
     choices = (["p2p"] * attempts + ["routed"] if transport == "auto"
                else ["routed"] if transport == "turn" else ["p2p"] * attempts)
     last_error = None
+    connection_deadline = time.time() + CONNECTION_SETUP_TIMEOUT_SECONDS
     for number, selected_transport in enumerate(choices, 1):
+        now = time.time()
+        if now >= connection_deadline:
+            break
+        attempt_deadline = now + (connection_deadline - now) / (len(choices) - number + 1)
         session_id = uuid.uuid4().hex
         session = {
             "version": 1,
@@ -548,7 +592,10 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
         store.write_recovery(session)
         progress.update("Requesting a DevKit session ({}/{})".format(number, len(choices)))
         try:
-            allocated = api.call("POST", "/v1/p2p/ice-sessions", {"request_id": session_id})
+            allocated = api.call(
+                "POST", "/v1/p2p/ice-sessions", {"request_id": session_id},
+                deadline=attempt_deadline,
+            )
             if not isinstance(allocated, dict):
                 raise CloudExError("CloudEx API returned an invalid session configuration")
             remote_session_id = allocated.get("session_id")
@@ -586,10 +633,11 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
                 process,
                 report_path,
                 log_path,
-                expires_at,
+                _connection_deadline(allocated, attempt_deadline),
                 progress,
                 remote_status=lambda: api.call(
-                    "GET", "/v1/p2p/ice-sessions/" + remote_session_id
+                    "GET", "/v1/p2p/ice-sessions/" + remote_session_id,
+                    deadline=attempt_deadline,
                 ),
             )
             wireguard = allocated.get("wireguard") or {}

@@ -157,11 +157,9 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
     popen = Mock(return_value=process)
     monkeypatch.setattr(client.subprocess, "Popen", popen)
-    monkeypatch.setattr(
-        client,
-        "_wait_forwarder",
-        Mock(return_value={"status": "connected", "path": "direct"}),
-    )
+    wait_forwarder = Mock(return_value={"status": "connected", "path": "direct"})
+    monkeypatch.setattr(client, "_wait_forwarder", wait_forwarder)
+    monkeypatch.setattr(client.time, "time", Mock(return_value=1000))
 
     result = client.connect(allocation_profile(), store, Mock(), attempts=1, transport="p2p")
 
@@ -178,6 +176,39 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
         "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]}
     )
     assert result["remote_session_id"] == "d" * 32
+    assert wait_forwarder.call_args.args[4] == 1060
+
+
+def test_connection_deadline_honors_shorter_server_setup_expiry(monkeypatch):
+    monkeypatch.setattr(client.time, "time", Mock(return_value=1000))
+
+    assert client._connection_deadline({
+        "setup_expires_at": 1045,
+        "expires_at": 5000,
+    }, 1060) == 1045
+
+
+def test_wait_forwarder_timeout_prints_sanitized_diagnostic_log(tmp_path, monkeypatch):
+    session_id = "b" * 32
+    report = tmp_path / "report.json"
+    log = tmp_path / "forwarder.log"
+    log.write_text(
+        "untrusted output that must not be printed\n"
+        "kerrigan-p2p-forwarder: joined authenticated signaling session\n"
+        "kerrigan-p2p-forwarder: ICE connection state Failed\n"
+    )
+    process = Mock(poll=Mock(return_value=None))
+    monkeypatch.setattr(client.time, "time", Mock(return_value=2000))
+
+    with pytest.raises(client.DirectHandshakeError, match="timed out after 60 seconds") as raised:
+        client._wait_forwarder(
+            session_id, process, report, log, 1999, Mock()
+        )
+
+    message = str(raised.value)
+    assert "Forwarder log" in message
+    assert "ICE connection state Failed" in message
+    assert "untrusted output" not in message
 
 
 def test_failed_connect_keeps_the_reported_host_diagnostics(tmp_path, monkeypatch):

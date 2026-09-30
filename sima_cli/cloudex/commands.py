@@ -18,6 +18,7 @@ from .client import (
     authorize_admin,
     connect,
     decode_key,
+    disconnect_requires_admin,
     disconnect_session,
     find_forwarder,
     inspect_session,
@@ -351,8 +352,11 @@ def disconnect_command(session_id, disconnect_all):
     for session in selected:
         label = session.get("device", "DevKit " + _short(session.get("allocation_id")))
         try:
+            if disconnect_requires_admin(session):
+                console.print("[cyan]→[/cyan] Authorizing local tunnel cleanup")
+                _authorize_supported_host()
             with StageProgress("Disconnecting {}".format(label)) as progress:
-                result = disconnect_session(session, store, progress)
+                result = disconnect_session(session, store, progress, authorize=False)
                 if result == "stale":
                     progress.success("Removed stale record for {}; newer connection retained".format(label))
                 elif result == "expired":

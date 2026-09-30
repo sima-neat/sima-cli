@@ -202,6 +202,49 @@ def test_disconnect_all_handles_each_session(monkeypatch):
     assert "Disconnected two" in result.output
 
 
+def test_disconnect_authorizes_running_forwarder_before_progress(monkeypatch, _authorize_cloudex):
+    store = Mock()
+    session = _session("a" * 32, "one")
+    store.list.return_value = [session]
+    monkeypatch.setattr(commands, "_store", Mock(return_value=store))
+    monkeypatch.setattr(commands, "disconnect_requires_admin", Mock(return_value=True))
+    events = []
+    _authorize_cloudex.side_effect = lambda: events.append("authorize")
+
+    class TrackingProgress(commands.StageProgress):
+        def __enter__(self):
+            events.append("progress")
+            return super().__enter__()
+
+    monkeypatch.setattr(commands, "StageProgress", TrackingProgress)
+    disconnect = Mock(return_value="disconnected")
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+
+    result = invoke_main(["cloudex", "disconnect"])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["authorize", "progress"]
+    assert disconnect.call_args.kwargs == {"authorize": False}
+    assert "Authorizing local tunnel cleanup" in result.output
+
+
+def test_disconnect_skips_admin_authorization_without_running_forwarder(
+    monkeypatch, _authorize_cloudex
+):
+    store = Mock()
+    store.list.return_value = [_session("a" * 32, "one")]
+    monkeypatch.setattr(commands, "_store", Mock(return_value=store))
+    monkeypatch.setattr(commands, "disconnect_requires_admin", Mock(return_value=False))
+    disconnect = Mock(return_value="disconnected")
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+
+    result = invoke_main(["cloudex", "disconnect"])
+
+    assert result.exit_code == 0, result.output
+    _authorize_cloudex.assert_not_called()
+    assert disconnect.call_args.kwargs == {"authorize": False}
+
+
 def test_disconnect_interactive_uses_checkbox_for_multiple_sessions(monkeypatch):
     store = Mock()
     sessions = [_session("a" * 32, "one"), _session("b" * 32, "two")]

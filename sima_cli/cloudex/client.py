@@ -734,6 +734,11 @@ def session_expired(session, now=None):
     return deadline <= (time.time() if now is None else now)
 
 
+def disconnect_requires_admin(session):
+    """Whether disconnecting this record must stop a privileged process."""
+    return _forwarder_running(session.get("forwarder_pid"))
+
+
 def disconnect_session(session, store, progress, authorize=True, preserve_log=False):
     """Remove one local and remote session, preserving state until confirmed."""
     if session_expired(session):
@@ -742,13 +747,13 @@ def disconnect_session(session, store, progress, authorize=True, preserve_log=Fa
         # already discarded the session, but still stop a surviving local
         # forwarder before removing its credentials and runtime state.
         progress.update("Removing expired local CloudEx record")
-        if _forwarder_running(session.get("forwarder_pid")):
+        if disconnect_requires_admin(session):
             if authorize:
                 authorize_admin()
             _stop_forwarder(session)
         store.delete(session["session_id"], preserve_log=preserve_log)
         return "expired"
-    if authorize:
+    if authorize and disconnect_requires_admin(session):
         authorize_admin()
     api = CloudExAPI.from_session(session)
     progress.update("Stopping the local encrypted tunnel")

@@ -486,6 +486,52 @@ def test_disconnect_expired_record_deletes_locally_without_api_request(tmp_path,
     assert store.list() == []
 
 
+def test_disconnect_unexpired_record_without_forwarder_skips_admin_authorization(
+    tmp_path, monkeypatch
+):
+    store = client.SessionStore(tmp_path / "cloudex")
+    session = session_record()
+    store.write(session)
+    api = Mock()
+    api.call.side_effect = [
+        {"status": "closing"},
+        {"status": "closed", "cleanup_confirmed": True},
+    ]
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+    authorize = Mock()
+    monkeypatch.setattr(client, "authorize_admin", authorize)
+    monkeypatch.setattr(client, "_forwarder_running", Mock(return_value=False))
+    monkeypatch.setattr(client, "_stop_forwarder", Mock())
+
+    assert client.disconnect_session(session, store, Mock()) == "disconnected"
+
+    authorize.assert_not_called()
+    assert store.list() == []
+
+
+def test_disconnect_unexpired_record_with_forwarder_authorizes_before_stop(
+    tmp_path, monkeypatch
+):
+    store = client.SessionStore(tmp_path / "cloudex")
+    session = session_record()
+    store.write(session)
+    api = Mock()
+    api.call.side_effect = [
+        {"status": "closing"},
+        {"status": "closed", "cleanup_confirmed": True},
+    ]
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+    events = []
+    monkeypatch.setattr(client, "_forwarder_running", Mock(return_value=True))
+    monkeypatch.setattr(client, "authorize_admin", lambda: events.append("authorize"))
+    monkeypatch.setattr(client, "_stop_forwarder", lambda _session: events.append("stop"))
+
+    assert client.disconnect_session(session, store, Mock()) == "disconnected"
+
+    assert events == ["authorize", "stop"]
+    assert store.list() == []
+
+
 def test_disconnect_recognizes_legacy_numeric_string_expiration(tmp_path, monkeypatch):
     store = client.SessionStore(tmp_path / "cloudex")
     session = session_record()

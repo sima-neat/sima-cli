@@ -459,8 +459,17 @@ jobs:
               exit 1
             fi
 
-            echo "::warning::Docker is unavailable; starting Colima."
-            colima start
+            docker_context="$(docker context show)"
+            docker_endpoint="$(docker context inspect "$docker_context" --format '{{.Endpoints.docker.Host}}')"
+            if [[ "$docker_endpoint" =~ \.colima/([^/]+)/docker\.sock$ ]]; then
+              colima_profile="${BASH_REMATCH[1]}"
+            else
+              echo "::error::Docker context '$docker_context' is unavailable but does not use a Colima socket: $docker_endpoint"
+              exit 1
+            fi
+
+            echo "::warning::Docker is unavailable; starting Colima profile '$colima_profile'."
+            colima start --profile "$colima_profile"
 
             for attempt in $(seq 1 30); do
               if docker info >/dev/null 2>&1; then

@@ -71,6 +71,68 @@ class TestCliUpdate(unittest.TestCase):
         self.assertIn("--dryrun is only supported", result.output)
         perform_update.assert_not_called()
 
+    def test_internal_linux_host_update_installs_daily_package_without_device_ip(self):
+        runner = CliRunner()
+        version = "3.0.0_daily_develop_B1774"
+
+        with patch("sima_cli.cli.check_for_update", return_value=False), \
+             patch("sima_cli.cli.get_environment_type", return_value=("host", "linux")), \
+             patch("sima_cli.cli.check_artifactory_reachability", return_value=False), \
+             patch("sima_cli.cli.install_host_package") as install_host_package, \
+             patch("sima_cli.cli.handle_update") as handle_update, \
+             patch("sima_cli.cli.perform_update") as perform_update:
+            result = runner.invoke(main, ["-i", "update", "-v", version, "-y"], obj={})
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        install_host_package.assert_called_once_with(version, auto_confirm=True)
+        handle_update.assert_not_called()
+        perform_update.assert_not_called()
+
+    def test_internal_linux_host_update_opens_version_picker_when_version_is_omitted(self):
+        runner = CliRunner()
+
+        with patch("sima_cli.cli.check_for_update", return_value=False), \
+             patch("sima_cli.cli.get_environment_type", return_value=("host", "linux")), \
+             patch("sima_cli.cli.check_artifactory_reachability", return_value=False), \
+             patch("sima_cli.cli.install_host_package") as install_host_package:
+            result = runner.invoke(main, ["-i", "update"], obj={})
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        install_host_package.assert_called_once_with(None, auto_confirm=False)
+
+    def test_internal_host_update_rejects_non_linux_host(self):
+        runner = CliRunner()
+
+        with patch("sima_cli.cli.check_for_update", return_value=False), \
+             patch("sima_cli.cli.get_environment_type", return_value=("host", "mac")), \
+             patch("sima_cli.cli.check_artifactory_reachability", return_value=False), \
+             patch("sima_cli.cli.install_host_package") as install_host_package:
+            result = runner.invoke(
+                main,
+                ["-i", "update", "-v", "3.0.0_daily_develop_B1774"],
+                obj={},
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("only supported on Linux hosts", result.output)
+        install_host_package.assert_not_called()
+
+    def test_linux_host_update_requires_internal_mode(self):
+        runner = CliRunner()
+
+        with patch("sima_cli.cli.check_for_update", return_value=False), \
+             patch("sima_cli.cli.get_environment_type", return_value=("host", "linux")), \
+             patch("sima_cli.cli.install_host_package") as install_host_package:
+            result = runner.invoke(
+                main,
+                ["update", "-v", "3.0.0_daily_develop_B1774"],
+                obj={},
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("require -i/--internal", result.output)
+        install_host_package.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

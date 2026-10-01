@@ -105,7 +105,7 @@ pip install sima-cli
 | [`sima-cli sdk`](commands/sima-cli-sdk.md) | Manage and launch SiMa SDK 2.0 container environments (Beta). |
 | [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md) | Update sima-cli manually from PyPI or a direct wheel URL. |
 | [`sima-cli serial`](commands/sima-cli-serial.md) | Connect to the UART serial console of the DevKit. |
-| [`sima-cli update`](commands/sima-cli-update.md) | Update the software on a SiMa DevKit or remote SiMa device. |
+| [`sima-cli update`](commands/sima-cli-update.md) | Update a SiMa DevKit, remote device, or Linux PCIe host. |
 
 ## Complete Command List
 

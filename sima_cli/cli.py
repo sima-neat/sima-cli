@@ -9,6 +9,7 @@ from rich.panel import Panel
 from rich.text import Text
 from sima_cli.utils.env import get_environment_type
 from sima_cli.update.updater import perform_update
+from sima_cli.update.host import install_host_package
 from sima_cli.update.swu import handle_update
 from sima_cli.model_zoo.model import list_models, download_model, describe_model
 from sima_cli.app_zoo.app import list_apps, download_app, describe_app
@@ -360,7 +361,7 @@ def download(ctx, url, dest):
 @click.pass_context
 def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, verbose, reboot, signing_cert):
     """
-    Update the software on a SiMa DevKit or remote SiMa device.
+    Update a SiMa DevKit, remote device, or Linux PCIe host.
 
     This command downloads and applies system software updates across
     different SiMa environments (Modalix, MLSoC/Davinci, headless images,
@@ -401,6 +402,9 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
 
       • Remote updates require an accessible IP address (``--ip``)
 
+      • PCIe host updates require Linux and ``-i/--internal``; omit the
+        version to choose from the available daily platform builds
+
     Typical Use Cases:
 
       • Updating a SiMa DevKit to the latest GA release
@@ -410,6 +414,8 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
       • Applying a specific firmware version during bring-up
 
       • Running updates from both the device itself or a host PC
+
+      • Installing a daily PCIe host package on a Linux development host
 
     \b
     Examples:
@@ -442,6 +448,14 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
 
         sima-cli -i update -y
 
+        # Select and install a PCIe host package from the daily build catalog (Linux only)
+
+        sima-cli -i update
+
+        # Or install a specific indexed daily platform build
+
+        sima-cli -i update -v 3.0.0_daily_develop_B1774
+
         # Update legacy eLxr (<3.0) from the public pre-release mirror without prompts
 
         sima-cli -y update -f -y
@@ -457,6 +471,30 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
     """
     # Prioritize explicit --version option over positional argument
     version_or_url = version_option or version_or_url
+    env_type, env_subtype = get_environment_type()
+    internal = ctx.obj.get("internal", False)
+    auto_confirm = yes or ctx.obj.get("yes", False)
+
+    device_update_options = (
+        dryrun
+        or troot_only
+        or inspect_state
+        or verbose
+        or reboot
+        or force
+        or signing_cert is not None
+        or flavor != "auto"
+    )
+    # A plain update with no remote target means installing the PCIe host
+    # package. Device-specific operations continue to the existing dispatcher.
+    if env_type == "host" and not ip and not device_update_options:
+        if env_subtype != "linux":
+            raise click.UsageError("PCIe host updates are only supported on Linux hosts.")
+        if not internal:
+            raise click.UsageError("Linux PCIe host updates require -i/--internal.")
+        install_host_package(version_or_url, auto_confirm=auto_confirm)
+        return
+
     is_elxr = is_devkit_running_elxr()
     if inspect_state and (version_or_url or dryrun or force or troot_only or reboot or signing_cert is not None or flavor != 'auto'):
         raise click.UsageError("--inspect cannot be combined with installation options.")

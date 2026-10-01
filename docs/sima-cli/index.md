@@ -79,9 +79,12 @@ pip install sima-cli
 
 | Guide | Description |
 | --- | --- |
-| [Neat SDK Networking Setup](sdk-networking/index.md) | Understand how SDK, Docker, Insight, and DevKit networking are configured. |
-| [Troubleshoot SDK Networking](sdk-networking/troubleshooting.md) | Run network diagnostics, repair Linux shared-network routing, and collect support bundles. |
-| [Roll Back SDK Network Changes](sdk-networking/rollback.md) | Preview and undo Linux SDK network setup or repair changes. |
+| [Boot Image and Netboot Operations](guides/boot-image-and-netboot.md) | Prepare local or downloaded images, configure remote netboot safely, recover from address changes, and prepare eMMC for flashing with `sima-cli bootimg`. |
+| [SDK Setup and Extension Management](guides/sdk-setup.md) | Choose optional SDK services, browser VS Code extensions, and the Model Compiler installation source when running `sima-cli sdk setup`. |
+| [System Update Operations](guides/system-updates.md) | Use daily builds, signed eLxr 3.0 SWU bundles, A/B inspection, storage staging, and persistent-overlay handling with `sima-cli update`. |
+| [Neat SDK Networking Setup](sdk-networking/index.md) | The Neat SDK, also known as the Neat Development Environment, runs inside a Docker container. `sima-cli sdk setup` creates the container, prepares the host workspace mount, starts Insight when enabled, and publishes the container ports that the host browser and a DevKit use during development. |
+| [Roll Back SDK Network Changes](sdk-networking/rollback.md) | Use rollback when you want to inspect or undo Linux host networking changes made by SDK setup or network repair. |
+| [Troubleshoot SDK Networking](sdk-networking/troubleshooting.md) | Use the network doctor when the SDK container, Insight UI, DevKit SSH, RTSP, WebRTC video, or workspace sync does not behave as expected. |
 
 ## Top-Level Commands
 
@@ -105,7 +108,7 @@ pip install sima-cli
 | [`sima-cli sdk`](commands/sima-cli-sdk.md) | Manage and launch SiMa SDK 2.0 container environments (Beta). |
 | [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md) | Update sima-cli manually from PyPI or a direct wheel URL. |
 | [`sima-cli serial`](commands/sima-cli-serial.md) | Connect to the UART serial console of the DevKit. |
-| [`sima-cli update`](commands/sima-cli-update.md) | Update the software on a SiMa DevKit or remote SiMa device. |
+| [`sima-cli update`](commands/sima-cli-update.md) | Update a SiMa DevKit, remote device, or Linux PCIe host. |
 
 ## Complete Command List
 

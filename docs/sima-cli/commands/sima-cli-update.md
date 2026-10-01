@@ -1,6 +1,6 @@
 # `sima-cli update`
 
-Update the software on a SiMa DevKit or remote SiMa device.
+Update a SiMa DevKit, remote device, or Linux PCIe host.
 
 Parent command: [`sima-cli`](./sima-cli.md)
 
@@ -9,46 +9,6 @@ Parent command: [`sima-cli`](./sima-cli.md)
 ```bash
 sima-cli update [OPTIONS] [VERSION_OR_URL]
 ```
-
-## Internal daily updates on eLxr 3.0+
-
-Internal mode (`-i`, `--internal`, or `SIMA_CLI_INTERNAL=1`) displays an
-informational warning panel: **Pre-release software may be unstable. Use at your
-own risk.** This applies across internal commands and does not add a confirmation
-prompt. The panel is written to stderr so JSON stdout remains usable.
-
-On Modalix devices already running eLxr 3.0+, `sima-cli -i update` first queries
-Artifactory. If credentials are missing, access returns HTTP 401/403, the server
-returns HTTP 5xx, or the connection fails or times out, it announces the reason
-and falls back to the [daily platform index](https://artifacts.neat.sima.ai/daily-platform-images/index.json).
-A successful Artifactory query with no matching builds does not trigger fallback.
-
-```bash
-# Search for matching builds; add --ip <device-ip> when running from a host.
-sima-cli -i update -f -v 3.0
-# Select an exact build directly.
-sima-cli -i update -f -v 3.0.0_daily_develop_B1247
-```
-
-Exact matches take priority. Partial queries such as `3.0`, `develop`, or `B1247`
-filter the index. Multiple matches show an aligned selector ordered by descending
-build number, without build times. Only builds containing a palette SWU are
-eligible. A missing build may have expired from the mirror's retained daily builds.
-
-The selected build's indexed `artifacts/palette/elxr-palette-modalix-*.swu` is
-downloaded from the public mirror without Artifactory credentials. Its size and
-SHA-256 are verified before the existing signed SWUpdate installation. With `-f`, if an
-Artifactory download fails after selection, fallback is restricted to that exact
-build. The selected build identity is also used for post-reboot verification.
-
-An unavailable index, missing artifact, or failed integrity check stops before
-installation. If connection is lost after installation starts, inspect the board
-with `sima-cli update --inspect --ip <device-ip>` before retrying.
-
-Devices running eLxr 2.1.3 retain their existing APT update behavior, remote-update
-limitations, and `--force` policy. Explicitly targeting 3.0 on those devices is
-still rejected; recovery/provisioning is required first. This mirror fallback
-applies only to eLxr 3.0+ SWUpdate, not bootimg or recovery-media creation.
 
 ## Options
 
@@ -59,13 +19,13 @@ applies only to eLxr 3.0+ SWUpdate, not bootimg or recovery-media creation.
 | `-y, --yes` | Assume yes for update confirmation prompts and select the newest matching full-system build. |
 | `-p, --passwd` | Password for remote board SSH or local ELXR sudo authentication. (default: edgeai) |
 | `--flavor` | Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above (default: auto) |
-| `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror (eLxr only). On 3.0+, signed-bundle verification remains required. The legacy 2.1 behavior is unchanged. |
+| `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror (eLxr only). eLxr 3.0+ still verifies signed full-system bundles. On eLxr 2.1, this disables repository signature verification and, without --internal, selects the mirror directly. |
 | `-t, --troot_only` | Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion. |
-| `--dryrun` | For ELXR updates only, validate the update path and print the simaai-ota command without running it. |
-| `--inspect` | Show eLxr 3.0+ A/B slots and overlay customizations without updating, locally or through `--ip`. |
-| `--verbose` | Show detailed overlay package and file categories during eLxr 3.0+ inspection or update. |
-| `--signing-cert` | Use a specific SWUpdate PEM verification certificate URL or local file. |
-| `--reboot` | Reboot after a successful eLxr 3.0+ installation and verify remote boot health. |
+| `--dryrun` | For eLxr updates, validate the update path and show the command without installing. |
+| `--inspect` | Show eLxr 3.0+ A/B slots and overlay customizations without updating (local or --ip). |
+| `--verbose` | Show detailed overlay file categories during eLxr 3.0+ inspection or update. |
+| `--signing-cert` | SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the certificate for the selected channel when configured (eLxr 3.0+). |
+| `--reboot` | Reboot after successful eLxr 3.0+ installation; verify remote boot health. |
 
 ## Arguments
 
@@ -78,12 +38,30 @@ applies only to eLxr 3.0+ SWUpdate, not bootimg or recovery-media creation.
 ```text
 Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
 
-  Update the software on a SiMa DevKit or remote SiMa device.
+  Update a SiMa DevKit, remote device, or Linux PCIe host.
 
   This command downloads and applies system software updates across different
   SiMa environments (Modalix, MLSoC/Davinci, headless images, or remote
   devices accessible over the network). Updates may be installed directly on
   the device or pushed from a development host.
+
+  eLxr 3.0+ uses signed full-system SWU bundles. Use --inspect for A/B state,
+  --ip for remote updates, and --reboot to reboot after installation. The
+  verification certificate is downloaded for the selected channel when
+  configured; use --signing-cert URL_OR_FILE for an image signed with your own
+  certificate. Developer-portal version lookup for 3.0 is not available yet.
+
+  Internal mode warns that pre-release software may be unstable and is used at
+  your own risk. On eLxr 3.0+, unavailable Artifactory access falls back to
+  the public daily platform mirror, including missing login, HTTP 401/403,
+  connection failures, timeouts, and server errors. Exact build names select
+  directly; partial matches show builds newest first by build number.
+
+  Mirror downloads verify the indexed size and SHA-256 before signed
+  installation. A missing build or failed download stops before installation.
+  A connection loss after installation starts requires inspecting the board
+  before retrying. Devices running eLxr 2.1.3 retain the APT update flow;
+  upgrading those devices to 3.0 requires recovery/provisioning first.
 
   How Version Resolution Works:
 
@@ -105,6 +83,9 @@ Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
 
     • Remote updates require an accessible IP address (``--ip``)
 
+    • PCIe host updates require Linux and ``-i/--internal``; omit the
+    version to choose from the available daily platform builds
+
   Typical Use Cases:
 
     • Updating a SiMa DevKit to the latest GA release
@@ -114,6 +95,8 @@ Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
     • Applying a specific firmware version during bring-up
 
     • Running updates from both the device itself or a host PC
+
+    • Installing a daily PCIe host package on a Linux development host
 
   Examples:
 
@@ -137,7 +120,8 @@ Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
 
       sima-cli update -v 1.7.0 -y
 
-      # Update ELXR to the latest official release without prompts
+      # Update legacy eLxr (<3.0) to the latest official release without
+      prompts
 
       sima-cli update -y
 
@@ -145,11 +129,21 @@ Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
 
       sima-cli -i update -y
 
-      # Update ELXR from the public pre-release mirror without prompts
+      # Select and install a PCIe host package from the daily build catalog
+      (Linux only)
+
+      sima-cli -i update
+
+      # Or install a specific indexed daily platform build
+
+      sima-cli -i update -v 3.0.0_daily_develop_B1774
+
+      # Update legacy eLxr (<3.0) from the public pre-release mirror without
+      prompts
 
       sima-cli -y update -f -y
 
-      # Validate ELXR update path without running simaai-ota
+      # Validate the eLxr update path without installing
 
       sima-cli update --dryrun
 
@@ -164,189 +158,36 @@ Options:
                                  argument if both are given.
   --ip TEXT                      Target device IP address for remote firmware
                                  update.
-  -y, --yes                      Assume yes for update confirmation prompts and select the newest matching full-system build.
+  -y, --yes                      Assume yes for update confirmation prompts
+                                 and select the newest matching full-system
+                                 build.
   -p, --passwd TEXT              Password for remote board SSH or local ELXR
                                  sudo authentication.  [default: edgeai]
   --flavor [headless|full|auto]  Firmware flavor: 'full' image supports NVMe
                                  and GUI on Modalix DevKit. This option is
                                  deprecated for 2.0 and above  [default: auto]
   -f, --force                    If the internal mirror is unreachable, fall
-                                 back to the external pre-release mirror
-                                 (eLxr only). eLxr 3.0+ still verifies signed
-                                 full-system bundles. On eLxr 2.1, this disables
-                                 repository signature verification and, without
-                                 --internal, selects the mirror directly.
+                                 back to the external pre-release mirror (eLxr
+                                 only). eLxr 3.0+ still verifies signed full-
+                                 system bundles. On eLxr 2.1, this disables
+                                 repository signature verification and,
+                                 without --internal, selects the mirror
+                                 directly.
   -t, --troot_only               Only update tRoot and not the root file
                                  system, compatible with Yocto system only,
                                  used for Yocto to eLxr conversion.
-  --dryrun                       For ELXR updates only, validate the update
-                                 path and print the simaai-ota command without
-                                 running it.
+  --dryrun                       For eLxr updates, validate the update path
+                                 and show the command without installing.
   --inspect                      Show eLxr 3.0+ A/B slots and overlay
                                  customizations without updating (local or
                                  --ip).
   --verbose                      Show detailed overlay file categories during
                                  eLxr 3.0+ inspection or update.
-  --signing-cert URL_OR_FILE     SWUpdate PEM verification certificate: HTTP(S)
-                                 URL or local file.
+  --signing-cert URL_OR_FILE     SWUpdate PEM verification certificate:
+                                 HTTP(S) URL or local file. Defaults to the
+                                 certificate for the selected channel when
+                                 configured (eLxr 3.0+).
   --reboot                       Reboot after successful eLxr 3.0+
                                  installation; verify remote boot health.
   --help                         Show this message and exit.
 ```
-
-## eLxr 3.0 and later
-
-On an A/B-provisioned Modalix system, `update` installs a signed full-system
-SWU bundle into the inactive slot. It preserves the running slot and persistent
-`/data`. Developer-portal version lookup for 3.0 is not available yet; use an
-explicit bundle URL/file or internal build selection.
-
-```sh
-sima-cli update /path/to/full-system.swu
-sima-cli update --ip 192.168.6.5 /path/to/full-system.swu
-sima-cli update --inspect
-sima-cli update --ip 192.168.6.5 --inspect
-```
-
-Staging checks `/data`, `/media/nvme/swupdate`, then `/tmp`, choosing the first
-location with room for the bundle plus a 64 MiB margin. If none is usable,
-the error reports the storage checks and asks you to remove unneeded files in
-`/data`, showing the required free space before retrying. This applies both to
-updates on the board and to `update --ip` from a host.
-
-SWUpdate also needs temporary extraction space in `/tmp`. Before installation,
-the CLI checks that `/tmp` has free space equal to the SWU archive size plus
-64 MiB, after the bundle has been staged. The uncompressed CPIO archive size
-bounds its extracted members, including `rootfs.ext4.gz`; the raw image handler
-decompresses that member directly into the inactive slot. When `/tmp` is also
-the bundle's staging location, selection reserves room for both copies.
-
-For a RAM-backed `/tmp`, available RAM is checked even when `df` reports enough
-space: a tmpfs size limit does not guarantee that memory is available.
-
-If a dedicated `/tmp` tmpfs is too small, the CLI can increase its limit. The
-existing memory guard reserves at least 512 MiB or 10% of total RAM for the
-system, whichever is larger. Raising a tmpfs limit does not add physical RAM.
-Disk-backed `/tmp` filesystems are not resized. If there is insufficient
-extraction space and safe expansion is unavailable, installation stops before
-SWUpdate starts, even if `/data` or NVMe has enough space for the bundle.
-
-`--dryrun` reports a feasible expansion without remounting `/tmp`. A real
-expansion lasts for the current mount (normally until reboot); it does not edit
-persistent mount configuration. The CLI rechecks free space after expansion.
-
-NVMe is mounted or remounted
-read/write before checking it (except during `--dryrun`). If no location is
-usable, the update stops with a storage error. Local downloads use one staged
-copy. After successful installation, the downloaded bundle and its temporary
-staging directory are removed on the device immediately after SWUpdate succeeds,
-before checking activation or rebooting. Remote updates do not require a second
-SSH request to remove the device download. Failed installations retain their
-staged bundle for diagnosis; user-supplied source files are never removed.
-
-Remote updates download on the host, transfer to the selected board storage,
-verify the transfer checksum, and run SWUpdate there. Both modes verify the signed bundle
-with `/etc/swupdate/public.pem` and select `update,full`. If that default key
-is absent, the CLI temporarily provisions the bundled SiMa certificate under
-`/tmp` and removes it after the update attempt. Existing keys are preserved.
-`--key` can select a
-verification key already installed on the target. Firmware-only/OS-only modes
-are not supported in this flow. `--force` only permits external pre-release
-mirror fallback; signature verification remains required.
-
-Download and transfer show byte progress. Installation shows the current
-artifact, step, and percentage from `swupdate-progress` when available; otherwise
-installer diagnostics remain visible. `--dryrun` checks the target and resolves
-the bundle without installation or reboot.
-
-A successful installation reports that a reboot is required. Add `--reboot` to
-reboot after success; for a remote board the CLI reconnects and checks the new
-slot and health confirmation. The board's health service commits the boot;
-`update` does not clear pending or rollback flags. Connection loss or a failed
-install must be inspected before retrying.
-
-`--inspect` displays both slots, their versions/OS and validity, the running and
-next-boot slots, pending-update status, rollback status, and boot count. It does
-not download or install firmware, switch slots, reboot, or self-update the CLI.
-Migration from an older layout to the 3.0 A/B layout requires provisioning/recovery.
-
-### Inspection with a persistent root overlay
-
-On overlay-enabled images, `--inspect` reads the active slot version from the
-pristine root at `/oldroot`, after verifying that the mount belongs to the running
-rootfs device. It does not use the overlay's package
-database to identify the slot. If the platform inspector omits fallback metadata,
-the CLI temporarily mounts the peer rootfs read-only with journal replay disabled
-and restores its previous LVM activation state. Inspection does not switch slots
-or clear boot flags. Missing or unverifiable metadata remains unknown.
-
-For eLxr 3.0+, `sima-cli -i update -f` tries Artifactory first and permits
-external pre-release fallback on supported discovery or artifact-download failures.
-Without `-f`, it stops instead of switching mirrors.
-
-### Overlay customization overview (3.0)
-
-Both `sima-cli update --inspect` and regular 3.0 full-system updates display a
-read-only overlay overview. Remote operations analyze the target device. Updates
-show it before build selection and installation confirmation, including with `-y`.
-An animated text indicator remains visible while package, configuration, and local
-software discovery is running.
-
-The report compares the effective dpkg database with the accessible lower layer's
-package database to list additional, changed, and removed packages. It also groups
-upper-layer entries into configuration/services, local software candidates,
-deletions/opaque directories, package state/caches/logs, and other files. The
-summary separates explicitly installed packages from supporting dependencies,
-lists software roots using the final path component and full path, and relates the
-shared overlay to an alternative slot already selected for the next boot. It
-identifies the baseline image and explains the consequences of keeping or clearing
-the overlay. Raw OS metadata and filesystem bookkeeping are omitted by default; use
-`--verbose` to include the complete package-version comparison, supporting
-dependencies, directory counts, and overlay-category counts for diagnosis. In
-the package comparison, `Image` is the pristine lower filesystem and `Overlay`
-is the effective package state retained in the persistent upper layer.
-
-When the `simaai-palette-*` package identifies different package-set build IDs in
-those two databases, the normal summary highlights both IDs and explains that the
-persistent overlay retained metadata from an earlier image. It warns that APT may
-then report or select incorrect versions and that image and overlay files may be
-mixed. It also explains that this commonly occurs when `apt install` was used on
-the previous platform version. The marker package used for this conclusion is
-shown with `--verbose`.
-
-Copied-up files are not necessarily intentional customizations. In particular,
-the effective dpkg database may itself be stale after an earlier update. This
-initial report does not determine file ownership or compare file contents, and it
-does not claim that every file under `/opt` or `/usr/local` is unmanaged software.
-Unavailable baselines, unreadable entries, and inventory limits are reported.
-Overlay-disabled systems are identified explicitly; direct-root customization
-analysis is not included.
-
-Inspection does not save files or change overlay/boot state. During a regular 3.0
-update, a package-build mismatch offers a separate clean-overlay confirmation.
-Accepting it makes sima-cli:
-
-1. Verify that the selected SWU implements the platform
-   `SWUPDATE_CLEAN_OVERLAY` contract.
-2. Save and checksum an inventory under a timestamped directory in
-   `/data/.overlay-backup`, with `latest` pointing to the newest inventory.
-3. Run SWUpdate with the platform cleanup environment enabled.
-4. Print post-reboot checks and reinstall guidance.
-
-With `-y`, a detected package-build mismatch automatically selects the clean-overlay
-update without prompting. Without `-y`, the user can decline the reset and continue
-with the existing overlay, leaving the mismatch in place. An SWU without the cleanup
-contract is rejected before firmware installation or backup.
-
-The saved inventory includes package selections, image and overlay identity,
-configuration/service paths, software roots, ownership, permissions, and an
-`AFTER-REBOOT.txt` guide. It deliberately contains no file contents and never
-archives or restores the old dpkg database, APT caches, or complete upper layer.
-It is therefore recovery information rather than automatic restoration.
-
-The same workflow applies with `--ip`. Analysis and cleanup run on the remote
-DevKit, and the initiating machine transfers the inventory into the remote
-`/data/.overlay-backup` before invoking SWUpdate there. With `--reboot`, the
-initiating CLI reconnects to verify the new slot and then prints the recovery
-guidance. Without `--reboot`, it prints guidance after installation and leaves the
-reboot to the user.

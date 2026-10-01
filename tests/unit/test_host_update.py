@@ -67,9 +67,10 @@ def test_resolve_host_package_url_rejects_untrusted_source(value):
         resolve_host_package_url(value)
 
 
-@patch("sima_cli.update.host.requests.get")
-def test_list_host_packages_uses_index_and_sorts_newest_first(get):
-    get.return_value.json.return_value = _index(
+@patch("sima_cli.update.host.requests.Session")
+def test_list_host_packages_uses_index_and_sorts_newest_first(session_factory):
+    session = session_factory.return_value.__enter__.return_value
+    session.get.return_value.json.return_value = _index(
         "3.0.0_daily_develop_B1768",
         VERSION,
     )
@@ -80,10 +81,15 @@ def test_list_host_packages_uses_index_and_sorts_newest_first(get):
         VERSION,
         "3.0.0_daily_develop_B1768",
     ]
+    assert session.trust_env is False
+    session.get.assert_called_once_with(
+        "https://artifacts.neat.sima.ai/daily-platform-images/index.json",
+        timeout=15,
+    )
 
 
-@patch("sima_cli.update.host.requests.get")
-def test_list_host_packages_skips_builds_with_malformed_file_lists(get):
+@patch("sima_cli.update.host.requests.Session")
+def test_list_host_packages_skips_builds_with_malformed_file_lists(session_factory):
     index = _index(VERSION)
     index["builds"].insert(
         0,
@@ -93,16 +99,18 @@ def test_list_host_packages_skips_builds_with_malformed_file_lists(get):
             "files": None,
         },
     )
-    get.return_value.json.return_value = index
+    session = session_factory.return_value.__enter__.return_value
+    session.get.return_value.json.return_value = index
 
     packages = list_host_packages()
 
     assert [package["name"] for package in packages] == [VERSION]
 
 
-@patch("sima_cli.update.host.requests.get")
-def test_list_host_packages_rejects_malformed_builds_collection(get):
-    get.return_value.json.return_value = {
+@patch("sima_cli.update.host.requests.Session")
+def test_list_host_packages_rejects_malformed_builds_collection(session_factory):
+    session = session_factory.return_value.__enter__.return_value
+    session.get.return_value.json.return_value = {
         "schema_version": 1,
         "builds": None,
     }
@@ -225,3 +233,22 @@ def test_install_host_package_translates_download_failure(select_package, downlo
         install_host_package(VERSION, auto_confirm=True)
 
     select_package.assert_called_once_with(VERSION, newest=True)
+
+
+@patch("sima_cli.update.host.subprocess.run")
+@patch("sima_cli.update.host.download_file_from_url")
+@patch("sima_cli.update.host.select_host_package")
+def test_install_host_package_translates_installer_launch_failure(
+    select_package, download_file, run, tmp_path
+):
+    script = tmp_path / HOST_PACKAGE_NAME
+    script.write_bytes(PACKAGE_BYTES)
+    select_package.return_value = {
+        "name": VERSION,
+        "sha256": PACKAGE_SHA256,
+    }
+    download_file.return_value = str(script)
+    run.side_effect = FileNotFoundError("sudo is not installed")
+
+    with pytest.raises(click.ClickException, match="Unable to launch.*sudo is not installed"):
+        install_host_package(VERSION, auto_confirm=True)

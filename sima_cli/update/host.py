@@ -63,9 +63,12 @@ def resolve_host_package_url(version_or_url: str) -> str:
 def list_host_packages() -> List[Dict]:
     """Return indexed daily builds that contain the Linux host package."""
     try:
-        response = requests.get(HOST_PACKAGE_INDEX_URL, timeout=15)
-        response.raise_for_status()
-        index = response.json()
+        with requests.Session() as session:
+            # Never send ambient proxy or .netrc credentials to the public mirror.
+            session.trust_env = False
+            response = session.get(HOST_PACKAGE_INDEX_URL, timeout=15)
+            response.raise_for_status()
+            index = response.json()
     except (requests.RequestException, json.JSONDecodeError, ValueError) as exc:
         raise click.ClickException(f"Unable to load the host package catalog: {exc}") from exc
 
@@ -207,11 +210,16 @@ def install_host_package(version_or_url: Optional[str], *, auto_confirm: bool = 
             )
 
         click.echo(f"🚀 Running Linux PCIe host installer: {script_path}")
-        result = subprocess.run(
-            ["sudo", "sh", script_path],
-            cwd=temp_dir,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["sudo", "sh", script_path],
+                cwd=temp_dir,
+                check=False,
+            )
+        except OSError as exc:
+            raise click.ClickException(
+                f"Unable to launch the Linux PCIe host installer: {exc}"
+            ) from exc
         if result.returncode != 0:
             raise click.ClickException(
                 f"Host driver installer exited with code {result.returncode}."

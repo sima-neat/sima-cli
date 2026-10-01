@@ -212,7 +212,7 @@ def install_host_package(version_or_url: Optional[str], *, auto_confirm: bool = 
         click.echo(f"🚀 Running Linux PCIe host installer: {script_path}")
         try:
             result = subprocess.run(
-                ["sudo", "sh", script_path],
+                ["sudo", "bash", script_path],
                 cwd=temp_dir,
                 check=False,
             )

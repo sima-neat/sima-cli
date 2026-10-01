@@ -176,7 +176,7 @@ def test_install_host_package_downloads_from_cdn_and_runs_with_sudo(
 
     assert download_file.call_args.args[0] == EXPECTED_URL
     assert download_file.call_args.kwargs["internal"] is False
-    assert run.call_args.args[0] == ["sudo", "sh", str(script)]
+    assert run.call_args.args[0] == ["sudo", "bash", str(script)]
     assert run.call_args.kwargs["check"] is False
     assert Path(run.call_args.kwargs["cwd"]).name.startswith("sima-cli-host-update-")
 

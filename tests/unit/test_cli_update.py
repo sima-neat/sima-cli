@@ -100,6 +100,18 @@ class TestCliUpdate(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         install_host_package.assert_called_once_with(None, auto_confirm=False)
 
+    def test_internal_linux_host_update_yes_selects_newest_without_picker(self):
+        runner = CliRunner()
+
+        with patch("sima_cli.cli.check_for_update", return_value=False), \
+             patch("sima_cli.cli.get_environment_type", return_value=("host", "linux")), \
+             patch("sima_cli.cli.check_artifactory_reachability", return_value=False), \
+             patch("sima_cli.cli.install_host_package") as install_host_package:
+            result = runner.invoke(main, ["-i", "update", "-y"], obj={})
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        install_host_package.assert_called_once_with(None, auto_confirm=True)
+
     def test_internal_host_update_rejects_non_linux_host(self):
         runner = CliRunner()
 

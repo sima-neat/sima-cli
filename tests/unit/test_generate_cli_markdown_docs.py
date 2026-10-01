@@ -42,21 +42,21 @@ def test_write_docs_preserves_manual_guides_and_links_them_from_index():
         assert "Understand SDK, Docker, Insight, and DevKit networking." in index_text
 
 
-def test_write_docs_preserves_existing_guides_section_verbatim():
+def test_write_docs_regenerates_guides_section_from_manual_pages():
     with TemporaryDirectory() as tmpdir:
         output_dir = Path(tmpdir) / "docs" / "sima-cli"
         output_dir.mkdir(parents=True)
-        guides_section = (
-            "## Guides\n\n"
-            "| Guide | Description |\n"
-            "| --- | --- |\n"
-            "| [Custom Guide](custom/index.md) | Keep this hand-written description. |\n"
+        manual_dir = output_dir / "custom"
+        manual_dir.mkdir()
+        (manual_dir / "index.md").write_text(
+            "# Custom Guide\n\nCurrent description from the guide.\n",
+            encoding="utf-8",
         )
         (output_dir / "index.md").write_text(
             "# Existing\n\n"
             "## Installation\n\n"
             "Old install text.\n\n"
-            f"{guides_section}\n"
+            "## Guides\n\nOld hand-written guide table.\n\n"
             "## Top-Level Commands\n\n"
             "Old generated content.\n",
             encoding="utf-8",
@@ -70,7 +70,9 @@ def test_write_docs_preserves_existing_guides_section_verbatim():
             docs_generator.write_docs(output_dir)
 
         index_text = (output_dir / "index.md").read_text(encoding="utf-8")
-        assert guides_section.strip() in index_text
+        assert "[Custom Guide](custom/index.md)" in index_text
+        assert "Current description from the guide." in index_text
+        assert "Old hand-written guide table." not in index_text
 
 
 def test_compare_dirs_ignores_manual_extra_files():

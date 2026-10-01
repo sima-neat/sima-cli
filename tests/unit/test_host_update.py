@@ -100,6 +100,17 @@ def test_list_host_packages_skips_builds_with_malformed_file_lists(get):
     assert [package["name"] for package in packages] == [VERSION]
 
 
+@patch("sima_cli.update.host.requests.get")
+def test_list_host_packages_rejects_malformed_builds_collection(get):
+    get.return_value.json.return_value = {
+        "schema_version": 1,
+        "builds": None,
+    }
+
+    with pytest.raises(click.ClickException, match="unsupported format"):
+        list_host_packages()
+
+
 @patch("InquirerPy.inquirer.fuzzy")
 @patch("sima_cli.update.host.list_host_packages")
 def test_select_host_package_prompts_when_version_is_omitted(list_packages, fuzzy):
@@ -114,6 +125,25 @@ def test_select_host_package_prompts_when_version_is_omitted(list_packages, fuzz
 
     assert selected["name"] == VERSION
     assert fuzzy.call_args.kwargs["choices"][1]["value"] == VERSION
+
+
+@patch("InquirerPy.inquirer.fuzzy")
+@patch("sima_cli.update.host.list_host_packages")
+def test_select_host_package_uses_newest_without_prompt(list_packages, fuzzy):
+    packages = [
+        {"name": VERSION, "size": len(PACKAGE_BYTES), "sha256": PACKAGE_SHA256},
+        {
+            "name": "3.0.0_daily_develop_B1768",
+            "size": len(PACKAGE_BYTES),
+            "sha256": PACKAGE_SHA256,
+        },
+    ]
+    list_packages.return_value = packages
+
+    selected = select_host_package(None, newest=True)
+
+    assert selected == packages[0]
+    fuzzy.assert_not_called()
 
 
 @patch("sima_cli.update.host.subprocess.run")
@@ -180,3 +210,18 @@ def test_install_host_package_rejects_checksum_mismatch(
         install_host_package(VERSION, auto_confirm=True)
 
     run.assert_not_called()
+
+
+@patch("sima_cli.update.host.download_file_from_url")
+@patch("sima_cli.update.host.select_host_package")
+def test_install_host_package_translates_download_failure(select_package, download_file):
+    select_package.return_value = {
+        "name": VERSION,
+        "sha256": PACKAGE_SHA256,
+    }
+    download_file.side_effect = RuntimeError("Download failed: timed out")
+
+    with pytest.raises(click.ClickException, match="Unable to download.*timed out"):
+        install_host_package(VERSION, auto_confirm=True)
+
+    select_package.assert_called_once_with(VERSION, newest=True)

@@ -72,8 +72,12 @@ def list_host_packages() -> List[Dict]:
     if not isinstance(index, dict) or index.get("schema_version") != 1:
         raise click.ClickException("The host package catalog has an unsupported format.")
 
+    builds = index.get("builds")
+    if not isinstance(builds, list):
+        raise click.ClickException("The host package catalog has an unsupported format.")
+
     packages = []
-    for build in index.get("builds", []):
+    for build in builds:
         if not isinstance(build, dict):
             continue
         name = build.get("name")
@@ -115,7 +119,7 @@ def list_host_packages() -> List[Dict]:
     return packages
 
 
-def select_host_package(version_or_url: Optional[str]) -> Dict:
+def select_host_package(version_or_url: Optional[str], *, newest: bool = False) -> Dict:
     """Select an indexed host package, prompting when no version was supplied."""
     packages = list_host_packages()
 
@@ -131,6 +135,9 @@ def select_host_package(version_or_url: Optional[str]) -> Dict:
                 f"Daily platform build '{requested_name}' does not contain an indexed Linux host package."
             )
         return package
+
+    if newest:
+        return packages[0]
 
     from InquirerPy import inquirer
 
@@ -165,16 +172,21 @@ def _sha256(path: str) -> str:
 
 def install_host_package(version_or_url: Optional[str], *, auto_confirm: bool = False) -> None:
     """Download and execute the Linux PCIe host package installer."""
-    package = select_host_package(version_or_url)
+    package = select_host_package(version_or_url, newest=auto_confirm)
     package_url = resolve_host_package_url(package["name"])
     click.echo(f"📦 Linux PCIe host package: {package_url}")
 
     with tempfile.TemporaryDirectory(prefix="sima-cli-host-update-") as temp_dir:
-        script_path = download_file_from_url(
-            package_url,
-            dest_folder=temp_dir,
-            internal=False,
-        )
+        try:
+            script_path = download_file_from_url(
+                package_url,
+                dest_folder=temp_dir,
+                internal=False,
+            )
+        except RuntimeError as exc:
+            raise click.ClickException(
+                f"Unable to download the Linux PCIe host package: {exc}"
+            ) from exc
         if (
             os.path.basename(script_path) != HOST_PACKAGE_NAME
             or not os.path.isfile(script_path)

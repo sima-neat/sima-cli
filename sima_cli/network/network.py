@@ -4,12 +4,39 @@ import re
 import time
 import ipaddress
 import tempfile
+import uuid
+import psutil
 from sima_cli.utils.env import is_sima_board
 from sima_cli.utils.env import get_sima_board_type, is_devkit_running_elxr, get_sima_build_version
 
 IP_CMD = "/sbin/ip"
 NETWORKD_DIR = "/etc/systemd/network"
 NETWORKD_RUNTIME_DIR = "/run/systemd/network"
+
+
+def _is_ssh_session() -> bool:
+    """Detect SSH even when sudo has discarded the SSH environment variables."""
+    if any(os.environ.get(key) for key in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
+        return True
+    # sudo (including sudo -i) remains a descendant of sshd. Do not use
+    # SUDO_USER or /dev/pts alone: both also occur in legitimate local sessions.
+    try:
+        for process in [psutil.Process()] + psutil.Process().parents():
+            if process.name().split(":", 1)[0] in ("sshd", "sshd-session"):
+                return True
+    except (psutil.Error, OSError) as exc:
+        raise RuntimeError("Cannot verify the console session; network changes refused.") from exc
+    return False
+
+
+def _network_changes_allowed() -> bool:
+    try:
+        if not _is_ssh_session():
+            return True
+        print("❌ Network changes over SSH are not allowed. Use the DevKit serial console.")
+    except RuntimeError as exc:
+        print(f"❌ {exc} Use the DevKit serial console.")
+    return False
 
 
 def parse_static_address(value: str, default_prefix: int = 24) -> str:
@@ -37,12 +64,19 @@ def _remove_custom_network_file(iface: str, persistent: bool = False):
         subprocess.run(["sudo", "rm", "--", path], check=True)
 
 
-def _nm_custom_exists(iface: str) -> bool:
-    result = subprocess.run(
-        ["nmcli", "connection", "show", f"{iface}-sima-custom-static"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+def _nm_custom_profiles(iface: str):
+    """Return owned profile UUIDs, including replacements left after cleanup failure."""
+    output = subprocess.check_output(
+        ["nmcli", "-t", "--escape", "no", "-f", "UUID,NAME", "connection", "show"],
+        text=True,
     )
-    return result.returncode == 0
+    name = f"{iface}-sima-custom-static"
+    profiles = []
+    for line in output.splitlines():
+        profile_uuid, separator, profile_name = line.partition(":")
+        if separator and (profile_name == name or profile_name.startswith(name + "-next-")):
+            profiles.append(profile_uuid)
+    return profiles
 
 
 def _default_static_template(iface: str, backend: str):
@@ -141,37 +175,46 @@ def _custom_networkd_content(content: str, address: str) -> str:
 
 def apply_custom_static_ip(iface: str, value: str) -> bool:
     """Clone the default static settings without changing boot configuration."""
+    if not _network_changes_allowed():
+        return False
     try:
         # Validate syntax before reading profiles. Host/subnet validation follows
         # once the default profile's prefix is known.
         parse_static_address(value, default_prefix=32)
         if not re.fullmatch(r"[A-Za-z0-9_.:-]+", iface):
             raise ValueError("Invalid interface name")
-        backend = _select_network_backend()
+        backend = _select_network_backend(iface)
         template = _default_static_template(iface, backend)
         address = parse_static_address(value, template["prefix"])
         if backend == "nm":
             gateway = _gateway_for_address(template["gateway"], address)
             name = f"{iface}-sima-custom-static"
-            # Clone afresh so repeated use follows the current default settings.
-            # The temporary clone cannot replace the boot profile, even if a
-            # later command fails before autoconnect has been disabled.
-            if _nm_custom_exists(iface):
-                subprocess.run(["sudo", "nmcli", "connection", "delete", name], check=True)
+            previous_profiles = _nm_custom_profiles(iface)
+            replacement = f"{name}-next-{uuid.uuid4().hex}"
+            # Keep the current profile intact until the replacement is active.
             subprocess.run(
-                ["sudo", "nmcli", "connection", "clone", "--temporary", f"{iface}-static", name],
+                ["sudo", "nmcli", "connection", "clone", "--temporary", f"{iface}-static", replacement],
                 check=True,
             )
             try:
                 subprocess.run([
-                    "sudo", "nmcli", "connection", "modify", "--temporary", name,
+                    "sudo", "nmcli", "connection", "modify", "--temporary", replacement,
                     "connection.autoconnect", "no", "connection.autoconnect-priority", "0",
                     "ipv4.method", "manual", "ipv4.addresses", address, "ipv4.gateway", gateway,
                 ], check=True)
-                subprocess.run(["sudo", "nmcli", "connection", "up", name], check=True)
+                subprocess.run(["sudo", "nmcli", "connection", "up", replacement], check=True)
             except (OSError, subprocess.CalledProcessError):
-                subprocess.run(["sudo", "nmcli", "connection", "delete", name], check=False)
+                # Only discard the new candidate; never delete the old profile
+                # on a preparation or activation failure.
+                subprocess.run(["sudo", "nmcli", "connection", "delete", replacement], check=False)
                 raise
+            # Cleanup failures must not tear down the newly active connection.
+            for profile_uuid in previous_profiles:
+                subprocess.run(["sudo", "nmcli", "connection", "delete", "uuid", profile_uuid], check=True)
+            subprocess.run([
+                "sudo", "nmcli", "connection", "modify", "--temporary", replacement,
+                "connection.id", name,
+            ], check=True)
         else:
             content = _custom_networkd_content(template["content"], address)
             with tempfile.NamedTemporaryFile(mode="w", suffix=".network") as temp:
@@ -209,7 +252,6 @@ def prompt_custom_static_ip(iface: str):
             continue
         except (KeyboardInterrupt, EOFError):
             return
-        print("ℹ️ Changing the IP may disconnect SSH. Reconnect using the new address.")
         apply_custom_static_ip(iface, value)
         return
 
@@ -347,10 +389,9 @@ def _nm_connection_up(iface: str, mode: str) -> bool:
     conn_name = f"{iface}-{mode}"
     try:
         subprocess.run(["sudo", "nmcli", "connection", "up", conn_name], check=True)
-        if _nm_custom_exists(iface):
+        for profile_uuid in _nm_custom_profiles(iface):
             subprocess.run(
-                ["sudo", "nmcli", "connection", "delete", f"{iface}-sima-custom-static"],
-                check=True,
+                ["sudo", "nmcli", "connection", "delete", "uuid", profile_uuid], check=True,
             )
         print(f"✅ NetworkManager profile brought up: {conn_name}")
         return True
@@ -359,7 +400,21 @@ def _nm_connection_up(iface: str, mode: str) -> bool:
         return False
 
 
-def _select_network_backend():
+def _nm_manages_interface(iface: str):
+    try:
+        result = subprocess.run(
+            ["nmcli", "-g", "GENERAL.NM-MANAGED", "device", "show", iface],
+            capture_output=True, text=True, check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except OSError:
+        return None
+    if result.returncode == 0 and result.stdout.strip() in ("yes", "no"):
+        return result.stdout.strip() == "yes"
+    return None
+
+
+def _select_network_backend(iface: str):
     """
     Returns:
       - "nm": use NetworkManager profiles
@@ -382,6 +437,15 @@ def _select_network_backend():
             f"NetworkManager={'enabled' if nm_enabled else 'disabled'})."
         )
 
+    # Interface ownership takes precedence over boot-time service enablement.
+    managed = _nm_manages_interface(iface)
+    if managed is True:
+        return "nm"
+    if managed is False:
+        return "networkd"
+    if nm_enabled and networkd_enabled and is_modalix_elxr and is_elxr_21_or_above:
+        raise ValueError(f"Cannot determine network manager for {iface}; no changes made.")
+
     # Primary path for 2.1+ style images where only NM is enabled.
     if is_modalix_elxr and nm_enabled and not networkd_enabled:
         return "nm"
@@ -399,7 +463,13 @@ def _select_network_backend():
 
 
 def apply_network_mode(iface: str, mode: str):
-    backend = _select_network_backend()
+    if not _network_changes_allowed():
+        return
+    try:
+        backend = _select_network_backend(iface)
+    except ValueError as exc:
+        print(f"❌ {exc}")
+        return
     if backend == "nm":
         # NM flow activates pre-defined profiles like end0-dhcp / end0-static.
         ok = _nm_connection_up(iface, mode)
@@ -435,6 +505,8 @@ def populate_resolv_conf(dns_server="8.8.8.8"):
         print(f"❌ Failed to update /etc/resolv.conf: {e}")
 
 def set_default_route(iface, ip):
+    if not _network_changes_allowed():
+        return
     gateway = get_gateway_for_interface(ip)
     if not gateway:
         print(f"❌ Cannot set default route — IP not assigned for {iface}")
@@ -459,6 +531,9 @@ def set_default_route(iface, ip):
 def network_menu():
     if not is_sima_board():
         print("❌ This command only runs on the DevKit")
+        return
+
+    if not _network_changes_allowed():
         return
 
     from InquirerPy import inquirer

@@ -7,6 +7,13 @@ import pytest
 from sima_cli.network import network as net
 
 
+@pytest.fixture(autouse=True)
+def local_console():
+    with patch.object(net, "_is_ssh_session", return_value=False), \
+         patch.object(net.uuid, "uuid4", return_value=Mock(hex="test")):
+        yield
+
+
 @pytest.mark.parametrize("value,expected", [
     ("192.168.1.50", "192.168.1.50/24"),
     (" 10.20.30.40/16 ", "10.20.30.40/16"),
@@ -34,14 +41,13 @@ def test_invalid_address_cannot_change_network(value):
 def test_nm_clones_default_without_overriding_boot_configuration(exists):
     with patch.object(net, "_select_network_backend", return_value="nm"), \
          patch.object(net, "_default_static_template", return_value={"prefix": 16, "gateway": "10.2.0.1"}), \
-         patch.object(net, "_nm_custom_exists", return_value=exists), \
+         patch.object(net, "_nm_custom_profiles", return_value=["old-uuid"] if exists else []), \
          patch.object(net.subprocess, "run") as run:
         assert net.apply_custom_static_ip("end0", "10.2.3.4")
     commands = [call.args[0] for call in run.call_args_list]
-    if exists:
-        assert commands[0] == ["sudo", "nmcli", "connection", "delete", "end0-sima-custom-static"]
-    assert commands[-3] == ["sudo", "nmcli", "connection", "clone", "--temporary", "end0-static", "end0-sima-custom-static"]
-    command = commands[-2]
+    replacement = "end0-sima-custom-static-next-test"
+    assert commands[0] == ["sudo", "nmcli", "connection", "clone", "--temporary", "end0-static", replacement]
+    command = commands[1]
     assert command[:5] == ["sudo", "nmcli", "connection", "modify", "--temporary"]
     assert command[command.index("ipv4.addresses") + 1] == "10.2.3.4/16"
     assert command[command.index("ipv4.gateway") + 1] == "10.2.0.1"
@@ -50,7 +56,10 @@ def test_nm_clones_default_without_overriding_boot_configuration(exists):
     assert "ipv4.dns" not in command
     assert "ipv4.routes" not in command
     assert "ipv4.never-default" not in command
-    assert commands[-1] == ["sudo", "nmcli", "connection", "up", "end0-sima-custom-static"]
+    assert commands[2] == ["sudo", "nmcli", "connection", "up", replacement]
+    if exists:
+        assert commands[3] == ["sudo", "nmcli", "connection", "delete", "uuid", "old-uuid"]
+    assert commands[-1][-2:] == ["connection.id", "end0-sima-custom-static"]
 
 
 @pytest.mark.parametrize("old_profile", [False, True])
@@ -104,17 +113,17 @@ def test_networkd_switch_back_removes_custom_override(tmp_path, mode):
 
 @pytest.mark.parametrize("mode", ["static", "dhcp"])
 def test_nm_switch_back_removes_custom_profile(mode):
-    with patch.object(net, "_nm_custom_exists", return_value=True), \
+    with patch.object(net, "_nm_custom_profiles", return_value=["old-uuid"]), \
          patch.object(net.subprocess, "run") as run:
         assert net._nm_connection_up("end0", mode)
     assert run.call_args_list[0].args[0][-1] == f"end0-{mode}"
-    assert run.call_args_list[1].args[0][-2:] == ["delete", "end0-sima-custom-static"]
+    assert run.call_args_list[1].args[0][-3:] == ["delete", "uuid", "old-uuid"]
 
 
 @pytest.mark.parametrize("backend", ["nm", "networkd"])
 def test_apply_failure_is_reported(backend, capsys):
     with patch.object(net, "_select_network_backend", return_value=backend), \
-         patch.object(net, "_nm_custom_exists", return_value=True), \
+         patch.object(net, "_nm_custom_profiles", return_value=["old-uuid"]), \
          patch.object(net, "_default_static_template", return_value={"prefix": 24, "gateway": "", "content": "[Network]\nAddress=192.168.1.20/24\n"}), \
          patch.object(net.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "configure")):
         assert not net.apply_custom_static_ip("end0", "10.2.3.4")
@@ -226,8 +235,8 @@ def test_missing_default_profile_does_not_create_empty_custom_profile():
 def test_failed_clone_configuration_is_cleaned_up():
     with patch.object(net, '_select_network_backend', return_value='nm'), \
          patch.object(net, '_default_static_template', return_value={'prefix': 24, 'gateway': ''}), \
-         patch.object(net, '_nm_custom_exists', return_value=False), \
+         patch.object(net, '_nm_custom_profiles', return_value=[]), \
          patch.object(net.subprocess, 'run', side_effect=[Mock(), subprocess.CalledProcessError(1, 'modify'), Mock()]) as run:
         assert not net.apply_custom_static_ip('end0', '192.168.0.20')
-    assert run.call_args_list[-1].args[0] == ['sudo', 'nmcli', 'connection', 'delete', 'end0-sima-custom-static']
+    assert run.call_args_list[-1].args[0] == ['sudo', 'nmcli', 'connection', 'delete', 'end0-sima-custom-static-next-test']
     assert not any('up' in call.args[0] for call in run.call_args_list)

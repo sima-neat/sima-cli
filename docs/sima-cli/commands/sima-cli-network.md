@@ -43,7 +43,10 @@ Usage: sima-cli network [OPTIONS]
   replacement gateway or leave it blank for no gateway. The default profile is
   not modified.
 
-  Changing the address may disconnect SSH; reconnect using the new address.
+  Network changes must be made from the DevKit serial console. SSH sessions,
+  including commands launched through sudo, are rejected before configuration
+  changes. A replacement custom profile is activated before the old one is
+  removed.
 
 Options:
   --help  Show this message and exit.

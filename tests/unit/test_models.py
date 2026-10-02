@@ -16,6 +16,7 @@ from sima_cli.models.client import (
     STAGING_BASE_URL,
     ModelRegistryError,
     RegistryClient,
+    _coherent_branch_packages,
     artifact_filename,
     find_latest_run,
     latest_runs_by_model_variant,
@@ -185,10 +186,18 @@ def test_find_latest_run_prefers_default_promoted_package():
 
 
 def test_client_paginates_runs_and_preserves_search_filters():
+    first = _run("one")
+    second = _run("two")
+    first["git_ref"] = "refs/heads/feature/models v2"
+    second["git_ref"] = "refs/heads/feature/models v2"
     session = FakeSession(
         [
-            FakeResponse(payload={"runs": [_run("one")], "has_more": True, "next_cursor": "next"}),
-            FakeResponse(payload={"runs": [_run("two")], "has_more": False, "next_cursor": None}),
+            FakeResponse(
+                payload={"runs": [first], "has_more": True, "next_cursor": "next"}
+            ),
+            FakeResponse(
+                payload={"runs": [second], "has_more": False, "next_cursor": None}
+            ),
         ]
     )
     client = RegistryClient("https://registry.example", session=session)
@@ -248,7 +257,38 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
             }
         }
     }
-    session = FakeSession([FakeResponse(payload=catalog)])
+    backbone = _run(
+        "backbone", model_id="rf_detr_small", variant_id="modalix_int8_bf16"
+    )
+    backbone["metadata"].update(
+        {"component_id": "backbone", "github_run_id": "workflow-1"}
+    )
+    transformer = _run(
+        "transformer", model_id="rf_detr_small", variant_id="modalix_int8_bf16"
+    )
+    transformer["metadata"].update(
+        {"component_id": "transformer", "github_run_id": "workflow-1"}
+    )
+    package_run = _run(
+        "package-run", model_id="rf_detr_small", variant_id="modalix_int8_bf16"
+    )
+    package_run["run_type"] = "model_package"
+    package_run["metadata"].update(
+        {
+            "package_id": "default",
+            "component_run_ids": {
+                "backbone": "backbone",
+                "transformer": "transformer",
+            },
+        }
+    )
+    session = FakeSession(
+        [
+            FakeResponse(payload=catalog),
+            FakeResponse(payload={"runs": [backbone, transformer], "has_more": False}),
+            FakeResponse(payload={"runs": [package_run], "has_more": False}),
+        ]
+    )
 
     models = RegistryClient("https://registry.example", session=session).catalog_models(
         "develop", query="RF-DETR object detection"
@@ -265,6 +305,67 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
     }
     assert find_latest_run(models, "rf_detr_small", "modalix_int8_bf16") == package
     assert session.calls[0][1]["params"] == {"git_ref": "refs/heads/develop"}
+    assert session.calls[1][1]["params"]["run_type"] == "model_compile"
+    assert "latest_per_model_compiler" not in session.calls[1][1]["params"]
+    assert session.calls[2][1]["params"]["run_type"] == "model_package"
+
+
+def test_client_excludes_inherited_catalog_packages_from_feature_branch():
+    catalog = {
+        "catalog": {
+            "document": {
+                "catalog_revision": "b" * 40,
+                "models": [
+                    {
+                        "id": "resnet_50",
+                        "display_name": "ResNet-50",
+                        "packages": [
+                            {
+                                "run_id": "develop-package",
+                                "package_id": "default",
+                                "build_profile_id": "modalix_int8",
+                                "component_run_ids": {"model": "develop-compile"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    }
+    inherited_compile = _run("develop-compile", variant_id="modalix_int8")
+    inherited_package = _run("develop-package", variant_id="modalix_int8")
+    inherited_package["run_type"] = "model_package"
+    inherited_package["metadata"].update(
+        {"package_id": "default", "component_run_ids": {"model": "develop-compile"}}
+    )
+    client = RegistryClient(
+        "https://registry.example",
+        session=FakeSession(
+            [
+                FakeResponse(payload=catalog),
+                FakeResponse(payload={"runs": [inherited_compile], "has_more": False}),
+                FakeResponse(payload={"runs": [inherited_package], "has_more": False}),
+            ]
+        ),
+    )
+
+    assert client.catalog_models("feature/readme-only") == []
+
+
+def test_coherent_branch_packages_excludes_package_for_superseded_compile():
+    old_compile = _run("old-compile", finished_at="2026-08-29T12:00:00Z")
+    old_compile["metadata"]["github_run_id"] = "old-workflow"
+    new_compile = _run("new-compile", finished_at="2026-08-30T12:00:00Z")
+    new_compile["metadata"]["github_run_id"] = "new-workflow"
+    old_package = _run("old-package", finished_at="2026-08-29T12:05:00Z")
+    old_package["run_type"] = "model_package"
+    old_package["metadata"].update(
+        {"package_id": "default", "component_run_ids": {"model": "old-compile"}}
+    )
+
+    assert _coherent_branch_packages(
+        [old_compile, new_compile], [old_package]
+    ) == []
 
 
 def test_client_rejects_catalog_without_models():

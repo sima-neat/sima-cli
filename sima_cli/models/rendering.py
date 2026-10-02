@@ -115,51 +115,6 @@ def group_model_variants(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]
     return sorted(models, key=lambda item: item["model_id"].lower())
 
 
-def render_runs(runs: Sequence[Dict[str, Any]]) -> None:
-    models = group_model_variants(runs)
-    if not models:
-        click.echo("No completed model builds are available on this branch.")
-        return
-    rows = []
-    for model in models:
-        display_name = str(model.get("display_name") or model["model_id"])
-        model_label = (
-            f"{display_name} ({model['model_id']})"
-            if display_name != model["model_id"]
-            else display_name
-        )
-        variants = model["variants"]
-        rows.append(
-            [
-                model_label,
-                f"{len(variants)} variant{'s' if len(variants) != 1 else ''}",
-                "",
-                "",
-                "",
-            ]
-        )
-        for index, variant in enumerate(variants):
-            run = variant["run"]
-            metadata = run.get("metadata") or {}
-            connector = "└─" if index == len(variants) - 1 else "├─"
-            rows.append(
-                [
-                    "",
-                    f"{connector} {variant['variant_id']}",
-                    metadata.get("package_id") or "default",
-                    run.get("target_platform", ""),
-                    _format_bytes(run.get("size_bytes")),
-                ]
-            )
-    click.echo(
-        tabulate(
-            rows,
-            headers=["Model", "Variant", "Package", "Target", "Size"],
-            tablefmt="simple",
-        )
-    )
-
-
 def select_run(runs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     models = group_model_variants(runs)
     if not models:

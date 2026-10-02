@@ -20,7 +20,6 @@ from .rendering import (
     model_card,
     render_branches,
     render_model_card,
-    render_runs,
     select_run,
 )
 
@@ -152,16 +151,20 @@ def list_command(
     output: Path,
     force: bool,
 ) -> None:
-    """List the latest registered models on BRANCH."""
+    """Browse registered models on BRANCH, or list them with --json."""
     try:
         client = _client(ctx, staging)
         runs = client.catalog_models(branch, query=query)
         if json_output:
             echo_json({"branch": branch, "query": query, "models": runs})
             return
-        render_runs(runs)
-        if not runs or not _is_interactive():
+        if not runs:
+            click.echo("No completed model builds are available on this branch.")
             return
+        if not _is_interactive():
+            raise ModelRegistryError(
+                "Model selection requires an interactive terminal. Use --json to list models."
+            )
         selected = select_run(runs)
         summary = client.run(str(selected["id"]))
         registry_run = summary.get("run") or {}

@@ -543,56 +543,27 @@ def test_list_json_is_non_interactive_and_returns_catalog_models():
     select.assert_not_called()
 
 
-def test_list_renders_models_with_nested_variants():
-    int8 = _run(run_id="int8", variant_id="modalix_int8")
-    int8["metadata"]["display_name"] = "ResNet-50"
-    int8["metadata"]["package_id"] = "default"
-    int8["size_bytes"] = 1024
-    bf16 = _run(run_id="bf16", variant_id="modalix_bf16")
-    bf16["metadata"]["display_name"] = "ResNet-50"
-    bf16["metadata"]["package_id"] = "default"
-    bf16["size_bytes"] = 2048
-    yolo = _run(
-        run_id="yolo", model_id="yolo26_tiny", variant_id="modalix_int8"
-    )
-    yolo["metadata"]["display_name"] = "YOLO26 Tiny"
+def test_noninteractive_list_requires_json_instead_of_rendering_overview_table():
     fake_client = Mock()
-    fake_client.catalog_models.return_value = [int8, yolo, bf16]
+    fake_client.catalog_models.return_value = [_run()]
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
-        result = CliRunner().invoke(
-            models_group, ["--stg", "list", "--branch", "develop"]
-        )
+        result = CliRunner().invoke(models_group, ["--stg", "list"])
 
-    assert result.exit_code == 0, result.output
-    assert "Model" in result.output
-    assert "Variant" in result.output
-    assert "ResNet-50 (resnet_50)" in result.output
-    assert "2 variants" in result.output
-    assert "├─ modalix_bf16" in result.output
-    assert "└─ modalix_int8" in result.output
-    assert "YOLO26 Tiny (yolo26_tiny)" in result.output
-    assert result.output.index("ResNet-50") < result.output.index("YOLO26 Tiny")
+    assert result.exit_code == 1
+    assert "Use --json to list models" in result.output
+    assert "Package    Target    Size" not in result.output
 
 
-def test_list_rejects_ambiguous_promoted_packages_for_a_variant():
+def test_model_variant_group_rejects_ambiguous_promoted_packages():
     packages = []
     for package_id in ("optimized", "portable"):
         run = _run(run_id=package_id, variant_id="modalix_int8")
         run["run_type"] = "model_package"
         run["metadata"]["package_id"] = package_id
         packages.append(run)
-    fake_client = Mock()
-    fake_client.catalog_models.return_value = packages
-
-    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
-        result = CliRunner().invoke(models_group, ["--stg", "list"])
-
-    assert result.exit_code == 1
-    assert (
-        "Multiple promoted packages found for model 'resnet_50', variant "
-        "'modalix_int8': optimized, portable."
-    ) in result.output
+    with pytest.raises(ModelRegistryError, match="optimized, portable"):
+        rendering.group_model_variants(packages)
 
 
 def test_model_variant_group_prefers_the_default_package():
@@ -700,6 +671,7 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
     assert result.exit_code == 0, result.output
     assert "resnet_50" in result.output
     assert "Benchmark" in result.output
+    assert "Package    Target    Size" not in result.output
     fake_client.run.assert_called_once_with("run-1")
     fake_client.download.assert_not_called()
 

@@ -11,10 +11,11 @@ from click.testing import CliRunner
 from rich.console import Console
 
 from sima_cli.cli import main
+from sima_cli.models import rendering
 from sima_cli.models.client import (
+    STAGING_BASE_URL,
     ModelRegistryError,
     RegistryClient,
-    STAGING_BASE_URL,
     artifact_filename,
     find_latest_run,
     latest_runs_by_model_variant,
@@ -23,7 +24,6 @@ from sima_cli.models.client import (
     select_model_artifact,
 )
 from sima_cli.models.commands import models_group
-from sima_cli.models import rendering
 from sima_cli.models.rendering import model_card, render_model_card
 
 
@@ -112,7 +112,7 @@ def test_top_level_models_json_keeps_root_diagnostics_on_stderr(arguments):
     run = _run()
     artifact = {
         "name": "mpk",
-        "artifact_type": "model-pack",
+        "artifact_type": "model-package",
         "size_bytes": 5,
         "sha256": hashlib.sha256(b"model").hexdigest(),
     }
@@ -122,7 +122,7 @@ def test_top_level_models_json_keeps_root_diagnostics_on_stderr(arguments):
     }
     fake_client = Mock()
     fake_client.branches.return_value = [{"name": "main"}]
-    fake_client.runs.return_value = [run]
+    fake_client.catalog_models.return_value = [run]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     fake_client.artifact_download.return_value = signed
     fake_client.download.return_value = Path(
@@ -173,6 +173,17 @@ def test_find_latest_run_reports_missing_model():
         find_latest_run([], "missing", "int8")
 
 
+def test_find_latest_run_prefers_default_promoted_package():
+    packages = []
+    for package_id in ("extras", "default"):
+        run = _run(run_id=package_id)
+        run["run_type"] = "model_package"
+        run["metadata"]["package_id"] = package_id
+        packages.append(run)
+
+    assert find_latest_run(packages, "resnet_50", "int8")["id"] == "default"
+
+
 def test_client_paginates_runs_and_preserves_search_filters():
     session = FakeSession(
         [
@@ -204,6 +215,68 @@ def test_client_rejects_repeated_pagination_cursor():
         client.runs("develop")
 
 
+def test_client_resolves_promoted_grouped_model_package_from_catalog():
+    catalog = {
+        "catalog": {
+            "document": {
+                "catalog_revision": "b" * 40,
+                "models": [
+                    {
+                        "id": "rf_detr_small",
+                        "display_name": "RF-DETR Small 512x512",
+                        "description": "Grouped object detector.",
+                        "categories": {"tasks": ["object_detection"]},
+                        "builds": [
+                            {"component_id": "backbone", "run_id": "backbone"},
+                            {"component_id": "transformer", "run_id": "transformer"},
+                        ],
+                        "packages": [
+                            {
+                                "run_id": "package-run",
+                                "package_id": "default",
+                                "build_profile_id": "modalix_int8_bf16",
+                                "component_run_ids": {
+                                    "backbone": "backbone",
+                                    "transformer": "transformer",
+                                },
+                                "size_bytes": 123,
+                                "artifact_sha256": "c" * 64,
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    }
+    session = FakeSession([FakeResponse(payload=catalog)])
+
+    models = RegistryClient("https://registry.example", session=session).catalog_models(
+        "develop", query="RF-DETR object detection"
+    )
+
+    assert len(models) == 1
+    package = models[0]
+    assert package["id"] == "package-run"
+    assert package["run_type"] == "model_package"
+    assert package["metadata"]["variant_id"] == "modalix_int8_bf16"
+    assert package["metadata"]["component_run_ids"] == {
+        "backbone": "backbone",
+        "transformer": "transformer",
+    }
+    assert find_latest_run(models, "rf_detr_small", "modalix_int8_bf16") == package
+    assert session.calls[0][1]["params"] == {"git_ref": "refs/heads/develop"}
+
+
+def test_client_rejects_catalog_without_models():
+    client = RegistryClient(
+        "https://registry.example",
+        session=FakeSession([FakeResponse(payload={"catalog": {"document": {}}})]),
+    )
+
+    with pytest.raises(ModelRegistryError, match="current model catalog"):
+        client.catalog_models("develop")
+
+
 def test_client_treats_missing_benchmark_as_normal():
     client = RegistryClient(
         "https://registry.example",
@@ -212,14 +285,14 @@ def test_client_treats_missing_benchmark_as_normal():
     assert client.benchmark("run") is None
 
 
-def test_select_model_artifact_requires_one_available_model_pack():
+def test_select_model_artifact_requires_one_available_model_package():
     artifact = {
         "name": "resnet_int8_mpk.tar.gz",
-        "artifact_type": "model-pack",
+        "artifact_type": "model-package",
         "object_status": "available",
     }
     assert select_model_artifact([artifact]) == artifact
-    with pytest.raises(ModelRegistryError, match="no available model-pack"):
+    with pytest.raises(ModelRegistryError, match="no available model-package"):
         select_model_artifact([{"name": "log", "artifact_type": "log"}])
 
 
@@ -456,12 +529,9 @@ def test_branches_accepts_staging_flag_before_or_after_subcommand():
     assert all(call.args[0] == STAGING_BASE_URL for call in client_type.call_args_list)
 
 
-def test_list_json_is_non_interactive_and_returns_latest_models():
+def test_list_json_is_non_interactive_and_returns_catalog_models():
     fake_client = Mock()
-    fake_client.runs.return_value = [
-        _run("old", finished_at="2026-08-29T00:00:00Z"),
-        _run("new", finished_at="2026-08-30T00:00:00Z"),
-    ]
+    fake_client.catalog_models.return_value = [_run("package")]
     runner = CliRunner()
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client), patch(
         "sima_cli.models.commands.select_run"
@@ -469,35 +539,35 @@ def test_list_json_is_non_interactive_and_returns_latest_models():
         result = runner.invoke(models_group, ["--stg", "list", "--branch", "develop", "--json"])
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["models"][0]["id"] == "new"
+    assert json.loads(result.output)["models"][0]["id"] == "package"
     select.assert_not_called()
 
 
 def test_list_accepts_short_branch_option():
     fake_client = Mock()
-    fake_client.runs.return_value = []
+    fake_client.catalog_models.return_value = []
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
         result = CliRunner().invoke(models_group, ["--stg", "list", "-b", "develop"])
 
     assert result.exit_code == 0, result.output
-    fake_client.runs.assert_called_once_with("develop", query=None)
+    fake_client.catalog_models.assert_called_once_with("develop", query=None)
 
 
 def test_list_defaults_to_main_branch():
     fake_client = Mock()
-    fake_client.runs.return_value = []
+    fake_client.catalog_models.return_value = []
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
         result = CliRunner().invoke(models_group, ["--stg", "list"])
 
     assert result.exit_code == 0, result.output
-    fake_client.runs.assert_called_once_with("main", query=None)
+    fake_client.catalog_models.assert_called_once_with("main", query=None)
 
 
 def test_list_passes_query_to_registry_search():
     fake_client = Mock()
-    fake_client.runs.return_value = []
+    fake_client.catalog_models.return_value = []
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
         result = CliRunner().invoke(
@@ -506,20 +576,14 @@ def test_list_passes_query_to_registry_search():
         )
 
     assert result.exit_code == 0, result.output
-    fake_client.runs.assert_called_once_with("main", query="yolo object detection")
+    fake_client.catalog_models.assert_called_once_with("main", query="yolo object detection")
 
 
 def test_interactive_list_renders_selected_model_card_without_forcing_download():
     run = _run()
     fake_client = Mock()
-    fake_client.runs.return_value = [run]
-    fake_client.detail.return_value = {
-        "summary": {"run": run, "artifacts": []},
-        "provenance": {"inputs": [], "parameters": None},
-        "tests": {"test_results": []},
-        "metrics": {"measurements": []},
-        "benchmark": None,
-    }
+    fake_client.catalog_models.return_value = [run]
+    fake_client.run.return_value = {"run": run, "artifacts": []}
     fake_client.taxonomy.return_value = None
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client), patch(
@@ -534,7 +598,7 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
     assert result.exit_code == 0, result.output
     assert "resnet_50" in result.output
     assert "Benchmark" in result.output
-    fake_client.detail.assert_called_once_with("run-1")
+    fake_client.run.assert_called_once_with("run-1")
     fake_client.download.assert_not_called()
 
 
@@ -549,23 +613,41 @@ def test_default_command_reports_unconfigured_production(monkeypatch):
 
 
 def test_download_command_resolves_and_downloads_selected_model(tmp_path):
-    run = _run()
+    run = _run(run_id="package-run", model_id="rf_detr_small")
+    run["run_type"] = "model_package"
+    run["metadata"] = {
+        "model_id": "rf_detr_small",
+        "build_profile_id": "modalix_int8_bf16",
+        "package_id": "default",
+        "component_run_ids": {
+            "backbone": "backbone-run",
+            "transformer": "transformer-run",
+        },
+    }
     content = b"model"
     artifact = {
-        "name": "resnet_int8_mpk.tar.gz",
-        "artifact_type": "model-pack",
+        "name": "package",
+        "artifact_type": "model-package",
         "size_bytes": len(content),
         "sha256": hashlib.sha256(content).hexdigest(),
     }
     fake_client = Mock()
-    fake_client.runs.return_value = [run]
+    fake_client.catalog_models.return_value = [run]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     signed = {
         "download_url": "https://download.example/model",
-        "s3_key": f"models/run/{artifact['name']}",
+        "s3_key": (
+            "models/develop/revision/rf_detr_small/modalix_int8_bf16/packages/"
+            "default/rf_detr_small_modalix_int8_bf16_default.zip"
+        ),
     }
     fake_client.artifact_download.return_value = signed
-    expected = tmp_path / "resnet_50" / "int8" / artifact["name"]
+    expected = (
+        tmp_path
+        / "rf_detr_small"
+        / "modalix_int8_bf16"
+        / "rf_detr_small_modalix_int8_bf16_default.zip"
+    )
     fake_client.download.return_value = expected
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
@@ -575,9 +657,9 @@ def test_download_command_resolves_and_downloads_selected_model(tmp_path):
                 "--stg",
                 "download",
                 "--id",
-                "resnet_50",
+                "rf_detr_small",
                 "--variant",
-                "int8",
+                "modalix_int8_bf16",
                 "--output",
                 str(tmp_path),
                 "--json",
@@ -585,10 +667,13 @@ def test_download_command_resolves_and_downloads_selected_model(tmp_path):
         )
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["path"] == str(expected)
-    fake_client.runs.assert_called_once_with("main")
+    payload = json.loads(result.output)
+    assert payload["path"] == str(expected)
+    assert payload["build_profile_id"] == "modalix_int8_bf16"
+    assert payload["filename"] == "rf_detr_small_modalix_int8_bf16_default.zip"
+    fake_client.catalog_models.assert_called_once_with("main")
     fake_client.download.assert_called_once_with(
-        "run-1", artifact, expected, force=False, initial_download=signed
+        "package-run", artifact, expected, force=False, initial_download=signed
     )
 
 
@@ -596,7 +681,7 @@ def test_download_accepts_short_branch_option(tmp_path):
     run = _run()
     artifact = {
         "name": "mpk",
-        "artifact_type": "model-pack",
+        "artifact_type": "model-package",
         "size_bytes": 5,
         "sha256": hashlib.sha256(b"model").hexdigest(),
     }
@@ -605,7 +690,7 @@ def test_download_accepts_short_branch_option(tmp_path):
         "s3_key": "models/run/resnet_50_int8_mpk.tar.gz",
     }
     fake_client = Mock()
-    fake_client.runs.return_value = [run]
+    fake_client.catalog_models.return_value = [run]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     fake_client.artifact_download.return_value = signed
     destination = tmp_path / "resnet_50" / "int8" / "resnet_50_int8_mpk.tar.gz"
@@ -629,4 +714,4 @@ def test_download_accepts_short_branch_option(tmp_path):
         )
 
     assert result.exit_code == 0, result.output
-    fake_client.runs.assert_called_once_with("develop")
+    fake_client.catalog_models.assert_called_once_with("develop")

@@ -58,7 +58,10 @@ def render_branches(branches: Sequence[Dict[str, Any]]) -> None:
 def _run_label(run: Dict[str, Any]) -> str:
     metadata = run.get("metadata") or {}
     model_id = metadata.get("model_id", "unknown")
-    variant_id = metadata.get("variant_id", "unknown")
+    variant_id = metadata.get("build_profile_id") or metadata.get("variant_id", "unknown")
+    if run.get("run_type") == "model_package":
+        package_id = metadata.get("package_id") or "default"
+        return f"{model_id} / {variant_id} — full package ({package_id})"
     compiler = " ".join(
         value for value in (run.get("toolchain_name"), run.get("toolchain_version")) if value
     )
@@ -73,14 +76,10 @@ def render_runs(runs: Sequence[Dict[str, Any]]) -> None:
         rows.append(
             [
                 metadata.get("model_id", ""),
-                metadata.get("variant_id", ""),
-                " ".join(
-                    value
-                    for value in (run.get("toolchain_name"), run.get("toolchain_version"))
-                    if value
-                ),
+                metadata.get("build_profile_id") or metadata.get("variant_id", ""),
+                metadata.get("package_id", "default"),
                 run.get("target_platform", ""),
-                run.get("finished_at") or run.get("created_at") or "",
+                _format_bytes(run.get("size_bytes")),
             ]
         )
     if not rows:
@@ -89,7 +88,7 @@ def render_runs(runs: Sequence[Dict[str, Any]]) -> None:
     click.echo(
         tabulate(
             rows,
-            headers=["Model", "Variant", "Compiler", "Target", "Built"],
+            headers=["Model", "Build profile", "Package", "Target", "Size"],
             tablefmt="simple",
         )
     )

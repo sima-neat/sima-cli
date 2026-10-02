@@ -11,7 +11,6 @@ from .client import (
     RegistryClient,
     artifact_filename,
     find_latest_run,
-    latest_runs_by_model_variant,
     resolve_base_url,
     safe_output_path,
     select_model_artifact,
@@ -68,7 +67,7 @@ def _download_run(
     artifact = select_model_artifact(artifacts)
     metadata = (summary.get("run") or run).get("metadata") or {}
     model_id = str(metadata.get("model_id") or "")
-    variant_id = str(metadata.get("variant_id") or "")
+    variant_id = str(metadata.get("build_profile_id") or metadata.get("variant_id") or "")
     signed = client.artifact_download(run_id, str(artifact.get("name") or ""))
     filename = artifact_filename({**artifact, **signed})
     destination = safe_output_path(output, model_id, variant_id, filename)
@@ -83,6 +82,7 @@ def _download_run(
         "run_id": run_id,
         "model_id": model_id,
         "variant_id": variant_id,
+        "build_profile_id": variant_id,
         "artifact": artifact.get("name"),
         "filename": filename,
         "path": str(downloaded),
@@ -127,8 +127,8 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
     "-q",
     "--query",
     help=(
-        "Search model names, variants, categories, compiler, target, branch, "
-        "or commit. Multiple words must all match."
+        "Search model names, build profiles, categories, or branch. "
+        "Multiple words must all match."
     ),
 )
 @_staging_option
@@ -155,7 +155,7 @@ def list_command(
     """List the latest registered models on BRANCH."""
     try:
         client = _client(ctx, staging)
-        runs = latest_runs_by_model_variant(client.runs(branch, query=query))
+        runs = client.catalog_models(branch, query=query)
         if json_output:
             echo_json({"branch": branch, "query": query, "models": runs})
             return
@@ -163,7 +163,25 @@ def list_command(
         if not runs or not _is_interactive():
             return
         selected = select_run(runs)
-        detail = client.detail(str(selected["id"]))
+        summary = client.run(str(selected["id"]))
+        registry_run = summary.get("run") or {}
+        selected_metadata = selected.get("metadata") or {}
+        registry_metadata = registry_run.get("metadata") or {}
+        summary["run"] = {
+            **selected,
+            **registry_run,
+            "metadata": {
+                **selected_metadata,
+                **registry_metadata,
+                "variant_id": selected_metadata.get("variant_id"),
+            },
+            "model_categories": (
+                selected.get("model_categories")
+                or registry_run.get("model_categories")
+                or {}
+            ),
+        }
+        detail = {"summary": summary}
         card = model_card(detail, _taxonomy(client))
         render_model_card(card)
         auto_confirm = bool((ctx.find_root().obj or {}).get("yes"))
@@ -183,7 +201,12 @@ def list_command(
     help="Models repository branch.",
 )
 @click.option("--id", "model_id", required=True, help="Model ID.")
-@click.option("--variant", "variant_id", required=True, help="Model variant ID.")
+@click.option(
+    "--variant",
+    "variant_id",
+    required=True,
+    help="Model build profile ID.",
+)
 @_staging_option
 @click.option(
     "-o",
@@ -206,10 +229,10 @@ def download_command(
     force: bool,
     json_output: bool,
 ) -> None:
-    """Download the latest artifact for a model and variant."""
+    """Download the promoted full package for a model and build profile."""
     try:
         client = _client(ctx, staging)
-        run = find_latest_run(client.runs(branch), model_id, variant_id)
+        run = find_latest_run(client.catalog_models(branch), model_id, variant_id)
         result = _download_run(client, run, output, force)
     except ModelRegistryError as exc:
         raise click.ClickException(str(exc)) from exc

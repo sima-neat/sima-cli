@@ -20,6 +20,7 @@ from .client import (
     REPOSITORY,
     ModelRegistryError,
     SUPPORTED_BENCHMARK_SCHEMAS,
+    find_latest_run,
 )
 
 
@@ -69,23 +70,6 @@ def _run_label(run: Dict[str, Any]) -> str:
     return f"{model_id} / {variant_id} — {compiler or 'unknown compiler'} — {target}"
 
 
-def _preferred_variant_run(runs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    defaults = [
-        run
-        for run in runs
-        if (run.get("metadata") or {}).get("package_id") == "default"
-    ]
-    candidates = defaults or list(runs)
-    return max(
-        candidates,
-        key=lambda run: (
-            str(run.get("finished_at") or run.get("created_at") or ""),
-            str(run.get("created_at") or ""),
-            str(run.get("id") or ""),
-        ),
-    )
-
-
 def group_model_variants(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
     for run in runs:
@@ -113,7 +97,9 @@ def group_model_variants(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]
         variants = [
             {
                 "variant_id": variant_id,
-                "run": _preferred_variant_run(variant_runs),
+                "run": find_latest_run(
+                    variant_runs, str(model["model_id"]), variant_id
+                ),
             }
             for variant_id, variant_runs in model["variants"].items()
         ]

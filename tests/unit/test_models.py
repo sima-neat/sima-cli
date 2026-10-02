@@ -575,6 +575,39 @@ def test_list_renders_models_with_nested_variants():
     assert result.output.index("ResNet-50") < result.output.index("YOLO26 Tiny")
 
 
+def test_list_rejects_ambiguous_promoted_packages_for_a_variant():
+    packages = []
+    for package_id in ("optimized", "portable"):
+        run = _run(run_id=package_id, variant_id="modalix_int8")
+        run["run_type"] = "model_package"
+        run["metadata"]["package_id"] = package_id
+        packages.append(run)
+    fake_client = Mock()
+    fake_client.catalog_models.return_value = packages
+
+    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
+        result = CliRunner().invoke(models_group, ["--stg", "list"])
+
+    assert result.exit_code == 1
+    assert (
+        "Multiple promoted packages found for model 'resnet_50', variant "
+        "'modalix_int8': optimized, portable."
+    ) in result.output
+
+
+def test_model_variant_group_prefers_the_default_package():
+    packages = []
+    for package_id in ("optimized", "default"):
+        run = _run(run_id=package_id, variant_id="modalix_int8")
+        run["run_type"] = "model_package"
+        run["metadata"]["package_id"] = package_id
+        packages.append(run)
+
+    models = rendering.group_model_variants(packages)
+
+    assert models[0]["variants"][0]["run"]["id"] == "default"
+
+
 def test_interactive_selection_chooses_model_then_variant(monkeypatch):
     resnet = _run(run_id="resnet", variant_id="modalix_int8")
     resnet["metadata"]["display_name"] = "ResNet-50"

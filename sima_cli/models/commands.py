@@ -11,7 +11,6 @@ from .client import (
     RegistryClient,
     artifact_filename,
     find_latest_run,
-    latest_runs_by_model_variant,
     resolve_base_url,
     safe_output_path,
     select_model_artifact,
@@ -21,7 +20,7 @@ from .rendering import (
     model_card,
     render_branches,
     render_model_card,
-    render_runs,
+    select_branch,
     select_run,
 )
 
@@ -68,7 +67,7 @@ def _download_run(
     artifact = select_model_artifact(artifacts)
     metadata = (summary.get("run") or run).get("metadata") or {}
     model_id = str(metadata.get("model_id") or "")
-    variant_id = str(metadata.get("variant_id") or "")
+    variant_id = str(metadata.get("build_profile_id") or metadata.get("variant_id") or "")
     signed = client.artifact_download(run_id, str(artifact.get("name") or ""))
     filename = artifact_filename({**artifact, **signed})
     destination = safe_output_path(output, model_id, variant_id, filename)
@@ -83,11 +82,89 @@ def _download_run(
         "run_id": run_id,
         "model_id": model_id,
         "variant_id": variant_id,
+        "build_profile_id": variant_id,
         "artifact": artifact.get("name"),
         "filename": filename,
         "path": str(downloaded),
         "size_bytes": artifact.get("size_bytes"),
         "sha256": artifact.get("sha256"),
+    }
+
+
+def _selected_model_detail(
+    client: RegistryClient, selected: Dict[str, Any]
+) -> Dict[str, Any]:
+    selected_metadata = selected.get("metadata") or {}
+    component_run_ids = selected_metadata.get("component_run_ids") or {}
+    if isinstance(component_run_ids, dict) and component_run_ids:
+        components = sorted(
+            (
+                (str(component), str(run_id))
+                for component, run_id in component_run_ids.items()
+                if str(component) and str(run_id)
+            ),
+            key=lambda item: (item[0] != "model", item[0]),
+        )
+        details = [(component, client.detail(run_id)) for component, run_id in components]
+        package_summary = client.run(str(selected.get("id") or ""))
+    else:
+        details = [
+            (
+                str(selected_metadata.get("component_id") or "model"),
+                client.detail(str(selected.get("id") or "")),
+            )
+        ]
+        package_summary = details[0][1].get("summary") or {}
+
+    primary = details[0][1]
+    registry_run = ((primary.get("summary") or {}).get("run") or {})
+    registry_metadata = registry_run.get("metadata") or {}
+    summary = {
+        **(primary.get("summary") or {}),
+        "run": {
+            **selected,
+            **registry_run,
+            "metadata": {
+                **registry_metadata,
+                **selected_metadata,
+                "variant_id": (
+                    selected_metadata.get("build_profile_id")
+                    or selected_metadata.get("variant_id")
+                ),
+            },
+            "model_categories": (
+                selected.get("model_categories")
+                or registry_run.get("model_categories")
+                or {}
+            ),
+        },
+        "artifacts": package_summary.get("artifacts") or [],
+    }
+    return {
+        "summary": summary,
+        "provenance": primary.get("provenance") or {},
+        "tests": {
+            "test_results": [
+                {**test, "component_id": test.get("component_id") or component}
+                for component, detail in details
+                for test in (detail.get("tests") or {}).get("test_results") or []
+            ]
+        },
+        "metrics": {
+            "measurements": [
+                {**metric, "component_id": metric.get("component_id") or component}
+                for component, detail in details
+                for metric in (detail.get("metrics") or {}).get("measurements") or []
+            ]
+        },
+        "benchmark": next(
+            (detail.get("benchmark") for _, detail in details if detail.get("benchmark")),
+            None,
+        ),
+        "accuracy": next(
+            (detail.get("accuracy") for _, detail in details if detail.get("accuracy")),
+            None,
+        ),
     }
 
 
@@ -119,16 +196,17 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
 @click.option(
     "-b",
     "--branch",
-    default="main",
-    show_default=True,
-    help="Models repository branch.",
+    help=(
+        "Models repository branch. If omitted, select interactively; "
+        "--json defaults to main."
+    ),
 )
 @click.option(
     "-q",
     "--query",
     help=(
-        "Search model names, variants, categories, compiler, target, branch, "
-        "or commit. Multiple words must all match."
+        "Search model names, variants, categories, or branch. "
+        "Multiple words must all match."
     ),
 )
 @_staging_option
@@ -145,25 +223,39 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
 @click.pass_context
 def list_command(
     ctx: click.Context,
-    branch: str,
+    branch: Optional[str],
     query: Optional[str],
     staging: bool,
     json_output: bool,
     output: Path,
     force: bool,
 ) -> None:
-    """List the latest registered models on BRANCH."""
+    """Browse registered models, or list them with --json."""
     try:
         client = _client(ctx, staging)
-        runs = latest_runs_by_model_variant(client.runs(branch, query=query))
+        if branch is None:
+            if json_output:
+                branch = "main"
+            elif not _is_interactive():
+                raise ModelRegistryError(
+                    "Branch selection requires an interactive terminal. "
+                    "Use --branch BRANCH."
+                )
+            else:
+                branch = select_branch(client.branches())
+        runs = client.catalog_models(branch, query=query)
         if json_output:
             echo_json({"branch": branch, "query": query, "models": runs})
             return
-        render_runs(runs)
-        if not runs or not _is_interactive():
+        if not runs:
+            click.echo("No completed model builds are available on this branch.")
             return
+        if not _is_interactive():
+            raise ModelRegistryError(
+                "Model selection requires an interactive terminal. Use --json to list models."
+            )
         selected = select_run(runs)
-        detail = client.detail(str(selected["id"]))
+        detail = _selected_model_detail(client, selected)
         card = model_card(detail, _taxonomy(client))
         render_model_card(card)
         auto_confirm = bool((ctx.find_root().obj or {}).get("yes"))
@@ -183,7 +275,12 @@ def list_command(
     help="Models repository branch.",
 )
 @click.option("--id", "model_id", required=True, help="Model ID.")
-@click.option("--variant", "variant_id", required=True, help="Model variant ID.")
+@click.option(
+    "--variant",
+    "variant_id",
+    required=True,
+    help="Model variant ID.",
+)
 @_staging_option
 @click.option(
     "-o",
@@ -206,10 +303,10 @@ def download_command(
     force: bool,
     json_output: bool,
 ) -> None:
-    """Download the latest artifact for a model and variant."""
+    """Download the promoted full package for a model variant."""
     try:
         client = _client(ctx, staging)
-        run = find_latest_run(client.runs(branch), model_id, variant_id)
+        run = find_latest_run(client.catalog_models(branch), model_id, variant_id)
         result = _download_run(client, run, output, force)
     except ModelRegistryError as exc:
         raise click.ClickException(str(exc)) from exc

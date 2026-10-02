@@ -336,10 +336,6 @@ class RegistryClient:
         if not isinstance(models, list):
             raise ModelRegistryError("The registry did not return a current model catalog.")
 
-        git_ref = f"refs/heads/{branch}"
-        compile_runs = self._repository_runs(branch, "model_compile")
-        package_runs = self._repository_runs(branch, "model_package")
-        native_packages = _coherent_branch_packages(compile_runs, package_runs)
         definitions = {
             str(model.get("id") or ""): model
             for model in models
@@ -352,6 +348,17 @@ class RegistryClient:
             for package in (model.get("packages") or [])
             if isinstance(package, dict) and package.get("run_id")
         }
+        git_ref = f"refs/heads/{branch}"
+        compile_runs = self._repository_runs(branch, "model_compile")
+        package_runs = self._repository_runs(branch, "model_package")
+        promoted_package_runs = [
+            run
+            for run in package_runs
+            if str(run.get("id") or "") in catalog_packages
+        ]
+        native_packages = _coherent_branch_packages(
+            compile_runs, promoted_package_runs
+        )
 
         normalized_query = (query or "").strip().lower()
         query_terms = normalized_query.split()

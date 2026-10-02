@@ -383,6 +383,62 @@ def test_client_excludes_native_package_not_promoted_in_catalog():
     assert client.catalog_models("feature/model") == []
 
 
+def test_client_keeps_promoted_package_when_newer_unpromoted_rerun_exists():
+    catalog = {
+        "catalog": {
+            "document": {
+                "catalog_revision": "b" * 40,
+                "models": [
+                    {
+                        "id": "resnet_50",
+                        "packages": [
+                            {
+                                "run_id": "promoted-package",
+                                "package_id": "default",
+                                "build_profile_id": "modalix_int8",
+                                "component_run_ids": {"model": "feature-compile"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    }
+    compile_run = _run("feature-compile", variant_id="modalix_int8")
+    compile_run["git_ref"] = "refs/heads/feature/model"
+
+    def package(run_id, finished_at):
+        run = _run(run_id, variant_id="modalix_int8", finished_at=finished_at)
+        run["git_ref"] = "refs/heads/feature/model"
+        run["run_type"] = "model_package"
+        run["metadata"].update(
+            {
+                "package_id": "default",
+                "component_run_ids": {"model": "feature-compile"},
+            }
+        )
+        return run
+
+    promoted = package("promoted-package", "2026-08-30T12:01:00Z")
+    unpromoted = package("unpromoted-package", "2026-08-30T12:02:00Z")
+    client = RegistryClient(
+        "https://registry.example",
+        session=FakeSession(
+            [
+                FakeResponse(payload=catalog),
+                FakeResponse(payload={"runs": [compile_run], "has_more": False}),
+                FakeResponse(
+                    payload={"runs": [promoted, unpromoted], "has_more": False}
+                ),
+            ]
+        ),
+    )
+
+    assert [run["id"] for run in client.catalog_models("feature/model")] == [
+        "promoted-package"
+    ]
+
+
 def test_coherent_branch_packages_excludes_package_for_superseded_compile():
     old_compile = _run("old-compile", finished_at="2026-08-29T12:00:00Z")
     old_compile["metadata"]["github_run_id"] = "old-workflow"

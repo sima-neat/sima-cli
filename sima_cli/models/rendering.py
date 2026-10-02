@@ -56,6 +56,34 @@ def render_branches(branches: Sequence[Dict[str, Any]]) -> None:
     click.echo(tabulate(rows, headers=["Branch", "Latest run", "Runs"], tablefmt="simple"))
 
 
+def select_branch(branches: Sequence[Dict[str, Any]]) -> str:
+    choices: List[Dict[str, Any]] = [
+        {"name": str(branch["name"]), "value": str(branch["name"])}
+        for branch in branches
+        if str(branch.get("name") or "").strip()
+    ]
+    if not choices:
+        raise ModelRegistryError("No model branches are available to select.")
+    if not sys.stdin.isatty():
+        raise ModelRegistryError(
+            "Branch selection requires an interactive terminal. Use --branch BRANCH."
+        )
+    choices.append({"name": "Cancel", "value": None})
+    try:
+        selected = inquirer.fuzzy(
+            message="Select a branch:",
+            choices=choices,
+            max_height="70%",
+            instruction="(Type or use ↑↓)",
+            qmark="👉",
+        ).execute()
+    except KeyboardInterrupt as exc:
+        raise ModelRegistryError("Selection cancelled.") from exc
+    if selected is None:
+        raise ModelRegistryError("Selection cancelled.")
+    return str(selected)
+
+
 def _run_label(run: Dict[str, Any]) -> str:
     metadata = run.get("metadata") or {}
     model_id = metadata.get("model_id", "unknown")

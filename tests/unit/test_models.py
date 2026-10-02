@@ -95,7 +95,7 @@ def test_models_group_is_hidden_but_directly_invokable(monkeypatch):
     "arguments",
     [
         ["models", "--stg", "branches", "--json"],
-        ["models", "--stg", "list", "--json"],
+        ["models", "--stg", "list", "--branch", "main", "--json"],
         [
             "models",
             "--stg",
@@ -603,16 +603,32 @@ def test_list_json_is_non_interactive_and_returns_catalog_models():
     select.assert_not_called()
 
 
-def test_noninteractive_list_requires_json_instead_of_rendering_overview_table():
+def test_noninteractive_list_requires_explicit_branch_when_omitted():
     fake_client = Mock()
-    fake_client.catalog_models.return_value = [_run()]
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
         result = CliRunner().invoke(models_group, ["--stg", "list"])
 
     assert result.exit_code == 1
+    assert "Use --branch BRANCH" in result.output
+    assert "Package    Target    Size" not in result.output
+    fake_client.branches.assert_not_called()
+    fake_client.catalog_models.assert_not_called()
+
+
+def test_noninteractive_list_requires_json_instead_of_rendering_overview_table():
+    fake_client = Mock()
+    fake_client.catalog_models.return_value = [_run()]
+
+    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
+        result = CliRunner().invoke(
+            models_group, ["--stg", "list", "--branch", "develop"]
+        )
+
+    assert result.exit_code == 1
     assert "Use --json to list models" in result.output
     assert "Package    Target    Size" not in result.output
+    fake_client.catalog_models.assert_called_once_with("develop", query=None)
 
 
 def test_model_variant_group_rejects_ambiguous_promoted_packages():
@@ -676,6 +692,26 @@ def test_interactive_selection_chooses_model_then_variant(monkeypatch):
     assert prompts[1]["choices"][-1] == "Cancel"
 
 
+def test_interactive_branch_selection_uses_available_branch_names(monkeypatch):
+    prompt = Mock()
+    prompt.execute.return_value = "develop"
+    fuzzy = Mock(return_value=prompt)
+    monkeypatch.setattr(rendering.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(rendering.inquirer, "fuzzy", fuzzy)
+
+    selected = rendering.select_branch(
+        [{"name": "develop", "run_count": 335}, {"name": "main", "run_count": 11}]
+    )
+
+    assert selected == "develop"
+    assert fuzzy.call_args.kwargs["message"] == "Select a branch:"
+    assert fuzzy.call_args.kwargs["choices"] == [
+        {"name": "develop", "value": "develop"},
+        {"name": "main", "value": "main"},
+        {"name": "Cancel", "value": None},
+    ]
+
+
 def test_list_accepts_short_branch_option():
     fake_client = Mock()
     fake_client.catalog_models.return_value = []
@@ -685,17 +721,27 @@ def test_list_accepts_short_branch_option():
 
     assert result.exit_code == 0, result.output
     fake_client.catalog_models.assert_called_once_with("develop", query=None)
+    fake_client.branches.assert_not_called()
 
 
-def test_list_defaults_to_main_branch():
+def test_list_prompts_for_branch_when_omitted():
     fake_client = Mock()
+    fake_client.branches.return_value = [{"name": "develop"}, {"name": "main"}]
     fake_client.catalog_models.return_value = []
 
-    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
+    with patch(
+        "sima_cli.models.commands.RegistryClient", return_value=fake_client
+    ), patch(
+        "sima_cli.models.commands._is_interactive", return_value=True
+    ), patch(
+        "sima_cli.models.commands.select_branch", return_value="develop"
+    ) as select:
         result = CliRunner().invoke(models_group, ["--stg", "list"])
 
     assert result.exit_code == 0, result.output
-    fake_client.catalog_models.assert_called_once_with("main", query=None)
+    fake_client.branches.assert_called_once_with()
+    select.assert_called_once_with(fake_client.branches.return_value)
+    fake_client.catalog_models.assert_called_once_with("develop", query=None)
 
 
 def test_list_passes_query_to_registry_search():
@@ -705,7 +751,14 @@ def test_list_passes_query_to_registry_search():
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
         result = CliRunner().invoke(
             models_group,
-            ["--stg", "list", "--query", "yolo object detection"],
+            [
+                "--stg",
+                "list",
+                "--branch",
+                "main",
+                "--query",
+                "yolo object detection",
+            ],
         )
 
     assert result.exit_code == 0, result.output
@@ -797,7 +850,9 @@ def test_interactive_package_selection_loads_component_benchmark_and_accuracy():
     ), patch("sima_cli.models.commands.select_run", return_value=package), patch(
         "sima_cli.models.commands.click.confirm", return_value=False
     ):
-        result = CliRunner().invoke(models_group, ["--stg", "list"])
+        result = CliRunner().invoke(
+            models_group, ["--stg", "list", "--branch", "develop"]
+        )
 
     assert result.exit_code == 0, result.output
     assert "Average latency" in result.output

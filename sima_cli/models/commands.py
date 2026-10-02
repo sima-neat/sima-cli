@@ -20,6 +20,7 @@ from .rendering import (
     model_card,
     render_branches,
     render_model_card,
+    select_branch,
     select_run,
 )
 
@@ -195,9 +196,7 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
 @click.option(
     "-b",
     "--branch",
-    default="main",
-    show_default=True,
-    help="Models repository branch.",
+    help="Models repository branch. If omitted, select interactively.",
 )
 @click.option(
     "-q",
@@ -221,16 +220,23 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
 @click.pass_context
 def list_command(
     ctx: click.Context,
-    branch: str,
+    branch: Optional[str],
     query: Optional[str],
     staging: bool,
     json_output: bool,
     output: Path,
     force: bool,
 ) -> None:
-    """Browse registered models on BRANCH, or list them with --json."""
+    """Browse registered models, or list them with --json."""
     try:
         client = _client(ctx, staging)
+        if branch is None:
+            if not _is_interactive():
+                raise ModelRegistryError(
+                    "Branch selection requires an interactive terminal. "
+                    "Use --branch BRANCH."
+                )
+            branch = select_branch(client.branches())
         runs = client.catalog_models(branch, query=query)
         if json_output:
             echo_json({"branch": branch, "query": query, "models": runs})

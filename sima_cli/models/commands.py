@@ -90,6 +90,83 @@ def _download_run(
     }
 
 
+def _selected_model_detail(
+    client: RegistryClient, selected: Dict[str, Any]
+) -> Dict[str, Any]:
+    selected_metadata = selected.get("metadata") or {}
+    component_run_ids = selected_metadata.get("component_run_ids") or {}
+    if isinstance(component_run_ids, dict) and component_run_ids:
+        components = sorted(
+            (
+                (str(component), str(run_id))
+                for component, run_id in component_run_ids.items()
+                if str(component) and str(run_id)
+            ),
+            key=lambda item: (item[0] != "model", item[0]),
+        )
+        details = [(component, client.detail(run_id)) for component, run_id in components]
+        package_summary = client.run(str(selected.get("id") or ""))
+    else:
+        details = [
+            (
+                str(selected_metadata.get("component_id") or "model"),
+                client.detail(str(selected.get("id") or "")),
+            )
+        ]
+        package_summary = details[0][1].get("summary") or {}
+
+    primary = details[0][1]
+    registry_run = ((primary.get("summary") or {}).get("run") or {})
+    registry_metadata = registry_run.get("metadata") or {}
+    summary = {
+        **(primary.get("summary") or {}),
+        "run": {
+            **selected,
+            **registry_run,
+            "metadata": {
+                **registry_metadata,
+                **selected_metadata,
+                "variant_id": (
+                    selected_metadata.get("build_profile_id")
+                    or selected_metadata.get("variant_id")
+                ),
+            },
+            "model_categories": (
+                selected.get("model_categories")
+                or registry_run.get("model_categories")
+                or {}
+            ),
+        },
+        "artifacts": package_summary.get("artifacts") or [],
+    }
+    return {
+        "summary": summary,
+        "provenance": primary.get("provenance") or {},
+        "tests": {
+            "test_results": [
+                {**test, "component_id": test.get("component_id") or component}
+                for component, detail in details
+                for test in (detail.get("tests") or {}).get("test_results") or []
+            ]
+        },
+        "metrics": {
+            "measurements": [
+                {**metric, "component_id": metric.get("component_id") or component}
+                for component, detail in details
+                for metric in (detail.get("metrics") or {}).get("measurements") or []
+            ]
+        },
+        "benchmark": next(
+            (detail.get("benchmark") for _, detail in details if detail.get("benchmark")),
+            None,
+        ),
+        "accuracy": next(
+            (detail.get("accuracy") for _, detail in details if detail.get("accuracy")),
+            None,
+        ),
+    }
+
+
 @click.group(name="models", help="Browse and download Model Registry artifacts.", hidden=True)
 @_staging_option
 @click.pass_context
@@ -166,25 +243,7 @@ def list_command(
                 "Model selection requires an interactive terminal. Use --json to list models."
             )
         selected = select_run(runs)
-        summary = client.run(str(selected["id"]))
-        registry_run = summary.get("run") or {}
-        selected_metadata = selected.get("metadata") or {}
-        registry_metadata = registry_run.get("metadata") or {}
-        summary["run"] = {
-            **selected,
-            **registry_run,
-            "metadata": {
-                **selected_metadata,
-                **registry_metadata,
-                "variant_id": selected_metadata.get("variant_id"),
-            },
-            "model_categories": (
-                selected.get("model_categories")
-                or registry_run.get("model_categories")
-                or {}
-            ),
-        }
-        detail = {"summary": summary}
+        detail = _selected_model_detail(client, selected)
         card = model_card(detail, _taxonomy(client))
         render_model_card(card)
         auto_confirm = bool((ctx.find_root().obj or {}).get("yes"))

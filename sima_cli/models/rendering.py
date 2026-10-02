@@ -255,6 +255,50 @@ def _measured_benchmarks(benchmark: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _accuracy_summary(accuracy: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not accuracy:
+        return {"status": "not available", "metrics": {}}
+    result = accuracy.get("result")
+    if not isinstance(result, dict):
+        return {"status": "not available", "metrics": {}}
+    metrics = result.get("metrics") or {}
+    candidate = metrics.get("candidate") or {}
+    reference = metrics.get("reference") or {}
+    comparison = metrics.get("comparison") or {}
+    dataset = result.get("dataset") or {}
+    counts = result.get("counts") or {}
+    evaluation = result.get("evaluation") or {}
+    execution = result.get("execution") or {}
+    return {
+        "status": evaluation.get("status") or "available",
+        "schema_version": result.get("schema_version"),
+        "scope": result.get("report_scope"),
+        "profile": evaluation.get("profile"),
+        "dataset": " / ".join(
+            str(value)
+            for value in (dataset.get("id"), dataset.get("variant"), dataset.get("split"))
+            if value
+        ),
+        "evaluated_samples": dataset.get("evaluated_samples"),
+        "available_samples": dataset.get("available_samples"),
+        "samples_per_second": execution.get("samples_per_second"),
+        "metrics": {
+            "top1_accuracy": {
+                "candidate": candidate.get("top1_accuracy"),
+                "reference": reference.get("top1_accuracy"),
+                "delta": comparison.get("top1_delta"),
+            },
+            "top5_accuracy": {
+                "candidate": candidate.get("top5_accuracy"),
+                "reference": reference.get("top5_accuracy"),
+                "delta": comparison.get("top5_delta"),
+            },
+            "top1_agreement": comparison.get("top1_agreement"),
+        },
+        "counts": counts,
+    }
+
+
 def model_card(detail: Dict[str, Any], taxonomy_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     summary = detail.get("summary") or {}
     run = summary.get("run") or {}
@@ -307,6 +351,7 @@ def model_card(detail: Dict[str, Any], taxonomy_payload: Optional[Dict[str, Any]
             "parameters": parameters,
         },
         "benchmark": _measured_benchmarks(detail.get("benchmark")),
+        "accuracy": _accuracy_summary(detail.get("accuracy")),
     }
 
 
@@ -381,6 +426,13 @@ def _format_measurement(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:,.6g}"
     return _format_value(value)
+
+
+def _format_percentage(value: Any, signed: bool = False) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "not available"
+    formatted = f"{value * 100:{'+' if signed else ''}.2f}".rstrip("0").rstrip(".")
+    return f"{formatted}%"
 
 
 def render_model_card(card: Dict[str, Any]) -> None:
@@ -465,6 +517,55 @@ def render_model_card(card: Dict[str, Any]) -> None:
     validation_content = validation_table if validation_table.row_count else _value_text(None)
     console.print(
         Panel(validation_content, title="Validation", title_align="left", border_style="blue")
+    )
+
+    accuracy = card.get("accuracy") or {"status": "not available", "metrics": {}}
+    accuracy_rows = [
+        ["Status", _status_text(accuracy.get("status"))],
+        ["Schema", accuracy.get("schema_version")],
+        ["Scope", accuracy.get("scope")],
+        ["Profile", accuracy.get("profile")],
+        ["Dataset", accuracy.get("dataset")],
+    ]
+    evaluated = accuracy.get("evaluated_samples")
+    available = accuracy.get("available_samples")
+    if evaluated is not None or available is not None:
+        accuracy_rows.append(["Samples", f"{evaluated or 0} / {available or 0}"])
+    if accuracy.get("samples_per_second") is not None:
+        accuracy_rows.append(
+            ["Throughput", f"{_format_measurement(accuracy['samples_per_second'])} images/s"]
+        )
+    accuracy_parts = [_metadata_grid(accuracy_rows)]
+    accuracy_table = Table(
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        show_edge=False,
+        header_style="bold bright_blue",
+        padding=(0, 1),
+    )
+    accuracy_table.add_column("Metric", ratio=1)
+    accuracy_table.add_column("Candidate", justify="right", style="bold cyan")
+    accuracy_table.add_column("Reference", justify="right")
+    accuracy_table.add_column("Delta", justify="right")
+    accuracy_metrics = accuracy.get("metrics") or {}
+    for key, label in (("top1_accuracy", "Top-1 accuracy"), ("top5_accuracy", "Top-5 accuracy")):
+        metric = accuracy_metrics.get(key) or {}
+        if any(metric.get(field) is not None for field in ("candidate", "reference", "delta")):
+            accuracy_table.add_row(
+                label,
+                _format_percentage(metric.get("candidate")),
+                _format_percentage(metric.get("reference")),
+                _format_percentage(metric.get("delta"), signed=True),
+            )
+    agreement = accuracy_metrics.get("top1_agreement")
+    if agreement is not None:
+        accuracy_table.add_row(
+            "Top-1 agreement", _format_percentage(agreement), "not applicable", "not applicable"
+        )
+    if accuracy_table.row_count:
+        accuracy_parts.extend([Text(""), accuracy_table])
+    console.print(
+        Panel(Group(*accuracy_parts), title="Accuracy", title_align="left", border_style="blue")
     )
 
     benchmark = card["benchmark"]

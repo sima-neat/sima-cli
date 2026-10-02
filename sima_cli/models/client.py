@@ -14,7 +14,7 @@ ORGANIZATION = "sima-neat"
 REPOSITORY = "models"
 STAGING_BASE_URL = "https://models-registry.stg.neat.sima.ai"
 TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
-SUPPORTED_BENCHMARK_SCHEMAS = (1, 2, 3)
+SUPPORTED_BENCHMARK_SCHEMAS = (1, 2, 3, 4, 5)
 
 
 class ModelRegistryError(RuntimeError):
@@ -366,6 +366,11 @@ class RegistryClient:
             ("v1", "runs", run_id, "benchmarks", "latest"), allow_not_found=True
         )
 
+    def accuracy(self, run_id: str) -> Optional[Dict[str, Any]]:
+        return self._get_json(
+            ("v1", "runs", run_id, "accuracy", "latest"), allow_not_found=True
+        )
+
     def taxonomy(self) -> Optional[Dict[str, Any]]:
         return self._get_json(
             ("v1", "repositories", ORGANIZATION, REPOSITORY, "taxonomies", "latest"),
@@ -379,6 +384,7 @@ class RegistryClient:
             "tests": self.test_results(run_id),
             "metrics": self.metrics(run_id),
             "benchmark": self.benchmark(run_id),
+            "accuracy": self.accuracy(run_id),
         }
 
     def artifact_download(self, run_id: str, name: str) -> Dict[str, Any]:

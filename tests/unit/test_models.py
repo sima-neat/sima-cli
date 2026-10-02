@@ -285,6 +285,14 @@ def test_client_treats_missing_benchmark_as_normal():
     assert client.benchmark("run") is None
 
 
+def test_client_treats_missing_accuracy_as_normal():
+    client = RegistryClient(
+        "https://registry.example",
+        session=FakeSession([FakeResponse(status_code=404, payload={"error": {}})]),
+    )
+    assert client.accuracy("run") is None
+
+
 def test_select_model_artifact_requires_one_available_model_package():
     artifact = {
         "name": "resnet_int8_mpk.tar.gz",
@@ -409,7 +417,7 @@ def test_model_card_handles_supported_and_unsupported_benchmarks():
         "metrics": {"measurements": []},
         "benchmark": {
             "result": {
-                "schema_version": 3,
+                "schema_version": 5,
                 "status": "passed",
                 "metrics": {
                     "latency_avg_ms": {
@@ -433,6 +441,30 @@ def test_model_card_handles_supported_and_unsupported_benchmarks():
                 },
             }
         },
+        "accuracy": {
+            "result": {
+                "schema_version": 1,
+                "report_scope": "sampled_accuracy_smoke",
+                "dataset": {
+                    "id": "imagenet-2012",
+                    "variant": "mini",
+                    "split": "validation",
+                    "evaluated_samples": 500,
+                    "available_samples": 5000,
+                },
+                "evaluation": {"status": "provisional", "profile": "regular"},
+                "execution": {"samples_per_second": 5.669},
+                "metrics": {
+                    "candidate": {"top1_accuracy": 0.762, "top5_accuracy": 0.934},
+                    "reference": {"top1_accuracy": 0.798, "top5_accuracy": 0.95},
+                    "comparison": {
+                        "top1_delta": -0.036,
+                        "top5_delta": -0.016,
+                        "top1_agreement": 0.88,
+                    },
+                },
+            }
+        },
     }
 
     card = model_card(detail)
@@ -443,6 +475,8 @@ def test_model_card_handles_supported_and_unsupported_benchmarks():
     )
     assert card["benchmark"]["measurements"]["latency_avg_ms"]["value"] == 3.5
     assert card["benchmark"]["temperature_c"]["maximum"] == 42.0
+    assert card["accuracy"]["metrics"]["top1_accuracy"]["candidate"] == 0.762
+    assert card["accuracy"]["evaluated_samples"] == 500
 
     detail["benchmark"]["result"]["schema_version"] = 99
     assert model_card(detail)["benchmark"]["status"] == "unsupported schema"
@@ -489,6 +523,29 @@ def test_model_card_rendering_uses_panels_and_readable_metric_labels(monkeypatch
             }
         ],
         "tests": [{"suite": "compile", "name": "mpk-validation", "status": "passed"}],
+        "accuracy": {
+            "status": "provisional",
+            "schema_version": 1,
+            "scope": "sampled_accuracy_smoke",
+            "profile": "regular",
+            "dataset": "imagenet-2012 / mini / validation",
+            "evaluated_samples": 500,
+            "available_samples": 5000,
+            "samples_per_second": 5.669,
+            "metrics": {
+                "top1_accuracy": {
+                    "candidate": 0.762,
+                    "reference": 0.798,
+                    "delta": -0.036,
+                },
+                "top5_accuracy": {
+                    "candidate": 0.934,
+                    "reference": 0.95,
+                    "delta": -0.016,
+                },
+                "top1_agreement": 0.88,
+            },
+        },
         "benchmark": {
             "status": "passed",
             "schema_version": 3,
@@ -511,6 +568,9 @@ def test_model_card_rendering_uses_panels_and_readable_metric_labels(monkeypatch
     assert "30.0 MiB" in rendered
     assert "Average latency" in rendered
     assert "latency_avg_ms" not in rendered
+    assert "Accuracy" in rendered
+    assert "76.2%" in rendered
+    assert "-3.6%" in rendered
     assert "GitHub commit" not in rendered
     assert "Model folder" in rendered
     assert "/models/yolo26_tiny_drone" in rendered
@@ -656,7 +716,14 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
     run = _run()
     fake_client = Mock()
     fake_client.catalog_models.return_value = [run]
-    fake_client.run.return_value = {"run": run, "artifacts": []}
+    fake_client.detail.return_value = {
+        "summary": {"run": run, "artifacts": []},
+        "provenance": {},
+        "tests": {"test_results": []},
+        "metrics": {"measurements": []},
+        "benchmark": None,
+        "accuracy": None,
+    }
     fake_client.taxonomy.return_value = None
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client), patch(
@@ -672,8 +739,72 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
     assert "resnet_50" in result.output
     assert "Benchmark" in result.output
     assert "Package    Target    Size" not in result.output
-    fake_client.run.assert_called_once_with("run-1")
+    fake_client.detail.assert_called_once_with("run-1")
     fake_client.download.assert_not_called()
+
+
+def test_interactive_package_selection_loads_component_benchmark_and_accuracy():
+    package = _run(run_id="package-run", variant_id="modalix_int8")
+    package["run_type"] = "model_package"
+    package["metadata"].update(
+        {
+            "build_profile_id": "modalix_int8",
+            "package_id": "default",
+            "component_run_ids": {"model": "compile-run"},
+        }
+    )
+    compile_run = _run(run_id="compile-run", variant_id="modalix_int8")
+    fake_client = Mock()
+    fake_client.catalog_models.return_value = [package]
+    fake_client.run.return_value = {"run": package, "artifacts": []}
+    fake_client.detail.return_value = {
+        "summary": {"run": compile_run, "artifacts": []},
+        "provenance": {},
+        "tests": {"test_results": []},
+        "metrics": {"measurements": []},
+        "benchmark": {
+            "result": {
+                "schema_version": 5,
+                "status": "passed",
+                "metrics": {
+                    "latency_avg_ms": {
+                        "status": "measured",
+                        "value": 3.5,
+                        "unit": "ms",
+                        "aggregation": "mean",
+                    }
+                },
+            }
+        },
+        "accuracy": {
+            "result": {
+                "schema_version": 1,
+                "report_scope": "sampled_accuracy_smoke",
+                "dataset": {"id": "imagenet-2012", "evaluated_samples": 500},
+                "evaluation": {"status": "provisional", "profile": "regular"},
+                "metrics": {
+                    "candidate": {"top1_accuracy": 0.762},
+                    "reference": {"top1_accuracy": 0.798},
+                    "comparison": {"top1_delta": -0.036},
+                },
+            }
+        },
+    }
+    fake_client.taxonomy.return_value = None
+
+    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client), patch(
+        "sima_cli.models.commands._is_interactive", return_value=True
+    ), patch("sima_cli.models.commands.select_run", return_value=package), patch(
+        "sima_cli.models.commands.click.confirm", return_value=False
+    ):
+        result = CliRunner().invoke(models_group, ["--stg", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "Average latency" in result.output
+    assert "76.2%" in result.output
+    assert "-3.6%" in result.output
+    fake_client.detail.assert_called_once_with("compile-run")
+    fake_client.run.assert_called_once_with("package-run")
 
 
 def test_default_command_reports_unconfigured_production(monkeypatch):

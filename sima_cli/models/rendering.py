@@ -4,7 +4,7 @@ import json
 import re
 import sys
 import urllib.parse
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import click
 from InquirerPy import inquirer
@@ -69,51 +69,161 @@ def _run_label(run: Dict[str, Any]) -> str:
     return f"{model_id} / {variant_id} — {compiler or 'unknown compiler'} — {target}"
 
 
-def render_runs(runs: Sequence[Dict[str, Any]]) -> None:
-    rows = []
+def _preferred_variant_run(runs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    defaults = [
+        run
+        for run in runs
+        if (run.get("metadata") or {}).get("package_id") == "default"
+    ]
+    candidates = defaults or list(runs)
+    return max(
+        candidates,
+        key=lambda run: (
+            str(run.get("finished_at") or run.get("created_at") or ""),
+            str(run.get("created_at") or ""),
+            str(run.get("id") or ""),
+        ),
+    )
+
+
+def group_model_variants(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
     for run in runs:
         metadata = run.get("metadata") or {}
-        rows.append(
-            [
-                metadata.get("model_id", ""),
-                metadata.get("build_profile_id") or metadata.get("variant_id", ""),
-                metadata.get("package_id", "default"),
-                run.get("target_platform", ""),
-                _format_bytes(run.get("size_bytes")),
-            ]
+        model_id = str(metadata.get("model_id") or "").strip()
+        variant_id = str(
+            metadata.get("build_profile_id") or metadata.get("variant_id") or ""
+        ).strip()
+        if not model_id or not variant_id:
+            continue
+        model = grouped.setdefault(
+            model_id,
+            {
+                "model_id": model_id,
+                "display_name": metadata.get("display_name"),
+                "variants": {},
+            },
         )
-    if not rows:
+        if not model.get("display_name") and metadata.get("display_name"):
+            model["display_name"] = metadata["display_name"]
+        model["variants"].setdefault(variant_id, []).append(run)
+
+    models = []
+    for model in grouped.values():
+        variants = [
+            {
+                "variant_id": variant_id,
+                "run": _preferred_variant_run(variant_runs),
+            }
+            for variant_id, variant_runs in model["variants"].items()
+        ]
+        models.append(
+            {
+                "model_id": model["model_id"],
+                "display_name": model.get("display_name"),
+                "variants": sorted(
+                    variants, key=lambda item: item["variant_id"].lower()
+                ),
+            }
+        )
+    return sorted(models, key=lambda item: item["model_id"].lower())
+
+
+def render_runs(runs: Sequence[Dict[str, Any]]) -> None:
+    models = group_model_variants(runs)
+    if not models:
         click.echo("No completed model builds are available on this branch.")
         return
+    rows = []
+    for model in models:
+        display_name = str(model.get("display_name") or model["model_id"])
+        model_label = (
+            f"{display_name} ({model['model_id']})"
+            if display_name != model["model_id"]
+            else display_name
+        )
+        variants = model["variants"]
+        rows.append(
+            [
+                model_label,
+                f"{len(variants)} variant{'s' if len(variants) != 1 else ''}",
+                "",
+                "",
+                "",
+            ]
+        )
+        for index, variant in enumerate(variants):
+            run = variant["run"]
+            metadata = run.get("metadata") or {}
+            connector = "└─" if index == len(variants) - 1 else "├─"
+            rows.append(
+                [
+                    "",
+                    f"{connector} {variant['variant_id']}",
+                    metadata.get("package_id") or "default",
+                    run.get("target_platform", ""),
+                    _format_bytes(run.get("size_bytes")),
+                ]
+            )
     click.echo(
         tabulate(
             rows,
-            headers=["Model", "Build profile", "Package", "Target", "Size"],
+            headers=["Model", "Variant", "Package", "Target", "Size"],
             tablefmt="simple",
         )
     )
 
 
 def select_run(runs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    if not runs:
+    models = group_model_variants(runs)
+    if not models:
         raise ModelRegistryError("No model builds are available to select.")
     if not sys.stdin.isatty():
         raise ModelRegistryError("Model selection requires an interactive terminal.")
-    labels = [_run_label(run) for run in runs]
-    labels.append("Cancel")
+    model_labels = []
+    for model in models:
+        display_name = str(model.get("display_name") or model["model_id"])
+        identity = (
+            f"{display_name} ({model['model_id']})"
+            if display_name != model["model_id"]
+            else display_name
+        )
+        count = len(model["variants"])
+        model_labels.append(
+            f"{identity} — {count} variant{'s' if count != 1 else ''}"
+        )
+    model_labels.append("Cancel")
     try:
-        selected = inquirer.fuzzy(
+        selected_model = inquirer.fuzzy(
             message="Select a model:",
-            choices=labels,
+            choices=model_labels,
             max_height="70%",
             instruction="(Type or use ↑↓)",
             qmark="👉",
         ).execute()
     except KeyboardInterrupt as exc:
         raise ModelRegistryError("Selection cancelled.") from exc
-    if selected in {None, "Cancel"}:
+    if selected_model in {None, "Cancel"}:
         raise ModelRegistryError("Selection cancelled.")
-    return runs[labels.index(selected)]
+    model = models[model_labels.index(selected_model)]
+
+    variant_labels = [
+        _run_label(variant["run"]) for variant in model["variants"]
+    ]
+    variant_labels.append("Cancel")
+    try:
+        selected_variant = inquirer.fuzzy(
+            message="Select a variant:",
+            choices=variant_labels,
+            max_height="70%",
+            instruction="(Type or use ↑↓)",
+            qmark="👉",
+        ).execute()
+    except KeyboardInterrupt as exc:
+        raise ModelRegistryError("Selection cancelled.") from exc
+    if selected_variant in {None, "Cancel"}:
+        raise ModelRegistryError("Selection cancelled.")
+    return model["variants"][variant_labels.index(selected_variant)]["run"]
 
 
 def _taxonomy_label(taxonomy: Dict[str, Any], section: str, value: Any) -> Any:

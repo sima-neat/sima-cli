@@ -127,7 +127,7 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
     "-q",
     "--query",
     help=(
-        "Search model names, build profiles, categories, or branch. "
+        "Search model names, variants, categories, or branch. "
         "Multiple words must all match."
     ),
 )
@@ -205,7 +205,7 @@ def list_command(
     "--variant",
     "variant_id",
     required=True,
-    help="Model build profile ID.",
+    help="Model variant ID.",
 )
 @_staging_option
 @click.option(
@@ -229,7 +229,7 @@ def download_command(
     force: bool,
     json_output: bool,
 ) -> None:
-    """Download the promoted full package for a model and build profile."""
+    """Download the promoted full package for a model variant."""
     try:
         client = _client(ctx, staging)
         run = find_latest_run(client.catalog_models(branch), model_id, variant_id)

@@ -543,6 +543,75 @@ def test_list_json_is_non_interactive_and_returns_catalog_models():
     select.assert_not_called()
 
 
+def test_list_renders_models_with_nested_variants():
+    int8 = _run(run_id="int8", variant_id="modalix_int8")
+    int8["metadata"]["display_name"] = "ResNet-50"
+    int8["metadata"]["package_id"] = "default"
+    int8["size_bytes"] = 1024
+    bf16 = _run(run_id="bf16", variant_id="modalix_bf16")
+    bf16["metadata"]["display_name"] = "ResNet-50"
+    bf16["metadata"]["package_id"] = "default"
+    bf16["size_bytes"] = 2048
+    yolo = _run(
+        run_id="yolo", model_id="yolo26_tiny", variant_id="modalix_int8"
+    )
+    yolo["metadata"]["display_name"] = "YOLO26 Tiny"
+    fake_client = Mock()
+    fake_client.catalog_models.return_value = [int8, yolo, bf16]
+
+    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
+        result = CliRunner().invoke(
+            models_group, ["--stg", "list", "--branch", "develop"]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Model" in result.output
+    assert "Variant" in result.output
+    assert "ResNet-50 (resnet_50)" in result.output
+    assert "2 variants" in result.output
+    assert "├─ modalix_bf16" in result.output
+    assert "└─ modalix_int8" in result.output
+    assert "YOLO26 Tiny (yolo26_tiny)" in result.output
+    assert result.output.index("ResNet-50") < result.output.index("YOLO26 Tiny")
+
+
+def test_interactive_selection_chooses_model_then_variant(monkeypatch):
+    resnet = _run(run_id="resnet", variant_id="modalix_int8")
+    resnet["metadata"]["display_name"] = "ResNet-50"
+    yolo_bf16 = _run(
+        run_id="yolo-bf16", model_id="yolo26_tiny", variant_id="modalix_bf16"
+    )
+    yolo_bf16["metadata"]["display_name"] = "YOLO26 Tiny"
+    yolo_int8 = _run(
+        run_id="yolo-int8", model_id="yolo26_tiny", variant_id="modalix_int8"
+    )
+    yolo_int8["metadata"]["display_name"] = "YOLO26 Tiny"
+    prompts = []
+
+    def fuzzy(**kwargs):
+        prompts.append(kwargs)
+        prompt = Mock()
+        prompt.execute.return_value = (
+            "YOLO26 Tiny (yolo26_tiny) — 2 variants"
+            if len(prompts) == 1
+            else "yolo26_tiny / modalix_int8 — model-compiler 2.1.3 — modalix"
+        )
+        return prompt
+
+    monkeypatch.setattr(rendering.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(rendering.inquirer, "fuzzy", fuzzy)
+
+    selected = rendering.select_run([yolo_int8, resnet, yolo_bf16])
+
+    assert selected["id"] == "yolo-int8"
+    assert [prompt["message"] for prompt in prompts] == [
+        "Select a model:",
+        "Select a variant:",
+    ]
+    assert prompts[0]["choices"][-1] == "Cancel"
+    assert prompts[1]["choices"][-1] == "Cancel"
+
+
 def test_list_accepts_short_branch_option():
     fake_client = Mock()
     fake_client.catalog_models.return_value = []

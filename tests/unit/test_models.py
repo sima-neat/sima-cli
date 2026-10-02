@@ -96,7 +96,7 @@ def test_models_group_is_hidden_but_directly_invokable(monkeypatch):
     "arguments",
     [
         ["models", "--stg", "branches", "--json"],
-        ["models", "--stg", "list", "--branch", "main", "--json"],
+        ["models", "--stg", "list", "--json"],
         [
             "models",
             "--stg",
@@ -350,6 +350,37 @@ def test_client_excludes_inherited_catalog_packages_from_feature_branch():
     )
 
     assert client.catalog_models("feature/readme-only") == []
+
+
+def test_client_excludes_native_package_not_promoted_in_catalog():
+    catalog = {
+        "catalog": {
+            "document": {
+                "catalog_revision": "b" * 40,
+                "models": [{"id": "resnet_50", "packages": []}],
+            }
+        }
+    }
+    compile_run = _run("feature-compile", variant_id="modalix_int8")
+    compile_run["git_ref"] = "refs/heads/feature/model"
+    package_run = _run("feature-package", variant_id="modalix_int8")
+    package_run["git_ref"] = "refs/heads/feature/model"
+    package_run["run_type"] = "model_package"
+    package_run["metadata"].update(
+        {"package_id": "default", "component_run_ids": {"model": "feature-compile"}}
+    )
+    client = RegistryClient(
+        "https://registry.example",
+        session=FakeSession(
+            [
+                FakeResponse(payload=catalog),
+                FakeResponse(payload={"runs": [compile_run], "has_more": False}),
+                FakeResponse(payload={"runs": [package_run], "has_more": False}),
+            ]
+        ),
+    )
+
+    assert client.catalog_models("feature/model") == []
 
 
 def test_coherent_branch_packages_excludes_package_for_superseded_compile():
@@ -704,6 +735,26 @@ def test_list_json_is_non_interactive_and_returns_catalog_models():
     select.assert_not_called()
 
 
+def test_list_json_defaults_to_main_without_prompting():
+    fake_client = Mock()
+    fake_client.catalog_models.return_value = []
+
+    with patch(
+        "sima_cli.models.commands.RegistryClient", return_value=fake_client
+    ), patch(
+        "sima_cli.models.commands._is_interactive", return_value=True
+    ), patch(
+        "sima_cli.models.commands.select_branch"
+    ) as select:
+        result = CliRunner().invoke(models_group, ["--stg", "list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["branch"] == "main"
+    fake_client.catalog_models.assert_called_once_with("main", query=None)
+    fake_client.branches.assert_not_called()
+    select.assert_not_called()
+
+
 def test_noninteractive_list_requires_explicit_branch_when_omitted():
     fake_client = Mock()
 
@@ -959,6 +1010,8 @@ def test_interactive_package_selection_loads_component_benchmark_and_accuracy():
     assert "Average latency" in result.output
     assert "76.2%" in result.output
     assert "-3.6%" in result.output
+    assert "500 / not available" in result.output
+    assert "500 / 0" not in result.output
     fake_client.detail.assert_called_once_with("compile-run")
     fake_client.run.assert_called_once_with("package-run")
 

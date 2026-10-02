@@ -196,7 +196,10 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
 @click.option(
     "-b",
     "--branch",
-    help="Models repository branch. If omitted, select interactively.",
+    help=(
+        "Models repository branch. If omitted, select interactively; "
+        "--json defaults to main."
+    ),
 )
 @click.option(
     "-q",
@@ -231,12 +234,15 @@ def list_command(
     try:
         client = _client(ctx, staging)
         if branch is None:
-            if not _is_interactive():
+            if json_output:
+                branch = "main"
+            elif not _is_interactive():
                 raise ModelRegistryError(
                     "Branch selection requires an interactive terminal. "
                     "Use --branch BRANCH."
                 )
-            branch = select_branch(client.branches())
+            else:
+                branch = select_branch(client.branches())
         runs = client.catalog_models(branch, query=query)
         if json_output:
             echo_json({"branch": branch, "query": query, "models": runs})

@@ -558,7 +558,9 @@ def render_model_card(card: Dict[str, Any]) -> None:
     evaluated = accuracy.get("evaluated_samples")
     available = accuracy.get("available_samples")
     if evaluated is not None or available is not None:
-        accuracy_rows.append(["Samples", f"{evaluated or 0} / {available or 0}"])
+        accuracy_rows.append(
+            ["Samples", f"{_format_value(evaluated)} / {_format_value(available)}"]
+        )
     if accuracy.get("samples_per_second") is not None:
         accuracy_rows.append(
             ["Throughput", f"{_format_measurement(accuracy['samples_per_second'])} images/s"]

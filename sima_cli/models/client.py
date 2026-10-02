@@ -357,13 +357,14 @@ class RegistryClient:
         query_terms = normalized_query.split()
         selections: List[Dict[str, Any]] = []
         for package_run in native_packages:
+            run_id = str(package_run.get("id") or "")
+            catalog_package = catalog_packages.get(run_id)
+            if catalog_package is None:
+                continue
             package_metadata = package_run.get("metadata") or {}
             model_id = str(package_metadata.get("model_id") or "").strip()
             profile_id = _build_profile_id(package_metadata)
             model = definitions.get(model_id) or {}
-            catalog_package = (
-                catalog_packages.get(str(package_run.get("id") or "")) or {}
-            )
             metadata = {
                 **package_metadata,
                 "variant_id": profile_id,

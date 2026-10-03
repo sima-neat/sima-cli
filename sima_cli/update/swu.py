@@ -24,7 +24,7 @@ from sima_cli.update.rootfs import ROOT_DEVICE_SCRIPT
 from sima_cli.update.swu_certificate import load_certificate, certificate_source
 
 
-def install_script(bundle, key, clean_overlay=False, staging=None, reboot=False):
+def install_script(bundle, key, clean_overlay=False, staging=None):
     if staging is not None:
         if not re.fullmatch(STAGING_PATTERN, staging) or bundle != staging + '/bundle.swu':
             raise ValueError('Cleanup requires the current update staging directory')
@@ -39,28 +39,6 @@ def install_script(bundle, key, clean_overlay=False, staging=None, reboot=False)
     command = shlex.join(['swupdate', '-v', '-i', bundle, *key_args, '-e', 'update,full'])
     if clean_overlay:
         command = 'SWUPDATE_CLEAN_OVERLAY=1 ' + command
-    activation_setup = ''
-    reboot_command = ''
-    if reboot:
-        # Keep the activation gate on the device: cleaning the overlay may
-        # remove the local CLI before it can inspect state or request a reboot.
-        activation_setup = r'''
-running=$(printf '%s\n' "$state" | sed -n 's/^[[:space:]]*running slot[[:space:]]*:[[:space:]]*\([AB]\)[[:space:]]*$/\1/p')
-case "$running" in
-    A) expected_slot=B ;;
-    B) expected_slot=A ;;
-    *) echo 'Running slot is unknown; refusing automatic restart'; exit 1 ;;
-esac
-'''
-        reboot_command = r'''
-pending=$(simaai-trootctl get-active-slot)
-if ! printf '%s\n' "$pending" | grep -Eq 'upgrade_available[[:space:]]*:[[:space:]]*yes([,[:space:]]|$)' ||
-   ! printf '%s\n' "$pending" | grep -Eq "next-boot( slot)?( \(CB\))?[[:space:]]*:[[:space:]]*$expected_slot([,[:space:]]|$)"; then
-    echo 'SWUpdate exited successfully, but pending activation could not be verified. Run update --inspect before rebooting.'
-    exit 1
-fi
-nohup sh -c 'sleep 3; /sbin/reboot' >/dev/null 2>&1 </dev/null &
-'''
     return r'''set -eu
 exec 9>/run/lock/sima-cli-swupdate.lock
 flock -n 9 || { echo 'Another sima-cli update is running'; exit 1; }
@@ -86,7 +64,24 @@ if command -v swupdate-progress >/dev/null; then
 else
     echo 'SWUpdate progress monitor unavailable; streaming installer diagnostics'
 fi
-''' + activation_setup + command + reboot_command + cleanup
+''' + command + cleanup
+
+
+def reboot_script(expected_slot):
+    """Verify pending activation again, then hand reboot off to the target."""
+    if expected_slot not in ('A', 'B'):
+        raise ValueError('Expected reboot slot must be A or B')
+    return r'''set -eu
+pending=$(simaai-trootctl get-active-slot)
+if ! printf '%s\n' "$pending" | grep -Eq 'upgrade_available[[:space:]]*:[[:space:]]*yes([,[:space:]]|$)' ||
+   ! printf '%s\n' "$pending" | grep -Eq ''' + shlex.quote(
+        r'next-boot( slot)?( \(CB\))?[[:space:]]*:[[:space:]]*' +
+        expected_slot + r'([,[:space:]]|$)') + r'''; then
+    echo 'Pending activation could not be verified. Run update --inspect before rebooting.'
+    exit 1
+fi
+nohup sh -c 'sleep 3; /sbin/reboot' >/dev/null 2>&1 </dev/null &
+'''
 
 
 def _source_build_id(source):
@@ -395,8 +390,7 @@ mkdir -p /media/nvme/swupdate''')
 
 
 def _reboot_and_verify(target, before, ip, passwd, expected=None):
-    # The successful device-side installer already scheduled the reboot. Do not
-    # make it depend on the client surviving overlay cleanup.
+    # Reboot is scheduled only after post-install inspection and cleanup finish.
     if not ip:
         click.echo('Reboot scheduled. Run sima-cli update --inspect after boot to check health confirmation.')
         return
@@ -582,7 +576,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             installing = True
             with InstallProgress() as progress:
                 target.run(install_script(remote, key, clean_overlay=reset_overlay,
-                                          staging=staging, reboot=reboot), stream=progress)
+                                          staging=staging), stream=progress)
             complete = True
         after = inspect_target(target)
         expected_slot = 'B' if before['running slot'] == 'A' else 'A'
@@ -601,6 +595,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
             if key_directory:
                 target.run('rm -rf -- ' + shlex.quote(key_directory))
                 key_directory = None
+            target.run(reboot_script(expected_slot))
             _reboot_and_verify(target, before, ip, passwd, expected=expected)
         if overlay_backup:
             print_overlay_recovery_guidance(*overlay_backup)

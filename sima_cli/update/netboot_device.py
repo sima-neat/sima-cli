@@ -191,6 +191,8 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
 
 def restore_environment(configuration):
     """Restore the exact U-Boot files saved before this netboot session."""
+    from sima_cli.update.uboot_environment import configure_environment
+
     if not configuration or not configuration.changed or not configuration.backup_dir:
         return True
     if not wait_for_ssh(configuration.devkit, timeout=180):
@@ -231,15 +233,36 @@ def restore_environment(configuration):
             sftp.close()
         source_dir = remote_stage
     backup = shlex.quote(source_dir)
+    restore_helper = inspect.getsource(configure_environment) + '''
+import sys
+import os
+from pathlib import Path
+config, boot_dir, backup_dir = sys.argv[1:]
+target_redundant = configure_environment(
+    config, boot_dir, allow_data_inference=True,
+)
+boot = Path(boot_dir)
+backup = Path(backup_dir)
+for name in ('uboot.env', 'uboot-redund.env'):
+    with (boot / name).open('wb') as output:
+        output.write((backup / name).read_bytes())
+        output.flush()
+        os.fsync(output.fileno())
+configure_environment(
+    config, boot_dir, target_redundant=target_redundant,
+)
+'''
     script = '\n'.join([
         'set -eu',
         'restore_ro=0',
         'restore_mount=',
+        'restore_config=',
         'boot_root=',
         'cleanup() {',
         '  status=$?',
         '  trap - EXIT',
         '  if [ -n "$restore_mount" ]; then umount "$restore_mount" || status=1; rmdir "$restore_mount" || status=1; fi',
+        '  if [ -n "$restore_config" ]; then rm -f "$restore_config" || status=1; fi',
         '  if [ "$restore_ro" = 1 ]; then sync; mount -o remount,ro /boot || status=1; fi',
         *(([f'  rm -rf {shlex.quote(remote_stage)} || status=1'] if remote_stage else [])),
         '  exit "$status"',
@@ -270,10 +293,10 @@ def restore_environment(configuration):
         '    boot_root=$probe ;;',
         'esac',
         'test -n "$boot_root"',
-        f'cp {backup}/uboot.env "$boot_root/uboot.env"',
-        f'cp {backup}/uboot-redund.env "$boot_root/uboot-redund.env"',
-        f'cmp {backup}/uboot.env "$boot_root/uboot.env"',
-        f'cmp {backup}/uboot-redund.env "$boot_root/uboot-redund.env"',
+        'restore_config=$(mktemp /tmp/sima-cli-netboot-fw-env.XXXXXX)',
+        'python3 -c ' + shlex.quote(restore_helper)
+        + f' "$restore_config" "$boot_root" {backup}',
+        'fw_printenv -c "$restore_config" >/dev/null',
         'sync',
     ])
     try:

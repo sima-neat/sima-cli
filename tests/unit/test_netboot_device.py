@@ -506,9 +506,10 @@ def test_configured_session_records_and_restores_exact_backup(capsys):
     assert '/boot:/dev/mmcblk0p*' in restore_script
     assert 'for part in /dev/mmcblk0p*' in restore_script
     assert 'Cannot locate the eMMC boot partition' in restore_script
-    assert '"$boot_root/uboot.env"' in restore_script
     assert 'cp -p ' not in restore_script
-    assert 'cmp ' in restore_script
+    assert 'target_redundant = configure_environment' in restore_script
+    assert 'allow_data_inference=True' in restore_script
+    assert 'fw_printenv -c "$restore_config"' in restore_script
     assert configuration.changed is False
     assert configuration.local_backup_dir is None
     assert connect.return_value.close.call_count == 2

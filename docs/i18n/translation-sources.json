@@ -1,24 +1,36 @@
 {
   "ja": {
-    "docs/sima-cli/index.md": "2415b26f14c97eefd80aba26572090bc0efaa9c13fe4738edc5da246a0b85189",
+    "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
+    "docs/sima-cli/guides/sdk-setup.md": "c138d0c8b957f1ec922381cd455051707515adc17642fb508667367557dc68fd",
+    "docs/sima-cli/guides/system-updates.md": "90bfc395ccc6b036e4dbda95944275dc8a5d7b460bb18ddbba7939e8a2432cf7",
+    "docs/sima-cli/index.md": "014577da6770baebfab6107538617d62b18a70b890f4cf4e567abdf21b171b71",
     "docs/sima-cli/sdk-networking/index.md": "1dea47f95484f3c062ad3b36be755191e08e8eda14fbd186514422d5763791bf",
     "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
     "docs/sima-cli/sdk-networking/troubleshooting.md": "d72019c1ca29c34459093a7dd5bcf9e68679a0b4f3ee3ea677c87cd0288d0273"
   },
   "ko": {
-    "docs/sima-cli/index.md": "2415b26f14c97eefd80aba26572090bc0efaa9c13fe4738edc5da246a0b85189",
+    "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
+    "docs/sima-cli/guides/sdk-setup.md": "c138d0c8b957f1ec922381cd455051707515adc17642fb508667367557dc68fd",
+    "docs/sima-cli/guides/system-updates.md": "90bfc395ccc6b036e4dbda95944275dc8a5d7b460bb18ddbba7939e8a2432cf7",
+    "docs/sima-cli/index.md": "014577da6770baebfab6107538617d62b18a70b890f4cf4e567abdf21b171b71",
     "docs/sima-cli/sdk-networking/index.md": "1dea47f95484f3c062ad3b36be755191e08e8eda14fbd186514422d5763791bf",
     "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
     "docs/sima-cli/sdk-networking/troubleshooting.md": "d72019c1ca29c34459093a7dd5bcf9e68679a0b4f3ee3ea677c87cd0288d0273"
   },
   "uk": {
-    "docs/sima-cli/index.md": "2415b26f14c97eefd80aba26572090bc0efaa9c13fe4738edc5da246a0b85189",
+    "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
+    "docs/sima-cli/guides/sdk-setup.md": "c138d0c8b957f1ec922381cd455051707515adc17642fb508667367557dc68fd",
+    "docs/sima-cli/guides/system-updates.md": "90bfc395ccc6b036e4dbda95944275dc8a5d7b460bb18ddbba7939e8a2432cf7",
+    "docs/sima-cli/index.md": "014577da6770baebfab6107538617d62b18a70b890f4cf4e567abdf21b171b71",
     "docs/sima-cli/sdk-networking/index.md": "1dea47f95484f3c062ad3b36be755191e08e8eda14fbd186514422d5763791bf",
     "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
     "docs/sima-cli/sdk-networking/troubleshooting.md": "d72019c1ca29c34459093a7dd5bcf9e68679a0b4f3ee3ea677c87cd0288d0273"
   },
   "zh-Hant": {
-    "docs/sima-cli/index.md": "2415b26f14c97eefd80aba26572090bc0efaa9c13fe4738edc5da246a0b85189",
+    "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
+    "docs/sima-cli/guides/sdk-setup.md": "c138d0c8b957f1ec922381cd455051707515adc17642fb508667367557dc68fd",
+    "docs/sima-cli/guides/system-updates.md": "90bfc395ccc6b036e4dbda95944275dc8a5d7b460bb18ddbba7939e8a2432cf7",
+    "docs/sima-cli/index.md": "014577da6770baebfab6107538617d62b18a70b890f4cf4e567abdf21b171b71",
     "docs/sima-cli/sdk-networking/index.md": "1dea47f95484f3c062ad3b36be755191e08e8eda14fbd186514422d5763791bf",
     "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
     "docs/sima-cli/sdk-networking/troubleshooting.md": "d72019c1ca29c34459093a7dd5bcf9e68679a0b4f3ee3ea677c87cd0288d0273"

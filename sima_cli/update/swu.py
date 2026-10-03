@@ -307,6 +307,11 @@ test "$(date +%Y)" -ge 2024 || { echo 'Set the system clock before signed update
     state = inspect_target(target)
     if state.get('running slot') not in ('A', 'B') or state.get('active slot') != state.get('running slot'):
         raise click.ClickException('Cannot establish a consistent running A/B slot. Inspect the system before updating.')
+    if state.get('rollback') == 'rollback':
+        raise click.ClickException(
+            'This board has rolled back and cannot accept an OTA update. '
+            'Re-flash the board to re-enable A/B updates.'
+        )
     factory_boot = (state.get('factory') and state.get('running slot') == 'A'
                     and state.get('rollback') == 'normal'
                     and state.get('upgrade_available') == 'unknown')

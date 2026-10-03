@@ -1,11 +1,13 @@
 import json
 import re
 import shlex
+from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import click
 import pytest
 from click.testing import CliRunner
+from rich.console import Console
 
 from sima_cli.cli import main
 from sima_cli.update import swu, swu_artifacts
@@ -35,6 +37,28 @@ def test_parse_state_keeps_running_next_boot_and_unknown_distinct():
     assert parse_state('rollback boot')['rollback'] == 'rollback'
 
 
+ROLLBACK_STATE = '''medium             : /dev/mmcblk0
+active slot        : B
+active version     : 3.0.0_develop_B1768
+active os          : eLxr 26.04.02
+fallback slot      : A
+fallback state     : invalid (retired by a rollback)
+running slot       : B
+next-boot slot (CB): B
+slots valid        : B
+upgrade_available  : no
+rolled back        : yes (active slot is a rollback fallback)
+boot mode          : normal boot
+'''
+
+
+def test_explicit_rollback_wins_over_normal_boot_mode():
+    state = parse_state(ROLLBACK_STATE)
+    assert state['rollback'] == 'rollback'
+    assert state['rolled_back'] == 'yes'
+    assert state['boot mode'] == 'normal boot'
+
+
 def test_slot_table_colors_running_green_and_fallback_yellow():
     state = parse_state(STATE)
     state['bootcount'] = '0'
@@ -55,6 +79,20 @@ def test_boot_state_panel_fits_its_content():
     assert panel.expand is True
     assert panel.width == 72
     assert panel.renderable.columns[1].justify == 'right'
+
+
+def test_rollback_inspection_shows_status_and_reflash_guidance():
+    state = parse_state(ROLLBACK_STATE)
+    state['bootcount'] = '0'
+    stream = StringIO()
+    with patch('sima_cli.update.ab_state.Console', return_value=Console(file=stream, width=80)):
+        render_state(state)
+    output = stream.getvalue()
+    assert 'Boot mode' in output and 'normal boot' in output
+    assert 'Rolled back' in output and 'yes' in output
+    assert 'Rollback detected' in output
+    assert 'cannot accept an OTA update' in output
+    assert 'Re-flash the board' in output
 
 
 def test_inspect_never_checks_for_self_update_or_installs():
@@ -749,6 +787,12 @@ def test_current_pending_flag_blocks_preflight():
     state = parse_state('active slot: B\n' + CURRENT_CONTROL_STATE.replace('upgrade_available   : no', 'upgrade_available   : yes'))
     with patch.object(swu, 'inspect_target', return_value=state):
         with pytest.raises(click.ClickException, match='pending'):
+            swu.preflight(MagicMock(), '/tmp/test-signing-cert.pem')
+
+
+def test_rollback_state_blocks_preflight_with_reflash_guidance():
+    with patch.object(swu, 'inspect_target', return_value=parse_state(ROLLBACK_STATE)):
+        with pytest.raises(click.ClickException, match='Re-flash the board'):
             swu.preflight(MagicMock(), '/tmp/test-signing-cert.pem')
 
 

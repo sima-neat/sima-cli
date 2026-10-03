@@ -374,6 +374,26 @@ def test_explicit_flash_ip_cannot_retarget_saved_environment(capsys):
     assert 'could not be verified' in capsys.readouterr().out
 
 
+def test_saved_flash_ip_is_still_verified_before_copying(capsys):
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1', hardware_address='02:00:00:00:00:01',
+        backup_dir='/boot/backup', changed=True
+    )
+    with patch.object(netboot, '_validate_override_ip', return_value=True), \
+            patch.object(netboot, '_same_netboot_device', return_value=False) as verify, \
+            patch.object(netboot, 'copy_file_to_remote_board') as copy:
+        netboot.flash_emmc(
+            MagicMock(),
+            ['/images/root.img.gz'],
+            override_ip='192.0.2.1',
+            configuration=configuration,
+        )
+
+    verify.assert_called_once_with(configuration, '192.0.2.1')
+    copy.assert_not_called()
+    assert 'could not be verified' in capsys.readouterr().out
+
+
 def test_verified_changed_ip_becomes_restoration_target():
     configuration = device.NetbootConfiguration(
         '192.0.2.1', hardware_address='02:00:00:00:00:01',

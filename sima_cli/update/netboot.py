@@ -644,15 +644,15 @@ def flash_emmc(
     selected_ip = _select_flash_target(client_manager, override_ip=override_ip)
     if not selected_ip:
         return
-    if (configuration is not None and configuration.changed
-            and selected_ip != configuration.devkit):
+    if configuration is not None and configuration.changed:
         if not _same_netboot_device(configuration, selected_ip):
             click.echo(
                 f"❌ Refusing to flash {selected_ip}: it could not be verified as "
                 f"the device whose U-Boot environment was saved at {configuration.devkit}."
             )
             return
-        configuration.devkit = selected_ip
+        if selected_ip != configuration.devkit:
+            configuration.devkit = selected_ip
 
     click.echo(f"📡 Selected client: {selected_ip}")
     remote_dir = "/tmp"

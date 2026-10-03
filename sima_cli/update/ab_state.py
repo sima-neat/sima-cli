@@ -93,9 +93,8 @@ def render_state(state):
         ('Control block', 'factory default (uninitialized)' if state.get('factory') else state.get('control block', 'unknown')),
         ('Next boot', state.get('next-boot', 'unknown')),
         ('Upgrade pending', 'not recorded (factory mode)' if state.get('factory') else state.get('upgrade_available', 'unknown')),
-        ('Boot mode', state.get('boot mode', state.get('rollback', 'unknown'))),
-        ('Rolled back', state.get('rolled_back', 'yes' if state.get('rollback') == 'rollback' else
-                                  'no' if state.get('rollback') == 'normal' else 'unknown')),
+        ('Boot mode', state.get('boot mode', 'unknown')),
+        ('Rolled back', state.get('rolled_back', 'unknown')),
         ('Boot attempts', state.get('bootcount', 'unknown')),
     ]
     grid = Table.grid(expand=True)

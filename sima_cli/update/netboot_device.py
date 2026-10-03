@@ -399,6 +399,10 @@ def _uboot_script(devkit, server_ip, network):
         'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
         'backup_complete=1',
         'python3 -c ' + shlex.quote(helper) + ' "$config"',
+        # configure_environment may convert a legacy redundant environment to
+        # the single-file format required by the installed bootloader. Make
+        # that normalized state the rollback point before applying netboot.
+        'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
         'fw_printenv -c "$config" > "$backup/environment.txt"',
         f'echo "{BACKUP_MARKER}$backup"',
         'export_dir=$(mktemp -d /tmp/sima-cli-netboot-export.XXXXXX)',

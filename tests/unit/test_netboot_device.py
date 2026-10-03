@@ -205,7 +205,8 @@ def test_host_address_uses_route_to_selected_devkit():
 
 
 @pytest.mark.parametrize('initial_mode,failure', [
-    ('ro', None), ('rw', None), ('ro', 'rw'), ('ro', 'write'), ('ro', 'ro'),
+    ('ro', None), ('rw', None), ('ro', 'rw'), ('ro', 'write'),
+    ('rw', 'normalized_write'), ('ro', 'ro'),
 ])
 def test_boot_mount_and_rollback_script(tmp_path, initial_mode, failure):
     """Execute the actual shell script against fake mount/fw tools and temp files."""
@@ -237,11 +238,14 @@ elif name == 'mount':
     if failure == wanted:
         sys.exit(1)
     mode.write_text(wanted)
+elif name == 'python3' and failure == 'normalized_write':
+    (boot / 'uboot.env').write_text('normalized')
+    (boot / 'uboot-redund.env').write_text('normalized')
 elif name == 'fw_setenv':
     assert mode.read_text() == 'rw'
     (boot / 'uboot.env').write_text('changed')
     (boot / 'uboot-redund.env').write_text('changed')
-    if failure == 'write':
+    if failure in ('write', 'normalized_write'):
         sys.exit(1)
 elif name == 'fw_printenv':
     if '-n' in args:
@@ -264,7 +268,7 @@ elif name == 'fw_printenv':
         assert 'fw_setenv' not in commands
         assert 'Cannot remount' in result.stderr
         assert device.MANUAL_FALLBACK_READY not in result.stdout
-    elif failure == 'write':
+    elif failure in ('write', 'normalized_write'):
         assert 'Restored saved U-Boot' in result.stdout
         assert device.MANUAL_FALLBACK_READY in result.stdout
     elif failure == 'ro':
@@ -273,6 +277,9 @@ elif name == 'fw_printenv':
     if failure in ('rw', 'write'):
         for name in ('uboot.env', 'uboot-redund.env'):
             assert (boot / name).read_text() == 'original ' + name
+    if failure == 'normalized_write':
+        for name in ('uboot.env', 'uboot-redund.env'):
+            assert (boot / name).read_text() == 'normalized'
     if failure != 'ro':
         assert state.read_text() == initial_mode
     if initial_mode == 'rw':

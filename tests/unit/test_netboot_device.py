@@ -309,6 +309,14 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
         server.stop.assert_not_called()
         manager.shutdown.assert_not_called()
 
+    def checked(_ssh, remote_command):
+        if remote_command == 'cat /sys/class/net/*/address':
+            return NETWORK['hardware_address']
+        return (
+            device.BACKUP_MARKER + '/boot/sima-cli-netboot-backup.test'
+            + '\n' + device.BACKUP_EXPORT_MARKER + '/tmp/export'
+        )
+
     with patch.object(netboot, 'get_environment_type', return_value=('host', 'mac')), \
             patch.object(netboot, 'download_image', return_value=[str(boot)]), \
             patch.object(netboot, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
@@ -323,10 +331,7 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
             patch.object(device, 'wait_for_ssh', side_effect=lambda *a, **k: (
                 server.stop.assert_not_called() or True
             )), \
-            patch.object(device, '_checked', return_value=(
-                device.BACKUP_MARKER + '/boot/sima-cli-netboot-backup.test'
-                + '\n' + device.BACKUP_EXPORT_MARKER + '/tmp/export'
-            )) as command, \
+            patch.object(device, '_checked', side_effect=checked) as command, \
             patch.object(click, 'confirm', return_value=confirmed):
         thread.return_value.is_alive.return_value = False
         netboot.setup_netboot('3.0', 'modalix', autoflash=autoflash)
@@ -453,6 +458,7 @@ def test_configured_session_records_and_restores_exact_backup(capsys):
                 + device.BACKUP_EXPORT_MARKER + '/tmp/export',
                 '',
                 '',
+                NETWORK['hardware_address'],
                 '',
                 '',
             ]) as command, \
@@ -481,6 +487,32 @@ def test_configured_session_records_and_restores_exact_backup(capsys):
     assert connect.return_value.close.call_count == 2
     assert connect.return_value.open_sftp.return_value.put.call_count == 2
     assert 'Restored the saved U-Boot environment' in capsys.readouterr().out
+
+
+def test_restore_refuses_device_with_different_hardware_address(tmp_path):
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1',
+        hardware_address='02:00:00:00:00:01',
+        backup_dir='/boot/sima-cli-netboot-backup.ABC123',
+        local_backup_dir=str(tmp_path),
+        changed=True,
+    )
+    for name in ('uboot.env', 'uboot-redund.env'):
+        (tmp_path / name).write_bytes(b'preserved environment')
+
+    with patch.object(device, 'wait_for_ssh', return_value=True), \
+            patch.object(device, 'init_ssh_session') as connect, \
+            patch.object(device, '_checked', return_value='02:00:00:00:00:99') as command:
+        with pytest.raises(click.ClickException, match='does not match'):
+            device.restore_environment(configuration)
+
+    command.assert_called_once_with(
+        connect.return_value, 'cat /sys/class/net/*/address'
+    )
+    connect.return_value.open_sftp.assert_not_called()
+    connect.return_value.close.assert_called_once()
+    assert configuration.changed is True
+    assert configuration.local_backup_dir == str(tmp_path)
 
 
 def test_tftp_stop_wakes_listener_and_rejects_late_requests(tmp_path):

@@ -724,6 +724,12 @@ def flash_emmc(
                 f"gzip -dc {remote_path} | dd of=/dev/mmcblk0 bs=16M conv=fsync status=progress"
             )
             run_remote_command(ssh, flash_cmd, check=True)
+            run_remote_command(
+                ssh,
+                'sudo blockdev --rereadpt /dev/mmcblk0 && sudo udevadm settle',
+                check=True,
+                command_label='Refreshing eMMC partitions',
+            )
         else:
             click.echo("❌ No .wic.gz or .img image found in emmc_image_paths.")
             return

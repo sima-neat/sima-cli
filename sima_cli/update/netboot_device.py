@@ -200,6 +200,21 @@ def restore_environment(configuration):
     ssh = init_ssh_session(configuration.devkit)
     remote_stage = None
     source_dir = configuration.backup_dir
+    expected_address = (configuration.hardware_address or '').strip().lower()
+    try:
+        addresses = {
+            line.strip().lower()
+            for line in _checked(ssh, 'cat /sys/class/net/*/address').splitlines()
+        }
+    except Exception:
+        ssh.close()
+        raise
+    if not expected_address or expected_address not in addresses:
+        ssh.close()
+        raise click.ClickException(
+            f'Refusing to restore U-Boot on {configuration.devkit}: '
+            'the connected device does not match the saved network interface.'
+        )
     local_files = [
         os.path.join(configuration.local_backup_dir or '', name)
         for name in ('uboot.env', 'uboot-redund.env')

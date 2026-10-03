@@ -26,7 +26,8 @@ def test_running_firmware_selects_troot_command_before_emmc(version, command):
         assert copy.call_args_list[0].args[1:3] == ('/images/troot_blob.be', '/tmp')
         assert run.call_args_list[0].args[1] == command
         assert run.call_args_list[0].kwargs == {'check': True}
-        assert 'dd of=/dev/mmcblk0' in run.call_args_list[-1].args[1]
+        assert 'dd of=/dev/mmcblk0' in run.call_args_list[-2].args[1]
+        assert 'blockdev --rereadpt /dev/mmcblk0' in run.call_args_list[-1].args[1]
 
 
 @pytest.mark.parametrize('version', ['', 'unknown'])

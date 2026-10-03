@@ -10,12 +10,11 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-
 ORGANIZATION = "sima-neat"
 REPOSITORY = "models"
 STAGING_BASE_URL = "https://models-registry.stg.neat.sima.ai"
 TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
-SUPPORTED_BENCHMARK_SCHEMAS = (1, 2, 3)
+SUPPORTED_BENCHMARK_SCHEMAS = (1, 2, 3, 4, 5)
 
 
 class ModelRegistryError(RuntimeError):
@@ -97,6 +96,10 @@ def _run_sort_key(run: Dict[str, Any]) -> Tuple[str, str, str]:
     )
 
 
+def _build_profile_id(metadata: Dict[str, Any]) -> str:
+    return str(metadata.get("build_profile_id") or metadata.get("variant_id") or "").strip()
+
+
 def latest_runs_by_model_variant(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     latest: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for run in runs:
@@ -104,7 +107,7 @@ def latest_runs_by_model_variant(runs: Sequence[Dict[str, Any]]) -> List[Dict[st
         if not isinstance(metadata, dict):
             continue
         model_id = str(metadata.get("model_id") or "").strip()
-        variant_id = str(metadata.get("variant_id") or "").strip()
+        variant_id = _build_profile_id(metadata)
         if not model_id or not variant_id:
             continue
         key = (model_id, variant_id)
@@ -115,17 +118,129 @@ def latest_runs_by_model_variant(runs: Sequence[Dict[str, Any]]) -> List[Dict[st
         latest.values(),
         key=lambda run: (
             str(run.get("metadata", {}).get("model_id", "")).lower(),
-            str(run.get("metadata", {}).get("variant_id", "")).lower(),
+            _build_profile_id(run.get("metadata", {})).lower(),
         ),
     )
+
+
+def _coherent_branch_packages(
+    compile_runs: Sequence[Dict[str, Any]], package_runs: Sequence[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    groups: Dict[Tuple[str, ...], List[Dict[str, Any]]] = {}
+    for run in compile_runs:
+        metadata = run.get("metadata")
+        if (
+            run.get("status") != "completed"
+            or run.get("run_type") != "model_compile"
+            or not isinstance(metadata, dict)
+        ):
+            continue
+        model_id = str(metadata.get("model_id") or "").strip()
+        profile_id = _build_profile_id(metadata)
+        if not model_id or not profile_id:
+            continue
+        workflow = str(
+            metadata.get("github_run_id")
+            or run.get("ci_run_url")
+            or metadata.get("compile_invocation_id")
+            or run.get("id")
+            or ""
+        )
+        key = (
+            model_id,
+            profile_id,
+            str(run.get("commit_sha") or ""),
+            str(run.get("toolchain_name") or ""),
+            str(run.get("toolchain_version") or ""),
+            str(run.get("target_platform") or ""),
+            workflow,
+        )
+        groups.setdefault(key, []).append(run)
+
+    latest: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for key, runs in groups.items():
+        model_profile = (key[0], key[1])
+        current = latest.get(model_profile)
+        if current is None or max(map(_run_sort_key, runs)) > max(
+            map(_run_sort_key, current)
+        ):
+            latest[model_profile] = runs
+
+    builds: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
+    for model_profile, runs in latest.items():
+        components: Dict[str, Dict[str, Any]] = {}
+        for run in runs:
+            component_id = str(
+                (run.get("metadata") or {}).get("component_id") or "model"
+            )
+            previous = components.get(component_id)
+            if previous is None or _run_sort_key(run) > _run_sort_key(previous):
+                components[component_id] = run
+        builds[model_profile] = components
+
+    matches: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for run in package_runs:
+        metadata = run.get("metadata")
+        if (
+            run.get("status") != "completed"
+            or run.get("run_type") != "model_package"
+            or not isinstance(metadata, dict)
+        ):
+            continue
+        model_id = str(metadata.get("model_id") or "").strip()
+        profile_id = _build_profile_id(metadata)
+        component_run_ids = metadata.get("component_run_ids")
+        components = builds.get((model_id, profile_id))
+        if not isinstance(component_run_ids, dict) or not components:
+            continue
+        if len(component_run_ids) != len(components) or any(
+            component_run_ids.get(component_id) != component.get("id")
+            or run.get("git_ref") != component.get("git_ref")
+            or run.get("commit_sha") != component.get("commit_sha")
+            for component_id, component in components.items()
+        ):
+            continue
+        package_id = str(metadata.get("package_id") or "default")
+        key = (model_id, profile_id, package_id)
+        previous = matches.get(key)
+        if previous is None or _run_sort_key(run) > _run_sort_key(previous):
+            matches[key] = run
+    return list(matches.values())
 
 
 def find_latest_run(
     runs: Sequence[Dict[str, Any]], model_id: str, variant_id: str
 ) -> Dict[str, Any]:
+    package_matches = [
+        run
+        for run in runs
+        if run.get("run_type") == "model_package"
+        and run.get("metadata", {}).get("model_id") == model_id
+        and _build_profile_id(run.get("metadata", {})) == variant_id
+    ]
+    if package_matches:
+        defaults = [
+            run
+            for run in package_matches
+            if run.get("metadata", {}).get("package_id") == "default"
+        ]
+        if len(defaults) == 1:
+            return defaults[0]
+        if len(package_matches) == 1:
+            return package_matches[0]
+        package_ids = ", ".join(
+            sorted(
+                str(run.get("metadata", {}).get("package_id") or "unknown")
+                for run in package_matches
+            )
+        )
+        raise ModelRegistryError(
+            f"Multiple promoted packages found for model {model_id!r}, variant "
+            f"{variant_id!r}: {package_ids}."
+        )
     for run in latest_runs_by_model_variant(runs):
         metadata = run.get("metadata", {})
-        if metadata.get("model_id") == model_id and metadata.get("variant_id") == variant_id:
+        if metadata.get("model_id") == model_id and _build_profile_id(metadata) == variant_id:
             return run
     raise ModelRegistryError(
         f"No completed model build found for model {model_id!r}, variant {variant_id!r}."
@@ -137,16 +252,14 @@ def select_model_artifact(artifacts: Sequence[Dict[str, Any]]) -> Dict[str, Any]
         artifact
         for artifact in artifacts
         if artifact.get("object_status") in {None, "available"}
-        and artifact.get("artifact_type") == "model-pack"
+        and artifact.get("artifact_type") == "model-package"
     ]
     if not available:
-        raise ModelRegistryError("The selected run has no available model-pack artifact.")
-    preferred = [item for item in available if str(item.get("name", "")).endswith("_mpk.tar.gz")]
-    candidates = preferred or available
-    if len(candidates) != 1:
-        names = ", ".join(sorted(str(item.get("name", "")) for item in candidates))
-        raise ModelRegistryError(f"The selected run has multiple model-pack artifacts: {names}.")
-    return candidates[0]
+        raise ModelRegistryError("The selected build has no available model-package artifact.")
+    if len(available) != 1:
+        names = ", ".join(sorted(str(item.get("name", "")) for item in available))
+        raise ModelRegistryError(f"The selected build has multiple model-package artifacts: {names}.")
+    return available[0]
 
 
 def artifact_filename(artifact: Dict[str, Any]) -> str:
@@ -210,17 +323,114 @@ class RegistryClient:
                 normalized.append(branch)
         return sorted(normalized, key=lambda item: str(item["name"]).lower())
 
-    def runs(self, branch: str, query: Optional[str] = None) -> List[Dict[str, Any]]:
+    def catalog_models(self, branch: str, query: Optional[str] = None) -> List[Dict[str, Any]]:
         if not branch.strip():
             raise ModelRegistryError("Branch is required.")
+        payload = self._get_json(
+            ("v1", "repositories", ORGANIZATION, REPOSITORY, "catalogs", "current"),
+            params={"git_ref": f"refs/heads/{branch}"},
+        )
+        catalog = payload.get("catalog") if payload else None
+        document = catalog.get("document") if isinstance(catalog, dict) else None
+        models = document.get("models") if isinstance(document, dict) else None
+        if not isinstance(models, list):
+            raise ModelRegistryError("The registry did not return a current model catalog.")
+
+        definitions = {
+            str(model.get("id") or ""): model
+            for model in models
+            if isinstance(model, dict) and model.get("id")
+        }
+        catalog_packages = {
+            str(package.get("run_id")): package
+            for model in models
+            if isinstance(model, dict)
+            for package in (model.get("packages") or [])
+            if isinstance(package, dict) and package.get("run_id")
+        }
+        git_ref = f"refs/heads/{branch}"
+        compile_runs = self._repository_runs(branch, "model_compile")
+        package_runs = self._repository_runs(branch, "model_package")
+        promoted_package_runs = [
+            run
+            for run in package_runs
+            if str(run.get("id") or "") in catalog_packages
+        ]
+        native_packages = _coherent_branch_packages(
+            compile_runs, promoted_package_runs
+        )
+
+        normalized_query = (query or "").strip().lower()
+        query_terms = normalized_query.split()
+        selections: List[Dict[str, Any]] = []
+        for package_run in native_packages:
+            run_id = str(package_run.get("id") or "")
+            catalog_package = catalog_packages.get(run_id)
+            if catalog_package is None:
+                continue
+            package_metadata = package_run.get("metadata") or {}
+            model_id = str(package_metadata.get("model_id") or "").strip()
+            profile_id = _build_profile_id(package_metadata)
+            model = definitions.get(model_id) or {}
+            metadata = {
+                **package_metadata,
+                "variant_id": profile_id,
+                "build_profile_id": profile_id,
+                "display_name": model.get("display_name"),
+                "description": model.get("description"),
+            }
+            selection = {
+                **package_run,
+                "repository": package_run.get("repository")
+                or f"{ORGANIZATION}/{REPOSITORY}",
+                "metadata": metadata,
+                "model_categories": model.get("categories") or {},
+                "size_bytes": catalog_package.get("size_bytes"),
+                "sha256": catalog_package.get("artifact_sha256"),
+            }
+            searchable = " ".join(
+                str(value)
+                for value in (
+                    model_id,
+                    profile_id,
+                    model.get("display_name"),
+                    model.get("description"),
+                    model.get("categories"),
+                    branch,
+                )
+                if value
+            ).lower()
+            if query_terms and not all(term in searchable for term in query_terms):
+                continue
+            selections.append(selection)
+        return sorted(
+            selections,
+            key=lambda run: (
+                str(run.get("metadata", {}).get("model_id") or "").lower(),
+                _build_profile_id(run.get("metadata", {})).lower(),
+                str(run.get("metadata", {}).get("package_id") or "").lower(),
+            ),
+        )
+
+    def _repository_runs(
+        self,
+        branch: str,
+        run_type: str,
+        query: Optional[str] = None,
+        latest_per_model_compiler: bool = False,
+    ) -> List[Dict[str, Any]]:
+        if not branch.strip():
+            raise ModelRegistryError("Branch is required.")
+        git_ref = f"refs/heads/{branch}"
         path = ("v1", "repositories", ORGANIZATION, REPOSITORY, "runs")
         params: Dict[str, Any] = {
             "status": "completed",
-            "run_type": "model_compile",
-            "git_ref": f"refs/heads/{branch}",
-            "latest_per_model_compiler": "true",
+            "run_type": run_type,
+            "git_ref": git_ref,
             "limit": 200,
         }
+        if latest_per_model_compiler:
+            params["latest_per_model_compiler"] = "true"
         normalized_query = (query or "").strip()
         if normalized_query:
             params["q"] = normalized_query
@@ -231,7 +441,11 @@ class RegistryClient:
             page = payload.get("runs") if payload else None
             if not isinstance(page, list):
                 raise ModelRegistryError("The registry did not return a runs list.")
-            runs.extend(item for item in page if isinstance(item, dict))
+            runs.extend(
+                item
+                for item in page
+                if isinstance(item, dict) and item.get("git_ref") == git_ref
+            )
             if not payload.get("has_more"):
                 break
             cursor = payload.get("next_cursor")
@@ -240,6 +454,14 @@ class RegistryClient:
             seen_cursors.add(cursor)
             params["cursor"] = cursor
         return runs
+
+    def runs(self, branch: str, query: Optional[str] = None) -> List[Dict[str, Any]]:
+        return self._repository_runs(
+            branch,
+            "model_compile",
+            query=query,
+            latest_per_model_compiler=True,
+        )
 
     def run(self, run_id: str) -> Dict[str, Any]:
         payload = self._get_json(("v1", "runs", run_id))
@@ -262,6 +484,11 @@ class RegistryClient:
             ("v1", "runs", run_id, "benchmarks", "latest"), allow_not_found=True
         )
 
+    def accuracy(self, run_id: str) -> Optional[Dict[str, Any]]:
+        return self._get_json(
+            ("v1", "runs", run_id, "accuracy", "latest"), allow_not_found=True
+        )
+
     def taxonomy(self) -> Optional[Dict[str, Any]]:
         return self._get_json(
             ("v1", "repositories", ORGANIZATION, REPOSITORY, "taxonomies", "latest"),
@@ -275,6 +502,7 @@ class RegistryClient:
             "tests": self.test_results(run_id),
             "metrics": self.metrics(run_id),
             "benchmark": self.benchmark(run_id),
+            "accuracy": self.accuracy(run_id),
         }
 
     def artifact_download(self, run_id: str, name: str) -> Dict[str, Any]:

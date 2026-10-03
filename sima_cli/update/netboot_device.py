@@ -13,6 +13,9 @@ from rich.text import Text
 
 from sima_cli.update.remote import init_ssh_session, run_remote_command_capture
 
+LEGACY_LAYOUT_ERROR = 'Unsupported legacy 2.1 fw_env.config'
+MANUAL_FALLBACK_READY = 'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY'
+
 
 def resolve_device(devkit=None):
     # Share SDK setup's discovery, deduplication, selection, and IP validation.
@@ -95,7 +98,15 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
         # Match Kerrigan's redundant environment layout. Use a temporary config,
         # preserving any system fw_env.config, and back up before the first write.
         script = _uboot_script(devkit, server_ip, network)
-        output = _checked(ssh, 'sudo sh -c ' + shlex.quote(script))
+        try:
+            output = _checked(ssh, 'sudo sh -c ' + shlex.quote(script))
+        except click.ClickException as exc:
+            error = str(exc)
+            if (LEGACY_LAYOUT_ERROR not in error or MANUAL_FALLBACK_READY not in error
+                    or 'ERROR:' in error):
+                raise
+            _show_manual_legacy_setup(devkit, server_ip, network, autoflash)
+            return False
         click.echo(output)
         # A delayed systemd job acknowledges scheduling before SSH disconnects.
         _checked(ssh, 'sudo systemd-run --on-active=3s /sbin/reboot')
@@ -111,6 +122,54 @@ def configure_and_reboot(devkit, server_ip, autoflash=False):
         ssh.close()
 
 
+def _manual_netboot_commands(devkit, server_ip, network):
+    values = {
+        'bootfile': 'netboot.scr.uimg',
+        'netcfg': 'static',
+        'forcenetcfg': 'static',
+        'ipaddr': devkit,
+        'netmask': network['netmask'],
+        'gatewayip': network['gateway'],
+        'nfs_linux_intf': network['interface'],
+        'serverip': server_ip,
+    }
+    commands = [f'setenv {name} {value}' for name, value in values.items()]
+    commands.extend([
+        "setenv bootcmd_net 'tftp ${scriptaddr} ${serverip}:${bootfile} && source ${scriptaddr}'",
+        "setenv bootcmd 'for attempt in 1 2 3 4 5; do echo Netboot attempt ${attempt}; run bootcmd_net; sleep 10; done; reset'",
+        'setenv boot_targets net',
+        'saveenv',
+        'reset',
+    ])
+    return '\n'.join(commands)
+
+
+def _show_manual_legacy_setup(devkit, server_ip, network, autoflash):
+    message = Text()
+    message.append(
+        'This Platform 2.1 DevKit uses an older U-Boot environment layout that '
+        'sima-cli cannot safely modify. The saved environment was restored and '
+        'the DevKit was not rebooted.\n\n', style='bold yellow',
+    )
+    message.append(
+        'Keep this command running. Connect to the DevKit serial console, interrupt '
+        'autoboot, and enter:\n\n',
+    )
+    message.append(_manual_netboot_commands(devkit, server_ip, network), style='cyan')
+    message.append(
+        '\n\nAfter the board boots from TFTP and SSH becomes available, type "f" at the '
+        'netboot prompt to flash it.',
+    )
+    if autoflash:
+        message.append(
+            '\nAutomatic flashing is disabled because manual serial setup is required.',
+            style='bold yellow',
+        )
+    Console().print(Panel(
+        message, title='Manual netboot setup required', border_style='yellow',
+    ))
+
+
 def _uboot_script(devkit, server_ip, network):
     """Prepare redundant environment files while preserving the boot mount mode."""
     from sima_cli.update.uboot_environment import configure_environment
@@ -121,6 +180,7 @@ def _uboot_script(devkit, server_ip, network):
         'backup=',
         'restore_ro=0',
         'backup_complete=0',
+        'cleanup_complete=1',
         'cleanup() {',
         '  status=$?',
         '  trap - EXIT',
@@ -130,17 +190,33 @@ def _uboot_script(devkit, server_ip, network):
         '      echo "Restored saved U-Boot environment after preparation failed."',
         '    else',
         '      echo "ERROR: Could not restore U-Boot environment. Backup: $backup. DevKit will not be rebooted." >&2',
+        '      status=1',
+        '      cleanup_complete=0',
         '    fi',
-        '    sync',
+        '    if ! sync; then',
+        '      echo "ERROR: Could not sync the restored U-Boot environment. DevKit will not be rebooted." >&2',
+        '      status=1',
+        '      cleanup_complete=0',
+        '    fi',
         '  fi',
-        '  rm -f "$config"',
+        '  if ! rm -f "$config"; then',
+        '    echo "ERROR: Could not remove the temporary U-Boot configuration." >&2',
+        '    status=1',
+        '    cleanup_complete=0',
+        '  fi',
         '  if [ "$restore_ro" = 1 ]; then',
-        '    sync',
+        '    if ! sync; then',
+        '      echo "ERROR: Could not sync /boot before restoring it read-only." >&2',
+        '      status=1',
+        '      cleanup_complete=0',
+        '    fi',
         '    if ! mount -o remount,ro /boot; then',
         '      echo "ERROR: Could not restore /boot to read-only. DevKit will not be rebooted." >&2',
         '      status=1',
+        '      cleanup_complete=0',
         '    fi',
         '  fi',
+        f'  if [ "$status" -ne 0 ] && [ "$backup_complete" = 1 ] && [ "$cleanup_complete" = 1 ]; then echo {MANUAL_FALLBACK_READY}; fi',
         '  exit "$status"',
         '}',
         'trap cleanup EXIT',

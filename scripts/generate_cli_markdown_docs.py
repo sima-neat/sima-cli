@@ -271,22 +271,9 @@ def collect_manual_guides(output_dir: Path) -> List[ManualGuide]:
     return guides
 
 
-def read_markdown_section(path: Path, heading: str) -> Optional[str]:
-    if not path.exists():
-        return None
-    text = path.read_text(encoding="utf-8")
-    pattern = re.compile(
-        r"(^## {}\s*$.*?)(?=^## \S|\Z)".format(re.escape(heading)),
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    match = pattern.search(text)
-    return match.group(1).strip() if match else None
-
-
 def render_index(
     docs: List[CommandDoc],
     manual_guides: Optional[List[ManualGuide]] = None,
-    guides_section: Optional[str] = None,
 ) -> str:
     root = docs[0]
     top_level = [doc for doc in docs if doc.parent_path == root.path]
@@ -301,9 +288,7 @@ def render_index(
         installation,
         "",
     ]
-    if guides_section:
-        lines.extend([guides_section, ""])
-    elif manual_guides:
+    if manual_guides:
         lines.extend([
             "## Guides",
             "",
@@ -344,7 +329,6 @@ def write_docs(output_dir: Path, manual_source_dir: Optional[Path] = None) -> No
     docs_by_path = {doc.full_name: doc for doc in docs}
     commands_dir = output_dir / "commands"
     manual_source_dir = manual_source_dir or output_dir
-    guides_section = read_markdown_section(manual_source_dir / "index.md", "Guides")
     manual_guides = collect_manual_guides(manual_source_dir)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -353,7 +337,7 @@ def write_docs(output_dir: Path, manual_source_dir: Optional[Path] = None) -> No
     commands_dir.mkdir(parents=True, exist_ok=True)
 
     (output_dir / "index.md").write_text(
-        render_index(docs, manual_guides, guides_section=guides_section),
+        render_index(docs, manual_guides),
         encoding="utf-8",
     )
     for doc in docs:

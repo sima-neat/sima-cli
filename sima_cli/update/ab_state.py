@@ -78,14 +78,20 @@ def render_state(state):
         prefix = 'active' if state.get('active slot') == slot else 'fallback' if state.get('fallback slot') == slot else None
         role = 'Running' if slot == running else 'Next boot' if slot == state.get('next-boot') else 'Fallback' if prefix == 'fallback' else 'Unknown'
         values = [slot, role, state.get(f'{prefix} version', 'unknown'), state.get(f'{prefix} os', 'unknown'), state.get('validity ' + slot, 'unknown')]
-        table.add_row(*(Text(value) for value in values))
+        row_style = 'green' if role == 'Running' else 'yellow' if role == 'Fallback' else None
+        table.add_row(*(Text(value) for value in values), style=row_style)
     console.print(table)
-    details = '\n'.join([
-        'Medium: ' + state.get('medium', 'unknown'),
-        'Control block: ' + ('factory default (uninitialized)' if state.get('factory') else state.get('control block', 'unknown')),
-        'Next boot: ' + state.get('next-boot', 'unknown'),
-        'Upgrade pending: ' + ('not recorded (factory mode)' if state.get('factory') else state.get('upgrade_available', 'unknown')),
-        'Boot status: ' + state.get('rollback', 'unknown'),
-        'Boot attempts: ' + state.get('bootcount', 'unknown'),
-    ])
-    console.print(Panel(Text(details), title='Boot state'))
+    details = [
+        ('Medium', state.get('medium', 'unknown')),
+        ('Control block', 'factory default (uninitialized)' if state.get('factory') else state.get('control block', 'unknown')),
+        ('Next boot', state.get('next-boot', 'unknown')),
+        ('Upgrade pending', 'not recorded (factory mode)' if state.get('factory') else state.get('upgrade_available', 'unknown')),
+        ('Boot status', state.get('rollback', 'unknown')),
+        ('Boot attempts', state.get('bootcount', 'unknown')),
+    ]
+    grid = Table.grid(expand=True)
+    grid.add_column()
+    grid.add_column(justify='right')
+    for label, value in details:
+        grid.add_row(label, value)
+    console.print(Panel(grid, title='Boot state', width=72))

@@ -119,7 +119,7 @@ def mirror_bundles(board, requested, netboot=False):
         ) from exc
 
 
-def select_mirror_bundle(requested, board, reason, exact=False):
+def select_mirror_bundle(requested, board, reason, exact=False, *, auto_confirm=False):
     click.echo(f'{reason} Using the public daily platform mirror.')
     builds = mirror_bundles(board, requested)
     if exact:
@@ -129,7 +129,7 @@ def select_mirror_bundle(requested, board, reason, exact=False):
             f'No matching palette SWU for {requested or "latest"} in the retained daily builds. '
             'The build may have expired or may not contain a palette SWU. No firmware was installed.'
         )
-    if len(builds) == 1:
+    if len(builds) == 1 or auto_confirm:
         return builds[0]['url']
     from InquirerPy import inquirer
     width = max(len(b['version']) for b in builds)
@@ -226,7 +226,7 @@ def _portal_session():
     return session
 
 
-def resolve_bundle(requested, board, internal=False, *, allow_external_fallback=False):
+def resolve_bundle(requested, board, internal=False, *, allow_external_fallback=False, auto_confirm=False):
     """Return a local path or a download URL; never install or unpack the SWU."""
     if requested and urlparse(requested).scheme not in ('http', 'https') and Path(requested).is_file():
         if not requested.endswith('.swu'):
@@ -247,13 +247,13 @@ def resolve_bundle(requested, board, internal=False, *, allow_external_fallback=
                 raise
             if not allow_external_fallback:
                 raise click.ClickException(reason + " Retry with --force to allow the external pre-release mirror.") from exc
-            return select_mirror_bundle(requested, board, reason)
+            return select_mirror_bundle(requested, board, reason, auto_confirm=auto_confirm)
         builds = _matching_builds(builds, requested)
         for build in builds:
             build['url'] = BundleSource(build['url'], build['version'])
         if not builds:
             raise click.ClickException(f'No matching eLxr 3.0+ SWU builds for {requested or "latest"}.')
-        if len(builds) == 1:
+        if len(builds) == 1 or auto_confirm:
             return builds[0]['url']
         from InquirerPy import inquirer
         version_width = max(len(b['version']) for b in builds)

@@ -453,6 +453,38 @@ jobs:
             fi
           done
           command -v docker
+          if ! docker info >/dev/null 2>&1; then
+            if ! command -v colima >/dev/null 2>&1; then
+              echo "::error::Docker is installed, but its daemon is unavailable and Colima is not installed."
+              exit 1
+            fi
+
+            docker_context="$(docker context show)"
+            docker_endpoint="$(docker context inspect "$docker_context" --format '{{.Endpoints.docker.Host}}')"
+            if [[ "$docker_endpoint" =~ \.colima/([^/]+)/docker\.sock$ ]]; then
+              colima_profile="${BASH_REMATCH[1]}"
+            else
+              echo "::error::Docker context '$docker_context' is unavailable but does not use a Colima socket: $docker_endpoint"
+              exit 1
+            fi
+
+            echo "::warning::Docker is unavailable; starting Colima profile '$colima_profile'."
+            colima start --profile "$colima_profile"
+
+            for attempt in $(seq 1 30); do
+              if docker info >/dev/null 2>&1; then
+                break
+              fi
+              if [[ "$attempt" -eq 30 ]]; then
+                echo "::error::Docker did not become ready within 60 seconds after starting Colima."
+                colima status || true
+                docker info || true
+                exit 1
+              fi
+              echo "Waiting for Docker after Colima startup (attempt ${attempt}/30)..."
+              sleep 2
+            done
+          fi
           docker info
 
       - name: Install Docker from Snap on Ubuntu
@@ -512,6 +544,13 @@ jobs:
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --minimal
 
+      - name: Test CloudEx forwarder install and update
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          bash tests/e2e/test_cloudex_forwarder_install.sh \
+            "$HOME/.sima-cli/.venv/bin/sima-cli"
+
       - name: Install candidate in WSL2
         if: runner.os == 'Windows'
         shell: wsl-bash {0}
@@ -527,6 +566,31 @@ jobs:
           "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --minimal
+
+      - name: Test CloudEx forwarder install and update in WSL2
+        if: runner.os == 'Windows'
+        shell: wsl-bash {0}
+        run: |
+          bash tests/e2e/test_cloudex_forwarder_install.sh \
+            "$HOME/.sima-cli/.venv/bin/sima-cli"
+
+      - name: Verify CloudEx forwarder is unsupported on native Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # A nonzero exit is the expected native-Windows contract. Capture it
+          # without letting PowerShell promote native stderr into a step error.
+          $ErrorActionPreference = "Continue"
+          $output = (& "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" cloudex update 2>&1 | Out-String)
+          $exitCode = $LASTEXITCODE
+          $ErrorActionPreference = "Stop"
+          if ($exitCode -eq 0) {
+            throw "CloudEx forwarder update unexpectedly succeeded on native Windows"
+          }
+          if ($output -notmatch "packages are unavailable for Windows") {
+            throw "CloudEx returned an unexpected native Windows error: $output"
+          }
+          exit 0
 
   promote-latest:
     name: Promote Tested Latest

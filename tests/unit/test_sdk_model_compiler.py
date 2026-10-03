@@ -226,7 +226,7 @@ def test_install_routing_uses_container_arch(tmp_path, monkeypatch, local, yes, 
         assert commands[-1][-3:-1] == ["rm", "-rf"]
         assert path.exists()
     else:
-        assert 'neat install model-compiler/arm64@v2.1.3' in script
+        assert 'neat install model-compiler/arm64@v2.1.3.1' in script
         assert "install_modelsdk_wheels.sh" not in script
 
 

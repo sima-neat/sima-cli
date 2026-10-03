@@ -72,7 +72,7 @@ def discover(ignore_cache):
     """
     click.echo("🔍 Running device discovery...\n")
     try:
-        discover_and_probe(mdns_only=ignore_cache)
+        discover_and_probe(mdns_only=ignore_cache, include_cloudex=True)
         discover_and_render_pcie_devices()
     except Exception as e:
         raise click.ClickException(f"Discovery failed: {e}")

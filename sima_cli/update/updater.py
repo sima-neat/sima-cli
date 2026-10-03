@@ -9,7 +9,7 @@ import gzip
 import subprocess
 import shutil
 from urllib.parse import urlparse, urljoin
-from typing import List
+from typing import List, Optional
 from sima_cli.utils.env import get_environment_type
 from sima_cli.download import download_file_from_url
 from sima_cli.utils.config_loader import load_resource_config
@@ -336,7 +336,15 @@ def _extract_required_files(tar_path: str, board: str, update_type: str = 'stand
 
 
     
-def _download_image(version_or_url: str, board: str, internal: bool = False, update_type: str = 'standard', flavor: str = 'headless', swtype: str = 'yocto'):
+def _download_image(
+    version_or_url: str,
+    board: str,
+    internal: bool = False,
+    update_type: str = 'standard',
+    flavor: str = 'headless',
+    swtype: str = 'yocto',
+    destination_dir: Optional[str] = None,
+):
     """
     Download or use a firmware image for the specified board and version or file path.
 
@@ -349,7 +357,7 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
 
     Notes:
         - If a local file is provided, it skips downloading.
-        - Downloads the firmware into the system's temporary directory otherwise.
+        - Downloads the firmware into destination_dir, or the system's temporary directory otherwise.
         - Target file name is uniquely derived from the URL or preserved from local path.
     """
     try:
@@ -398,13 +406,13 @@ def _download_image(version_or_url: str, board: str, internal: bool = False, upd
                 update_type=update_type,
             )
 
-        # Determine platform-safe temp directory
-        temp_dir = tempfile.gettempdir()
-        os.makedirs(temp_dir, exist_ok=True)
-
-        # Build safe filename based on the URL
-        safe_filename = _sanitize_url_to_filename(image_url)
-        dest_path = os.path.join(temp_dir, safe_filename)
+        if destination_dir:
+            dest_path = destination_dir
+        else:
+            temp_dir = tempfile.gettempdir()
+            safe_filename = _sanitize_url_to_filename(image_url)
+            dest_path = os.path.join(temp_dir, safe_filename)
+        os.makedirs(dest_path, exist_ok=True)
 
         # Download the file
         click.echo(f"📦 Downloading from {image_url}")
@@ -594,7 +602,33 @@ def _update_remote(extracted_paths: List[str], ip: str, board: str, passwd: str,
 
     return script_path
 
-def download_image(version_or_url: str, board: str, swtype: str, internal: bool = False, update_type: str = 'standard', flavor: str = 'headless', allow_daily_fallback: bool = False):
+def resolve_image_reference(
+    version_or_url: str,
+    board: str,
+    swtype: str,
+    internal: bool = False,
+    update_type: str = 'standard',
+    flavor: str = 'headless',
+) -> str:
+    """Resolve a version selector once so managed caches use a concrete source."""
+    if 'http' not in version_or_url and not os.path.exists(version_or_url):
+        return _pick_from_available_versions(
+            board, version_or_url, internal, flavor, swtype, update_type
+        )
+    return version_or_url
+
+
+def download_image(
+    version_or_url: str,
+    board: str,
+    swtype: str,
+    internal: bool = False,
+    update_type: str = 'standard',
+    flavor: str = 'headless',
+    allow_daily_fallback: bool = False,
+    destination_dir: Optional[str] = None,
+    reference_is_resolved: bool = False,
+):
     """
     Download and extract a firmware image for a specified board.
 
@@ -605,6 +639,8 @@ def download_image(version_or_url: str, board: str, swtype: str, internal: bool 
         internal (bool): Whether to use internal download paths (e.g., Artifactory).
         update_type (str): Whether this is standard update or writing boot image.
         flavor (str): Flavor of the image, can be headless or full.
+        destination_dir (str): Optional managed directory for downloaded and extracted files.
+        reference_is_resolved (bool): Skip version selection when the caller already resolved it.
 
     Returns:
         List[str]: Paths to the extracted image files.
@@ -613,14 +649,33 @@ def download_image(version_or_url: str, board: str, swtype: str, internal: bool 
     if (internal and update_type == 'netboot' and swtype == 'elxr' and board == 'modalix'
             and not version_or_url.startswith(('http://', 'https://')) and not os.path.exists(version_or_url)):
         from sima_cli.update.netboot_artifacts import download_netboot_image
-        return download_netboot_image(version_or_url, board, flavor, allow_daily_fallback=allow_daily_fallback)
-
-    if 'http' not in version_or_url and not os.path.exists(version_or_url): 
-        version_or_url = _pick_from_available_versions(
-            board, version_or_url, internal, flavor, swtype, update_type
+        return download_netboot_image(
+            version_or_url,
+            board,
+            flavor,
+            allow_daily_fallback=allow_daily_fallback,
+            destination_dir=destination_dir,
         )
 
-    extracted_paths = _download_image(version_or_url, board, internal, update_type, flavor=flavor, swtype=swtype) 
+    if not reference_is_resolved:
+        version_or_url = resolve_image_reference(
+            version_or_url,
+            board,
+            swtype,
+            internal=internal,
+            update_type=update_type,
+            flavor=flavor,
+        )
+
+    extracted_paths = _download_image(
+        version_or_url,
+        board,
+        internal,
+        update_type,
+        flavor=flavor,
+        swtype=swtype,
+        destination_dir=destination_dir,
+    )
     return extracted_paths
 
 

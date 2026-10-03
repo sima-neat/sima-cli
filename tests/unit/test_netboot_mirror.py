@@ -55,7 +55,9 @@ def test_missing_required_file_reports_error(missing):
                                   artifacts.ArtifactoryUnavailable('Login required.')])
 def test_discovery_failure_falls_back(error):
     with patch.object(net, '_list_available_firmware_versions_internal', side_effect=error), \
-            patch.object(net, '_mirror_files', return_value=sources()) as mirror, \
+            patch.object(net, '_mirror_build', return_value={
+                'version': VERSION, 'artifacts': sources()
+            }) as mirror, \
             patch.object(net, '_download_set', return_value=['ready']) as download:
         assert net.download_netboot_image('1247', 'modalix', allow_daily_fallback=True) == ['ready']
     assert mirror.call_args.args[:2] == ('1247', 'modalix')
@@ -69,7 +71,9 @@ def test_artifact_failure_retries_exact_selected_build():
     with patch.object(net, '_list_available_firmware_versions_internal', return_value=[{'version': VERSION}]), \
             patch.object(net, 'resolve_elxr_palette_image', return_value='internal.img.gz'), \
             patch.object(net, '_download_set', side_effect=[requests.HTTPError(response=response), ['ready']]), \
-            patch.object(net, '_mirror_files', return_value=sources()) as mirror:
+            patch.object(net, '_mirror_build', return_value={
+                'version': VERSION, 'artifacts': sources()
+            }) as mirror:
         assert net.download_netboot_image('3.0', 'modalix', allow_daily_fallback=True) == ['ready']
     assert mirror.call_args.args[0] == VERSION
     assert mirror.call_args.kwargs['exact'] is True
@@ -107,7 +111,7 @@ def test_all_downloads_verified_before_extraction(tmp_path, bad_index):
 
 def test_local_io_error_does_not_trigger_mirror():
     with patch.object(net, '_list_available_firmware_versions_internal', side_effect=OSError('Disk full')), \
-            patch.object(net, '_mirror_files') as mirror:
+            patch.object(net, '_mirror_build') as mirror:
         with pytest.raises(OSError):
             net.download_netboot_image('3.0', 'modalix')
     mirror.assert_not_called()
@@ -138,7 +142,7 @@ def test_explicit_source_keeps_existing_download_path(value):
 def test_legacy_elxr_uses_existing_downloader():
     with patch.object(net, '_list_available_firmware_versions_internal', return_value=[{'version': '2.1.3'}]), \
             patch.object(updater, '_download_image', return_value=['legacy']) as download, \
-            patch.object(net, '_mirror_files') as mirror:
+            patch.object(net, '_mirror_build') as mirror:
         assert net.download_netboot_image('2.1.3', 'modalix') == ['legacy']
     download.assert_called_once_with('2.1.3', 'modalix', True, 'netboot', 'headless', 'elxr')
     mirror.assert_not_called()
@@ -147,7 +151,8 @@ def test_legacy_elxr_uses_existing_downloader():
 def test_failure_stops_before_tftp_start():
     from sima_cli.update import netboot
     with patch.object(netboot, 'get_environment_type', return_value=('host', 'mac')), \
-            patch.object(netboot, 'download_image', side_effect=click.ClickException('Mirror verification failed')), \
+            patch.object(net, 'resolve_netboot_image_selection',
+                         side_effect=click.ClickException('Mirror verification failed')), \
             patch.object(netboot, 'InteractiveTftpServer') as server:
         with pytest.raises(RuntimeError, match='Mirror verification failed'):
             netboot.setup_netboot('1247', 'modalix', True, False, swtype='elxr')
@@ -168,7 +173,7 @@ def test_no_force_never_contacts_daily_mirror(selected):
     discovery = {'return_value': [{'version': VERSION}]} if selected else {'side_effect': requests.ConnectionError()}
     with patch.object(net, '_list_available_firmware_versions_internal', **discovery), \
             patch.object(net, 'resolve_elxr_palette_image', side_effect=requests.ConnectionError()), \
-            patch.object(net, '_mirror_files') as mirror:
+            patch.object(net, '_mirror_build') as mirror:
         with pytest.raises(click.ClickException, match='Retry with -f/--force'):
             net.download_netboot_image('1247', 'modalix')
     mirror.assert_not_called()

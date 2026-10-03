@@ -329,3 +329,21 @@ def test_artifact_failure_without_force_never_uses_public_mirror(stage):
             swu.update_system('3.0', 'modalix', ip='192.0.2.1', internal=True, auto_confirm=True)
     fallback.assert_not_called()
     target.transfer.assert_not_called()
+
+
+@pytest.mark.parametrize('fallback', [False, True])
+@pytest.mark.parametrize('requested', [None, '3.0', '3.0.0_daily_B9'])
+def test_yes_selects_newest_matching_build_without_prompt(fallback, requested):
+    builds = [
+        {'version': '3.0.0_daily_B11', 'url': 'https://example/B11.swu', 'created': None, 'build_number': 11},
+        {'version': '3.0.0_daily_B9', 'url': 'https://example/B9.swu', 'created': None, 'build_number': 9},
+    ]
+    expected = builds[1] if requested == '3.0.0_daily_B9' else builds[0]
+    with patch.object(artifacts, 'internal_bundles', return_value=builds,
+                      side_effect=requests.ConnectionError('offline') if fallback else None), \
+            patch.object(artifacts, 'mirror_bundles', return_value=artifacts._matching_builds(builds, requested)), \
+            patch('InquirerPy.inquirer.fuzzy') as picker:
+        source = artifacts.resolve_bundle(requested, 'modalix', internal=True,
+                                          allow_external_fallback=fallback, auto_confirm=True)
+    assert source == expected['url']
+    picker.assert_not_called()

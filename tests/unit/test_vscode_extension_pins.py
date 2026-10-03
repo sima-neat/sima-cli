@@ -298,7 +298,8 @@ def test_explicit_all_installs_three_even_with_legacy_empty_overrides():
 def test_setup_cli_forwards_all_extensions():
     from click.testing import CliRunner
     from sima_cli.sdk.commands import sdk
-    with patch("sima_cli.sdk.commands.setup_and_start") as setup:
+    with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+         patch("sima_cli.sdk.commands.setup_and_start") as setup:
         result = CliRunner().invoke(sdk, ["setup", "--noninteractive", "--all-extensions"])
     assert result.exit_code == 0, result.output
     assert setup.call_args.kwargs["all_extensions"] is True

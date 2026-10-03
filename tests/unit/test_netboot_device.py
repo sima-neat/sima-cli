@@ -87,6 +87,50 @@ def test_remote_failure_prevents_reboot(failed_call):
     connect.return_value.close.assert_called_once()
 
 
+def test_unsupported_legacy_layout_continues_with_manual_instructions(capsys):
+    failure = click.ClickException(
+        'Remote netboot preparation failed: Restored saved U-Boot environment. '
+        'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY '
+        'RuntimeError: Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout.',
+    )
+    with patch.object(device, 'init_ssh_session') as connect, \
+            patch.object(device, '_checked', side_effect=['', failure]) as command, \
+            patch.object(click, 'confirm', return_value=True):
+        assert device.configure_and_reboot(
+            '192.0.2.1', '192.0.2.10', autoflash=True,
+        ) is False
+
+    assert len(command.call_args_list) == 2
+    assert not any('systemd-run' in call.args[1] for call in command.call_args_list)
+    connect.return_value.close.assert_called_once()
+    output = capsys.readouterr().out
+    assert 'Manual netboot setup required' in output
+    assert 'saved environment was restored' in output
+    assert 'setenv ipaddr 192.0.2.1' in output
+    assert 'setenv serverip 192.0.2.10' in output
+    assert 'setenv netmask 255.255.255.0' in output
+    assert 'setenv nfs_linux_intf end0' in output
+    assert 'setenv boot_targets net' in output
+    assert 'saveenv' in output
+    assert 'reset' in output
+    assert 'Automatic flashing is disabled' in output
+
+
+def test_legacy_layout_with_cleanup_failure_remains_fatal():
+    failure = click.ClickException(
+        'Remote netboot preparation failed: Restored saved U-Boot environment. '
+        'RuntimeError: Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout. '
+        'ERROR: Could not restore /boot to read-only.',
+    )
+    with patch.object(device, 'init_ssh_session'), \
+            patch.object(device, '_checked', side_effect=['', failure]) as command, \
+            patch.object(click, 'confirm', return_value=True):
+        with pytest.raises(click.ClickException, match='Could not restore /boot'):
+            device.configure_and_reboot('192.0.2.1', '192.0.2.10')
+
+    assert not any('systemd-run' in call.args[1] for call in command.call_args_list)
+
+
 @pytest.mark.parametrize('bind_failure', [False, True])
 @pytest.mark.parametrize('selected', ['192.0.2.1', None])
 def test_tftp_ready_before_remote_changes_and_always_cleaned_up(tmp_path, bind_failure, selected):
@@ -207,10 +251,13 @@ elif name == 'fw_printenv':
     if failure == 'rw':
         assert 'fw_setenv' not in commands
         assert 'Cannot remount' in result.stderr
+        assert device.MANUAL_FALLBACK_READY not in result.stdout
     elif failure == 'write':
         assert 'Restored saved U-Boot' in result.stdout
+        assert device.MANUAL_FALLBACK_READY in result.stdout
     elif failure == 'ro':
         assert 'Could not restore' in result.stderr
+        assert device.MANUAL_FALLBACK_READY not in result.stdout
     if failure in ('rw', 'write'):
         for name in ('uboot.env', 'uboot-redund.env'):
             assert (boot / name).read_text() == 'original ' + name

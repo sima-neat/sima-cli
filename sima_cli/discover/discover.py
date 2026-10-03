@@ -170,7 +170,8 @@ def render_device_table(devices):
     seen = set()
     unique_devices = []
     for dev in devices:
-        key = dev.get("mac") or dev.get("ip")
+        mac = dev.get("mac")
+        key = mac if mac not in {None, "", "-", "—"} else dev.get("ip")
         if key and key not in seen:
             seen.add(key)
             unique_devices.append(dev)
@@ -182,7 +183,13 @@ def render_device_table(devices):
         console.print("[yellow]⚠️  No unique SiMa devices found after filtering duplicates.[/yellow]")
         return
 
-    table = Table(title="SiMa Devices on the local network")
+    has_connection_source = any(device.get("connection") for device in unique_devices)
+    has_cloudex = any(device.get("source") == "CloudEx" for device in unique_devices)
+    table = Table(title="Discovered SiMa Devices" if has_connection_source else "SiMa Devices on the local network")
+    if has_connection_source:
+        table.add_column("Connection", justify="center")
+    if has_cloudex:
+        table.add_column("Device")
     table.add_column("IP", justify="center")
     table.add_column("MAC", justify="center")
     table.add_column("Board Type", justify="center")
@@ -192,17 +199,77 @@ def render_device_table(devices):
     table.add_column("FW Type", justify="center")
 
     for dev in unique_devices:
-        table.add_row(
+        values = [
             dev.get("ip", "-"),
             dev.get("mac", "-"),
             dev.get("board", "-"),
             dev.get("version", "-"),
             dev.get("model", "-"),
-            "✅" if dev.get("full_image") else "❌",
+            "—" if dev.get("full_image") is None else "✅" if dev.get("full_image") else "❌",
             dev.get("fwtype", "-"),
-        )
-
+        ]
+        if has_cloudex:
+            values.insert(0, dev.get("device", "—"))
+        if has_connection_source:
+            values.insert(0, dev.get("connection", "local"))
+        table.add_row(*values)
     console.print(table)
+
+
+def discover_cloudex_devices():
+    """Return connected CloudEx endpoints enriched through the normal SSH probe."""
+    try:
+        # CloudEx remains experimental, so keep its state dependency lazy and
+        # let ordinary LAN discovery work even when that state is unavailable.
+        from sima_cli.cloudex.client import SessionStore, inspect_session
+
+        store = SessionStore()
+        sessions = store.list()
+    except Exception as exc:
+        console.print(f"[yellow]⚠️  CloudEx connection state could not be read: {exc}[/yellow]")
+        return []
+
+    sessions_to_probe = []
+    for session in sessions:
+        try:
+            status = inspect_session(session, store)
+        except Exception:
+            continue
+        target = session.get("target")
+        if not status.get("connected") or not isinstance(target, str) or not target:
+            continue
+        path = status.get("path", "unknown")
+        path_label = "relayed" if path == "relay" else path
+        sessions_to_probe.append({
+            "ip": target,
+            "mac": "—",
+            "device": session.get("device", "DevKit " + str(session.get("allocation_id", ""))[:8]),
+            "board": "—",
+            "version": "—",
+            "model": "—",
+            "full_image": None,
+            "fwtype": "—",
+            "source": "CloudEx",
+            "path": path_label,
+            "connection": "CloudEx ({})".format(path_label),
+        })
+
+    if sessions_to_probe:
+        console.print("[cyan]🔍 Probing CloudEx-connected devices via SSH...[/cyan]")
+    devices = []
+    for device in sessions_to_probe:
+        board, version, model, full, fw = get_remote_board_info(device["ip"])
+        identified = any((board, version, model, fw))
+        devices.append({
+            **device,
+            "board": board or "—",
+            "version": version or "—",
+            "model": model or "—",
+            "full_image": full if identified else None,
+            "fwtype": fw or "—",
+        })
+    return devices
+
 
 def discover_and_render_pcie_devices():
     # ------------------------------------------------------------------
@@ -241,9 +308,10 @@ def discover_and_render_pcie_devices():
 # ─────────────────────────────────────────────────────────────
 # Unified Discovery Orchestration
 # ─────────────────────────────────────────────────────────────
-def discover_and_probe(mdns_only: bool = False) -> List[Dict[str, str]]:
+def discover_and_probe(mdns_only: bool = False, include_cloudex: bool = False) -> List[Dict[str, str]]:
     # Check if there's any interface without IP (Ubuntu quirk), if so, fix it by setting to linklocal
     suggest_and_switch_to_linklocal()
+    cloudex_devices = discover_cloudex_devices() if include_cloudex else []
 
     if not mdns_only:
         arp_devices = get_sima_devices_from_arp()
@@ -262,9 +330,17 @@ def discover_and_probe(mdns_only: bool = False) -> List[Dict[str, str]]:
                     "model": model,
                     "full_image": full,
                     "fwtype": fw,
+                    "connection": "local" if cloudex_devices else None,
                 })
-            render_device_table(enriched)
-            return enriched
+            devices = cloudex_devices + enriched
+            render_device_table(devices)
+            return devices
+
+        if cloudex_devices:
+            console.print("[green]✅ Found {} active CloudEx connection(s)[/green]".format(len(cloudex_devices)))
+            render_device_table(cloudex_devices)
+            console.print("[dim]Use --ignore-cache to additionally scan local networks with multicast.[/dim]")
+            return cloudex_devices
 
         # 2️⃣ No ARP hits → Ask user for multicast
         console.print(
@@ -282,6 +358,10 @@ def discover_and_probe(mdns_only: bool = False) -> List[Dict[str, str]]:
 
     responses = discover_multicast()
     if not responses:
+        if cloudex_devices:
+            console.print("[yellow]⚠️  No multicast responses received; showing active CloudEx connections.[/yellow]")
+            render_device_table(cloudex_devices)
+            return cloudex_devices
         console.print("[yellow]⚠️  No multicast responses received from DevKits, unable to discover devices.[/yellow]")
         console.print("🔍 If you are sure the DevKit is online, try to connect to the serial console using 'sima-cli serial' command, login and type 'ifconfig' to find out its IP address.")
         return []
@@ -299,7 +379,9 @@ def discover_and_probe(mdns_only: bool = False) -> List[Dict[str, str]]:
             "model": model,
             "full_image": full,
             "fwtype": fw,
+            "connection": "local" if cloudex_devices else None,
         })
+    devices = cloudex_devices + devices
     render_device_table(devices)
     return devices
 

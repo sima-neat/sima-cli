@@ -40,7 +40,7 @@ None.
 - [`sima-cli sdk`](./sima-cli-sdk.md): Manage and launch SiMa SDK 2.0 container environments (Beta).
 - [`sima-cli selfupdate`](./sima-cli-selfupdate.md): Update sima-cli manually from PyPI or a direct wheel URL.
 - [`sima-cli serial`](./sima-cli-serial.md): Connect to the UART serial console of the DevKit.
-- [`sima-cli update`](./sima-cli-update.md): Update the software on a SiMa DevKit or remote SiMa device.
+- [`sima-cli update`](./sima-cli-update.md): Update a SiMa DevKit, remote device, or Linux PCIe host.
 
 ## Full Help
 
@@ -78,5 +78,5 @@ Commands:
   sdk         Manage and launch SiMa SDK 2.0 container environments (Beta).
   selfupdate  Update sima-cli manually from PyPI or a direct wheel URL.
   serial      Connect to the UART serial console of the DevKit.
-  update      Update the software on a SiMa DevKit or remote SiMa device.
+  update      Update a SiMa DevKit, remote device, or Linux PCIe host.
 ```

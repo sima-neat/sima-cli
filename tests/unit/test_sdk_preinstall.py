@@ -3,6 +3,9 @@ import types
 from unittest.mock import patch
 
 from sima_cli.sdk.preinstall import (
+    _detect_colima_profile,
+    _colima_port_forwarder,
+    _ensure_colima_udp_forwarding_for_insight,
     ensure_colima_resources_for_neat_sdk,
     check_colima_resources,
     check_firewall,
@@ -14,6 +17,67 @@ from sima_cli.sdk.preinstall import (
 
 
 class TestSdkPreinstall(unittest.TestCase):
+    def test_detects_named_colima_profile_from_active_docker_context(self):
+        inspect = '[{"Endpoints":{"docker":{"Host":"unix:///Users/me/.colima/work/docker.sock"}}}]'
+        with patch("sima_cli.sdk.preinstall.subprocess.check_output", return_value=inspect):
+            self.assertEqual(_detect_colima_profile(), "work")
+
+    def test_colima_port_forwarder_prefers_effective_status(self):
+        with patch("sima_cli.sdk.preinstall._colima_status", return_value={"portForwarder": "grpc"}), \
+             patch("sima_cli.sdk.preinstall._colima_config", return_value={"portForwarder": "ssh"}):
+            self.assertEqual(_colima_port_forwarder("work"), "grpc")
+
+    def test_colima_port_forwarder_falls_back_to_profile_config(self):
+        with patch("sima_cli.sdk.preinstall._colima_status", return_value={}), \
+             patch("sima_cli.sdk.preinstall._colima_config", return_value={"portForwarder": "ssh"}):
+            self.assertEqual(_colima_port_forwarder("work"), "ssh")
+
+    def test_colima_port_forwarder_handles_older_missing_field(self):
+        with patch("sima_cli.sdk.preinstall._colima_status", return_value={}), \
+             patch("sima_cli.sdk.preinstall._colima_config", return_value={}):
+            self.assertEqual(_colima_port_forwarder("default"), "")
+
+    def test_colima_udp_check_skips_grpc(self):
+        for forwarder in ("grpc", ""):
+            with self.subTest(forwarder=forwarder), \
+                 patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+                 patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value=forwarder), \
+                 patch("sima_cli.sdk.preinstall.subprocess.run") as run:
+                self.assertFalse(_ensure_colima_udp_forwarding_for_insight())
+            run.assert_not_called()
+
+    def test_colima_udp_check_noninteractive_fails_with_remediation(self):
+        with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="ssh"), \
+             patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            with self.assertRaisesRegex(RuntimeError, "--port-forwarder grpc"):
+                _ensure_colima_udp_forwarding_for_insight(noninteractive=True)
+
+    def test_colima_udp_check_requires_confirmation_and_preserves_profile(self):
+        with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="ssh"), \
+             patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
+             patch("builtins.input", return_value="y"):
+            self.assertTrue(_ensure_colima_udp_forwarding_for_insight())
+
+        self.assertEqual(run.call_args_list[0].args[0], [
+            "/opt/homebrew/bin/colima", "stop", "--profile", "work",
+        ])
+        self.assertEqual(run.call_args_list[1].args[0], [
+            "/opt/homebrew/bin/colima", "start", "--profile", "work",
+            "--port-forwarder", "grpc", "--save-config",
+        ])
+
+    def test_colima_udp_check_decline_blocks_insight_setup(self):
+        with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="ssh"), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
+             patch("builtins.input", return_value="n"):
+            with self.assertRaisesRegex(RuntimeError, "--no-insight"):
+                _ensure_colima_udp_forwarding_for_insight()
+        run.assert_not_called()
+
     def test_macos_skips_firewall_check(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall.platform.machine", return_value="x86_64"), \

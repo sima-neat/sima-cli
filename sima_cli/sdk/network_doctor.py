@@ -477,6 +477,31 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
 
     profile = preinstall._detect_colima_profile()
     network = preinstall._colima_network_config(profile)
+    forwarder = preinstall._colima_port_forwarder(profile)
+    if forwarder == "ssh":
+        report.add(
+            "error",
+            "colima-udp-forwarder",
+            "Colima's SSH port forwarder supports TCP only; Insight UDP/WebRTC paths are unavailable.",
+            (
+                f"profile={profile} portForwarder=ssh; affected: webcam/WebRTC, video/metadata UDP ingest, "
+                "and vf WebRTC delivery. Run: colima stop --profile "
+                f"{profile} && colima start --profile {profile} --port-forwarder grpc --save-config"
+            ),
+        )
+    elif forwarder == "grpc":
+        report.add(
+            "info",
+            "colima-udp-forwarder",
+            f"Colima profile '{profile}' uses the UDP-capable gRPC port forwarder.",
+        )
+    else:
+        report.add(
+            "warning",
+            "colima-udp-forwarder-unknown",
+            "Could not determine Colima's effective port forwarder; Docker UDP publication is not proof of delivery.",
+            f"profile={profile} portForwarder={forwarder or 'unset'}; inspect {preinstall._colima_config_path(profile)}",
+        )
     detail = (
         f"profile={profile} "
         f"address={network.get('address')} "
@@ -627,7 +652,12 @@ def build_network_doctor_report(container: str = "", devkit_ip: str = "") -> Net
                 "; ".join(mismatches),
             )
         else:
-            report.add("info", "port-map-ok", "Docker published ports match the generated Insight port map.", port_map_path)
+            report.add(
+                "info",
+                "port-map-ok",
+                "Docker published ports match the generated Insight port map; UDP delivery is not verified.",
+                port_map_path,
+            )
 
     if _container_running(inspect):
         if not _container_default_route_confirmed(resolved_container, inspect):

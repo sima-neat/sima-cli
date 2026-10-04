@@ -120,6 +120,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
              patch.object(net, "_is_darwin_host", return_value=True), \
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
              patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="grpc"), \
              patch(
                  "sima_cli.sdk.preinstall._colima_network_config",
                  return_value={"address": True, "mode": "shared", "interface": "bridge100"},
@@ -136,6 +137,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
              patch.object(net, "_is_darwin_host", return_value=True), \
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
              patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="grpc"), \
              patch(
                  "sima_cli.sdk.preinstall._colima_network_config",
                  return_value={"address": False, "mode": "shared", "interface": "en0"},
@@ -147,6 +149,21 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
         finding = next(f for f in report.findings if f.code == "colima-network-address-disabled")
         self.assertEqual(finding.severity, "warning")
         self.assertIn("--network-interface en7", finding.detail)
+
+    def test_report_blocks_colima_ssh_forwarder_for_insight_udp(self):
+        with patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "_is_darwin_host", return_value=True), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="ssh"), \
+             patch("sima_cli.sdk.preinstall._colima_network_config", return_value={"address": True}), \
+             patch("sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit", return_value=True):
+            report = net.build_network_doctor_report()
+
+        finding = next(f for f in report.findings if f.code == "colima-udp-forwarder")
+        self.assertEqual(finding.severity, "error")
+        self.assertIn("webcam/WebRTC", finding.detail)
+        self.assertIn("--profile work --port-forwarder grpc", finding.detail)
 
     def test_container_default_route_confirmed_from_docker_gateway(self):
         inspect = {

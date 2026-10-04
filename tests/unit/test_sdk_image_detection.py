@@ -2709,7 +2709,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
              patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
-             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk") as ensure_colima, \
              patch("sima_cli.sdk.install.get_container_status", return_value={}), \
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
@@ -2719,6 +2719,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
             setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
 
         self.assertFalse(setup_extensions.call_args.kwargs["for_model_compiler"])
+        ensure_colima.assert_called_once_with(
+            yes_to_all=True,
+            noninteractive=True,
+            require_udp=True,
+        )
         self.assertEqual(
             start_container.call_args.kwargs["sdk_extensions_dir"],
             "/home/u/sima-sdk-extensions",
@@ -2732,7 +2737,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
              patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
-             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk") as ensure_colima, \
              patch("sima_cli.sdk.install.get_container_status", return_value={}), \
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
@@ -2741,6 +2746,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
              patch("sima_cli.sdk.install.start_docker_container") as start_container:
             setup_and_start(**kwargs)
+        self._ensure_colima = ensure_colima
         return start_container
 
     def test_setup_forwards_all_extensions_to_new_container(self):
@@ -2789,6 +2795,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
             start_container = self._run_setup_for_studio(no_insight=True)
 
         prompt.assert_not_called()
+        self._ensure_colima.assert_called_once_with(
+            yes_to_all=False,
+            noninteractive=False,
+            require_udp=False,
+        )
         self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
         self.assertFalse(start_container.call_args.kwargs["publish_edgematic_studio_port"])
 
@@ -2909,7 +2920,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
              patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
-             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk") as ensure_colima, \
              patch("sima_cli.sdk.install.get_container_status", return_value={}), \
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
@@ -2919,6 +2930,11 @@ table ip6 nm-shared-enx6c1ff720d573 {
             setup_and_start(minimal=True, yes_to_all=True, noninteractive=True)
 
         setup_extensions.assert_not_called()
+        ensure_colima.assert_called_once_with(
+            yes_to_all=True,
+            noninteractive=True,
+            require_udp=False,
+        )
         self.assertEqual(start_container.call_args.kwargs["sdk_extensions_dir"], "")
         self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
         self.assertTrue(start_container.call_args.kwargs["minimal"])

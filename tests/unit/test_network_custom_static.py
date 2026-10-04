@@ -93,6 +93,35 @@ def test_networkd_writes_runtime_profile_and_cleans_temporary_file(tmp_path, old
     assert run.call_args_list[-1].args[0] == ["sudo", "systemctl", "restart", "systemd-networkd"]
 
 
+def test_networkd_activation_failure_restores_previous_profiles(tmp_path):
+    runtime_dir = tmp_path / "run"
+    runtime_dir.mkdir()
+    runtime = runtime_dir / "01-end0-sima-custom-static.network"
+    persistent = tmp_path / runtime.name
+    runtime.write_text("[Network]\nAddress=10.0.0.2/24\n")
+    persistent.write_text("[Network]\nAddress=10.0.0.3/24\n")
+    original_runtime = runtime.read_bytes()
+    original_persistent = persistent.read_bytes()
+
+    def execute(command, **kwargs):
+        if command[1] == "install":
+            Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(command[-1]).write_bytes(Path(command[-2]).read_bytes())
+        elif command[1] == "rm":
+            Path(command[-1]).unlink(missing_ok=True)
+        elif command[1:3] == ["systemctl", "restart"]:
+            raise subprocess.CalledProcessError(1, command)
+
+    with patch.object(net, "NETWORKD_DIR", str(tmp_path)), \
+         patch.object(net, "NETWORKD_RUNTIME_DIR", str(runtime_dir)), \
+         patch.object(net, "_select_network_backend", return_value="networkd"), \
+         patch.object(net.subprocess, "run", side_effect=execute):
+        assert not net.apply_custom_static_ip("end0", "10.2.3.4")
+
+    assert runtime.read_bytes() == original_runtime
+    assert persistent.read_bytes() == original_persistent
+
+
 @pytest.mark.parametrize("mode", ["static", "dhcp"])
 def test_networkd_switch_back_removes_custom_override(tmp_path, mode):
     (tmp_path / "02-end0-static.network").write_text("[Network]\nAddress=192.168.1.20/24\n")

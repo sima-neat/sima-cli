@@ -189,34 +189,55 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
         ssh.close()
 
 
-def restore_environment(configuration):
+def _connect_restoration_target(configuration, candidate_ips=()):
+    """Connect to the saved device, allowing its address to change after netboot."""
+    expected_address = (configuration.hardware_address or '').strip().lower()
+    candidates = []
+    for candidate in (*candidate_ips, configuration.devkit):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    reachable_mismatch = None
+    for index, candidate in enumerate(candidates):
+        # Quickly reject observed addresses that are not this device, but retain
+        # the full reboot allowance for the last (normally original) address.
+        timeout = 180 if index == len(candidates) - 1 else 10
+        if not wait_for_ssh(candidate, timeout=timeout):
+            continue
+        ssh = init_ssh_session(candidate)
+        try:
+            addresses = {
+                line.strip().lower()
+                for line in _checked(ssh, 'cat /sys/class/net/*/address').splitlines()
+            }
+        except Exception:
+            ssh.close()
+            raise
+        if expected_address and expected_address in addresses:
+            configuration.devkit = candidate
+            return ssh
+        ssh.close()
+        reachable_mismatch = candidate
+
+    if reachable_mismatch is not None:
+        raise click.ClickException(
+            f'Refusing to restore U-Boot on {reachable_mismatch}: '
+            'the connected device does not match the saved network interface.'
+        )
+    raise click.ClickException(
+        'The DevKit did not return at a verified address for U-Boot restoration.'
+    )
+
+
+def restore_environment(configuration, candidate_ips=()):
     """Restore the exact U-Boot files saved before this netboot session."""
     from sima_cli.update.uboot_environment import configure_environment
 
     if not configuration or not configuration.changed or not configuration.backup_dir:
         return True
-    if not wait_for_ssh(configuration.devkit, timeout=180):
-        raise click.ClickException(
-            f'DevKit {configuration.devkit} did not return to SSH for U-Boot restoration.'
-        )
-    ssh = init_ssh_session(configuration.devkit)
+    ssh = _connect_restoration_target(configuration, candidate_ips)
     remote_stage = None
     source_dir = configuration.backup_dir
-    expected_address = (configuration.hardware_address or '').strip().lower()
-    try:
-        addresses = {
-            line.strip().lower()
-            for line in _checked(ssh, 'cat /sys/class/net/*/address').splitlines()
-        }
-    except Exception:
-        ssh.close()
-        raise
-    if not expected_address or expected_address not in addresses:
-        ssh.close()
-        raise click.ClickException(
-            f'Refusing to restore U-Boot on {configuration.devkit}: '
-            'the connected device does not match the saved network interface.'
-        )
     local_files = [
         os.path.join(configuration.local_backup_dir or '', name)
         for name in ('uboot.env', 'uboot-redund.env')

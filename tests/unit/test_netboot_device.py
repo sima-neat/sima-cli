@@ -436,6 +436,43 @@ def test_changed_ip_is_verified_by_hardware_address(reported, expected):
     connect.return_value.close.assert_called_once()
 
 
+def test_restore_uses_verified_observed_address_when_device_ip_changes():
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1', hardware_address='02:00:00:00:00:01',
+        backup_dir='/boot/backup', changed=True,
+    )
+    changed = MagicMock()
+    with patch.object(device, 'wait_for_ssh', side_effect=[False, True]) as wait, \
+            patch.object(device, 'init_ssh_session', return_value=changed) as connect, \
+            patch.object(device, '_checked', side_effect=[
+                '02:00:00:00:00:01', ''
+            ]):
+        device.restore_environment(
+            configuration, candidate_ips=['192.0.2.1', '192.0.2.99']
+        )
+
+    assert configuration.devkit == '192.0.2.99'
+    assert configuration.changed is False
+    assert wait.call_args_list[0].args == ('192.0.2.1',)
+    assert wait.call_args_list[0].kwargs == {'timeout': 10}
+    assert wait.call_args_list[1].args == ('192.0.2.99',)
+    assert wait.call_args_list[1].kwargs == {'timeout': 180}
+    connect.assert_called_once_with('192.0.2.99')
+    changed.close.assert_called_once()
+
+
+def test_discovery_updates_cleanup_target_without_flashing(capsys):
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1', hardware_address='02:00:00:00:00:01', changed=True,
+    )
+    netboot._update_restoration_target_from_discovery(configuration, [
+        {'ip': '192.0.2.55', 'mac': '02:00:00:00:00:99'},
+        {'ip': '192.0.2.99', 'mac': '02:00:00:00:00:01'},
+    ])
+    assert configuration.devkit == '192.0.2.99'
+    assert 'used for cleanup' in capsys.readouterr().out
+
+
 def test_restore_interrupt_still_shuts_down_session(tmp_path, capsys):
     boot = tmp_path / 'netboot.scr.uimg'
     boot.write_bytes(b'boot')

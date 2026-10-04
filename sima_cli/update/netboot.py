@@ -1019,10 +1019,30 @@ def _discover_netboot_devices():
     from sima_cli.discover.discover import discover_and_probe
 
     try:
-        discover_and_probe(mdns_only=True)
+        devices = discover_and_probe(mdns_only=True)
     except Exception as exc:
         click.echo(f"❌ Device discovery failed: {exc}")
+        devices = []
     _print_ip_recovery_help()
+    return devices
+
+
+def _update_restoration_target_from_discovery(configuration, devices):
+    """Remember a newly discovered address only when its MAC is an exact match."""
+    if configuration is None or not configuration.changed:
+        return
+    expected = (configuration.hardware_address or '').strip().lower()
+    matches = {
+        device.get('ip')
+        for device in devices
+        if (device.get('mac') or '').strip().lower() == expected and device.get('ip')
+    }
+    if len(matches) == 1:
+        configuration.devkit = matches.pop()
+        click.echo(
+            f"✅ Found the configured DevKit at {configuration.devkit}; "
+            "this address will be used for cleanup."
+        )
 
 
 def run_cli(client_manager, configuration=None):
@@ -1064,7 +1084,8 @@ def run_cli(client_manager, configuration=None):
                     click.echo("❌ Usage: d")
                     continue
                 client_manager.stop_monitoring()
-                _discover_netboot_devices()
+                devices = _discover_netboot_devices()
+                _update_restoration_target_from_discovery(configuration, devices)
             elif command == "f":
                 if len(args) > 1:
                     click.echo("❌ Usage: f [ip]")
@@ -1283,7 +1304,11 @@ def setup_netboot(
         shutdown_error = None
         if configuration is not None and configuration.changed:
             try:
-                restore_environment(configuration)
+                candidate_ips = (
+                    [ip for ip, _ in client_manager.get_client_info()]
+                    if client_manager is not None else []
+                )
+                restore_environment(configuration, candidate_ips=candidate_ips)
             except (Exception, KeyboardInterrupt) as exc:
                 recovery_backup = (
                     configuration.local_backup_dir or configuration.backup_dir

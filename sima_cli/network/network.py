@@ -64,6 +64,51 @@ def _remove_custom_network_file(iface: str, persistent: bool = False):
         subprocess.run(["sudo", "rm", "--", path], check=True)
 
 
+def _replace_network_file(path: str, content):
+    """Restore a networkd file snapshot, or remove a file that was absent."""
+    if content is None:
+        if os.path.exists(path):
+            subprocess.run(["sudo", "rm", "--", path], check=True)
+        return
+    with tempfile.NamedTemporaryFile(mode="wb") as temp:
+        temp.write(content)
+        temp.flush()
+        subprocess.run(
+            ["sudo", "install", "-D", "-m", "644", temp.name, path],
+            check=True,
+        )
+
+
+def _apply_networkd_custom_profile(iface: str, content: str):
+    """Install and activate a runtime profile transactionally."""
+    runtime_path = _custom_network_file(iface)
+    persistent_path = _custom_network_file(iface, persistent=True)
+    previous = {}
+    for path in (runtime_path, persistent_path):
+        if os.path.exists(path):
+            with open(path, "rb") as source:
+                previous[path] = source.read()
+        else:
+            previous[path] = None
+    install_attempted = False
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".network") as temp:
+            temp.write(content)
+            temp.flush()
+            install_attempted = True
+            subprocess.run(
+                ["sudo", "install", "-D", "-m", "644", temp.name, runtime_path],
+                check=True,
+            )
+        _remove_custom_network_file(iface, persistent=True)
+        subprocess.run(["sudo", "systemctl", "restart", "systemd-networkd"], check=True)
+    except (OSError, subprocess.CalledProcessError):
+        if install_attempted:
+            for path, snapshot in previous.items():
+                _replace_network_file(path, snapshot)
+        raise
+
+
 def _nm_custom_profiles(iface: str):
     """Return owned profile UUIDs, including replacements left after cleanup failure."""
     output = subprocess.check_output(
@@ -217,15 +262,7 @@ def apply_custom_static_ip(iface: str, value: str) -> bool:
             ], check=True)
         else:
             content = _custom_networkd_content(template["content"], address)
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".network") as temp:
-                temp.write(content)
-                temp.flush()
-                subprocess.run(
-                    ["sudo", "install", "-D", "-m", "644", temp.name, _custom_network_file(iface)],
-                    check=True,
-                )
-            _remove_custom_network_file(iface, persistent=True)
-            subprocess.run(["sudo", "systemctl", "restart", "systemd-networkd"], check=True)
+            _apply_networkd_custom_profile(iface, content)
         print(f"✅ Custom static address {address} configured on {iface}.")
         return True
     except (KeyboardInterrupt, EOFError):

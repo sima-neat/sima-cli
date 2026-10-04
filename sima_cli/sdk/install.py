@@ -1119,6 +1119,8 @@ def setup_and_start(
             "the Insight APIs and ports that option turns off."
         )
 
+    skip_insight = no_insight or minimal
+
     if not start_only:
         console.print(Panel("🔧 SiMa.ai SDK Setup", border_style="cyan", expand=False))
         ensure_simasdkbridge_network()
@@ -1137,6 +1139,7 @@ def setup_and_start(
             ensure_colima_resources_for_neat_sdk(
                 yes_to_all=yes_to_all,
                 noninteractive=noninteractive,
+                require_udp=not skip_insight,
             )
             if devkit_ip:
                 warn_if_colima_devkit_network_may_need_bridged(
@@ -1177,7 +1180,6 @@ def setup_and_start(
         persistent_network_profile=persistent_network_profile,
     )
     skip_model_sdk = no_model_sdk or minimal
-    skip_insight = no_insight or minimal
     if (
         insight_video_channels > DEFAULT_INSIGHT_VIDEO_CHANNELS
         and not skip_insight

@@ -1,10 +1,15 @@
 """Match fw_env configuration to the FAT environment supported by U-Boot."""
 
 
-def configure_environment(config_path, boot_dir='/boot', etc_dir='/etc'):
-    """Run after backup: repair redundant files for a single-file FAT loader.
+def configure_environment(
+        config_path, boot_dir='/boot', etc_dir='/etc',
+        target_redundant=None, allow_data_inference=False):
+    """Validate and normalize FAT environment files for the target loader.
 
-    This function is also sent to the DevKit as standalone Python source.
+    This function is also sent to the DevKit as standalone Python source. When
+    ``target_redundant`` is supplied, it is the authoritative target layout;
+    otherwise the bootloader, legacy platform metadata, or explicitly allowed
+    CRC-based inference determines the layout.
     """
     import os
     import re
@@ -14,11 +19,43 @@ def configure_environment(config_path, boot_dir='/boot', etc_dir='/etc'):
     import zlib
 
     boot = Path(boot_dir)
-    if (boot / 'u-boot.bin').is_file():
+    primary = boot / 'uboot.env'
+    secondary = boot / 'uboot-redund.env'
+    size = 0x80000
+
+    def valid(data, header):
+        return len(data) == size and struct.unpack('<I', data[:4])[0] == zlib.crc32(data[header:])
+
+    def replace(path, content):
+        mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+        fd, temporary = tempfile.mkstemp(prefix='.sima-cli-env-', dir=str(boot))
+        try:
+            with os.fdopen(fd, 'wb') as output:
+                output.write(content)
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, mode)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    if target_redundant is not None:
+        redundant = bool(target_redundant)
+    elif (boot / 'u-boot.bin').is_file():
         binary = (boot / 'u-boot.bin').read_bytes()
         if b'uboot.env\0' not in binary:
             raise RuntimeError('Cannot identify the U-Boot FAT environment filename; refusing to guess its format.')
         redundant = b'uboot-redund.env\0' in binary
+    elif allow_data_inference:
+        data = primary.read_bytes()
+        other = secondary.read_bytes() if secondary.exists() else b''
+        if valid(data, 4):
+            redundant = False
+        elif valid(data, 5) or valid(other, 5):
+            redundant = True
+        else:
+            raise RuntimeError('Cannot infer the target U-Boot environment format from its CRC-valid files.')
     else:
         etc = Path(etc_dir)
         builds = '\n'.join(p.read_text() for p in (etc / 'build', etc / 'buildinfo') if p.is_file())
@@ -31,18 +68,20 @@ def configure_environment(config_path, boot_dir='/boot', etc_dir='/etc'):
             raise RuntimeError('Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout.')
         # Legacy 2.1 images omit the binary but declare their redundant FAT layout.
         redundant = True
-    primary = boot / 'uboot.env'
-    secondary = boot / 'uboot-redund.env'
-    size = 0x80000
-
-    def valid(data, header):
-        return len(data) == size and struct.unpack('<I', data[:4])[0] == zlib.crc32(data[header:])
 
     data = primary.read_bytes()
     if redundant:
-        other = secondary.read_bytes()
-        if not (valid(data, 5) or valid(other, 5)):
-            raise RuntimeError('No valid redundant U-Boot environment; refusing to replace it with defaults.')
+        other = secondary.read_bytes() if secondary.exists() else b''
+        if valid(data, 4):
+            if data[-1:] != b'\0':
+                raise RuntimeError('Single-file U-Boot environment has no padding byte for redundant conversion.')
+            payload = data[4:-1]
+            for path, flag in ((primary, 0), (secondary, 1)):
+                converted = struct.pack('<I', zlib.crc32(payload)) + bytes([flag]) + payload
+                replace(path, converted)
+            print('Converted U-Boot environment to the redundant CRC format required by this bootloader.')
+        elif not (valid(data, 5) or valid(other, 5)):
+            raise RuntimeError('No CRC-valid U-Boot environment available for redundant repair.')
         paths = [primary, secondary]
     else:
         if not valid(data, 4):
@@ -61,18 +100,9 @@ def configure_environment(config_path, boot_dir='/boot', etc_dir='/etc'):
                     selected = second
             payload = selected[5:] + b'\0'
             converted = struct.pack('<I', zlib.crc32(payload)) + payload
-            fd, temporary = tempfile.mkstemp(prefix='.sima-cli-env-', dir=str(boot))
-            try:
-                with os.fdopen(fd, 'wb') as output:
-                    output.write(converted)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.chmod(temporary, primary.stat().st_mode & 0o777)
-                os.replace(temporary, primary)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
+            replace(primary, converted)
             print('Converted U-Boot environment to the single-file CRC format required by this bootloader.')
         paths = [primary]
     Path(config_path).write_text(''.join(f'{path} 0x0000 0x80000\n' for path in paths))
     print('U-Boot environment format: ' + ('redundant' if redundant else 'single-file') + '; ' + str(primary))
+    return redundant

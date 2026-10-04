@@ -38,8 +38,15 @@ def parse_state(output):
         fields['next-boot'] = 'A (factory default)'
         fields['validity A'] = fields['validity B'] = 'not recorded'
     lower = output.lower()
-    fields['rollback'] = ('normal' if 'normal boot' in lower else
-                          'rollback' if re.search(r'\brollback\s+boot\b|rollback.*(?:yes|latched)', lower) else 'unknown')
+    rolled_back = re.match(r'(yes|no)\b', fields.get('rolled back', ''), re.I)
+    fields['rolled_back'] = rolled_back.group(1).lower() if rolled_back else 'unknown'
+    # Current simaai-ab-info output can report both "rolled back: yes" and
+    # "boot mode: normal boot".  The explicit rollback latch is authoritative;
+    # boot mode only describes how this invocation started.
+    fields['rollback'] = ('rollback' if fields['rolled_back'] == 'yes' else
+                          'normal' if fields['rolled_back'] == 'no' else
+                          'rollback' if re.search(r'\brollback\s+boot\b|rollback.*(?:yes|latched)', lower) else
+                          'normal' if 'normal boot' in lower else 'unknown')
     return fields
 
 
@@ -86,7 +93,8 @@ def render_state(state):
         ('Control block', 'factory default (uninitialized)' if state.get('factory') else state.get('control block', 'unknown')),
         ('Next boot', state.get('next-boot', 'unknown')),
         ('Upgrade pending', 'not recorded (factory mode)' if state.get('factory') else state.get('upgrade_available', 'unknown')),
-        ('Boot status', state.get('rollback', 'unknown')),
+        ('Boot mode', state.get('boot mode', 'unknown')),
+        ('Rolled back', state.get('rolled_back', 'unknown')),
         ('Boot attempts', state.get('bootcount', 'unknown')),
     ]
     grid = Table.grid(expand=True)
@@ -95,3 +103,9 @@ def render_state(state):
     for label, value in details:
         grid.add_row(label, value)
     console.print(Panel(grid, title='Boot state', width=72))
+    if state.get('rollback') == 'rollback':
+        console.print(Panel(
+            'This board has rolled back and cannot accept an OTA update.\n\n'
+            'Re-flash the board to re-enable A/B updates.',
+            title='Rollback detected', border_style='red', width=72,
+        ))

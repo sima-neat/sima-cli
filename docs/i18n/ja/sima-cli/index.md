@@ -79,9 +79,12 @@ pip install sima-cli
 
 | ガイド | 説明 |
 | --- | --- |
-| [Neat SDK ネットワーク設定](sdk-networking/index.md) | SDK、Docker、Insight、およびDevKitのネットワーク設定について理解しましょう。 |
-| [SDK ネットワークの問題解決](sdk-networking/troubleshooting.md) | ネットワーク診断を実行し、Linux共有ネットワークのルーティングを修復し、サポートに必要な情報を収集します。 |
-| [SDKのネットワーク変更をロールバック](sdk-networking/rollback.md) | プレビューを行い、Linux SDK のネットワーク設定または変更を元に戻します。 |
+| [ブートイメージとネットワークブートの操作](guides/boot-image-and-netboot.md) | `sima-cli bootimg` でローカルまたはダウンロードしたイメージを準備し、リモートネットワークブートを安全に設定し、アドレス変更から復旧し、書き込み用の eMMC を準備します。 |
+| [SDK のセットアップと拡張機能の管理](guides/sdk-setup.md) | `sima-cli sdk setup` の実行時に、任意の SDK サービス、ブラウザー版 VS Code の拡張機能、Model Compiler のインストール元を選択します。 |
+| [システム更新の操作](guides/system-updates.md) | `sima-cli update` で日次ビルド、署名済み eLxr 3.0 SWU バンドル、A/B 検査、ストレージへのステージング、永続オーバーレイの処理を利用します。 |
+| [Neat SDK ネットワーク設定](sdk-networking/index.md) | Neat SDK、別名Neat開発環境は、Dockerコンテナ内で実行されます。`sima-cli sdk setup`は、コンテナを作成し、ホストのワークスペースのマウントを準備し、有効になっている場合はInsightを起動し、ホストのブラウザとDevKitが開発中に使用するコンテナのポートを公開します。 |
+| [SDKネットワークの変更をロールバックする](sdk-networking/rollback.md) | SDK のセットアップまたはネットワークの修復によって行われた Linux ホストのネットワーク変更を検査または元に戻したい場合は、ロールバックを使用してください。 |
+| [SDK ネットワークの問題解決](sdk-networking/troubleshooting.md) | SDKコンテナ、Insight UI、DevKit SSH、RTSP、WebRTCビデオ、またはワークスペースの同期が期待どおりに動作しない場合は、ネットワーク診断ツールを使用してください。 |
 
 ## 最上位レベルのコマンド
 
@@ -105,7 +108,7 @@ pip install sima-cli
 | [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | SiMa SDK 2.0 のコンテナ環境を管理し、ベータ版として公開します。 |
 | [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md) | sima-cli を手動で、PyPI または直接的な wheel URL から更新してください。 |
 | [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md) | DevKit の UART シリアルコンソールに接続します。 |
-| [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md) | SiMa DevKit またはリモートの SiMa デバイスでソフトウェアを更新します。 |
+| [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md) | SiMa DevKit、リモートデバイス、または Linux PCIe ホストを更新します。 |
 
 ## コマンド一覧（完全版）
 

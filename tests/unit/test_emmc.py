@@ -90,3 +90,21 @@ def test_failed_image_write_never_reports_success(capsys):
     assert 'pipefail' in command and 'conv=fsync' in command
     assert run.call_args.kwargs == {'check': True}
     assert 'Flash completed' not in capsys.readouterr().out
+
+
+def test_raw_image_refreshes_partition_table_after_dd(capsys):
+    with patch.object(netboot, '_select_flash_target', return_value='192.0.2.1'), \
+            patch.object(netboot, 'copy_file_to_remote_board', return_value=True), \
+            patch.object(netboot, 'init_ssh_session', return_value=object()), \
+            patch.object(netboot, 'run_remote_command') as run:
+        netboot.flash_emmc(None, ['/images/test.img.gz'])
+
+    refresh = run.call_args_list[2]
+    assert refresh.args[1] == (
+        'sudo blockdev --rereadpt /dev/mmcblk0 && sudo udevadm settle'
+    )
+    assert refresh.kwargs == {
+        'check': True,
+        'command_label': 'Refreshing eMMC partitions',
+    }
+    assert 'Flash completed' in capsys.readouterr().out

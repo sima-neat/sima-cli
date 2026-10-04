@@ -40,6 +40,37 @@ def test_matching_format_is_not_rewritten(tmp_path, redundant):
     assert len(config.read_text().splitlines()) == (2 if redundant else 1)
 
 
+def test_converts_single_file_environment_for_redundant_target(tmp_path):
+    (tmp_path / 'u-boot.bin').write_bytes(b'uboot.env\0uboot-redund.env\0')
+    original = env(b'mmc0')
+    (tmp_path / 'uboot.env').write_bytes(original)
+    (tmp_path / 'uboot-redund.env').write_bytes(b'old')
+    config = tmp_path / 'config'
+
+    assert configure_environment(str(config), str(tmp_path)) is True
+
+    for name in ('uboot.env', 'uboot-redund.env'):
+        converted = (tmp_path / name).read_bytes()
+        assert len(converted) == SIZE
+        assert struct.unpack('<I', converted[:4])[0] == zlib.crc32(converted[5:])
+        assert converted[5:].startswith(b'boot_targets=mmc0\0')
+    assert len(config.read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize('redundant', [False, True])
+def test_infers_offline_target_layout_from_environment_files(tmp_path, redundant):
+    (tmp_path / 'uboot.env').write_bytes(env(b'mmc0', 1 if redundant else None))
+    (tmp_path / 'uboot-redund.env').write_bytes(env(b'mmc0', 0))
+    config = tmp_path / 'config'
+
+    detected = configure_environment(
+        str(config), str(tmp_path), allow_data_inference=True,
+    )
+
+    assert detected is redundant
+    assert len(config.read_text().splitlines()) == (2 if redundant else 1)
+
+
 def test_corrupt_environment_is_not_replaced_with_defaults(tmp_path):
     (tmp_path / 'u-boot.bin').write_bytes(b'uboot.env\0')
     (tmp_path / 'uboot.env').write_bytes(b'broken')

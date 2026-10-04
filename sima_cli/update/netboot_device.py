@@ -192,10 +192,14 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
 def _connect_restoration_target(configuration, candidate_ips=()):
     """Connect to the saved device, allowing its address to change after netboot."""
     expected_address = (configuration.hardware_address or '').strip().lower()
+    # Probe newly observed addresses briefly, then reserve the full reboot wait
+    # for the saved (or discovery-verified) address.
     candidates = []
-    for candidate in (*candidate_ips, configuration.devkit):
-        if candidate and candidate not in candidates:
+    for candidate in candidate_ips:
+        if candidate and candidate != configuration.devkit and candidate not in candidates:
             candidates.append(candidate)
+    if configuration.devkit:
+        candidates.append(configuration.devkit)
 
     reachable_mismatch = None
     for index, candidate in enumerate(candidates):
@@ -204,15 +208,19 @@ def _connect_restoration_target(configuration, candidate_ips=()):
         timeout = 180 if index == len(candidates) - 1 else 10
         if not wait_for_ssh(candidate, timeout=timeout):
             continue
-        ssh = init_ssh_session(candidate)
+        ssh = None
         try:
+            ssh = init_ssh_session(candidate)
             addresses = {
                 line.strip().lower()
                 for line in _checked(ssh, 'cat /sys/class/net/*/address').splitlines()
             }
         except Exception:
-            ssh.close()
-            raise
+            if ssh is not None:
+                ssh.close()
+            # An observed TFTP client can be unrelated or only partially
+            # initialized. Continue until every candidate has been attempted.
+            continue
         if expected_address and expected_address in addresses:
             configuration.devkit = candidate
             return ssh

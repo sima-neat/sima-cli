@@ -442,7 +442,7 @@ def test_restore_uses_verified_observed_address_when_device_ip_changes():
         backup_dir='/boot/backup', changed=True,
     )
     changed = MagicMock()
-    with patch.object(device, 'wait_for_ssh', side_effect=[False, True]) as wait, \
+    with patch.object(device, 'wait_for_ssh', return_value=True) as wait, \
             patch.object(device, 'init_ssh_session', return_value=changed) as connect, \
             patch.object(device, '_checked', side_effect=[
                 '02:00:00:00:00:01', ''
@@ -453,12 +453,51 @@ def test_restore_uses_verified_observed_address_when_device_ip_changes():
 
     assert configuration.devkit == '192.0.2.99'
     assert configuration.changed is False
-    assert wait.call_args_list[0].args == ('192.0.2.1',)
+    assert wait.call_args_list[0].args == ('192.0.2.99',)
     assert wait.call_args_list[0].kwargs == {'timeout': 10}
-    assert wait.call_args_list[1].args == ('192.0.2.99',)
-    assert wait.call_args_list[1].kwargs == {'timeout': 180}
     connect.assert_called_once_with('192.0.2.99')
     changed.close.assert_called_once()
+
+
+def test_restore_continues_after_observed_candidate_probe_failure():
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1', hardware_address='02:00:00:00:00:01',
+        backup_dir='/boot/backup', changed=True,
+    )
+    failed = MagicMock()
+    saved = MagicMock()
+    with patch.object(device, 'wait_for_ssh', return_value=True), \
+            patch.object(device, 'init_ssh_session', side_effect=[failed, saved]) as connect, \
+            patch.object(device, '_checked', side_effect=[
+                OSError('SSH handshake failed'),
+                '02:00:00:00:00:01',
+                '',
+            ]):
+        device.restore_environment(
+            configuration, candidate_ips=['192.0.2.99', '192.0.2.1']
+        )
+
+    assert [call.args[0] for call in connect.call_args_list] == [
+        '192.0.2.99', '192.0.2.1'
+    ]
+    failed.close.assert_called_once()
+    saved.close.assert_called_once()
+
+
+def test_saved_restoration_address_gets_full_reboot_wait():
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1', hardware_address='02:00:00:00:00:01', changed=True,
+    )
+    with patch.object(device, 'wait_for_ssh', return_value=False) as wait:
+        with pytest.raises(click.ClickException, match='verified address'):
+            device._connect_restoration_target(
+                configuration,
+                candidate_ips=['192.0.2.1', '192.0.2.99'],
+            )
+
+    assert [(call.args[0], call.kwargs['timeout']) for call in wait.call_args_list] == [
+        ('192.0.2.99', 10), ('192.0.2.1', 180),
+    ]
 
 
 def test_discovery_updates_cleanup_target_without_flashing(capsys):

@@ -229,7 +229,22 @@ def _colima_status(profile: str) -> dict:
 
 
 def _colima_config_path(profile: str) -> Path:
-    colima_home = Path(os.environ.get("COLIMA_HOME", Path.home() / ".colima"))
+    configured_home = os.environ.get("COLIMA_HOME")
+    configured_path = Path(configured_home).expanduser() if configured_home else None
+    if configured_path and configured_path.exists():
+        colima_home = configured_path
+    else:
+        legacy_home = Path.home() / ".colima"
+        xdg_home = os.environ.get("XDG_CONFIG_HOME")
+        default_xdg_home = Path.home() / ".config" / "colima"
+        if legacy_home.exists():
+            colima_home = legacy_home
+        elif xdg_home:
+            colima_home = Path(xdg_home).expanduser() / "colima"
+        elif default_xdg_home.exists():
+            colima_home = default_xdg_home
+        else:
+            colima_home = legacy_home if platform.system() == "Darwin" else default_xdg_home
     return colima_home / profile / "colima.yaml"
 
 
@@ -256,6 +271,97 @@ def _colima_network_config(profile: str) -> dict:
         "interface": status_network.get("interface", network.get("interface")),
         "ip_address": status.get("ip_address") or status.get("address"),
     }
+
+
+def _colima_port_forwarder(profile: str) -> str:
+    """Return the active profile's effective port forwarder when available."""
+    status = _colima_status(profile)
+    config = _colima_config(profile)
+    for source in (status, config):
+        value = source.get("portForwarder") or source.get("port_forwarder")
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return ""
+
+
+def _ensure_colima_udp_forwarding_for_insight(
+    yes_to_all: bool = False,
+    noninteractive: bool = False,
+) -> bool:
+    profile = _detect_colima_profile()
+    forwarder = _colima_port_forwarder(profile)
+    if forwarder == "grpc":
+        return False
+
+    profile_args = ["--profile", profile]
+    command = (
+        f"colima stop --profile {profile} && "
+        f"colima start --profile {profile} --port-forwarder grpc --save-config"
+    )
+    if not forwarder:
+        raise RuntimeError(
+            "Could not determine Colima's effective port forwarder. Upgrade Colima, then run "
+            f"`{command}`, or rerun setup with --no-insight."
+        )
+
+    reason = (
+        "uses the SSH port forwarder, which supports TCP only"
+        if forwarder == "ssh"
+        else f"uses portForwarder={forwarder}, which is not UDP-capable"
+    )
+    message = "\n".join([
+        f"Colima profile '{profile}' {reason}.",
+        "Insight webcam/WebRTC, UDP video and metadata ingest, and vf WebRTC delivery will not work.",
+        "Restarting Colima interrupts every container in this profile.",
+        "",
+        f"Remediation: {command}",
+        "Or rerun setup with --no-insight (or --minimal).",
+    ])
+    console.print(Panel(
+        message,
+        title="Colima UDP Forwarding Required",
+        border_style="red",
+        expand=False,
+    ))
+
+    if noninteractive:
+        raise RuntimeError(
+            "Insight requires UDP forwarding, but Colima profile "
+            f"'{profile}' uses portForwarder={forwarder}. Run `{command}` or rerun with --no-insight."
+        )
+
+    should_restart = yes_to_all
+    if not should_restart:
+        choice = input(
+            "Restart this Colima profile with the gRPC port forwarder now? [y/N]: "
+        ).strip().lower()
+        should_restart = choice in ("y", "yes")
+    if not should_restart:
+        raise RuntimeError(
+            "Insight setup stopped because Colima UDP forwarding is unavailable. "
+            f"Run `{command}` or rerun with --no-insight."
+        )
+
+    colima_cmd = shutil.which("colima")
+    if not colima_cmd:
+        raise RuntimeError(f"Colima was not found on PATH. Run `{command}` manually.")
+
+    try:
+        subprocess.run([colima_cmd, "stop", *profile_args], check=True)
+        subprocess.run([
+            colima_cmd,
+            "start",
+            *profile_args,
+            "--port-forwarder",
+            "grpc",
+            "--save-config",
+        ], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Could not restart Colima with UDP forwarding. Run `{command}` manually."
+        ) from exc
+    console.print("[green]✅ Colima restarted with UDP-capable gRPC port forwarding.[/green]")
+    return True
 
 
 def _boolish(value: Any) -> bool:
@@ -480,15 +586,27 @@ def _restart_colima_with_resources(profile: str) -> None:
     ], check=True)
 
 
-def ensure_colima_resources_for_neat_sdk(yes_to_all: bool = False, noninteractive: bool = False) -> bool:
+def ensure_colima_resources_for_neat_sdk(
+    yes_to_all: bool = False,
+    noninteractive: bool = False,
+    require_udp: bool = False,
+) -> bool:
     if platform.system() != "Darwin" or not _is_docker_using_colima():
         return False
+
+    udp_restarted = (
+        _ensure_colima_udp_forwarding_for_insight(
+            yes_to_all=yes_to_all,
+            noninteractive=noninteractive,
+        )
+        if require_udp else False
+    )
 
     profile = _detect_colima_profile()
     status = _colima_status(profile)
     if not status:
         console.print("[yellow]⚠️  Could not inspect Colima resources for Neat SDK setup.[/yellow]")
-        return False
+        return udp_restarted
 
     cpus, memory_gb = _parse_colima_status(status)
     if cpus >= NEAT_COLIMA_MIN_CPUS and memory_gb >= NEAT_COLIMA_MIN_MEMORY_GB:
@@ -497,7 +615,7 @@ def ensure_colima_resources_for_neat_sdk(yes_to_all: bool = False, noninteractiv
             f"(Required ≥ {NEAT_COLIMA_MIN_CPUS} CPUs / {NEAT_COLIMA_MIN_MEMORY_GB} GB RAM)",
             style="green",
         )
-        return False
+        return udp_restarted
 
     console.print(
         Panel(
@@ -522,7 +640,7 @@ def ensure_colima_resources_for_neat_sdk(yes_to_all: bool = False, noninteractiv
 
     if not should_restart:
         console.print("[yellow]⚠️  Continuing with current Colima resources. Neat SDK may be unstable or fail to start.[/yellow]")
-        return False
+        return udp_restarted
 
     console.print(
         f"[yellow]⚙️  Restarting Colima with {NEAT_COLIMA_MIN_CPUS} CPUs and "

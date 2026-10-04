@@ -2,7 +2,7 @@
 
 Використовуйте `sima-cli update` для щоденних збірок, підписаних пакетів SWU eLxr 3.0, перевірки A/B, підготовки сховища та обробки постійного накладеного шару.
 
-Довідка команди: [`sima-cli update`](../commands/sima-cli-update.md)
+Довідка команди: [`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
 
 ## Внутрішні щоденні оновлення eLxr 3.0+
 

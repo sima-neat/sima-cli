@@ -38,13 +38,28 @@ class TestSdkPreinstall(unittest.TestCase):
             self.assertEqual(_colima_port_forwarder("default"), "")
 
     def test_colima_udp_check_skips_grpc(self):
-        for forwarder in ("grpc", ""):
-            with self.subTest(forwarder=forwarder), \
-                 patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
-                 patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value=forwarder), \
-                 patch("sima_cli.sdk.preinstall.subprocess.run") as run:
-                self.assertFalse(_ensure_colima_udp_forwarding_for_insight())
-            run.assert_not_called()
+        with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="grpc"), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run:
+            self.assertFalse(_ensure_colima_udp_forwarding_for_insight())
+        run.assert_not_called()
+
+    def test_colima_udp_check_rejects_missing_forwarder(self):
+        with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value=""), \
+             patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            with self.assertRaisesRegex(RuntimeError, "Upgrade Colima"):
+                _ensure_colima_udp_forwarding_for_insight()
+
+    def test_colima_udp_check_can_repair_disabled_forwarding(self):
+        with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="none"), \
+             patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
+             patch("builtins.input", return_value="y"):
+            self.assertTrue(_ensure_colima_udp_forwarding_for_insight())
+
+        self.assertIn("grpc", run.call_args_list[1].args[0])
 
     def test_colima_udp_check_noninteractive_fails_with_remediation(self):
         with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \

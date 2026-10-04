@@ -271,13 +271,25 @@ def _colima_port_forwarder(profile: str) -> str:
 
 def _ensure_colima_udp_forwarding_for_insight(noninteractive: bool = False) -> bool:
     profile = _detect_colima_profile()
-    if _colima_port_forwarder(profile) != "ssh":
+    forwarder = _colima_port_forwarder(profile)
+    if forwarder == "grpc":
         return False
 
     profile_args = ["--profile", profile]
     command = f"colima start --profile {profile} --port-forwarder grpc --save-config"
+    if not forwarder:
+        raise RuntimeError(
+            "Could not determine Colima's effective port forwarder. Upgrade Colima, then run "
+            f"`{command}`, or rerun setup with --no-insight."
+        )
+
+    reason = (
+        "uses the SSH port forwarder, which supports TCP only"
+        if forwarder == "ssh"
+        else f"uses portForwarder={forwarder}, which is not UDP-capable"
+    )
     message = "\n".join([
-        f"Colima profile '{profile}' uses the SSH port forwarder, which supports TCP only.",
+        f"Colima profile '{profile}' {reason}.",
         "Insight webcam/WebRTC, UDP video and metadata ingest, and vf WebRTC delivery will not work.",
         "Restarting Colima interrupts every container in this profile.",
         "",
@@ -294,7 +306,7 @@ def _ensure_colima_udp_forwarding_for_insight(noninteractive: bool = False) -> b
     if noninteractive:
         raise RuntimeError(
             "Insight requires UDP forwarding, but Colima profile "
-            f"'{profile}' uses portForwarder=ssh. Run `{command}` or rerun with --no-insight."
+            f"'{profile}' uses portForwarder={forwarder}. Run `{command}` or rerun with --no-insight."
         )
 
     choice = input("Restart this Colima profile with the gRPC port forwarder now? [y/N]: ").strip().lower()

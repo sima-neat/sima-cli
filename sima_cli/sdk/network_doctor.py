@@ -478,13 +478,18 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
     profile = preinstall._detect_colima_profile()
     network = preinstall._colima_network_config(profile)
     forwarder = preinstall._colima_port_forwarder(profile)
-    if forwarder == "ssh":
+    if forwarder and forwarder != "grpc":
+        reason = (
+            "Colima's SSH port forwarder supports TCP only"
+            if forwarder == "ssh"
+            else f"Colima's '{forwarder}' port forwarder is not UDP-capable"
+        )
         report.add(
             "error",
             "colima-udp-forwarder",
-            "Colima's SSH port forwarder supports TCP only; Insight UDP/WebRTC paths are unavailable.",
+            f"{reason}; Insight UDP/WebRTC paths are unavailable.",
             (
-                f"profile={profile} portForwarder=ssh; affected: webcam/WebRTC, video/metadata UDP ingest, "
+                f"profile={profile} portForwarder={forwarder}; affected: webcam/WebRTC, video/metadata UDP ingest, "
                 "and vf WebRTC delivery. Run: colima stop --profile "
                 f"{profile} && colima start --profile {profile} --port-forwarder grpc --save-config"
             ),

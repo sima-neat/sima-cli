@@ -98,6 +98,32 @@ class TestSdkPreinstall(unittest.TestCase):
 
         self.assertIn("grpc", run.call_args_list[1].args[0])
 
+    def test_colima_udp_check_yes_to_all_repairs_without_prompt(self):
+        with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="ssh"), \
+             patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
+             patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            self.assertTrue(_ensure_colima_udp_forwarding_for_insight(yes_to_all=True))
+
+        self.assertEqual(run.call_count, 2)
+
+    def test_colima_resource_check_forwards_yes_to_udp_repair(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch(
+                 "sima_cli.sdk.preinstall._ensure_colima_udp_forwarding_for_insight",
+                 return_value=True,
+             ) as ensure_udp, \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_status", return_value={"cpu": 8, "memory": 16}):
+            self.assertTrue(ensure_colima_resources_for_neat_sdk(
+                yes_to_all=True,
+                require_udp=True,
+            ))
+
+        ensure_udp.assert_called_once_with(yes_to_all=True, noninteractive=False)
+
     def test_colima_udp_check_noninteractive_fails_with_remediation(self):
         with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
              patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="ssh"), \

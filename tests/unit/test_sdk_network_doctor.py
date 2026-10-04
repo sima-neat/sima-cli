@@ -165,6 +165,21 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
         self.assertIn("webcam/WebRTC", finding.detail)
         self.assertIn("--profile work --port-forwarder grpc", finding.detail)
 
+    def test_report_blocks_explicitly_disabled_colima_forwarder(self):
+        with patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "_is_darwin_host", return_value=True), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="none"), \
+             patch("sima_cli.sdk.preinstall._colima_network_config", return_value={"address": True}), \
+             patch("sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit", return_value=True):
+            report = net.build_network_doctor_report()
+
+        finding = next(f for f in report.findings if f.code == "colima-udp-forwarder")
+        self.assertEqual(finding.severity, "error")
+        self.assertTrue(report.has_errors)
+        self.assertIn("portForwarder=none", finding.detail)
+
     def test_container_default_route_confirmed_from_docker_gateway(self):
         inspect = {
             "NetworkSettings": {

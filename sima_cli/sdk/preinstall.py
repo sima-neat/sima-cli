@@ -284,7 +284,10 @@ def _colima_port_forwarder(profile: str) -> str:
     return ""
 
 
-def _ensure_colima_udp_forwarding_for_insight(noninteractive: bool = False) -> bool:
+def _ensure_colima_udp_forwarding_for_insight(
+    yes_to_all: bool = False,
+    noninteractive: bool = False,
+) -> bool:
     profile = _detect_colima_profile()
     forwarder = _colima_port_forwarder(profile)
     if forwarder == "grpc":
@@ -327,8 +330,13 @@ def _ensure_colima_udp_forwarding_for_insight(noninteractive: bool = False) -> b
             f"'{profile}' uses portForwarder={forwarder}. Run `{command}` or rerun with --no-insight."
         )
 
-    choice = input("Restart this Colima profile with the gRPC port forwarder now? [y/N]: ").strip().lower()
-    if choice not in ("y", "yes"):
+    should_restart = yes_to_all
+    if not should_restart:
+        choice = input(
+            "Restart this Colima profile with the gRPC port forwarder now? [y/N]: "
+        ).strip().lower()
+        should_restart = choice in ("y", "yes")
+    if not should_restart:
         raise RuntimeError(
             "Insight setup stopped because Colima UDP forwarding is unavailable. "
             f"Run `{command}` or rerun with --no-insight."
@@ -587,7 +595,10 @@ def ensure_colima_resources_for_neat_sdk(
         return False
 
     udp_restarted = (
-        _ensure_colima_udp_forwarding_for_insight(noninteractive=noninteractive)
+        _ensure_colima_udp_forwarding_for_insight(
+            yes_to_all=yes_to_all,
+            noninteractive=noninteractive,
+        )
         if require_udp else False
     )
 

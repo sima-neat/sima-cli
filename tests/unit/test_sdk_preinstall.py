@@ -25,17 +25,22 @@ class TestSdkPreinstall(unittest.TestCase):
             home = Path(tmpdir)
             legacy = home / ".colima"
             xdg = home / "xdg"
+            custom = home / "custom"
+            custom.mkdir()
 
             with patch("sima_cli.sdk.preinstall.Path.home", return_value=home), \
-                 patch.dict("os.environ", {"COLIMA_HOME": str(home / "custom")}, clear=True):
+                 patch.dict("os.environ", {"COLIMA_HOME": str(custom)}, clear=True):
                 self.assertEqual(
                     _colima_config_path("work"),
-                    home / "custom" / "work" / "colima.yaml",
+                    custom / "work" / "colima.yaml",
                 )
 
             legacy.mkdir()
             with patch("sima_cli.sdk.preinstall.Path.home", return_value=home), \
-                 patch.dict("os.environ", {"XDG_CONFIG_HOME": str(xdg)}, clear=True):
+                 patch.dict("os.environ", {
+                     "COLIMA_HOME": str(home / "missing"),
+                     "XDG_CONFIG_HOME": str(xdg),
+                 }, clear=True):
                 self.assertEqual(
                     _colima_config_path("work"),
                     legacy / "work" / "colima.yaml",
@@ -97,8 +102,12 @@ class TestSdkPreinstall(unittest.TestCase):
         with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
              patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="ssh"), \
              patch("builtins.input", side_effect=AssertionError("should not prompt")):
-            with self.assertRaisesRegex(RuntimeError, "--port-forwarder grpc"):
+            with self.assertRaises(RuntimeError) as raised:
                 _ensure_colima_udp_forwarding_for_insight(noninteractive=True)
+        self.assertIn(
+            "colima stop --profile work && colima start --profile work --port-forwarder grpc",
+            str(raised.exception),
+        )
 
     def test_colima_udp_check_requires_confirmation_and_preserves_profile(self):
         with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \

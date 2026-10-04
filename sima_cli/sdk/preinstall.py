@@ -230,8 +230,9 @@ def _colima_status(profile: str) -> dict:
 
 def _colima_config_path(profile: str) -> Path:
     configured_home = os.environ.get("COLIMA_HOME")
-    if configured_home:
-        colima_home = Path(configured_home).expanduser()
+    configured_path = Path(configured_home).expanduser() if configured_home else None
+    if configured_path and configured_path.exists():
+        colima_home = configured_path
     else:
         legacy_home = Path.home() / ".colima"
         xdg_home = os.environ.get("XDG_CONFIG_HOME")
@@ -290,7 +291,10 @@ def _ensure_colima_udp_forwarding_for_insight(noninteractive: bool = False) -> b
         return False
 
     profile_args = ["--profile", profile]
-    command = f"colima start --profile {profile} --port-forwarder grpc --save-config"
+    command = (
+        f"colima stop --profile {profile} && "
+        f"colima start --profile {profile} --port-forwarder grpc --save-config"
+    )
     if not forwarder:
         raise RuntimeError(
             "Could not determine Colima's effective port forwarder. Upgrade Colima, then run "

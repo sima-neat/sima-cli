@@ -229,7 +229,21 @@ def _colima_status(profile: str) -> dict:
 
 
 def _colima_config_path(profile: str) -> Path:
-    colima_home = Path(os.environ.get("COLIMA_HOME", Path.home() / ".colima"))
+    configured_home = os.environ.get("COLIMA_HOME")
+    if configured_home:
+        colima_home = Path(configured_home).expanduser()
+    else:
+        legacy_home = Path.home() / ".colima"
+        xdg_home = os.environ.get("XDG_CONFIG_HOME")
+        default_xdg_home = Path.home() / ".config" / "colima"
+        if legacy_home.exists():
+            colima_home = legacy_home
+        elif xdg_home:
+            colima_home = Path(xdg_home).expanduser() / "colima"
+        elif default_xdg_home.exists():
+            colima_home = default_xdg_home
+        else:
+            colima_home = legacy_home if platform.system() == "Darwin" else default_xdg_home
     return colima_home / profile / "colima.yaml"
 
 

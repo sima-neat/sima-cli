@@ -1,9 +1,12 @@
 import unittest
 import types
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sima_cli.sdk.preinstall import (
     _detect_colima_profile,
+    _colima_config_path,
     _colima_port_forwarder,
     _ensure_colima_udp_forwarding_for_insight,
     ensure_colima_resources_for_neat_sdk,
@@ -17,6 +20,35 @@ from sima_cli.sdk.preinstall import (
 
 
 class TestSdkPreinstall(unittest.TestCase):
+    def test_colima_config_path_honors_documented_precedence(self):
+        with TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            legacy = home / ".colima"
+            xdg = home / "xdg"
+
+            with patch("sima_cli.sdk.preinstall.Path.home", return_value=home), \
+                 patch.dict("os.environ", {"COLIMA_HOME": str(home / "custom")}, clear=True):
+                self.assertEqual(
+                    _colima_config_path("work"),
+                    home / "custom" / "work" / "colima.yaml",
+                )
+
+            legacy.mkdir()
+            with patch("sima_cli.sdk.preinstall.Path.home", return_value=home), \
+                 patch.dict("os.environ", {"XDG_CONFIG_HOME": str(xdg)}, clear=True):
+                self.assertEqual(
+                    _colima_config_path("work"),
+                    legacy / "work" / "colima.yaml",
+                )
+
+            legacy.rmdir()
+            with patch("sima_cli.sdk.preinstall.Path.home", return_value=home), \
+                 patch.dict("os.environ", {"XDG_CONFIG_HOME": str(xdg)}, clear=True):
+                self.assertEqual(
+                    _colima_config_path("work"),
+                    xdg / "colima" / "work" / "colima.yaml",
+                )
+
     def test_detects_named_colima_profile_from_active_docker_context(self):
         inspect = '[{"Endpoints":{"docker":{"Host":"unix:///Users/me/.colima/work/docker.sock"}}}]'
         with patch("sima_cli.sdk.preinstall.subprocess.check_output", return_value=inspect):

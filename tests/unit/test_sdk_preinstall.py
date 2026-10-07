@@ -20,6 +20,7 @@ from sima_cli.sdk.preinstall import (
     check_rosetta_and_firewall,
     check_cpu_ram,
     _parse_colima_status,
+    _prompt_colima_resource_targets,
     warn_if_colima_devkit_network_may_need_bridged,
 )
 
@@ -336,6 +337,7 @@ class TestSdkPreinstall(unittest.TestCase):
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
              patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
              patch("sima_cli.sdk.preinstall._colima_status", return_value={"cpu": 2, "memory": 4294967296}), \
+             patch("sima_cli.sdk.preinstall._host_colima_resource_limits", return_value=(32, 64)), \
              patch("sima_cli.sdk.preinstall._restart_colima_with_resources") as restart, \
              patch("builtins.input", side_effect=["", "", "n"]):
             restarted = ensure_colima_resources_for_neat_sdk()
@@ -360,12 +362,22 @@ class TestSdkPreinstall(unittest.TestCase):
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
              patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
              patch("sima_cli.sdk.preinstall._colima_status", return_value={"cpu": 2, "memory": 2147483648}), \
+             patch("sima_cli.sdk.preinstall._host_colima_resource_limits", return_value=(32, 64)), \
              patch("sima_cli.sdk.preinstall._restart_colima_with_resources") as restart, \
              patch("builtins.input", side_effect=["12", "24", ""]):
             restarted = ensure_colima_resources_for_neat_sdk()
 
         self.assertTrue(restarted)
         restart.assert_called_once_with("default", 12, 24.0)
+
+    def test_colima_resource_prompt_rejects_values_above_host_capacity(self):
+        with patch(
+            "sima_cli.sdk.preinstall._host_colima_resource_limits",
+            return_value=(8, 16),
+        ), patch("builtins.input", side_effect=["9", "8", "17", "16"]):
+            targets = _prompt_colima_resource_targets(2, 2)
+
+        self.assertEqual(targets, (8, 16.0))
 
     def test_colima_devkit_network_warning_skips_when_bridged_address_enabled(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
@@ -607,6 +619,7 @@ class TestSdkPreinstall(unittest.TestCase):
              patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="en7"), \
              patch("sima_cli.sdk.preinstall._colima_supports_network_address_flag", return_value=True), \
              patch("sima_cli.sdk.preinstall._colima_supports_bridged_network_flags", return_value=True), \
+             patch("sima_cli.sdk.preinstall._host_colima_resource_limits", return_value=(32, 64)), \
              patch("sima_cli.sdk.preinstall._colima_profile_recreation_safety", return_value=(True, "")), \
              patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
              patch(

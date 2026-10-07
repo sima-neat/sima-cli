@@ -400,31 +400,60 @@ def _is_colima_network_suitable_for_devkit(
     )
 
 
+def _host_colima_resource_limits() -> tuple:
+    """Return the host CPU count and whole GiB available to Colima."""
+    import psutil
+
+    max_cpus = psutil.cpu_count(logical=True) or os.cpu_count() or 0
+    max_memory = int(psutil.virtual_memory().total // (1024 ** 3))
+    return max_cpus, max_memory
+
+
 def _prompt_colima_resource_targets(cpus: int, memory_gb: float) -> tuple:
     """Prompt for valid Colima resources, using Neat minimums as defaults."""
-    default_cpus = max(cpus, NEAT_COLIMA_MIN_CPUS)
-    default_memory = max(memory_gb, float(NEAT_COLIMA_MIN_MEMORY_GB))
+    max_cpus, max_memory = _host_colima_resource_limits()
+    if max_cpus < NEAT_COLIMA_MIN_CPUS or max_memory < NEAT_COLIMA_MIN_MEMORY_GB:
+        raise RuntimeError(
+            "The host does not have enough CPU or memory for the Neat SDK: "
+            f"found {max_cpus} CPUs / {max_memory} GB RAM, required at least "
+            f"{NEAT_COLIMA_MIN_CPUS} CPUs / {NEAT_COLIMA_MIN_MEMORY_GB} GB RAM."
+        )
+
+    default_cpus = min(max(cpus, NEAT_COLIMA_MIN_CPUS), max_cpus)
+    default_memory = min(
+        max(memory_gb, float(NEAT_COLIMA_MIN_MEMORY_GB)),
+        float(max_memory),
+    )
 
     while True:
-        raw_cpus = input(f"Colima CPU count [{default_cpus}]: ").strip()
+        raw_cpus = input(
+            f"Colima CPU count [{default_cpus}] "
+            f"({NEAT_COLIMA_MIN_CPUS}-{max_cpus}): "
+        ).strip()
         try:
             target_cpus = int(raw_cpus) if raw_cpus else default_cpus
         except ValueError:
             target_cpus = 0
-        if target_cpus >= NEAT_COLIMA_MIN_CPUS:
+        if NEAT_COLIMA_MIN_CPUS <= target_cpus <= max_cpus:
             break
-        console.print(f"[yellow]Enter at least {NEAT_COLIMA_MIN_CPUS} CPUs.[/yellow]")
+        console.print(
+            f"[yellow]Enter between {NEAT_COLIMA_MIN_CPUS} and {max_cpus} CPUs.[/yellow]"
+        )
 
     while True:
-        raw_memory = input(f"Colima memory in GB [{default_memory:g}]: ").strip()
+        raw_memory = input(
+            f"Colima memory in GB [{default_memory:g}] "
+            f"({NEAT_COLIMA_MIN_MEMORY_GB}-{max_memory}): "
+        ).strip()
         try:
             target_memory = float(raw_memory) if raw_memory else default_memory
         except ValueError:
             target_memory = 0
-        if target_memory >= NEAT_COLIMA_MIN_MEMORY_GB:
+        if NEAT_COLIMA_MIN_MEMORY_GB <= target_memory <= max_memory:
             break
         console.print(
-            f"[yellow]Enter at least {NEAT_COLIMA_MIN_MEMORY_GB} GB of memory.[/yellow]"
+            f"[yellow]Enter between {NEAT_COLIMA_MIN_MEMORY_GB} and "
+            f"{max_memory} GB of memory.[/yellow]"
         )
 
     return target_cpus, target_memory

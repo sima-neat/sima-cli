@@ -26,6 +26,7 @@ from sima_cli.sdk.container_registry import (
     ensure_container_registry,
     existing_container_registry_port,
     find_available_container_registry_port,
+    resolve_container_registry_bind_ip,
 )
 from sima_cli.sdk.linux_shared_network import (
     configure_linux_shared_devkit_network,
@@ -800,8 +801,11 @@ def _setup_devkit_container_registry(
             )
             return devkit_env
 
+    registry_bind_ip = resolve_container_registry_bind_ip(
+        str(devkit_env.get("host_ip", ""))
+    )
     config = ensure_container_registry(
-        str(devkit_env.get("host_ip", "")),
+        registry_bind_ip,
         requested_port=int(selected_port),
     )
     updated = dict(devkit_env)

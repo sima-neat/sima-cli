@@ -1,3 +1,5 @@
+import ipaddress
+import platform
 import socket
 import subprocess
 import time
@@ -12,6 +14,7 @@ REGISTRY_IMAGE = "registry:2"
 REGISTRY_MANAGED_LABEL = "com.sima.sdk.service"
 REGISTRY_MANAGED_VALUE = "container-registry"
 REGISTRY_PORT_LABEL = "com.sima.sdk.registry.port"
+REGISTRY_BIND_IP_LABEL = "com.sima.sdk.registry.bind-ip"
 REGISTRY_VOLUME_NAME = "sima-sdk-registry-data"
 DEFAULT_REGISTRY_PORT = 5050
 REGISTRY_READY_ATTEMPTS = 20
@@ -33,6 +36,7 @@ def _inspect_registry() -> Optional[dict]:
             "--format",
             "{{index .Config.Labels \"com.sima.sdk.service\"}}|"
             "{{index .Config.Labels \"com.sima.sdk.registry.port\"}}|"
+            "{{index .Config.Labels \"com.sima.sdk.registry.bind-ip\"}}|"
             "{{.State.Running}}",
             REGISTRY_CONTAINER_NAME,
         ],
@@ -43,13 +47,13 @@ def _inspect_registry() -> Optional[dict]:
     if result.returncode != 0:
         return None
 
-    parts = result.stdout.strip().split("|", 2)
-    if len(parts) != 3:
+    parts = result.stdout.strip().split("|", 3)
+    if len(parts) != 4:
         raise RuntimeError(
             "The existing local registry has invalid setup information. "
             "Remove it or choose a different container name."
         )
-    managed_value, port_text, running_text = parts
+    managed_value, port_text, bind_ip, running_text = parts
     if managed_value != REGISTRY_MANAGED_VALUE:
         raise RuntimeError(
             f"A Docker container named '{REGISTRY_CONTAINER_NAME}' already exists, but it was not "
@@ -62,12 +66,46 @@ def _inspect_registry() -> Optional[dict]:
             "The existing local registry does not record a valid port. "
             "Remove it and run SDK setup again."
         ) from exc
-    return {"port": port, "running": running_text.lower() == "true"}
+    return {
+        "port": port,
+        "bind_ip": bind_ip if bind_ip not in ("", "<no value>") else None,
+        "running": running_text.lower() == "true",
+    }
 
 
 def existing_container_registry_port() -> Optional[int]:
     existing = _inspect_registry()
     return int(existing["port"]) if existing else None
+
+
+def resolve_container_registry_bind_ip(host_ip: str) -> str:
+    """Return the Docker-host address on the DevKit-facing network path."""
+    if platform.system() != "Darwin":
+        return host_ip
+
+    # Colima's Docker daemon runs in a VM and cannot publish a port directly on
+    # a macOS interface address. With reachable networking enabled, its own VM
+    # address is the scoped endpoint that the DevKit can access.
+    from sima_cli.sdk.preinstall import (
+        _boolish,
+        _colima_network_config,
+        _detect_colima_profile,
+        _is_docker_using_colima,
+    )
+
+    if not _is_docker_using_colima():
+        return host_ip
+
+    profile = _detect_colima_profile()
+    network = _colima_network_config(profile)
+    bind_ip = str(network.get("ip_address") or "").strip()
+    if not _boolish(network.get("address")) or not bind_ip:
+        raise RuntimeError(
+            "The local registry needs a reachable Colima network address so it can be limited "
+            "to the DevKit-facing path. Rerun SDK setup and allow sima-cli to restart Colima "
+            "with reachable networking."
+        )
+    return bind_ip
 
 
 def _host_port_is_available(port: int) -> bool:
@@ -124,6 +162,14 @@ def _wait_for_registry(port: int) -> None:
 def ensure_container_registry(host_ip: str, requested_port: Optional[int] = None) -> ContainerRegistryConfig:
     if not host_ip:
         raise RuntimeError("Could not determine the SDK host address for the DevKit registry.")
+    try:
+        parsed_host_ip = ipaddress.ip_address(host_ip)
+    except ValueError as exc:
+        raise RuntimeError(f"The DevKit-facing registry address is not a valid IP address: {host_ip}") from exc
+    if parsed_host_ip.version != 4 or parsed_host_ip.is_unspecified:
+        raise RuntimeError(
+            "The DevKit-facing registry address must be a specific IPv4 address."
+        )
 
     existing = _inspect_registry()
     port = requested_port or (
@@ -132,12 +178,18 @@ def ensure_container_registry(host_ip: str, requested_port: Optional[int] = None
     if not 1 <= port <= 65535:
         raise RuntimeError("The container registry port must be between 1 and 65535.")
 
-    if existing and int(existing["port"]) != port:
-        _require_available_host_port(port)
-        print(
-            f"ℹ️  Changing the local container registry port from {existing['port']} to {port}. "
-            "Stored images will be kept."
-        )
+    port_changed = bool(existing and int(existing["port"]) != port)
+    bind_ip_changed = bool(existing and existing.get("bind_ip") != host_ip)
+    if existing and (port_changed or bind_ip_changed):
+        if port_changed:
+            _require_available_host_port(port)
+        if port_changed and bind_ip_changed:
+            change = f"port to {port} and DevKit-facing address to {host_ip}"
+        elif port_changed:
+            change = f"port from {existing['port']} to {port}"
+        else:
+            change = f"DevKit-facing address to {host_ip}"
+        print(f"ℹ️  Changing the local container registry {change}. Stored images will be kept.")
         subprocess.run(
             ["docker", "rm", "-f", REGISTRY_CONTAINER_NAME],
             text=True,
@@ -181,8 +233,11 @@ def ensure_container_registry(host_ip: str, requested_port: Optional[int] = None
                 f"{REGISTRY_MANAGED_LABEL}={REGISTRY_MANAGED_VALUE}",
                 "--label",
                 f"{REGISTRY_PORT_LABEL}={port}",
+                "--label",
+                f"{REGISTRY_BIND_IP_LABEL}={host_ip}",
                 "-p",
-                f"{port}:5000",
+                f"127.0.0.1:{port}:5000",
+                *([] if host_ip == "127.0.0.1" else ["-p", f"{host_ip}:{port}:5000"]),
                 "-v",
                 f"{REGISTRY_VOLUME_NAME}:/var/lib/registry",
                 REGISTRY_IMAGE,
@@ -208,6 +263,7 @@ def ensure_container_registry(host_ip: str, requested_port: Optional[int] = None
     devkit_address = f"{host_ip}:{port}"
     print(f"✅ The SDK can push container images to {sdk_address}.")
     print(f"✅ The DevKit can pull the same images from {devkit_address}.")
+    print("ℹ️  The registry is available only on this computer and the DevKit-facing network path.")
     print(
         "ℹ️  Inside the SDK, add --push and tag the image as "
         f"{sdk_address}/<image>:<tag>."

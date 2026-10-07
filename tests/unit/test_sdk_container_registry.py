@@ -10,6 +10,7 @@ from sima_cli.sdk.container_registry import (
     _require_available_host_port,
     ensure_container_registry,
     find_available_container_registry_port,
+    resolve_container_registry_bind_ip,
 )
 from sima_cli.sdk.install import _setup_devkit_container_registry
 from sima_cli.sdk.utils import (
@@ -55,7 +56,9 @@ class TestSdkContainerRegistry(unittest.TestCase):
         commands = [item.args[0] for item in run.call_args_list]
         self.assertIn(["docker", "volume", "create", REGISTRY_VOLUME_NAME], commands)
         registry_run = next(command for command in commands if command[:3] == ["docker", "run", "-d"])
-        self.assertIn("5000:5000", registry_run)
+        self.assertIn("127.0.0.1:5000:5000", registry_run)
+        self.assertIn("10.42.0.1:5000:5000", registry_run)
+        self.assertNotIn("5000:5000", registry_run)
         self.assertIn(f"{REGISTRY_VOLUME_NAME}:/var/lib/registry", registry_run)
         port_check.assert_called_once_with(5000)
         wait.assert_called_once_with(5000)
@@ -63,7 +66,7 @@ class TestSdkContainerRegistry(unittest.TestCase):
     def test_reuses_running_registry(self):
         with patch(
             "sima_cli.sdk.container_registry._inspect_registry",
-            return_value={"port": 5000, "running": True},
+            return_value={"port": 5000, "bind_ip": "10.42.0.1", "running": True},
         ), patch("sima_cli.sdk.container_registry._wait_for_registry") as wait, \
              patch("sima_cli.sdk.container_registry.subprocess.run") as run:
             config = ensure_container_registry("10.42.0.1")
@@ -76,7 +79,7 @@ class TestSdkContainerRegistry(unittest.TestCase):
         completed = Mock(returncode=0, stdout="registry-id\n", stderr="")
         with patch(
             "sima_cli.sdk.container_registry._inspect_registry",
-            return_value={"port": 5000, "running": True},
+            return_value={"port": 5000, "bind_ip": "10.42.0.1", "running": True},
         ), patch("sima_cli.sdk.container_registry._require_available_host_port") as port_check, \
              patch("sima_cli.sdk.container_registry._wait_for_registry"), \
              patch("sima_cli.sdk.container_registry.subprocess.run", return_value=completed) as run:
@@ -87,6 +90,36 @@ class TestSdkContainerRegistry(unittest.TestCase):
         self.assertIn(["docker", "rm", "-f", REGISTRY_CONTAINER_NAME], commands)
         self.assertFalse(any(command[:3] == ["docker", "volume", "rm"] for command in commands))
         port_check.assert_any_call(5050)
+
+    def test_reconfigures_legacy_all_interface_registry_without_deleting_volume(self):
+        completed = Mock(returncode=0, stdout="registry-id\n", stderr="")
+        with patch(
+            "sima_cli.sdk.container_registry._inspect_registry",
+            return_value={"port": 5050, "bind_ip": None, "running": True},
+        ), patch("sima_cli.sdk.container_registry._require_available_host_port"), \
+             patch("sima_cli.sdk.container_registry._wait_for_registry"), \
+             patch("sima_cli.sdk.container_registry.subprocess.run", return_value=completed) as run:
+            ensure_container_registry("10.42.0.1", requested_port=5050)
+
+        commands = [item.args[0] for item in run.call_args_list]
+        self.assertIn(["docker", "rm", "-f", REGISTRY_CONTAINER_NAME], commands)
+        registry_run = next(command for command in commands if command[:3] == ["docker", "run", "-d"])
+        self.assertIn("127.0.0.1:5050:5000", registry_run)
+        self.assertIn("10.42.0.1:5050:5000", registry_run)
+        self.assertFalse(any(command[:3] == ["docker", "volume", "rm"] for command in commands))
+
+    def test_colima_uses_reachable_vm_address_for_devkit_binding(self):
+        with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": True, "ip_address": "10.42.0.10"},
+             ):
+            self.assertEqual(
+                resolve_container_registry_bind_ip("10.42.0.1"),
+                "10.42.0.10",
+            )
 
     def test_setup_can_skip_registry(self):
         devkit_env = {"host_ip": "10.42.0.1", "devkit_ip": "10.42.0.2"}
@@ -109,6 +142,7 @@ class TestSdkContainerRegistry(unittest.TestCase):
         )
         with patch("sima_cli.sdk.install.existing_container_registry_port", return_value=None), \
              patch("sima_cli.sdk.install.find_available_container_registry_port", return_value=5052) as select_port, \
+             patch("sima_cli.sdk.install.resolve_container_registry_bind_ip", return_value="10.42.0.1") as bind_ip, \
              patch("sima_cli.sdk.install.ensure_container_registry", return_value=config) as ensure:
             result = _setup_devkit_container_registry(
                 devkit_env,
@@ -116,6 +150,7 @@ class TestSdkContainerRegistry(unittest.TestCase):
             )
 
         select_port.assert_called_once_with()
+        bind_ip.assert_called_once_with("10.42.0.1")
         ensure.assert_called_once_with("10.42.0.1", requested_port=5052)
         self.assertEqual(result["container_registry_sdk_address"], "localhost:5052")
         self.assertEqual(result["container_registry_devkit_address"], "10.42.0.1:5052")

@@ -46,6 +46,8 @@ without explicitly refreshing it first.
 
 The registry uses HTTP on the local development network. sima-cli updates the
 DevKit Docker settings and restarts Docker once when this setting changes.
+It exposes the registry only on loopback for SDK use and on the DevKit-facing
+network path; it does not publish the registry on every host interface.
 
 Use `--no-container-registry` to skip this step. It does not stop or remove an
 existing registry. To select a different port, run setup again with

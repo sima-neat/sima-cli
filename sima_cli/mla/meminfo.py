@@ -18,6 +18,9 @@ _LEGACY_TOTAL_RE = re.compile(
     r"Total allocated size:\s+0x([0-9a-fA-F]+)", re.IGNORECASE
 )
 _DMA_BUF_HEADER_RE = re.compile(r"\bsize\b.*\bexp_name\b.*\bino\b")
+_DMA_BUF_SUMMARY_RE = re.compile(
+    r"^\s*Total\s+(\d+)\s+objects?,\s+\d+\s+bytes\s*$"
+)
 _DMA_BUF_OBJECT_RE = re.compile(
     r"^\s*(\d+)\s+"  # size (decimal, zero padded)
     r"[0-9a-fA-F]+\s+"  # flags
@@ -66,6 +69,14 @@ def parse_dma_buf_objects(output: str) -> List[DmaBufObject]:
     lines = output.splitlines()
     if not any(_DMA_BUF_HEADER_RE.search(line) for line in lines):
         raise ValueError("missing DMA-BUF object header")
+    summary_counts = [
+        int(match.group(1), 10)
+        for line in lines
+        for match in [_DMA_BUF_SUMMARY_RE.match(line)]
+        if match
+    ]
+    if len(summary_counts) != 1:
+        raise ValueError("missing or ambiguous DMA-BUF object summary")
 
     objects = []  # type: List[DmaBufObject]
     current_size = None  # type: Optional[int]
@@ -115,6 +126,12 @@ def parse_dma_buf_objects(output: str) -> List[DmaBufObject]:
             current_devices.append(stripped)
 
     finish_current()
+    if len(objects) != summary_counts[0]:
+        raise ValueError(
+            "DMA-BUF object count mismatch: summary reports {}, parsed {}".format(
+                summary_counts[0], len(objects)
+            )
+        )
     return objects
 
 
@@ -224,11 +241,7 @@ def chart_limits_mib(values: Sequence[float]) -> Tuple[float, float]:
 
 def monitor_simaai_mem_chart(sample_interval_sec=5, max_samples=100):
     sizes = []
-    try:
-        source = detect_memory_source()
-    except MemoryTelemetryError as exc:
-        print("Error: {}".format(exc))
-        return False
+    source = detect_memory_source()
 
     print("MLA memory telemetry source: {}".format(source.name))
     print("Monitoring MLA memory usage... (Press 'q' or Ctrl+C to quit)")
@@ -241,11 +254,7 @@ def monitor_simaai_mem_chart(sample_interval_sec=5, max_samples=100):
                     print("\nExiting memory monitor...")
                     break
 
-            try:
-                size_bytes = read_mla_memory_bytes(source)
-            except MemoryTelemetryError as exc:
-                print("Error: {}".format(exc))
-                return False
+            size_bytes = read_mla_memory_bytes(source)
 
             sizes.append(size_bytes / (1024 * 1024))
             sizes = sizes[-max_samples:]

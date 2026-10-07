@@ -2,6 +2,9 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
+from click.testing import CliRunner
+
+from sima_cli.cli import show_mla_memory_usage
 from sima_cli.mla.meminfo import (
     DMA_BUFINFO_PATH,
     LEGACY_MEMORY_PATH,
@@ -84,6 +87,26 @@ Total 0 objects, 0 bytes
         with self.assertRaisesRegex(ValueError, "missing DMA-BUF"):
             parse_dma_buf_objects("permission denied")
 
+    def test_dma_buf_parser_rejects_unparsed_objects(self):
+        fixture = """
+Dma-buf Objects:
+size    flags    mode    count   exp_name    ino     name
+truncated object row
+
+Total 1 objects, 4096 bytes
+"""
+        with self.assertRaisesRegex(ValueError, "object count mismatch"):
+            parse_dma_buf_objects(fixture)
+
+    def test_dma_buf_parser_rejects_missing_summary(self):
+        fixture = """
+Dma-buf Objects:
+size    flags    mode    count   exp_name    ino     name
+00004096 00000002 02080007 00000002 mla 00000014 weights
+"""
+        with self.assertRaisesRegex(ValueError, "object summary"):
+            parse_dma_buf_objects(fixture)
+
     def test_detects_dma_buf_backend_from_3_0_heap(self):
         existing = {MLA_DMA_HEAP_PATH, LEGACY_MEMORY_PATH}
         source = detect_memory_source(existing.__contains__)
@@ -120,6 +143,16 @@ Total 0 objects, 0 bytes
         low, high = chart_limits_mib([10.0, 20.0])
         self.assertLessEqual(low, 10.0)
         self.assertGreaterEqual(high, 20.0)
+
+    def test_click_command_exits_nonzero_on_telemetry_failure(self):
+        failure = MemoryTelemetryError("debugfs telemetry is unavailable")
+        with patch(
+            "sima_cli.cli.monitor_simaai_mem_chart", side_effect=failure
+        ):
+            result = CliRunner().invoke(show_mla_memory_usage)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("Error: debugfs telemetry is unavailable", result.output)
 
 
 if __name__ == "__main__":

@@ -516,11 +516,15 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
     )
     if report.devkit_ip:
         route_interface = preinstall._route_interface_for_target(report.devkit_ip)
-        expected_interface = (
-            route_interface
-            if preinstall._is_safe_colima_bridge_interface(route_interface)
-            else "en0"
-        )
+        if not preinstall._is_safe_colima_bridge_interface(route_interface):
+            report.add(
+                "error",
+                "colima-bridge-route-unsafe",
+                "The DevKit route does not use a physical interface that Colima can bridge safely.",
+                f"routeInterface={route_interface or 'unresolved'}; connect the DevKit through a physical LAN interface",
+            )
+            return
+        expected_interface = route_interface
     else:
         expected_interface = ""
     if preinstall._is_colima_network_suitable_for_devkit(profile, expected_interface):

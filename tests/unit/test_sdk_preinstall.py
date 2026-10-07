@@ -562,9 +562,9 @@ class TestSdkPreinstall(unittest.TestCase):
              patch("sima_cli.sdk.preinstall._restore_colima_profile_config"), \
              patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
              patch("builtins.input", return_value="y"):
-            restarted = warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
+            with self.assertRaisesRegex(RuntimeError, "did not report"):
+                warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
 
-        self.assertFalse(restarted)
         self.assertEqual(run.call_args_list[1].args[0], ["/opt/homebrew/bin/colima", "delete", "--force"])
 
     def test_colima_devkit_network_warning_restarts_with_detected_interface(self):

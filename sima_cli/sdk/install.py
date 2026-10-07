@@ -802,7 +802,8 @@ def _setup_devkit_container_registry(
             return devkit_env
 
     registry_bind_ip = resolve_container_registry_bind_ip(
-        str(devkit_env.get("host_ip", ""))
+        str(devkit_env.get("host_ip", "")),
+        str(devkit_env.get("devkit_ip", "")),
     )
     config = ensure_container_registry(
         registry_bind_ip,

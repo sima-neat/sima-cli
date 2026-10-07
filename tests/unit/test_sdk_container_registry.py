@@ -114,12 +114,25 @@ class TestSdkContainerRegistry(unittest.TestCase):
              patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
              patch(
                  "sima_cli.sdk.preinstall._colima_network_config",
-                 return_value={"address": True, "mode": "bridged", "ip_address": "10.42.0.10"},
-             ):
+                 return_value={"address": True, "mode": "bridged", "interface": "en7", "ip_address": "10.42.0.10"},
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="en7"):
             self.assertEqual(
-                resolve_container_registry_bind_ip("10.42.0.1"),
+                resolve_container_registry_bind_ip("10.42.0.1", "10.42.0.2"),
                 "10.42.0.10",
             )
+
+    def test_colima_rejects_bridge_on_wrong_devkit_interface(self):
+        with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": True, "mode": "bridged", "interface": "en0", "ip_address": "10.42.0.10"},
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="en7"), \
+             self.assertRaisesRegex(RuntimeError, "bridged to en0"):
+            resolve_container_registry_bind_ip("10.42.0.1", "10.42.0.2")
 
     def test_colima_rejects_shared_vm_address_for_devkit_binding(self):
         with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
@@ -160,7 +173,7 @@ class TestSdkContainerRegistry(unittest.TestCase):
             )
 
         select_port.assert_called_once_with()
-        bind_ip.assert_called_once_with("10.42.0.1")
+        bind_ip.assert_called_once_with("10.42.0.1", "10.42.0.2")
         ensure.assert_called_once_with("10.42.0.1", requested_port=5052)
         self.assertEqual(result["container_registry_sdk_address"], "localhost:5052")
         self.assertEqual(result["container_registry_devkit_address"], "10.42.0.1:5052")

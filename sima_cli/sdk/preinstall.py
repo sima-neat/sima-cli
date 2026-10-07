@@ -681,8 +681,10 @@ def warn_if_colima_devkit_network_may_need_bridged(
         return False
 
     config_restored = False
+    recreation_started = False
     try:
         subprocess.run([colima_cmd, "stop", *profile_args], check=True)
+        recreation_started = True
         subprocess.run([colima_cmd, "delete", *profile_args, "--force"], check=True)
         _restore_colima_profile_config(
             config_path,
@@ -704,6 +706,8 @@ def warn_if_colima_devkit_network_may_need_bridged(
             "[yellow]⚠️  Could not recreate Colima with bridged networking automatically: "
             f"{exc}\nFix the reported problem, then rerun SDK setup.[/yellow]"
         )
+        if recreation_started:
+            raise
         return False
     finally:
         if config_restored:

@@ -179,6 +179,25 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
         self.assertIn("sima-cli sdk setup --devkit 10.0.0.244", finding.detail)
         self.assertNotIn("colima start", finding.detail)
 
+    def test_report_rejects_unsafe_colima_route_on_macos(self):
+        with patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "_is_darwin_host", return_value=True), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="grpc"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": True, "mode": "bridged", "interface": "en0", "ip_address": "10.0.0.211"},
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun7"), \
+             patch("sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit") as suitable:
+            report = net.build_network_doctor_report(devkit_ip="10.0.0.244")
+
+        finding = next(f for f in report.findings if f.code == "colima-bridge-route-unsafe")
+        self.assertEqual(finding.severity, "error")
+        self.assertIn("utun7", finding.detail)
+        suitable.assert_not_called()
+
     def test_report_blocks_colima_ssh_forwarder_for_insight_udp(self):
         with patch.object(net, "_is_linux_host", return_value=False), \
              patch.object(net, "_is_darwin_host", return_value=True), \

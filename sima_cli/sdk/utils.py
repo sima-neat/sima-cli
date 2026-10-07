@@ -2461,123 +2461,6 @@ def bootstrap_devkit_container(container_name: str, devkit_env: dict):
         default=True,
     )
     registry_devkit_address = str(devkit_env.get("container_registry_devkit_address", ""))
-    docker_setup = ""
-    if registry_devkit_address:
-        docker_setup = f"""
-DOCKER_STATUS=not_checked
-if [ "${{SRC_RC:-1}}" -ne 0 ]; then
-  DOCKER_STATUS=blocked
-elif ssh -T -p "${{DEVKIT_SYNC_DEVKIT_PORT:-22}}" -o BatchMode=yes -o ConnectTimeout=8 \
-    "${{DEVKIT_SYNC_DEVKIT_USER:-sima}}@${{DEVKIT_SYNC_DEVKIT_IP:-{shlex.quote(devkit_ip)}}}" \
-    'command -v docker >/dev/null 2>&1'; then
-  DOCKER_STATUS=ready
-else
-  DOCKER_PROBE_RC=$?
-  if [ "$DOCKER_PROBE_RC" -eq 1 ]; then
-    DOCKER_STATUS=missing
-    echo "Docker is not installed on the DevKit. It was not changed during SDK setup."
-    echo "The first 'dk container' command will offer to install and configure it."
-  else
-    DOCKER_STATUS=blocked
-    BOOTSTRAP_RC=1
-    if [ "$DOCKER_PROBE_RC" -eq 255 ]; then
-      echo "Could not connect to the DevKit over SSH while checking for Docker." >&2
-    else
-      echo "The DevKit Docker check failed with status $DOCKER_PROBE_RC." >&2
-    fi
-  fi
-fi
-"""
-
-    registry_setup = ""
-    if registry_devkit_address:
-        registry_setup = f"""
-REGISTRY_STATUS=not_started
-if [ "${{SRC_RC:-1}}" -ne 0 ] || [ "${{DOCKER_STATUS:-blocked}}" = blocked ]; then
-  REGISTRY_STATUS=blocked
-  BOOTSTRAP_RC=1
-elif [ "${{DOCKER_STATUS:-missing}}" = missing ]; then
-  REGISTRY_STATUS=skipped_no_docker
-elif [ "${{DOCKER_STATUS:-blocked}}" != ready ]; then
-  REGISTRY_STATUS=blocked
-  BOOTSTRAP_RC=1
-else
-  echo "Setting up the DevKit so it can download images from {registry_devkit_address}."
-  if ssh -T -p "${{DEVKIT_SYNC_DEVKIT_PORT:-22}}" -o BatchMode=yes -o ConnectTimeout=8 \
-      "${{DEVKIT_SYNC_DEVKIT_USER:-sima}}@${{DEVKIT_SYNC_DEVKIT_IP:-{shlex.quote(devkit_ip)}}}" \
-      bash -s -- {shlex.quote(registry_devkit_address)} <<'SIMA_REGISTRY_REMOTE'
-set -e
-registry="$1"
-
-python3 - "$registry" <<'PY'
-import sys
-import urllib.request
-
-address = sys.argv[1]
-with urllib.request.urlopen("http://" + address + "/v2/", timeout=8) as response:
-    if response.status != 200:
-        raise RuntimeError("registry returned HTTP status {{}}".format(response.status))
-PY
-
-changed="$(sudo python3 - "$registry" <<'PY'
-import json
-import os
-import shutil
-import sys
-from pathlib import Path
-
-path = Path("/etc/docker/daemon.json")
-state_path = Path("/etc/docker/sima-cli-registry-address")
-registry = sys.argv[1]
-data = {{}}
-if path.exists():
-    with path.open("r", encoding="utf-8") as stream:
-        data = json.load(stream)
-registries = data.get("insecure-registries", [])
-if not isinstance(registries, list):
-    raise RuntimeError("Docker insecure-registries must be a list")
-previous = state_path.read_text(encoding="utf-8").strip() if state_path.exists() else ""
-updated_registries = [
-    value for value in registries
-    if not previous or previous == registry or value != previous
-]
-if registry not in updated_registries:
-    updated_registries.append(registry)
-changed = sorted(set(updated_registries)) != sorted(set(registries))
-backup = Path(str(path) + ".sima-cli.bak")
-if path.exists() and not backup.exists():
-    shutil.copy2(str(path), str(backup))
-data["insecure-registries"] = sorted(set(updated_registries))
-path.parent.mkdir(parents=True, exist_ok=True)
-if changed:
-    temporary = Path(str(path) + ".sima-cli.tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(data, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-    os.replace(str(temporary), str(path))
-state_temporary = Path(str(state_path) + ".tmp")
-state_temporary.write_text(registry + "\n", encoding="utf-8")
-os.replace(str(state_temporary), str(state_path))
-print("changed" if changed else "unchanged")
-PY
-)"
-
-if [ "$changed" = changed ]; then
-  echo "Docker settings were updated on the DevKit. Restarting Docker."
-  sudo systemctl restart docker
-fi
-sudo docker info >/dev/null
-SIMA_REGISTRY_REMOTE
-  then
-    REGISTRY_STATUS=ready
-    echo "The DevKit can now pull container images from {registry_devkit_address}."
-  else
-    REGISTRY_STATUS=failed
-    BOOTSTRAP_RC=1
-  fi
-fi
-"""
-
     script = f"""set +e
 BOOTSTRAP_STATUS=unknown
 BOOTSTRAP_RC=0
@@ -2607,15 +2490,11 @@ else
     BOOTSTRAP_STATUS=sourced_no_dk
   fi
 fi
-{docker_setup}
-{registry_setup}
 if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ] && [ "$BOOTSTRAP_STATUS" != source_failed ] && [ "${{DEVKIT_SYNC_METHOD:-none}}" != rsync ]; then
   BOOTSTRAP_STATUS=rsync_fallback_failed
   BOOTSTRAP_RC=1
 fi
 echo "__SIMA_DEVKIT_BOOTSTRAP_STATUS=$BOOTSTRAP_STATUS"
-echo "__SIMA_DEVKIT_DOCKER_STATUS=${{DOCKER_STATUS:-skipped}}"
-echo "__SIMA_DEVKIT_REGISTRY_STATUS=${{REGISTRY_STATUS:-skipped}}"
 exit "$BOOTSTRAP_RC"
 """
 
@@ -2627,12 +2506,15 @@ exit "$BOOTSTRAP_RC"
         )
         if proc.returncode == 0:
             print(f"✅ DevKit bootstrap completed in container '{container_name}' (interactive).")
+            if registry_devkit_address:
+                print(
+                    f"✅ SDK container registry is ready ({registry_devkit_address})."
+                )
+                print(
+                    "ℹ️  DevKit Docker setup is deferred until the first "
+                    "'dk container' command."
+                )
             return
-        if registry_devkit_address:
-            raise RuntimeError(
-                "The DevKit connection or local container registry setup did not finish. "
-                f"Check the messages above, then run SDK setup again for {registry_devkit_address}."
-            )
         if not host_nfs_available:
             raise RuntimeError(
                 "Host NFS is unavailable and rsync fallback setup failed in SDK container "
@@ -2651,15 +2533,9 @@ exit "$BOOTSTRAP_RC"
     )
 
     status = ""
-    docker_status = ""
-    registry_status = ""
     for line in (proc.stdout or "").splitlines():
         if line.startswith("__SIMA_DEVKIT_BOOTSTRAP_STATUS="):
             status = line.split("=", 1)[1].strip()
-        elif line.startswith("__SIMA_DEVKIT_DOCKER_STATUS="):
-            docker_status = line.split("=", 1)[1].strip()
-        elif line.startswith("__SIMA_DEVKIT_REGISTRY_STATUS="):
-            registry_status = line.split("=", 1)[1].strip()
 
     if proc.returncode == 0:
         if status == "sourced_with_dk":
@@ -2685,18 +2561,12 @@ exit "$BOOTSTRAP_RC"
                 print(proc.stderr.strip())
         else:
             print(f"✅ DevKit bootstrap completed in container '{container_name}'.")
-        if registry_status == "ready":
+        if registry_devkit_address:
             print(
-                f"✅ DevKit container registry access is ready ({registry_devkit_address})."
+                f"✅ SDK container registry is ready ({registry_devkit_address})."
             )
             print(
-                "ℹ️  In the SDK shell, use 'dk container deploy <image>:<tag>' "
-                "to download and run an image on the DevKit."
-            )
-        elif docker_status == "missing":
-            print(
-                "ℹ️  Docker is not installed on the DevKit. The SDK is ready; the first "
-                "'dk container' command will offer to install and configure Docker."
+                "ℹ️  DevKit Docker setup is deferred until the first 'dk container' command."
             )
         return
 

@@ -17,6 +17,7 @@ import subprocess
 import platform
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
@@ -444,6 +445,31 @@ def _colima_supports_bridged_network_flags() -> bool:
     return "--network-mode" in output and "--network-interface" in output
 
 
+def _stage_colima_profile_config(profile: str) -> tuple:
+    """Copy the profile config outside its directory before Colima deletes it."""
+    config_path = _colima_config_path(profile)
+    if not config_path.is_file():
+        raise RuntimeError(f"Could not find Colima profile configuration at {config_path}.")
+
+    descriptor, snapshot_name = tempfile.mkstemp(
+        prefix=f"sima-cli-colima-{profile}-",
+        suffix=".yaml",
+    )
+    os.close(descriptor)
+    snapshot_path = Path(snapshot_name)
+    try:
+        shutil.copy2(config_path, snapshot_path)
+    except Exception:
+        snapshot_path.unlink(missing_ok=True)
+        raise
+    return config_path, snapshot_path
+
+
+def _restore_colima_profile_config(config_path: Path, snapshot_path: Path) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(snapshot_path, config_path)
+
+
 def warn_if_colima_devkit_network_may_need_bridged(
     devkit_ip: str,
     noninteractive: bool = False,
@@ -477,11 +503,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
         start_display_flags.extend(["--network-mode", "bridged", "--network-interface", interface])
     start_flags.append("--save-config")
     start_display_flags.append("--save-config")
-    command_lines = [
-        f"colima stop{profile_display}",
-        f"colima start{profile_display} {' '.join(start_display_flags)}",
-    ]
-    command_text = "\n".join(command_lines)
+    target_start_command = f"colima start{profile_display} {' '.join(start_display_flags)}"
 
     console.print(
         Panel(
@@ -491,9 +513,13 @@ def warn_if_colima_devkit_network_may_need_bridged(
                 "The macOS host may be able to SSH to the DevKit while the SDK container cannot, because the",
                 "container reaches the LAN through the Colima VM network path.",
                 "",
-                "Recommended Colima setup:",
-                f"[cyan]{command_lines[0]}[/cyan]",
-                f"[cyan]{command_lines[1]}[/cyan]",
+                "Colima cannot change network mode after a profile is created. The profile VM must be",
+                "recreated. Its configuration and container data will be preserved, but running containers",
+                "will be stopped.",
+                "",
+                "After confirmation, sima-cli will save the profile configuration, recreate the VM without",
+                "deleting container data, restore the configuration, and start Colima with:",
+                f"[cyan]{target_start_command}[/cyan]",
                 "" if supports_network_address else "",
                 "" if supports_network_address else (
                     "[yellow]Your Colima version does not expose the network-address flag. "
@@ -501,7 +527,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
                 ),
                 "" if supports_bridged_flags else (
                     "[yellow]This Colima version does not expose --network-mode/--network-interface; "
-                    "using --network-address only.[/yellow]"
+                    "upgrade Colima before rerunning SDK setup.[/yellow]"
                 ),
                 interface_warning,
             ]),
@@ -523,9 +549,19 @@ def warn_if_colima_devkit_network_may_need_bridged(
         )
         return False
 
-    should_restart = yes_to_all or noninteractive
+    if noninteractive and not yes_to_all:
+        raise RuntimeError(
+            "Colima must recreate its VM profile to use bridged networking. "
+            "Rerun interactively or pass --yes to approve this change. "
+            "Container data will be preserved."
+        )
+
+    should_restart = yes_to_all
     if not should_restart:
-        choice = input("Restart Colima in bridged network mode now? [y/N]: ").strip().lower()
+        choice = input(
+            "Recreate the Colima VM profile with bridged networking now? "
+            "Container data will be preserved. [y/N]: "
+        ).strip().lower()
         should_restart = choice in ("y", "yes")
         if not should_restart:
             console.print("[yellow]⚠️  Continuing with current Colima network. DevKit-Sync may fail from the SDK container.[/yellow]")
@@ -537,19 +573,41 @@ def warn_if_colima_devkit_network_may_need_bridged(
         return False
 
     try:
+        config_path, snapshot_path = _stage_colima_profile_config(profile)
+    except (OSError, RuntimeError) as exc:
+        console.print(
+            "[yellow]⚠️  Could not safely preserve the Colima profile configuration; "
+            f"the profile was not changed: {exc}[/yellow]"
+        )
+        return False
+
+    config_restored = False
+    try:
         subprocess.run([colima_cmd, "stop", *profile_args], check=True)
+        subprocess.run([colima_cmd, "delete", *profile_args, "--force"], check=True)
+        _restore_colima_profile_config(config_path, snapshot_path)
+        config_restored = True
         subprocess.run(
             [colima_cmd, "start", *profile_args, *start_flags],
             check=True,
         )
-        console.print("[green]✅ Colima restarted with reachable VM networking for DevKit-Sync.[/green]")
+        if not _is_colima_network_suitable_for_devkit(profile):
+            raise RuntimeError("Colima did not report a bridged, reachable address after recreation.")
+        console.print("[green]✅ Colima recreated with reachable VM networking for DevKit-Sync.[/green]")
         return True
-    except subprocess.CalledProcessError:
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         console.print(
-            "[yellow]⚠️  Could not restart Colima with bridged networking automatically. "
-            f"Run manually:\n{command_text}[/yellow]"
+            "[yellow]⚠️  Could not recreate Colima with bridged networking automatically: "
+            f"{exc}\nFix the reported problem, then rerun SDK setup.[/yellow]"
         )
         return False
+    finally:
+        if config_restored:
+            snapshot_path.unlink(missing_ok=True)
+        else:
+            console.print(
+                f"[yellow]The saved Colima profile configuration remains at {snapshot_path}.[/yellow]"
+            )
 
 
 def check_colima_resources() -> list:

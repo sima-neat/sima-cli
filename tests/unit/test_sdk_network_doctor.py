@@ -176,7 +176,8 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
 
         finding = next(f for f in report.findings if f.code == "colima-network-address-disabled")
         self.assertEqual(finding.severity, "warning")
-        self.assertIn("--network-interface en7", finding.detail)
+        self.assertIn("sima-cli sdk setup --devkit 10.0.0.244", finding.detail)
+        self.assertNotIn("colima start", finding.detail)
 
     def test_report_blocks_colima_ssh_forwarder_for_insight_udp(self):
         with patch.object(net, "_is_linux_host", return_value=False), \

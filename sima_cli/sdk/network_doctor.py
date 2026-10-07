@@ -516,14 +516,12 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
     )
     if report.devkit_ip:
         route_interface = preinstall._route_interface_for_target(report.devkit_ip)
-        interface = (
+        expected_interface = (
             route_interface
             if preinstall._is_safe_colima_bridge_interface(route_interface)
             else "en0"
         )
-        expected_interface = interface
     else:
-        interface = str(network.get("interface") or "").strip() or "en0"
         expected_interface = ""
     if preinstall._is_colima_network_suitable_for_devkit(profile, expected_interface):
         report.add(
@@ -540,8 +538,8 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
         "Colima reachable VM addressing is not enabled; SDK containers may be unable to reach the DevKit.",
         (
             f"{detail}\n"
-            "Run: colima stop && "
-            f"colima start --network-address --network-mode bridged --network-interface {interface} --save-config"
+            "Run the guarded Colima profile recreation in SDK setup: "
+            f"sima-cli sdk setup --devkit {report.devkit_ip or '<devkit-ip>'}"
         ),
     )
 

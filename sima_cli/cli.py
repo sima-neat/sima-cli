@@ -14,7 +14,7 @@ from sima_cli.update.swu import handle_update
 from sima_cli.model_zoo.model import list_models, download_model, describe_model
 from sima_cli.app_zoo.app import list_apps, download_app, describe_app
 from sima_cli.utils.config_loader import internal_resource_exists
-from sima_cli.mla.meminfo import monitor_simaai_mem_chart
+from sima_cli.mla.meminfo import MemoryTelemetryError, monitor_simaai_mem_chart
 from sima_cli.__version__ import __version__ 
 from sima_cli.utils.config import CONFIG_PATH
 from sima_cli.install.optiview import install_optiview
@@ -632,8 +632,10 @@ def mla(ctx):
 @click.pass_context
 def show_mla_memory_usage(ctx):
     """Show MLA Memory usage overtime."""
-    monitor_simaai_mem_chart()
-    pass
+    try:
+        monitor_simaai_mem_chart()
+    except MemoryTelemetryError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 # ----------------------

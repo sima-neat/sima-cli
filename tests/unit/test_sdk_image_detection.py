@@ -3226,10 +3226,22 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_sdk_setup_does_not_expose_container_build_option(self):
         runner = CliRunner()
-        result = runner.invoke(sdk, ["setup", "--help"])
+        with patch("sima_cli.sdk.commands.check_and_start_docker") as docker_preflight:
+            result = runner.invoke(sdk, ["setup", "--help"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertNotIn("--container-build", result.output)
+        docker_preflight.assert_not_called()
+
+    def test_sdk_setup_runs_docker_preflight_for_action(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker") as docker_preflight, \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        docker_preflight.assert_called_once_with()
+        setup_start.assert_called_once()
 
     def test_setup_automatically_enables_container_build_for_sdk_3(self):
         image = "ghcr.io/sima-neat/sdk:latest"

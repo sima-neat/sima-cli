@@ -56,10 +56,27 @@ from sima_cli.sdk.linux_shared_network import (
 console = Console()
 LEGACY_PALETTE_SDK_TOOLS = {"elxr", "model", "yocto", "mpk"}
 
+
+class DockerCommand(click.Command):
+    """Run the Docker preflight only after Click finishes parsing options."""
+
+    def invoke(self, ctx):
+        check_and_start_docker()
+        return super().invoke(ctx)
+
+
+class SdkGroup(click.Group):
+    command_class = DockerCommand
+    group_class = type
+
+
 # ------------------------------------------------------------
 # Group Definition
 # ------------------------------------------------------------
-@click.group(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.group(
+    cls=SdkGroup,
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
 @click.option(
     "-v", "--version",
     "version_filter",
@@ -91,7 +108,6 @@ def sdk(ctx, version_filter):
     """
     ctx.ensure_object(dict)
     ctx.obj["version_filter"] = version_filter
-    check_and_start_docker()
 
 # ------------------------------------------------------------
 # Helper functions 

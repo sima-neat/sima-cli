@@ -463,6 +463,7 @@ class TestSdkPreinstall(unittest.TestCase):
              ), \
              patch("sima_cli.sdk.preinstall._restore_colima_profile_config") as restore, \
              patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
+             patch.dict("os.environ", {"COLIMA_PROFILE": "unrelated"}), \
              patch("builtins.input", side_effect=AssertionError("should not prompt")):
             restarted = warn_if_colima_devkit_network_may_need_bridged(
                 "10.0.0.244",
@@ -470,10 +471,13 @@ class TestSdkPreinstall(unittest.TestCase):
             )
 
         self.assertTrue(restarted)
-        self.assertEqual(run.call_args_list[0].args[0], ["/opt/homebrew/bin/colima", "stop"])
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["/opt/homebrew/bin/colima", "stop", "--profile", "default"],
+        )
         self.assertEqual(
             run.call_args_list[1].args[0],
-            ["/opt/homebrew/bin/colima", "delete", "--force"],
+            ["/opt/homebrew/bin/colima", "delete", "--profile", "default", "--force"],
         )
         restore.assert_called_once_with(
             Path("/profile/colima.yaml"),
@@ -486,6 +490,8 @@ class TestSdkPreinstall(unittest.TestCase):
             [
                 "/opt/homebrew/bin/colima",
                 "start",
+                "--profile",
+                "default",
                 "--network-address",
                 "--network-mode",
                 "bridged",
@@ -565,7 +571,10 @@ class TestSdkPreinstall(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "did not report"):
                 warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
 
-        self.assertEqual(run.call_args_list[1].args[0], ["/opt/homebrew/bin/colima", "delete", "--force"])
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/opt/homebrew/bin/colima", "delete", "--profile", "default", "--force"],
+        )
 
     def test_colima_devkit_network_warning_restarts_with_detected_interface(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
@@ -590,13 +599,21 @@ class TestSdkPreinstall(unittest.TestCase):
             restarted = warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
 
         self.assertTrue(restarted)
-        self.assertEqual(run.call_args_list[0].args[0], ["/opt/homebrew/bin/colima", "stop"])
-        self.assertEqual(run.call_args_list[1].args[0], ["/opt/homebrew/bin/colima", "delete", "--force"])
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["/opt/homebrew/bin/colima", "stop", "--profile", "default"],
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/opt/homebrew/bin/colima", "delete", "--profile", "default", "--force"],
+        )
         self.assertEqual(
             run.call_args_list[2].args[0],
             [
                 "/opt/homebrew/bin/colima",
                 "start",
+                "--profile",
+                "default",
                 "--network-address",
                 "--network-mode",
                 "bridged",

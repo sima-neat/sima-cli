@@ -581,8 +581,11 @@ def warn_if_colima_devkit_network_may_need_bridged(
     interface = route_interface
     if _is_colima_network_suitable_for_devkit(profile, interface):
         return False
-    profile_args = [] if profile == "default" else ["--profile", profile]
-    profile_display = "" if profile == "default" else f" --profile {profile}"
+    # Always name the detected profile explicitly. Colima otherwise falls back
+    # to COLIMA_PROFILE, which could retarget these destructive commands after
+    # the safety checks inspected a different profile.
+    profile_args = ["--profile", profile]
+    profile_display = f" --profile {profile}"
     supports_network_address = _colima_supports_network_address_flag()
     supports_bridged_flags = _colima_supports_bridged_network_flags()
     start_flags = ["--network-address"]

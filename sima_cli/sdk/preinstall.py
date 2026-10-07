@@ -484,7 +484,13 @@ def _colima_profile_recreation_safety(profile: str) -> tuple:
     config = _colima_config(profile)
     kubernetes = config.get("kubernetes") if isinstance(config.get("kubernetes"), dict) else {}
     if _boolish(kubernetes.get("enabled")):
-        return False, "Kubernetes is enabled, and Colima does not preserve Kubernetes data during recreation."
+        return False, "Kubernetes is enabled in the profile configuration. Colima does not preserve its data."
+
+    status = _colima_status(profile)
+    if "kubernetes" not in status:
+        return False, "The live Colima Kubernetes state could not be verified."
+    if _boolish(status.get("kubernetes")):
+        return False, "Kubernetes is running in the profile. Colima does not preserve its data."
 
     store_path = _colima_store_path(profile)
     try:

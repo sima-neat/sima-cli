@@ -36,7 +36,8 @@ class TestSdkPreinstall(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("sima_cli.sdk.preinstall._colima_config_path", return_value=config_path):
+            with patch("sima_cli.sdk.preinstall._colima_config_path", return_value=config_path), \
+                 patch("sima_cli.sdk.preinstall._colima_status", return_value={"kubernetes": False}):
                 self.assertEqual(_colima_store_path("default"), store_path)
                 self.assertEqual(_colima_profile_recreation_safety("default"), (True, ""))
 
@@ -58,6 +59,29 @@ class TestSdkPreinstall(unittest.TestCase):
 
         self.assertFalse(safe)
         self.assertIn("Kubernetes", reason)
+
+    def test_colima_profile_recreation_safety_rejects_live_kubernetes_with_stale_config(self):
+        with patch(
+            "sima_cli.sdk.preinstall._colima_config",
+            return_value={"kubernetes": {"enabled": False}},
+        ), patch(
+            "sima_cli.sdk.preinstall._colima_status",
+            return_value={"kubernetes": True},
+        ):
+            safe, reason = _colima_profile_recreation_safety("default")
+
+        self.assertFalse(safe)
+        self.assertIn("running", reason)
+
+    def test_colima_profile_recreation_safety_fails_closed_without_live_kubernetes_state(self):
+        with patch(
+            "sima_cli.sdk.preinstall._colima_config",
+            return_value={"kubernetes": {"enabled": False}},
+        ), patch("sima_cli.sdk.preinstall._colima_status", return_value={}):
+            safe, reason = _colima_profile_recreation_safety("default")
+
+        self.assertFalse(safe)
+        self.assertIn("could not be verified", reason)
 
     def test_colima_profile_config_can_be_restored_after_profile_recreation(self):
         with TemporaryDirectory() as tmpdir:

@@ -2,7 +2,7 @@
 
 `sima-cli bootimg` でローカルまたはダウンロードしたイメージを準備し、リモートネットワークブートを安全に設定し、アドレス変更から復旧し、書き込み用の eMMC を準備します。
 
-コマンドリファレンス: [`sima-cli bootimg`](../../../../sima-cli/commands/sima-cli-bootimg.md)
+コマンドリファレンス: [`sima-cli bootimg`](../commands/sima-cli-bootimg.md)
 
 ## ローカルイメージとキャッシュの再利用
 

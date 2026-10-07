@@ -2,7 +2,7 @@
 
 `sima-cli update` で日次ビルド、署名済み eLxr 3.0 SWU バンドル、A/B 検査、ストレージへのステージング、永続オーバーレイの処理を利用します。
 
-コマンドリファレンス: [`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
+コマンドリファレンス: [`sima-cli update`](../commands/sima-cli-update.md)
 
 ## eLxr 3.0+ の内部日次更新
 

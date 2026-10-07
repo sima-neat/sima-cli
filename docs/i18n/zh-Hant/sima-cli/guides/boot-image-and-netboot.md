@@ -2,7 +2,7 @@
 
 使用 `sima-cli bootimg` 準備本機或下載的映像、安全設定遠端網路開機、處理位址變更，並準備要燒錄的 eMMC。
 
-命令參考：[`sima-cli bootimg`](../../../../sima-cli/commands/sima-cli-bootimg.md)
+命令參考：[`sima-cli bootimg`](../commands/sima-cli-bootimg.md)
 
 ## 本機映像與快取重複使用
 

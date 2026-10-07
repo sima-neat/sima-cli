@@ -2,7 +2,7 @@
 
 使用 `sima-cli update` 操作每日建置、已簽署的 eLxr 3.0 SWU 組合包、A/B 檢查、儲存空間暫存，以及持久性覆蓋層處理。
 
-命令參考：[`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
+命令參考：[`sima-cli update`](../commands/sima-cli-update.md)
 
 ## eLxr 3.0+ 內部每日更新
 

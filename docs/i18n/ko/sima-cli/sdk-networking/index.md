@@ -22,6 +22,7 @@ DevKit 통합을 사용하여 설정을 실행하면, `sima-cli`가 다음을 �
 - SDK 컨테이너 포트: 호스트에 Insight UI, 비디오, RTSP, 메타데이터, WebRTC 및 웹 SSH 포트를 게시합니다.
 - Insight 포트 매핑: 생성된 포트 매핑을 SDK 작업 공간 구성에 기록합니다.
 - 작업 공간 공유: `--devkit`를 사용할 때 호스트에서 DevKit 작업 공간에 대한 접근 권한을 설정합니다.
+- 로컬 컨테이너 레지스트리: SDK 3.0 이상에서는 SDK에서 빌드한 이미지를 호스트에 저장하고, 루프백과 DevKit 방향 네트워크 경로에만 레지스트리를 공개하며, DevKit이 이미지를 다운로드할 수 있도록 설정합니다.
 - DevKit 인터넷 접속: DevKit를 호스트의 공유 네트워크 링크를 통해 연결하여, 필요할 때 DevKit가 패키지 저장소에 접근하고 종속성을 다운로드할 수 있도록 합니다.
 - Linux 공유 네트워크 라우팅: Ubuntu의 Linux 공유 네트워크 링크에서 필요에 따라 범위가 지정된 전달/NAT 규칙을 적용합니다.
 
@@ -71,7 +72,7 @@ neat --json
 
 - [SDK 네트워킹 문제 해결](troubleshooting.md)
 - [SDK 네트워크 변경 사항 롤백](rollback.md)
-- [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
-- [`sima-cli sdk doctor network`](../../../../sima-cli/commands/sima-cli-sdk-doctor-network.md)
-- [`sima-cli sdk network repair`](../../../../sima-cli/commands/sima-cli-sdk-network-repair.md)
-- [`sima-cli sdk network rollback`](../../../../sima-cli/commands/sima-cli-sdk-network-rollback.md)
+- [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
+- [`sima-cli sdk doctor network`](../commands/sima-cli-sdk-doctor-network.md)
+- [`sima-cli sdk network repair`](../commands/sima-cli-sdk-network-repair.md)
+- [`sima-cli sdk network rollback`](../commands/sima-cli-sdk-network-rollback.md)

@@ -2,7 +2,43 @@
 
 `sima-cli sdk setup` の実行時に、任意の SDK サービス、ブラウザー版 VS Code の拡張機能、Model Compiler のインストール元を選択します。
 
-コマンドリファレンス: [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
+コマンドリファレンス: [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
+
+## コンテナイメージのビルドと共有
+
+DevKit とともに SDK 3.0 以降をセットアップすると、sima-cli は小規模なローカルコンテナレジストリの作成を提案します。レジストリはホストにイメージを保存するため、SDK コンテナを置き換えてもイメージを引き続き利用できます。
+
+レジストリはポート 5050 で起動します。そのポートが使用中の場合、sima-cli は次の空きポートを自動的に選択し、選択したアドレスを表示します。
+
+セットアップでは、SDK シェル内で使える次の 2 つのアドレスも提供します。
+
+- `SIMA_CONTAINER_REGISTRY` は SDK がイメージをプッシュするためのアドレスです。
+- `SIMA_DEVKIT_CONTAINER_REGISTRY` は DevKit が同じイメージをプルするためのアドレスです。
+
+Dockerfile でアプリケーションを定義し、SDK 内で ARM64 イメージをビルドしてプッシュします。
+
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --tag "${SIMA_CONTAINER_REGISTRY}/hello-neat:develop" \
+  --push \
+  .
+```
+
+`dk container deploy` を使って同じレジストリからイメージをダウンロードし、接続した DevKit 上で実行します。
+
+```bash
+dk container deploy hello-neat:develop \
+  --detach \
+  --name hello-neat \
+  --network host
+```
+
+短いイメージ名だけで十分です。`dk` は sima-cli が設定した DevKit 用のレジストリアドレスを使います。先に明示的にイメージを更新せずに起動するには、`dk container run hello-neat:develop ...` を使います。
+
+レジストリはローカル開発ネットワークで HTTP を使います。sima-cli は DevKit の Docker 設定を更新し、この設定が変更されたときに Docker を一度再起動します。レジストリは SDK 用のループバックと DevKit 側のネットワーク経路にのみ公開され、ホストのすべてのインターフェースには公開されません。
+
+この手順を省略するには `--no-container-registry` を使います。既存のレジストリを停止したり削除したりはしません。別のポートを選ぶには、`--container-registry-port <port>` を指定してセットアップを再実行します。ポートを変更しても保存済みのイメージは保持されます。
 
 ## Edgematic Studio の明示的な選択
 

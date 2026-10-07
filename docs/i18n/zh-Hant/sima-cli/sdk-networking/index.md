@@ -22,6 +22,7 @@ Neat SDK，也稱為 Neat 開發環境，在 Docker 容器中執行。`sima-cli 
 - SDK 容器埠：將 Insight UI、視訊、RTSP、中繼資料、WebRTC 和網頁 SSH 埠發佈到主機。
 - Insight 埠對應：將產生的埠對應寫入 SDK 工作區的設定中。
 - 工作區共用：設定當使用 `--devkit` 時，主機對 DevKit 工作區的存取權限。
+- 本機容器登錄庫：在 SDK 3.0 或更新版本中，將 SDK 建置的映像檔儲存在主機上，只在迴路介面和面向 DevKit 的網路路徑上公開登錄庫，並設定 DevKit 使其能下載映像檔。
 - DevKit 網路存取：透過主機的共用網路連線，將 DevKit 導向正確的網路路徑，以便在需要時，DevKit 可以存取套件儲存庫並下載相依性。
 - Linux 共享網路路由：在 Ubuntu/Linux 共享網路連線中，當需要時，會套用範圍型轉送/NAT 規則。
 
@@ -71,7 +72,7 @@ neat --json
 
 - [疑難排解 SDK 網路問題](troubleshooting.md)
 - [回滾 SDK 網路變更](rollback.md)
-- [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
-- [`sima-cli sdk doctor network`](../../../../sima-cli/commands/sima-cli-sdk-doctor-network.md)
-- [`sima-cli sdk network repair`](../../../../sima-cli/commands/sima-cli-sdk-network-repair.md)
-- [`sima-cli sdk network rollback`](../../../../sima-cli/commands/sima-cli-sdk-network-rollback.md)
+- [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
+- [`sima-cli sdk doctor network`](../commands/sima-cli-sdk-doctor-network.md)
+- [`sima-cli sdk network repair`](../commands/sima-cli-sdk-network-repair.md)
+- [`sima-cli sdk network rollback`](../commands/sima-cli-sdk-network-rollback.md)

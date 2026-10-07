@@ -2,7 +2,43 @@
 
 執行 `sima-cli sdk setup` 時，選擇選用 SDK 服務、瀏覽器版 VS Code 擴充功能，以及 Model Compiler 安裝來源。
 
-命令參考：[`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
+命令參考：[`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
+
+## 建置與分享容器映像檔
+
+使用 DevKit 設定 SDK 3.0 或更新版本時，sima-cli 會提供建立小型本機容器登錄庫的選項。登錄庫會將映像檔儲存在主機上，因此即使 SDK 容器被替換，映像檔仍可繼續使用。
+
+登錄庫從連接埠 5050 啟動。若該連接埠已被使用，sima-cli 會自動選擇下一個可用的連接埠，並顯示所選的位址。
+
+設定也會在 SDK shell 中提供兩個位址：
+
+- `SIMA_CONTAINER_REGISTRY` 是 SDK 用來推送映像檔的位址。
+- `SIMA_DEVKIT_CONTAINER_REGISTRY` 是 DevKit 用來拉取相同映像檔的位址。
+
+在 Dockerfile 中定義應用程式，然後從 SDK 內建置並推送 ARM64 映像檔：
+
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --tag "${SIMA_CONTAINER_REGISTRY}/hello-neat:develop" \
+  --push \
+  .
+```
+
+使用 `dk container deploy` 從同一登錄庫下載映像檔，並在已連接的 DevKit 上執行：
+
+```bash
+dk container deploy hello-neat:develop \
+  --detach \
+  --name hello-neat \
+  --network host
+```
+
+使用簡短的映像檔名稱即可。`dk` 會使用 sima-cli 設定的 DevKit 登錄庫位址。若要先不明確更新映像檔就直接啟動，請使用 `dk container run hello-neat:develop ...`。
+
+登錄庫會在本機開發網路上使用 HTTP。sima-cli 會更新 DevKit 的 Docker 設定，並在此設定變更時重新啟動 Docker 一次。登錄庫只會公開在 SDK 使用的迴路介面和面向 DevKit 的網路路徑上，不會公開在主機的所有介面上。
+
+使用 `--no-container-registry` 可略過此步驟。這不會停止或移除現有的登錄庫。若要選擇其他連接埠，請使用 `--container-registry-port <port>` 重新執行設定。變更連接埠時，已儲存的映像檔會保留。
 
 ## 選擇啟用 Edgematic Studio
 

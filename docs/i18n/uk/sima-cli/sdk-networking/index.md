@@ -22,6 +22,7 @@ Neat SDK, також відомий як Neat Development Environment, прац�
 - Порти контейнера SDK: публікує. Insight Інтерфейс користувача, відео, RTSP, метадані, WebRTC і веб-порти SSH для підключення до хоста.
 - Insight відображення портів: записує згенероване відображення портів до конфігурації робочого простору SDK.
 - Налаштування спільного доступу до робочого простору: визначає параметри доступу до робочого простору DevKit з основної системи, коли використовується `--devkit`.
+- Локальний реєстр контейнерів: для SDK 3.0 або новішої версії зберігає зібрані в SDK образи на хості, надає доступ до реєстру лише через петльовий інтерфейс і мережевий шлях до DevKit та налаштовує DevKit для їх завантаження.
 - DevKit Доступ до Інтернету: забезпечує маршрутизацію DevKit через загальне мережеве з’єднання хоста, щоб DevKit міг отримувати доступ до репозиторіїв пакетів і завантажувати необхідні залежності за потреби.
 - Linux Маршрутизація в мережі, що використовується спільно: в Ubuntu/Linux для мереж, що використовуються спільно, застосовуються правила перенаправлення/NAT, коли це необхідно.
 
@@ -71,7 +72,7 @@ neat --json
 
 - [Усунення несправностей у мережевому підключенні SDK](troubleshooting.md)
 - [Відміна змін мережевих налаштувань SDK](rollback.md)
-- [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
-- [`sima-cli sdk doctor network`](../../../../sima-cli/commands/sima-cli-sdk-doctor-network.md)
-- [`sima-cli sdk network repair`](../../../../sima-cli/commands/sima-cli-sdk-network-repair.md)
-- [`sima-cli sdk network rollback`](../../../../sima-cli/commands/sima-cli-sdk-network-rollback.md)
+- [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
+- [`sima-cli sdk doctor network`](../commands/sima-cli-sdk-doctor-network.md)
+- [`sima-cli sdk network repair`](../commands/sima-cli-sdk-network-repair.md)
+- [`sima-cli sdk network rollback`](../commands/sima-cli-sdk-network-rollback.md)

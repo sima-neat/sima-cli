@@ -2,7 +2,7 @@
 
 `sima-cli bootimg`로 로컬 또는 다운로드한 이미지를 준비하고, 원격 네트워크 부팅을 안전하게 구성하고, 주소 변경에 대응하고, 플래싱할 eMMC를 준비합니다.
 
-명령 참조: [`sima-cli bootimg`](../../../../sima-cli/commands/sima-cli-bootimg.md)
+명령 참조: [`sima-cli bootimg`](../commands/sima-cli-bootimg.md)
 
 ## 로컬 이미지 및 캐시 재사용
 

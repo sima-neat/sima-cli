@@ -36,7 +36,9 @@ dk container deploy hello-neat:develop \
 
 짧은 이미지 이름만으로 충분합니다. `dk`는 sima-cli가 설정한 DevKit 레지스트리 주소를 사용합니다. 먼저 명시적으로 이미지를 갱신하지 않고 시작하려면 `dk container run hello-neat:develop ...`를 사용합니다.
 
-레지스트리는 로컬 개발 네트워크에서 HTTP를 사용합니다. sima-cli는 DevKit의 Docker 설정을 업데이트하고 이 설정이 변경되면 Docker를 한 번 재시작합니다. SDK용 루프백과 DevKit 방향 네트워크 경로에만 레지스트리를 공개하며, 호스트의 모든 인터페이스에 공개하지 않습니다.
+레지스트리는 로컬 개발 네트워크에서 HTTP를 사용합니다. SDK용 루프백과 DevKit 방향 네트워크 경로에만 레지스트리를 공개하며, 호스트의 모든 인터페이스에 공개하지 않습니다.
+
+SDK 설정은 DevKit에 Docker를 설치하거나 구성하지 않습니다. 첫 번째 `dk container` 명령이 필요한 Docker 설치를 처리하고 로컬 레지스트리를 사용하도록 Docker를 구성하며, 레지스트리 설정이 변경된 경우에만 Docker를 다시 시작합니다. 따라서 컨테이너 배포를 사용하지 않는 사용자에게 Docker는 완전히 선택 사항으로 유지됩니다. Docker 설치에는 명시적인 승인, 비밀번호 없는 `sudo`, Docker의 Debian 저장소에 대한 인터넷 연결이 필요합니다.
 
 이 단계를 건너뛰려면 `--no-container-registry`를 사용합니다. 기존 레지스트리를 중지하거나 제거하지는 않습니다. 다른 포트를 선택하려면 `--container-registry-port <port>`로 설정을 다시 실행합니다. 포트가 변경되어도 기존에 저장된 이미지는 유지됩니다.
 

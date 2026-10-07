@@ -108,18 +108,28 @@ class TestSdkContainerRegistry(unittest.TestCase):
         self.assertIn("10.42.0.1:5050:5000", registry_run)
         self.assertFalse(any(command[:3] == ["docker", "volume", "rm"] for command in commands))
 
-    def test_colima_uses_reachable_vm_address_for_devkit_binding(self):
+    def test_colima_uses_bridged_vm_address_for_devkit_binding(self):
         with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
              patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
              patch(
                  "sima_cli.sdk.preinstall._colima_network_config",
-                 return_value={"address": True, "ip_address": "10.42.0.10"},
+                 return_value={"address": True, "mode": "bridged", "ip_address": "10.42.0.10"},
              ):
             self.assertEqual(
                 resolve_container_registry_bind_ip("10.42.0.1"),
                 "10.42.0.10",
             )
+
+    def test_colima_rejects_shared_vm_address_for_devkit_binding(self):
+        with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": True, "mode": "shared", "ip_address": "192.168.64.2"},
+             ), self.assertRaisesRegex(RuntimeError, "bridged"):
+            resolve_container_registry_bind_ip("10.42.0.1")
 
     def test_setup_can_skip_registry(self):
         devkit_env = {"host_ip": "10.42.0.1", "devkit_ip": "10.42.0.2"}

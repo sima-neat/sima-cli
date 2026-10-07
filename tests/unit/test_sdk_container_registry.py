@@ -218,5 +218,35 @@ class TestSdkContainerRegistry(unittest.TestCase):
         )
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
 
+    def test_bootstrap_surfaces_devkit_docker_probe_failure(self):
+        result = Mock(
+            returncode=1,
+            stdout=(
+                "__SIMA_DEVKIT_BOOTSTRAP_STATUS=sourced_with_dk\n"
+                "__SIMA_DEVKIT_DOCKER_STATUS=blocked\n"
+                "__SIMA_DEVKIT_REGISTRY_STATUS=blocked\n"
+            ),
+            stderr="Could not connect to the DevKit over SSH while checking for Docker.\n",
+        )
+        with patch("sima_cli.sdk.utils._configure_container_registry_environment"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result), \
+             self.assertRaisesRegex(
+                 RuntimeError,
+                 "Could not connect to the DevKit over SSH while checking for Docker",
+             ):
+            bootstrap_devkit_container(
+                "sdk-container",
+                {
+                    "devkit_ip": "10.42.0.2",
+                    "host_ip": "10.42.0.1",
+                    "workspace": "/workspace",
+                    "host_platform": "linux",
+                    "host_nfs_available": True,
+                    "noninteractive": True,
+                    "container_registry_devkit_address": "10.42.0.1:5000",
+                    "container_registry_sdk_address": "localhost:5000",
+                },
+            )
+
 if __name__ == "__main__":
     unittest.main()

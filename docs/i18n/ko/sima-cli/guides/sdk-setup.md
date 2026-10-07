@@ -38,6 +38,8 @@ dk container deploy hello-neat:develop \
 
 레지스트리는 로컬 개발 네트워크에서 HTTP를 사용합니다. sima-cli는 DevKit의 Docker 설정을 업데이트하고 이 설정이 변경되면 Docker를 한 번 재시작합니다. SDK용 루프백과 DevKit 방향 네트워크 경로에만 레지스트리를 공개하며, 호스트의 모든 인터페이스에 공개하지 않습니다.
 
+SDK 설정은 DevKit에 Docker를 설치하지 않습니다. Docker가 없더라도 설정은 정상적으로 완료되며, 첫 번째 `dk container` 명령이 설치 및 구성을 제안한다고 안내합니다. 따라서 컨테이너 배포를 사용하지 않는 사용자에게 Docker는 완전히 선택 사항으로 유지됩니다. DevKit 설치에는 명시적인 승인, 비밀번호 없는 `sudo`, Docker의 Debian 저장소에 대한 인터넷 연결이 필요합니다.
+
 이 단계를 건너뛰려면 `--no-container-registry`를 사용합니다. 기존 레지스트리를 중지하거나 제거하지는 않습니다. 다른 포트를 선택하려면 `--container-registry-port <port>`로 설정을 다시 실행합니다. 포트가 변경되어도 기존에 저장된 이미지는 유지됩니다.
 
 ## Edgematic Studio 선택 설치

@@ -38,6 +38,8 @@ dk container deploy hello-neat:develop \
 
 レジストリはローカル開発ネットワークで HTTP を使います。sima-cli は DevKit の Docker 設定を更新し、この設定が変更されたときに Docker を一度再起動します。レジストリは SDK 用のループバックと DevKit 側のネットワーク経路にのみ公開され、ホストのすべてのインターフェースには公開されません。
 
+SDK セットアップは DevKit に Docker をインストールしません。Docker が存在しない場合もセットアップは正常に完了し、最初の `dk container` コマンドがインストールと設定を提案することを説明します。これにより、コンテナーのデプロイを使用しないユーザーにとって Docker は完全に任意のままです。DevKit へのインストールには、明示的な承認、パスワードなしの `sudo`、および Docker の Debian リポジトリへのインターネットアクセスが必要です。
+
 この手順を省略するには `--no-container-registry` を使います。既存のレジストリを停止したり削除したりはしません。別のポートを選ぶには、`--container-registry-port <port>` を指定してセットアップを再実行します。ポートを変更しても保存済みのイメージは保持されます。
 
 ## Edgematic Studio の明示的な選択

@@ -38,6 +38,8 @@ dk container deploy hello-neat:develop \
 
 登錄庫會在本機開發網路上使用 HTTP。sima-cli 會更新 DevKit 的 Docker 設定，並在此設定變更時重新啟動 Docker 一次。登錄庫只會公開在 SDK 使用的迴路介面和面向 DevKit 的網路路徑上，不會公開在主機的所有介面上。
 
+SDK 設定不會在 DevKit 上安裝 Docker。若未安裝 Docker，設定仍會正常完成，並說明第一個 `dk container` 命令會提示安裝及設定。如此一來，對不使用容器部署的使用者而言，Docker 仍完全是選用項目。在 DevKit 上安裝需要明確核准、免密碼的 `sudo`，以及可透過網際網路存取 Docker 的 Debian 軟體庫。
+
 使用 `--no-container-registry` 可略過此步驟。這不會停止或移除現有的登錄庫。若要選擇其他連接埠，請使用 `--container-registry-port <port>` 重新執行設定。變更連接埠時，已儲存的映像檔會保留。
 
 ## 選擇啟用 Edgematic Studio

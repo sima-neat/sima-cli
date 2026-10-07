@@ -575,7 +575,9 @@ def warn_if_colima_devkit_network_may_need_bridged(
             "The Colima profile was not changed. Connect the DevKit through a physical LAN "
             "interface and rerun SDK setup.[/yellow]"
         )
-        return False
+        raise RuntimeError(
+            "Could not identify a safe physical interface for the route to the DevKit."
+        )
     interface = route_interface
     if _is_colima_network_suitable_for_devkit(profile, interface):
         return False

@@ -614,9 +614,9 @@ class TestSdkPreinstall(unittest.TestCase):
              patch("sima_cli.sdk.preinstall._colima_network_config") as network_config, \
              patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
              patch("builtins.input", side_effect=AssertionError("should not prompt")):
-            restarted = warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
+            with self.assertRaisesRegex(RuntimeError, "safe physical interface"):
+                warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
 
-        self.assertFalse(restarted)
         network_config.assert_not_called()
         run.assert_not_called()
 

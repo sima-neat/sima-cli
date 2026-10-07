@@ -511,10 +511,15 @@ def warn_if_colima_devkit_network_may_need_bridged(
         )
     )
 
-    if not supports_network_address:
+    if not supports_network_address or not supports_bridged_flags:
+        missing_feature = (
+            "the network-address flag"
+            if not supports_network_address
+            else "the bridged network flags"
+        )
         console.print(
             "[yellow]⚠️  Not restarting Colima automatically because this Colima version "
-            "does not support the required network-address flag.[/yellow]"
+            f"does not support {missing_feature}. Upgrade Colima, then rerun SDK setup.[/yellow]"
         )
         return False
 

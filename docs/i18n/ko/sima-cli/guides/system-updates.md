@@ -2,7 +2,7 @@
 
 `sima-cli update`로 일일 빌드, 서명된 eLxr 3.0 SWU 번들, A/B 검사, 저장소 스테이징 및 영구 오버레이 처리를 사용합니다.
 
-명령 참조: [`sima-cli update`](../commands/sima-cli-update.md)
+명령 참조: [`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
 
 ## eLxr 3.0+ 내부 일일 업데이트
 

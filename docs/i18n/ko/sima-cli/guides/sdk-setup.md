@@ -2,7 +2,7 @@
 
 `sima-cli sdk setup`을 실행할 때 선택적 SDK 서비스, 브라우저 VS Code 확장 및 Model Compiler 설치 원본을 선택합니다.
 
-명령 참조: [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
+명령 참조: [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
 
 ## 컨테이너 이미지 빌드 및 공유
 

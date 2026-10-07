@@ -2,7 +2,7 @@
 
 Під час запуску `sima-cli sdk setup` виберіть додаткові служби SDK, розширення браузерного VS Code та джерело встановлення Model Compiler.
 
-Довідка команди: [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
+Довідка команди: [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
 
 ## Збирання та поширення образу контейнера
 

@@ -2,7 +2,7 @@
 
 `sima-cli sdk setup` の実行時に、任意の SDK サービス、ブラウザー版 VS Code の拡張機能、Model Compiler のインストール元を選択します。
 
-コマンドリファレンス: [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
+コマンドリファレンス: [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
 
 ## コンテナイメージのビルドと共有
 

@@ -2,7 +2,7 @@
 
 執行 `sima-cli sdk setup` 時，選擇選用 SDK 服務、瀏覽器版 VS Code 擴充功能，以及 Model Compiler 安裝來源。
 
-命令參考：[`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
+命令參考：[`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
 
 ## 建置與分享容器映像檔
 

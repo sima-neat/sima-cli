@@ -470,6 +470,36 @@ def _restore_colima_profile_config(config_path: Path, snapshot_path: Path) -> No
     shutil.copy2(snapshot_path, config_path)
 
 
+def _colima_store_path(profile: str) -> Path:
+    if profile in ("", "default", "colima"):
+        profile_id = "colima"
+    else:
+        short_name = profile[len("colima-"):] if profile.startswith("colima-") else profile
+        profile_id = f"colima-{short_name}"
+    return _colima_config_path(profile).parent.parent / "_store" / f"{profile_id}.json"
+
+
+def _colima_profile_recreation_safety(profile: str) -> tuple:
+    """Return whether Colima can recreate this profile without known data loss."""
+    config = _colima_config(profile)
+    kubernetes = config.get("kubernetes") if isinstance(config.get("kubernetes"), dict) else {}
+    if _boolish(kubernetes.get("enabled")):
+        return False, "Kubernetes is enabled, and Colima does not preserve Kubernetes data during recreation."
+
+    store_path = _colima_store_path(profile)
+    try:
+        with store_path.open("r", encoding="utf-8") as stream:
+            store = json.load(stream)
+    except Exception:
+        return False, "Colima's separate runtime-disk state could not be verified."
+
+    if not isinstance(store, dict) or not _boolish(store.get("disk_formatted")):
+        return False, "This profile does not use Colima's separate runtime disk. It may be a legacy profile."
+    if str(store.get("disk_runtime") or "").strip().lower() != "docker":
+        return False, "The separate runtime disk is not recorded as a Docker data disk."
+    return True, ""
+
+
 def warn_if_colima_devkit_network_may_need_bridged(
     devkit_ip: str,
     noninteractive: bool = False,
@@ -514,11 +544,10 @@ def warn_if_colima_devkit_network_may_need_bridged(
                 "container reaches the LAN through the Colima VM network path.",
                 "",
                 "Colima cannot change network mode after a profile is created. The profile VM must be",
-                "recreated. Its configuration and container data will be preserved, but running containers",
-                "will be stopped.",
+                "recreated. This operation stops all running containers in the profile.",
                 "",
                 "After confirmation, sima-cli will save the profile configuration, recreate the VM without",
-                "deleting container data, restore the configuration, and start Colima with:",
+                "the --data option, restore the configuration, and start Colima with:",
                 f"[cyan]{target_start_command}[/cyan]",
                 "" if supports_network_address else "",
                 "" if supports_network_address else (
@@ -549,18 +578,27 @@ def warn_if_colima_devkit_network_may_need_bridged(
         )
         return False
 
+    recreation_is_safe, unsafe_reason = _colima_profile_recreation_safety(profile)
+    if not recreation_is_safe:
+        raise RuntimeError(
+            f"sima-cli will not recreate Colima profile '{profile}': {unsafe_reason} "
+            "Back up or migrate the profile data, recreate the profile with bridged networking, "
+            "and then rerun SDK setup. The profile was not changed."
+        )
+
     if noninteractive and not yes_to_all:
         raise RuntimeError(
             "Colima must recreate its VM profile to use bridged networking. "
             "Rerun interactively or pass --yes to approve this change. "
-            "Container data will be preserved."
+            "Colima reports a separate Docker data disk, but it does not guarantee against data loss."
         )
 
     should_restart = yes_to_all
     if not should_restart:
         choice = input(
             "Recreate the Colima VM profile with bridged networking now? "
-            "Container data will be preserved. [y/N]: "
+            "Colima reports a separate Docker data disk, but data loss is still possible. "
+            "Confirm that important data is backed up. [y/N]: "
         ).strip().lower()
         should_restart = choice in ("y", "yes")
         if not should_restart:

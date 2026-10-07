@@ -4,6 +4,56 @@ Choose optional SDK services, browser VS Code extensions, and the Model Compiler
 
 Command reference: [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
 
+## Build and share a container image
+
+When you set up an SDK 3.0 or newer with a DevKit, sima-cli offers to create a
+small local container registry. The registry stores images on the host so they
+remain available when the SDK container is replaced.
+
+The registry starts on port 5050. If that port is already in use, sima-cli
+automatically selects the next free port and prints the address it selected.
+
+Setup also makes two addresses available inside the SDK shell:
+
+- `SIMA_CONTAINER_REGISTRY` is the address the SDK uses to push an image.
+- `SIMA_DEVKIT_CONTAINER_REGISTRY` is the address the DevKit uses to pull the
+  same image.
+
+Define your application in a Dockerfile, then build and push an ARM64 image
+from inside the SDK:
+
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --tag "${SIMA_CONTAINER_REGISTRY}/hello-neat:develop" \
+  --push \
+  .
+```
+
+Use `dk container deploy` to download the image from the same registry and run
+it on the connected DevKit:
+
+```bash
+dk container deploy hello-neat:develop \
+  --detach \
+  --name hello-neat \
+  --network host
+```
+
+The short image name is enough. `dk` uses the DevKit registry address configured
+by sima-cli. Use `dk container run hello-neat:develop ...` to start an image
+without explicitly refreshing it first.
+
+The registry uses HTTP on the local development network. sima-cli updates the
+DevKit Docker settings and restarts Docker once when this setting changes.
+It exposes the registry only on loopback for SDK use and on the DevKit-facing
+network path; it does not publish the registry on every host interface.
+
+Use `--no-container-registry` to skip this step. It does not stop or remove an
+existing registry. To select a different port, run setup again with
+`--container-registry-port <port>`. Existing stored images are kept when the
+port changes.
+
 ## Edgematic Studio opt-in
 
 Default setup does not display an Edgematic Studio prompt, install Studio, or

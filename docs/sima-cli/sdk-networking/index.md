@@ -22,6 +22,7 @@ When you run setup with DevKit integration, `sima-cli` configures:
 - SDK container ports: publishes Insight UI, video, RTSP, metadata, WebRTC, and web SSH ports to the host.
 - Insight port map: writes the generated port mapping to the SDK workspace configuration.
 - Workspace sharing: configures host-to-DevKit workspace access when `--devkit` is used.
+- Local container registry: for SDK 3.0 or newer, stores SDK-built images on the host, exposes the registry only on loopback and the DevKit-facing network path, and configures the DevKit so it can download them.
 - DevKit Internet access: routes the DevKit through the host shared-network link so the DevKit can reach package repositories and download dependencies when required.
 - Linux shared-network routing: on Ubuntu/Linux shared-network links, applies scoped forwarding/NAT rules when they are needed.
 

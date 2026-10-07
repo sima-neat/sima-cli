@@ -22,6 +22,12 @@ from sima_cli.sdk.preinstall import (
     warn_if_colima_devkit_network_may_need_bridged,
 )
 from sima_cli.sdk.config import IMAGE_CONFIG
+from sima_cli.sdk.container_registry import (
+    ensure_container_registry,
+    existing_container_registry_port,
+    find_available_container_registry_port,
+    resolve_container_registry_bind_ip,
+)
 from sima_cli.sdk.linux_shared_network import (
     configure_linux_shared_devkit_network,
     maybe_install_nm_shared_dispatcher_repair,
@@ -54,6 +60,10 @@ from sima_cli.sdk.utils import (
     is_snap_docker_cli,
     check_os,
     container_user_mapping_unavailable,
+    container_has_docker_socket_mount,
+    configure_container_docker_builder,
+    sdk_image_uses_automatic_container_build,
+    validate_host_container_build_toolchain,
     detect_current_user,
     select_containers,
 )
@@ -759,6 +769,57 @@ def _setup_devkit_share(
     }
 
 
+def _setup_devkit_container_registry(
+    devkit_env: dict,
+    no_container_registry: bool = False,
+    container_registry_port: Optional[int] = None,
+    noninteractive: bool = False,
+    yes_to_all: bool = False,
+) -> dict:
+    if not devkit_env:
+        return devkit_env
+
+    if no_container_registry:
+        print(
+            "ℹ️  Skipping local container registry setup as requested. "
+            "Any registry already created by sima-cli is unchanged."
+        )
+        return devkit_env
+
+    current_port = existing_container_registry_port()
+    selected_port = container_registry_port or current_port
+    if selected_port is None:
+        selected_port = find_available_container_registry_port()
+    if not (noninteractive or yes_to_all):
+        if not click.confirm(
+            "Set up a local container registry so the DevKit can download images built in the SDK?",
+            default=True,
+        ):
+            print(
+                "ℹ️  Skipping local container registry setup. Any existing registry is unchanged. "
+                "You can enable it the next time you run SDK setup."
+            )
+            return devkit_env
+
+    registry_bind_ip = resolve_container_registry_bind_ip(
+        str(devkit_env.get("host_ip", ""))
+    )
+    config = ensure_container_registry(
+        registry_bind_ip,
+        requested_port=int(selected_port),
+    )
+    updated = dict(devkit_env)
+    updated.update(
+        {
+            "container_registry_enabled": True,
+            "container_registry_port": config.port,
+            "container_registry_sdk_address": config.sdk_address,
+            "container_registry_devkit_address": config.devkit_address,
+        }
+    )
+    return updated
+
+
 def _is_x86_platform() -> bool:
     machine = platform.machine().lower()
     return machine in {"x86_64", "amd64", "i386", "i686", "x86"}
@@ -1097,6 +1158,8 @@ def setup_and_start(
     persistent_network_profile: bool = False,
     image_selectors=(),
     all_extensions: bool = False,
+    no_container_registry: bool = False,
+    container_registry_port: Optional[int] = None,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -1148,6 +1211,21 @@ def setup_and_start(
                     yes_to_all=yes_to_all,
                 )
 
+    container_build_images = {
+        image for image in selected_images
+        if sdk_image_uses_automatic_container_build(image)
+    }
+    if container_build_images:
+        builder_socket = validate_host_container_build_toolchain()
+        click.echo(f"✅ Host Docker daemon and socket are ready ({builder_socket}).")
+        console.print(Panel(
+            "Neat SDK 3.0+ automatically receives the host Docker daemon socket. Commands in the SDK "
+            "can create privileged sibling containers and otherwise control the Docker host.",
+            title="Docker Builder Host Access",
+            border_style="yellow",
+            expand=False,
+        ))
+
 
     # Step 2: Check running containers
     print("\n🔍 Checking for running SDK containers...")
@@ -1179,6 +1257,14 @@ def setup_and_start(
         yes_to_all=yes_to_all,
         persistent_network_profile=persistent_network_profile,
     )
+    if devkit_env and container_build_images:
+        devkit_env = _setup_devkit_container_registry(
+            devkit_env,
+            no_container_registry=no_container_registry,
+            container_registry_port=container_registry_port,
+            noninteractive=noninteractive,
+            yes_to_all=yes_to_all,
+        )
     skip_model_sdk = no_model_sdk or minimal
     if (
         insight_video_channels > DEFAULT_INSIGHT_VIDEO_CHANNELS
@@ -1216,6 +1302,7 @@ def setup_and_start(
     studio_choice = None
 
     for img in selected_images:
+        container_build = img in container_build_images
         container_name = sanitize_container_name(img)
         print_section(f"🔄 CONTAINER START SEQUENCE for {container_name}")
         existing_container = confirm_to_remove_exiting_container(
@@ -1264,6 +1351,7 @@ def setup_and_start(
                 publish_edgematic_studio_port=publish_studio_port,
                 minimal=minimal,
                 all_extensions=all_extensions,
+                container_build=container_build,
             )
         else:
             if (edgematic_studio or edgematic_studio_port) and is_neat_sdk_image(img):
@@ -1279,6 +1367,15 @@ def setup_and_start(
                     f"Cannot apply {option} to an existing Neat SDK container because Docker "
                     "port mappings are immutable. Remove and recreate the container when prompted, "
                     f"or run: docker rm -f {existing_container}"
+                )
+            if (
+                container_build
+                and is_neat_sdk_image(img)
+                and not container_has_docker_socket_mount(existing_container)
+            ):
+                raise RuntimeError(
+                    f"Existing SDK 3.0+ container '{existing_container}' has no Docker socket mount. "
+                    "Docker mounts are immutable; remove and recreate it when prompted."
                 )
 
             if not is_container_running(existing_container):
@@ -1298,6 +1395,8 @@ def setup_and_start(
                     )
                 else:
                     configure_container_user(existing_container, login_name, user_uid, user_gid)
+                if container_build and is_neat_sdk_image(img):
+                    configure_container_docker_builder(existing_container, login_name)
 
             if all_extensions and is_neat_sdk_image(img):
                 if check_os() not in ["linux", "macos"]:

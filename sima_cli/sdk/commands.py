@@ -351,6 +351,17 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Allow setup to install a persistent NetworkManager shared-network repair profile without prompting.",
 )
 @click.option(
+    "--no-container-registry",
+    is_flag=True,
+    help="Skip the local registry that lets a configured DevKit download images built in the SDK.",
+)
+@click.option(
+    "--container-registry-port",
+    type=click.IntRange(1, 65535),
+    default=None,
+    help="Use this host port for the local DevKit container registry. Existing stored images are kept.",
+)
+@click.option(
     "--image",
     "image_selectors",
     multiple=True,
@@ -358,8 +369,29 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt.",
 )
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, edgematic_studio, edgematic_studio_port, minimal, workspace, persistent_network_profile, image_selectors, all_extensions):
+def setup(
+    ctx,
+    yes,
+    noninteractive,
+    devkit,
+    no_insight,
+    insight_video_channels,
+    no_model_sdk,
+    edgematic_studio,
+    edgematic_studio_port,
+    minimal,
+    workspace,
+    persistent_network_profile,
+    no_container_registry,
+    container_registry_port,
+    image_selectors,
+    all_extensions,
+):
     """Initialize SDK environment and select components to start."""
+    if no_container_registry and container_registry_port is not None:
+        raise click.UsageError(
+            "--no-container-registry cannot be used with --container-registry-port."
+        )
     devkit_ip = _resolve_devkit_ip(devkit)
     try:
         setup_and_start(
@@ -374,6 +406,8 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, 
             minimal=minimal,
             workspace=workspace,
             persistent_network_profile=persistent_network_profile,
+            no_container_registry=no_container_registry,
+            container_registry_port=container_registry_port,
             image_selectors=image_selectors,
             all_extensions=all_extensions,
         )

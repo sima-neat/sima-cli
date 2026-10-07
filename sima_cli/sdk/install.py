@@ -22,6 +22,11 @@ from sima_cli.sdk.preinstall import (
     warn_if_colima_devkit_network_may_need_bridged,
 )
 from sima_cli.sdk.config import IMAGE_CONFIG
+from sima_cli.sdk.container_registry import (
+    DEFAULT_REGISTRY_PORT,
+    ensure_container_registry,
+    existing_container_registry_port,
+)
 from sima_cli.sdk.linux_shared_network import (
     configure_linux_shared_devkit_network,
     maybe_install_nm_shared_dispatcher_repair,
@@ -763,6 +768,59 @@ def _setup_devkit_share(
     }
 
 
+def _setup_devkit_container_registry(
+    devkit_env: dict,
+    no_container_registry: bool = False,
+    container_registry_port: Optional[int] = None,
+    noninteractive: bool = False,
+    yes_to_all: bool = False,
+) -> dict:
+    if not devkit_env:
+        return devkit_env
+
+    if no_container_registry:
+        print(
+            "ℹ️  Skipping local container registry setup as requested. "
+            "Any registry already created by sima-cli is unchanged."
+        )
+        return devkit_env
+
+    current_port = existing_container_registry_port()
+    default_port = container_registry_port or current_port or DEFAULT_REGISTRY_PORT
+    if not (noninteractive or yes_to_all):
+        if not click.confirm(
+            "Set up a local container registry so the DevKit can download images built in the SDK?",
+            default=True,
+        ):
+            print(
+                "ℹ️  Skipping local container registry setup. Any existing registry is unchanged. "
+                "You can enable it the next time you run SDK setup."
+            )
+            return devkit_env
+        if container_registry_port is None:
+            default_port = click.prompt(
+                "Port for the local container registry",
+                type=click.IntRange(1, 65535),
+                default=default_port,
+                show_default=True,
+            )
+
+    config = ensure_container_registry(
+        str(devkit_env.get("host_ip", "")),
+        requested_port=int(default_port),
+    )
+    updated = dict(devkit_env)
+    updated.update(
+        {
+            "container_registry_enabled": True,
+            "container_registry_port": config.port,
+            "container_registry_sdk_address": config.sdk_address,
+            "container_registry_devkit_address": config.devkit_address,
+        }
+    )
+    return updated
+
+
 def _is_x86_platform() -> bool:
     machine = platform.machine().lower()
     return machine in {"x86_64", "amd64", "i386", "i686", "x86"}
@@ -1101,6 +1159,8 @@ def setup_and_start(
     persistent_network_profile: bool = False,
     image_selectors=(),
     all_extensions: bool = False,
+    no_container_registry: bool = False,
+    container_registry_port: Optional[int] = None,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -1198,6 +1258,14 @@ def setup_and_start(
         yes_to_all=yes_to_all,
         persistent_network_profile=persistent_network_profile,
     )
+    if devkit_env and container_build_images:
+        devkit_env = _setup_devkit_container_registry(
+            devkit_env,
+            no_container_registry=no_container_registry,
+            container_registry_port=container_registry_port,
+            noninteractive=noninteractive,
+            yes_to_all=yes_to_all,
+        )
     skip_model_sdk = no_model_sdk or minimal
     if (
         insight_video_channels > DEFAULT_INSIGHT_VIDEO_CHANNELS

@@ -26,6 +26,8 @@ sima-cli sdk setup [OPTIONS]
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
 | `--persistent-network-profile` | Allow setup to install a persistent NetworkManager shared-network repair profile without prompting. |
+| `--no-container-registry` | Skip the local registry that lets a configured DevKit download images built in the SDK. |
+| `--container-registry-port` | Use this host port for the local DevKit container registry. Existing stored images are kept. |
 | `--image` | Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt. |
 
 ## Arguments
@@ -71,6 +73,13 @@ Options:
   --persistent-network-profile    Allow setup to install a persistent
                                   NetworkManager shared-network repair profile
                                   without prompting.
+  --no-container-registry         Skip the local registry that lets a
+                                  configured DevKit download images built in
+                                  the SDK.
+  --container-registry-port INTEGER RANGE
+                                  Use this host port for the local DevKit
+                                  container registry. Existing stored images
+                                  are kept.  [1<=x<=65535]
   --image TEXT                    Start only the SDK image matching this
                                   repository:tag or tag (e.g. 'ghcr.io/sima-
                                   neat/sdk:latest' or 'latest'). Repeatable;

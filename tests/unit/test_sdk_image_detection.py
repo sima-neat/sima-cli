@@ -2732,6 +2732,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.detect_current_user", return_value=("devuser", 1000, 1000)), \
                  patch("sima_cli.sdk.neat.prepare_neat_container_run", return_value=neat_config), \
                  patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.network_doctor.validate_running_neat_container_network"), \
+                 patch("sima_cli.sdk.utils.bootstrap_devkit_container"), \
                  patch("sima_cli.sdk.utils.subprocess.run", return_value=docker_result) as run:
                 start_docker_container(
                     uid=1000,
@@ -2740,6 +2742,12 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     workspace=tmpdir,
                     image="ghcr.io/sima-neat/sdk:latest",
                     container_build=True,
+                    devkit_env={
+                        "devkit_ip": "10.42.0.2",
+                        "host_ip": "10.42.0.1",
+                        "container_registry_sdk_address": "localhost:5000",
+                        "container_registry_devkit_address": "10.42.0.1:5000",
+                    },
                 )
 
         docker_cmd = _last_docker_run_command(run)
@@ -2748,6 +2756,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(docker_cmd[docker_cmd.index("--group-add") + 1], "991")
         self.assertIn("DOCKER_HOST=unix:///var/run/docker.sock", docker_cmd)
         self.assertIn("SIMA_SDK_CONTAINER_BUILD=1", docker_cmd)
+        self.assertIn("SIMA_CONTAINER_REGISTRY=localhost:5000", docker_cmd)
+        self.assertIn("SIMA_DEVKIT_CONTAINER_REGISTRY=10.42.0.1:5000", docker_cmd)
         configure_builder.assert_called_once_with("ghcr.io-sima-neat-sdk-latest", "devuser")
 
     def test_start_ros2_container_only_maps_workspace_and_configures_user(self):
@@ -3177,6 +3187,43 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ("ghcr.io/sima-neat/sdk:latest",),
         )
 
+    def test_sdk_setup_forwards_container_registry_choices(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(
+                sdk,
+                [
+                    "setup",
+                    "--devkit",
+                    "10.42.0.2",
+                    "--container-registry-port",
+                    "5050",
+                    "-y",
+                    "-n",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(setup_start.call_args.kwargs["container_registry_port"], 5050)
+        self.assertFalse(setup_start.call_args.kwargs["no_container_registry"])
+
+    def test_sdk_setup_rejects_registry_port_when_registry_is_skipped(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"):
+            result = runner.invoke(
+                sdk,
+                [
+                    "setup",
+                    "--no-container-registry",
+                    "--container-registry-port",
+                    "5050",
+                ],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("cannot be used", result.output)
+
     def test_sdk_setup_does_not_expose_container_build_option(self):
         runner = CliRunner()
         result = runner.invoke(sdk, ["setup", "--help"])
@@ -3207,6 +3254,49 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         preflight.assert_called_once_with()
         self.assertTrue(start_container.call_args.kwargs["container_build"])
+
+    def test_setup_automatically_sets_up_registry_for_sdk_3_with_devkit(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        devkit_env = {
+            "devkit_ip": "10.42.0.2",
+            "host_ip": "10.42.0.1",
+            "workspace": "/tmp/workspace",
+        }
+        registry_env = {
+            **devkit_env,
+            "container_registry_sdk_address": "localhost:5000",
+            "container_registry_devkit_address": "10.42.0.1:5000",
+        }
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.warn_if_colima_devkit_network_may_need_bridged"), \
+             patch("sima_cli.sdk.install.sdk_image_uses_automatic_container_build", return_value=True), \
+             patch("sima_cli.sdk.install.validate_host_container_build_toolchain"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=devkit_env), \
+             patch("sima_cli.sdk.install._setup_devkit_container_registry", return_value=registry_env) as setup_registry, \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/ext"), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container:
+            setup_and_start(
+                devkit_ip="10.42.0.2",
+                no_model_sdk=True,
+                yes_to_all=True,
+                noninteractive=True,
+            )
+
+        setup_registry.assert_called_once_with(
+            devkit_env,
+            no_container_registry=False,
+            container_registry_port=None,
+            noninteractive=True,
+            yes_to_all=True,
+        )
+        self.assertEqual(start_container.call_args.kwargs["devkit_env"], registry_env)
 
     def test_setup_warns_for_snap_docker_with_neat_sdk(self):
         image = "ghcr.io/sima-neat/sdk:latest"

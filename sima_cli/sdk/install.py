@@ -1160,7 +1160,6 @@ def setup_and_start(
     all_extensions: bool = False,
     no_container_registry: bool = False,
     container_registry_port: Optional[int] = None,
-    install_devkit_docker: bool = False,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -1266,8 +1265,6 @@ def setup_and_start(
             noninteractive=noninteractive,
             yes_to_all=yes_to_all,
         )
-        devkit_env = dict(devkit_env)
-        devkit_env["install_devkit_docker"] = install_devkit_docker
     skip_model_sdk = no_model_sdk or minimal
     if (
         insight_video_channels > DEFAULT_INSIGHT_VIDEO_CHANNELS

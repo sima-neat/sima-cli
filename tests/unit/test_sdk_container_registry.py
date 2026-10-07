@@ -200,9 +200,9 @@ class TestSdkContainerRegistry(unittest.TestCase):
         script = run.call_args.args[0][-1]
         self.assertIn("insecure-registries", script)
         self.assertIn("10.42.0.1:5000", script)
-        self.assertIn("Install Docker on the DevKit now?", script)
-        self.assertIn("dk container setup --yes", script)
-        self.assertIn("INSTALL_DOCKER=0", script)
+        self.assertIn("Docker is not installed on the DevKit", script)
+        self.assertIn("first 'dk container' command", script)
+        self.assertNotIn("dk container setup --yes", script)
         self.assertIn("sima-cli-registry-address", script)
         self.assertIn("systemctl restart docker", script)
         syntax = subprocess.run(
@@ -213,38 +213,6 @@ class TestSdkContainerRegistry(unittest.TestCase):
             check=False,
         )
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
-
-    def test_bootstrap_honors_explicit_devkit_docker_install(self):
-        result = Mock(
-            returncode=0,
-            stdout=(
-                "__SIMA_DEVKIT_BOOTSTRAP_STATUS=sourced_with_dk\n"
-                "__SIMA_DEVKIT_DOCKER_STATUS=installed\n"
-                "__SIMA_DEVKIT_REGISTRY_STATUS=ready\n"
-            ),
-            stderr="",
-        )
-        with patch("sima_cli.sdk.utils._configure_container_registry_environment"), \
-             patch("sima_cli.sdk.utils.subprocess.run", return_value=result) as run:
-            bootstrap_devkit_container(
-                "sdk-container",
-                {
-                    "devkit_ip": "10.42.0.2",
-                    "host_ip": "10.42.0.1",
-                    "workspace": "/workspace",
-                    "host_platform": "linux",
-                    "host_nfs_available": True,
-                    "noninteractive": True,
-                    "install_devkit_docker": True,
-                    "container_registry_devkit_address": "10.42.0.1:5000",
-                    "container_registry_sdk_address": "localhost:5000",
-                },
-            )
-
-        script = run.call_args.args[0][-1]
-        self.assertIn("INSTALL_DOCKER=1", script)
-        self.assertIn("dk container setup --yes", script)
-
 
 if __name__ == "__main__":
     unittest.main()

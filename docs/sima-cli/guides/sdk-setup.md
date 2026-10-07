@@ -49,11 +49,11 @@ DevKit Docker settings and restarts Docker once when this setting changes.
 It exposes the registry only on loopback for SDK use and on the DevKit-facing
 network path; it does not publish the registry on every host interface.
 
-If Docker is missing on the DevKit, interactive setup explains the Modalix
-Docker configuration and asks before installing anything. Declining leaves the
-SDK usable but disables DevKit container deployment. For an explicitly approved
-noninteractive install, use `--install-devkit-docker`. The DevKit installation
-requires passwordless `sudo` and Internet access to Docker's Debian repository.
+SDK setup does not install Docker on the DevKit. If Docker is missing, setup
+finishes normally and explains that the first `dk container` command will offer
+to install and configure it. This keeps Docker completely optional for users
+who do not use container deployment. The DevKit installation requires explicit
+approval, passwordless `sudo`, and Internet access to Docker's Debian repository.
 
 Use `--no-container-registry` to skip this step. It does not stop or remove an
 existing registry. To select a different port, run setup again with

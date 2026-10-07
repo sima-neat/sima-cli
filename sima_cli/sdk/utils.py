@@ -2461,13 +2461,8 @@ def bootstrap_devkit_container(container_name: str, devkit_env: dict):
         default=True,
     )
     registry_devkit_address = str(devkit_env.get("container_registry_devkit_address", ""))
-    install_devkit_docker = _value_truthy(
-        devkit_env.get("install_devkit_docker"),
-        default=False,
-    )
-
     docker_setup = ""
-    if registry_devkit_address or install_devkit_docker:
+    if registry_devkit_address:
         docker_setup = f"""
 DOCKER_STATUS=not_checked
 if [ "${{SRC_RC:-1}}" -ne 0 ]; then
@@ -2477,32 +2472,9 @@ elif ssh -T -p "${{DEVKIT_SYNC_DEVKIT_PORT:-22}}" -o BatchMode=yes -o ConnectTim
     'command -v docker >/dev/null 2>&1'; then
   DOCKER_STATUS=ready
 else
-  INSTALL_DOCKER={shlex.quote("1" if install_devkit_docker else "0")}
-  if [ "$INSTALL_DOCKER" != 1 ] && [ -t 0 ] && [ -t 1 ]; then
-    cat <<'SIMA_DOCKER_PROMPT'
-Docker is required to deploy SDK-built container images to the DevKit.
-The Modalix setup stores Docker and containerd data under /data, enables the
-services, and adds the DevKit user to the docker group.
-SIMA_DOCKER_PROMPT
-    read -r -p 'Install Docker on the DevKit now? [y/N]: ' answer
-    case "$answer" in
-      y|Y|yes|YES|Yes) INSTALL_DOCKER=1 ;;
-      *) INSTALL_DOCKER=0 ;;
-    esac
-  fi
-  if [ "$INSTALL_DOCKER" = 1 ]; then
-    echo "Installing and configuring Docker on the DevKit."
-    if dk container setup --yes; then
-      DOCKER_STATUS=installed
-    else
-      DOCKER_STATUS=install_failed
-      BOOTSTRAP_RC=1
-    fi
-  else
-    DOCKER_STATUS=skipped
-    echo "Docker installation was skipped. Container deployment is not available yet."
-    echo "Rerun SDK setup with --install-devkit-docker, or run 'dk container setup' in the SDK shell."
-  fi
+  DOCKER_STATUS=missing
+  echo "Docker is not installed on the DevKit. It was not changed during SDK setup."
+  echo "The first 'dk container' command will offer to install and configure it."
 fi
 """
 
@@ -2513,10 +2485,9 @@ REGISTRY_STATUS=not_started
 if [ "${{SRC_RC:-1}}" -ne 0 ] || [ "${{DOCKER_STATUS:-blocked}}" = blocked ]; then
   REGISTRY_STATUS=blocked
   BOOTSTRAP_RC=1
-elif [ "${{DOCKER_STATUS:-skipped}}" = skipped ]; then
+elif [ "${{DOCKER_STATUS:-missing}}" = missing ]; then
   REGISTRY_STATUS=skipped_no_docker
-elif [ "${{DOCKER_STATUS:-blocked}}" != ready ] && \
-     [ "${{DOCKER_STATUS:-blocked}}" != installed ]; then
+elif [ "${{DOCKER_STATUS:-blocked}}" != ready ]; then
   REGISTRY_STATUS=blocked
   BOOTSTRAP_RC=1
 else
@@ -2711,10 +2682,10 @@ exit "$BOOTSTRAP_RC"
                 "ℹ️  In the SDK shell, use 'dk container deploy <image>:<tag>' "
                 "to download and run an image on the DevKit."
             )
-        elif docker_status == "skipped":
+        elif docker_status == "missing":
             print(
-                "ℹ️  Docker installation was not approved. The SDK is ready, but "
-                "DevKit container deployment remains disabled."
+                "ℹ️  Docker is not installed on the DevKit. The SDK is ready; the first "
+                "'dk container' command will offer to install and configure Docker."
             )
         return
 

@@ -373,7 +373,10 @@ def _boolish(value: Any) -> bool:
     return bool(value)
 
 
-def _is_colima_network_suitable_for_devkit(profile: str) -> bool:
+def _is_colima_network_suitable_for_devkit(
+    profile: str,
+    expected_interface: str = "",
+) -> bool:
     network = _colima_network_config(profile)
     # Colima persists a LAN-reachable VM address as:
     #   network.address: true
@@ -381,10 +384,16 @@ def _is_colima_network_suitable_for_devkit(profile: str) -> bool:
     # A shared-mode address is reachable from macOS but not from a DevKit on
     # the physical LAN, so it cannot be advertised as a registry endpoint.
     mode = str(network.get("mode") or "").strip().lower()
+    configured_interface = str(network.get("interface") or "en0").strip()
+    interface_matches = (
+        not expected_interface
+        or configured_interface == expected_interface
+    )
     return (
         _boolish(network.get("address"))
         and mode == "bridged"
         and bool(network.get("ip_address"))
+        and interface_matches
     )
 
 
@@ -445,21 +454,46 @@ def _colima_supports_bridged_network_flags() -> bool:
     return "--network-mode" in output and "--network-interface" in output
 
 
-def _stage_colima_profile_config(profile: str) -> tuple:
-    """Copy the profile config outside its directory before Colima deletes it."""
+def _stage_colima_profile_config(profile: str, interface: str) -> tuple:
+    """Stage a bridged profile config outside the directory Colima deletes."""
     config_path = _colima_config_path(profile)
     if not config_path.is_file():
         raise RuntimeError(f"Could not find Colima profile configuration at {config_path}.")
+
+    try:
+        with config_path.open("r", encoding="utf-8") as stream:
+            config = yaml.safe_load(stream)
+    except Exception as exc:
+        raise RuntimeError(f"Could not read Colima profile configuration at {config_path}.") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError(f"Colima profile configuration at {config_path} is not a mapping.")
+
+    network = config.get("network")
+    if not isinstance(network, dict):
+        network = {}
+        config["network"] = network
+    # Colima accepts subnet and nat66Prefix only in shared mode. Remove them
+    # from the staged copy before the old VM is deleted.
+    network.pop("subnet", None)
+    network.pop("nat66Prefix", None)
+    network["address"] = True
+    network["mode"] = "bridged"
+    network["interface"] = interface
 
     descriptor, snapshot_name = tempfile.mkstemp(
         prefix=f"sima-cli-colima-{profile}-",
         suffix=".yaml",
     )
-    os.close(descriptor)
     snapshot_path = Path(snapshot_name)
     try:
-        shutil.copy2(config_path, snapshot_path)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(config, stream, sort_keys=False)
+        os.chmod(snapshot_path, config_path.stat().st_mode & 0o777)
     except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
         snapshot_path.unlink(missing_ok=True)
         raise
     return config_path, snapshot_path
@@ -515,9 +549,6 @@ def warn_if_colima_devkit_network_may_need_bridged(
         return False
 
     profile = _detect_colima_profile()
-    if _is_colima_network_suitable_for_devkit(profile):
-        return False
-
     route_interface = _route_interface_for_target(devkit_ip)
     if _is_safe_colima_bridge_interface(route_interface):
         interface = route_interface
@@ -528,6 +559,8 @@ def warn_if_colima_devkit_network_may_need_bridged(
             f"[yellow]Route to DevKit resolved through '{route_interface or 'unknown'}', "
             "which is not a safe Colima bridged interface. Falling back to en0.[/yellow]"
         )
+    if _is_colima_network_suitable_for_devkit(profile, interface):
+        return False
     profile_args = [] if profile == "default" else ["--profile", profile]
     profile_display = "" if profile == "default" else f" --profile {profile}"
     supports_network_address = _colima_supports_network_address_flag()
@@ -617,7 +650,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
         return False
 
     try:
-        config_path, snapshot_path = _stage_colima_profile_config(profile)
+        config_path, snapshot_path = _stage_colima_profile_config(profile, interface)
     except (OSError, RuntimeError) as exc:
         console.print(
             "[yellow]⚠️  Could not safely preserve the Colima profile configuration; "
@@ -635,7 +668,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
             [colima_cmd, "start", *profile_args, *start_flags],
             check=True,
         )
-        if not _is_colima_network_suitable_for_devkit(profile):
+        if not _is_colima_network_suitable_for_devkit(profile, interface):
             raise RuntimeError("Colima did not report a bridged, reachable address after recreation.")
         console.print("[green]✅ Colima recreated with reachable VM networking for DevKit-Sync.[/green]")
         return True

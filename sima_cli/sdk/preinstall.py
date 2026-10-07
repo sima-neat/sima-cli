@@ -461,6 +461,7 @@ def _stage_colima_profile_config(profile: str, interface: str) -> tuple:
         raise RuntimeError(f"Could not find Colima profile configuration at {config_path}.")
 
     config_mode = config_path.stat().st_mode & 0o777
+    config_dir_mode = config_path.parent.stat().st_mode & 0o777
     try:
         with config_path.open("r", encoding="utf-8") as stream:
             config = yaml.safe_load(stream)
@@ -496,15 +497,17 @@ def _stage_colima_profile_config(profile: str, interface: str) -> tuple:
             pass
         snapshot_path.unlink(missing_ok=True)
         raise
-    return config_path, snapshot_path, config_mode
+    return config_path, snapshot_path, config_mode, config_dir_mode
 
 
 def _restore_colima_profile_config(
     config_path: Path,
     snapshot_path: Path,
     config_mode: int,
+    config_dir_mode: int,
 ) -> None:
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    os.chmod(config_path.parent, config_dir_mode)
     descriptor = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.fchmod(descriptor, 0o600)
@@ -565,15 +568,15 @@ def warn_if_colima_devkit_network_may_need_bridged(
 
     profile = _detect_colima_profile()
     route_interface = _route_interface_for_target(devkit_ip)
-    if _is_safe_colima_bridge_interface(route_interface):
-        interface = route_interface
-        interface_warning = ""
-    else:
-        interface = "en0"
-        interface_warning = (
+    if not _is_safe_colima_bridge_interface(route_interface):
+        console.print(
             f"[yellow]Route to DevKit resolved through '{route_interface or 'unknown'}', "
-            "which is not a safe Colima bridged interface. Falling back to en0.[/yellow]"
+            "which is not a physical interface that Colima can bridge safely. "
+            "The Colima profile was not changed. Connect the DevKit through a physical LAN "
+            "interface and rerun SDK setup.[/yellow]"
         )
+        return False
+    interface = route_interface
     if _is_colima_network_suitable_for_devkit(profile, interface):
         return False
     profile_args = [] if profile == "default" else ["--profile", profile]
@@ -612,7 +615,6 @@ def warn_if_colima_devkit_network_may_need_bridged(
                     "[yellow]This Colima version does not expose --network-mode/--network-interface; "
                     "upgrade Colima before rerunning SDK setup.[/yellow]"
                 ),
-                interface_warning,
             ]),
             title="Colima DevKit-Sync Network Warning",
             border_style="red",
@@ -665,7 +667,10 @@ def warn_if_colima_devkit_network_may_need_bridged(
         return False
 
     try:
-        config_path, snapshot_path, config_mode = _stage_colima_profile_config(profile, interface)
+        config_path, snapshot_path, config_mode, config_dir_mode = _stage_colima_profile_config(
+            profile,
+            interface,
+        )
     except (OSError, RuntimeError) as exc:
         console.print(
             "[yellow]⚠️  Could not safely preserve the Colima profile configuration; "
@@ -677,7 +682,12 @@ def warn_if_colima_devkit_network_may_need_bridged(
     try:
         subprocess.run([colima_cmd, "stop", *profile_args], check=True)
         subprocess.run([colima_cmd, "delete", *profile_args, "--force"], check=True)
-        _restore_colima_profile_config(config_path, snapshot_path, config_mode)
+        _restore_colima_profile_config(
+            config_path,
+            snapshot_path,
+            config_mode,
+            config_dir_mode,
+        )
         config_restored = True
         subprocess.run(
             [colima_cmd, "start", *profile_args, *start_flags],

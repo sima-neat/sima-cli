@@ -125,6 +125,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
                  "sima_cli.sdk.preinstall._colima_network_config",
                  return_value={"address": True, "mode": "shared", "interface": "bridge100"},
              ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="en0"), \
              patch("sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit", return_value=True):
             report = net.build_network_doctor_report(devkit_ip="10.0.0.244")
 

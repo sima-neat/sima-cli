@@ -44,16 +44,16 @@ The short image name is enough. `dk` uses the DevKit registry address configured
 by sima-cli. Use `dk container run hello-neat:develop ...` to start an image
 without explicitly refreshing it first.
 
-The registry uses HTTP on the local development network. sima-cli updates the
-DevKit Docker settings and restarts Docker once when this setting changes.
-It exposes the registry only on loopback for SDK use and on the DevKit-facing
-network path; it does not publish the registry on every host interface.
+The registry uses HTTP on the local development network. It is exposed only on
+loopback for SDK use and on the DevKit-facing network path; it is not published
+on every host interface.
 
-SDK setup does not install Docker on the DevKit. If Docker is missing, setup
-finishes normally and explains that the first `dk container` command will offer
-to install and configure it. This keeps Docker completely optional for users
-who do not use container deployment. The DevKit installation requires explicit
-approval, passwordless `sudo`, and Internet access to Docker's Debian repository.
+SDK setup does not install or configure Docker on the DevKit. The first
+`dk container` command handles any required Docker installation and configures
+Docker to use the local registry, restarting Docker only if the registry setting
+changes. This keeps Docker completely optional for users who do not use
+container deployment. Installing Docker requires explicit approval, passwordless
+`sudo`, and Internet access to Docker's Debian repository.
 
 Use `--no-container-registry` to skip this step. It does not stop or remove an
 existing registry. To select a different port, run setup again with

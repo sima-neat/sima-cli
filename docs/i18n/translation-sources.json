@@ -1,7 +1,7 @@
 {
   "ja": {
     "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
-    "docs/sima-cli/guides/sdk-setup.md": "2e938c5f8c22d978e149b05dba882bddd7ff7ca44c1e6a5097cfac035d59f7b7",
+    "docs/sima-cli/guides/sdk-setup.md": "a5881d0647e835672ebe956810b8896ecc9067284041d395c0c3259a90a548b0",
     "docs/sima-cli/guides/system-updates.md": "90bfc395ccc6b036e4dbda95944275dc8a5d7b460bb18ddbba7939e8a2432cf7",
     "docs/sima-cli/index.md": "014577da6770baebfab6107538617d62b18a70b890f4cf4e567abdf21b171b71",
     "docs/sima-cli/sdk-networking/index.md": "a283f17e7c0f13c6cb83037c8d16dcba6b884a42ce098822895e0e54438dc775",
@@ -10,7 +10,7 @@
   },
   "ko": {
     "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
-    "docs/sima-cli/guides/sdk-setup.md": "2e938c5f8c22d978e149b05dba882bddd7ff7ca44c1e6a5097cfac035d59f7b7",
+    "docs/sima-cli/guides/sdk-setup.md": "a5881d0647e835672ebe956810b8896ecc9067284041d395c0c3259a90a548b0",
     "docs/sima-cli/guides/system-updates.md": "90bfc395ccc6b036e4dbda95944275dc8a5d7b460bb18ddbba7939e8a2432cf7",
     "docs/sima-cli/index.md": "014577da6770baebfab6107538617d62b18a70b890f4cf4e567abdf21b171b71",
     "docs/sima-cli/sdk-networking/index.md": "a283f17e7c0f13c6cb83037c8d16dcba6b884a42ce098822895e0e54438dc775",
@@ -19,7 +19,7 @@
   },
   "uk": {
     "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
-    "docs/sima-cli/guides/sdk-setup.md": "2e938c5f8c22d978e149b05dba882bddd7ff7ca44c1e6a5097cfac035d59f7b7",
+    "docs/sima-cli/guides/sdk-setup.md": "a5881d0647e835672ebe956810b8896ecc9067284041d395c0c3259a90a548b0",
     "docs/sima-cli/guides/system-updates.md": "90bfc395ccc6b036e4dbda95944275dc8a5d7b460bb18ddbba7939e8a2432cf7",
     "docs/sima-cli/index.md": "014577da6770baebfab6107538617d62b18a70b890f4cf4e567abdf21b171b71",
     "docs/sima-cli/sdk-networking/index.md": "a283f17e7c0f13c6cb83037c8d16dcba6b884a42ce098822895e0e54438dc775",
@@ -28,7 +28,7 @@
   },
   "zh-Hant": {
     "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
-    "docs/sima-cli/guides/sdk-setup.md": "2e938c5f8c22d978e149b05dba882bddd7ff7ca44c1e6a5097cfac035d59f7b7",
+    "docs/sima-cli/guides/sdk-setup.md": "a5881d0647e835672ebe956810b8896ecc9067284041d395c0c3259a90a548b0",
     "docs/sima-cli/guides/system-updates.md": "90bfc395ccc6b036e4dbda95944275dc8a5d7b460bb18ddbba7939e8a2432cf7",
     "docs/sima-cli/index.md": "014577da6770baebfab6107538617d62b18a70b890f4cf4e567abdf21b171b71",
     "docs/sima-cli/sdk-networking/index.md": "a283f17e7c0f13c6cb83037c8d16dcba6b884a42ce098822895e0e54438dc775",

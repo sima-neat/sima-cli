@@ -2605,17 +2605,6 @@ exit "$BOOTSTRAP_RC"
             "workspace permissions."
         )
 
-    if registry_status in {"blocked", "failed"}:
-        message = (
-            "The local container registry is running, but the DevKit could not be configured to use it. "
-            "Check that Docker is installed on the DevKit and that the DevKit can reach "
-            f"{registry_devkit_address}, then run SDK setup again."
-        )
-        diagnostic = (proc.stderr or "").strip()
-        if diagnostic:
-            message += f"\nDetails: {diagnostic}"
-        raise RuntimeError(message)
-
     print(f"⚠️ DevKit bootstrap failed in container '{container_name}' (exit={proc.returncode}).")
     if proc.stdout.strip():
         print(proc.stdout.strip())

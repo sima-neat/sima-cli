@@ -208,5 +208,33 @@ class TestSdkContainerRegistry(unittest.TestCase):
         )
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
 
+    def test_bootstrap_reports_non_nfs_failure_without_registry_status(self):
+        result = Mock(
+            returncode=125,
+            stdout="__SIMA_DEVKIT_BOOTSTRAP_STATUS=sourced_with_dk\n",
+            stderr="docker exec failed\n",
+        )
+        with patch("sima_cli.sdk.utils._configure_container_registry_environment"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result), \
+             patch("builtins.print") as print_mock:
+            bootstrap_devkit_container(
+                "sdk-container",
+                {
+                    "devkit_ip": "10.42.0.2",
+                    "host_ip": "10.42.0.1",
+                    "workspace": "/workspace",
+                    "host_platform": "linux",
+                    "host_nfs_available": True,
+                    "noninteractive": True,
+                    "container_registry_devkit_address": "10.42.0.1:5000",
+                    "container_registry_sdk_address": "localhost:5000",
+                },
+            )
+
+        print_mock.assert_any_call(
+            "⚠️ DevKit bootstrap failed in container 'sdk-container' (exit=125)."
+        )
+        print_mock.assert_any_call("docker exec failed")
+
 if __name__ == "__main__":
     unittest.main()

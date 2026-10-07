@@ -271,6 +271,8 @@ def _colima_network_config(profile: str) -> dict:
         "mode": status_network.get("mode", network.get("mode")),
         "interface": status_network.get("interface", network.get("interface")),
         "ip_address": status.get("ip_address") or status.get("address"),
+        "cpu": status.get("cpu", config.get("cpu")),
+        "memory": status.get("memory", config.get("memory")),
     }
 
 
@@ -376,8 +378,9 @@ def _boolish(value: Any) -> bool:
 def _is_colima_network_suitable_for_devkit(
     profile: str,
     expected_interface: str = "",
+    network: dict = None,
 ) -> bool:
-    network = _colima_network_config(profile)
+    network = network if network is not None else _colima_network_config(profile)
     # Colima persists a LAN-reachable VM address as:
     #   network.address: true
     #   network.mode: bridged
@@ -395,6 +398,36 @@ def _is_colima_network_suitable_for_devkit(
         and bool(network.get("ip_address"))
         and interface_matches
     )
+
+
+def _prompt_colima_resource_targets(cpus: int, memory_gb: float) -> tuple:
+    """Prompt for valid Colima resources, using Neat minimums as defaults."""
+    default_cpus = max(cpus, NEAT_COLIMA_MIN_CPUS)
+    default_memory = max(memory_gb, float(NEAT_COLIMA_MIN_MEMORY_GB))
+
+    while True:
+        raw_cpus = input(f"Colima CPU count [{default_cpus}]: ").strip()
+        try:
+            target_cpus = int(raw_cpus) if raw_cpus else default_cpus
+        except ValueError:
+            target_cpus = 0
+        if target_cpus >= NEAT_COLIMA_MIN_CPUS:
+            break
+        console.print(f"[yellow]Enter at least {NEAT_COLIMA_MIN_CPUS} CPUs.[/yellow]")
+
+    while True:
+        raw_memory = input(f"Colima memory in GB [{default_memory:g}]: ").strip()
+        try:
+            target_memory = float(raw_memory) if raw_memory else default_memory
+        except ValueError:
+            target_memory = 0
+        if target_memory >= NEAT_COLIMA_MIN_MEMORY_GB:
+            break
+        console.print(
+            f"[yellow]Enter at least {NEAT_COLIMA_MIN_MEMORY_GB} GB of memory.[/yellow]"
+        )
+
+    return target_cpus, target_memory
 
 
 def _route_interface_for_target(target_ip: str) -> str:
@@ -580,7 +613,8 @@ def warn_if_colima_devkit_network_may_need_bridged(
             "Could not identify a safe physical interface for the route to the DevKit."
         )
     interface = route_interface
-    if _is_colima_network_suitable_for_devkit(profile, interface):
+    network = _colima_network_config(profile)
+    if _is_colima_network_suitable_for_devkit(profile, interface, network=network):
         return False
     # Always name the detected profile explicitly. Colima otherwise falls back
     # to COLIMA_PROFILE, which could retarget these destructive commands after
@@ -598,6 +632,26 @@ def warn_if_colima_devkit_network_may_need_bridged(
     if enable_udp:
         start_flags.extend(["--port-forwarder", "grpc"])
         start_display_flags.extend(["--port-forwarder", "grpc"])
+    current_cpus, current_memory = _parse_colima_status(network)
+    resources_known = bool(network.get("cpu") and network.get("memory"))
+    resize_resources = resources_known and (
+        current_cpus < NEAT_COLIMA_MIN_CPUS
+        or current_memory < NEAT_COLIMA_MIN_MEMORY_GB
+    )
+    target_cpus = max(current_cpus, NEAT_COLIMA_MIN_CPUS)
+    target_memory = max(current_memory, float(NEAT_COLIMA_MIN_MEMORY_GB))
+    if resize_resources and not (yes_to_all or noninteractive):
+        target_cpus, target_memory = _prompt_colima_resource_targets(
+            current_cpus,
+            current_memory,
+        )
+    if resize_resources:
+        resource_flags = [
+            "--cpus", str(target_cpus),
+            "--memory", f"{target_memory:g}",
+        ]
+        start_flags.extend(resource_flags)
+        start_display_flags.extend(resource_flags)
     start_flags.append("--save-config")
     start_display_flags.append("--save-config")
     target_start_command = f"colima start{profile_display} {' '.join(start_display_flags)}"
@@ -617,6 +671,9 @@ def warn_if_colima_devkit_network_may_need_bridged(
                 "the --data option, restore the configuration, and start Colima with:",
                 f"[cyan]{target_start_command}[/cyan]",
                 "" if not enable_udp else "This also enables the gRPC port forwarder required for Insight UDP traffic.",
+                "" if not resize_resources else (
+                    f"This also configures {target_cpus} CPUs and {target_memory:g} GB RAM for the Neat SDK."
+                ),
                 "" if supports_network_address else "",
                 "" if supports_network_address else (
                     "[yellow]Your Colima version does not expose the network-address flag. "
@@ -706,10 +763,19 @@ def warn_if_colima_devkit_network_may_need_bridged(
             [colima_cmd, "start", *profile_args, *start_flags],
             check=True,
         )
-        if not _is_colima_network_suitable_for_devkit(profile, interface):
+        updated_network = _colima_network_config(profile)
+        if not _is_colima_network_suitable_for_devkit(
+            profile,
+            interface,
+            network=updated_network,
+        ):
             raise RuntimeError("Colima did not report a bridged, reachable address after recreation.")
         if enable_udp and _colima_port_forwarder(profile) != "grpc":
             raise RuntimeError("Colima did not report the gRPC port forwarder after recreation.")
+        if resize_resources:
+            updated_cpus, updated_memory = _parse_colima_status(updated_network)
+            if updated_cpus < target_cpus or updated_memory < target_memory:
+                raise RuntimeError("Colima did not report the requested CPU and memory after recreation.")
         console.print("[green]✅ Colima recreated with reachable VM networking for DevKit-Sync.[/green]")
         return True
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
@@ -754,7 +820,11 @@ def check_colima_resources() -> list:
     return [["Colima", required, found, "⚠️ WARNING"]]
 
 
-def _restart_colima_with_resources(profile: str) -> None:
+def _restart_colima_with_resources(
+    profile: str,
+    cpus: int = NEAT_COLIMA_MIN_CPUS,
+    memory_gb: float = NEAT_COLIMA_MIN_MEMORY_GB,
+) -> None:
     colima_cmd = shutil.which("colima")
     if not colima_cmd:
         raise RuntimeError("Colima is not installed or is not available on PATH.")
@@ -765,10 +835,10 @@ def _restart_colima_with_resources(profile: str) -> None:
         "start",
         "--profile",
         profile,
-        "--cpu",
-        str(NEAT_COLIMA_MIN_CPUS),
+        "--cpus",
+        str(cpus),
         "--memory",
-        str(NEAT_COLIMA_MIN_MEMORY_GB),
+        f"{memory_gb:g}",
     ], check=True)
 
 
@@ -816,11 +886,16 @@ def ensure_colima_resources_for_neat_sdk(
         )
     )
 
+    target_cpus = NEAT_COLIMA_MIN_CPUS
+    target_memory = float(NEAT_COLIMA_MIN_MEMORY_GB)
+    if not (yes_to_all or noninteractive):
+        target_cpus, target_memory = _prompt_colima_resource_targets(cpus, memory_gb)
+
     should_restart = yes_to_all or noninteractive
     if not should_restart:
         choice = input(
-            f"Restart Colima with {NEAT_COLIMA_MIN_CPUS} CPUs and "
-            f"{NEAT_COLIMA_MIN_MEMORY_GB} GB RAM now? [Y/n]: "
+            f"Restart Colima with {target_cpus} CPUs and "
+            f"{target_memory:g} GB RAM now? [Y/n]: "
         ).strip().lower()
         should_restart = choice in ("", "y", "yes")
 
@@ -829,10 +904,10 @@ def ensure_colima_resources_for_neat_sdk(
         return udp_restarted
 
     console.print(
-        f"[yellow]⚙️  Restarting Colima with {NEAT_COLIMA_MIN_CPUS} CPUs and "
-        f"{NEAT_COLIMA_MIN_MEMORY_GB} GB RAM...[/yellow]"
+        f"[yellow]⚙️  Restarting Colima with {target_cpus} CPUs and "
+        f"{target_memory:g} GB RAM...[/yellow]"
     )
-    _restart_colima_with_resources(profile)
+    _restart_colima_with_resources(profile, target_cpus, target_memory)
     console.print("[green]✅ Colima restarted with sufficient resources for Neat SDK.[/green]")
     return True
 

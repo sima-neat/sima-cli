@@ -18,8 +18,10 @@ permissions:
   packages: read
 
 concurrency:
-  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+  # A branch push and its pull_request event should share one run instead of
+  # provisioning two fresh WSL environments for the same commit.
+  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref_type == 'branch' }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -430,7 +432,9 @@ jobs:
         uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04
-          update: "true"
+          # Installing packages refreshes APT metadata. Avoid a full distro
+          # upgrade on every ephemeral runner; it adds several variable minutes.
+          use-cache: "true"
           additional-packages: ca-certificates curl python3 python3-venv python3-pip docker.io
 
       - name: Verify Docker on Ubuntu

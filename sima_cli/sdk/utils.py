@@ -2472,9 +2472,20 @@ elif ssh -T -p "${{DEVKIT_SYNC_DEVKIT_PORT:-22}}" -o BatchMode=yes -o ConnectTim
     'command -v docker >/dev/null 2>&1'; then
   DOCKER_STATUS=ready
 else
-  DOCKER_STATUS=missing
-  echo "Docker is not installed on the DevKit. It was not changed during SDK setup."
-  echo "The first 'dk container' command will offer to install and configure it."
+  DOCKER_PROBE_RC=$?
+  if [ "$DOCKER_PROBE_RC" -eq 1 ]; then
+    DOCKER_STATUS=missing
+    echo "Docker is not installed on the DevKit. It was not changed during SDK setup."
+    echo "The first 'dk container' command will offer to install and configure it."
+  else
+    DOCKER_STATUS=blocked
+    BOOTSTRAP_RC=1
+    if [ "$DOCKER_PROBE_RC" -eq 255 ]; then
+      echo "Could not connect to the DevKit over SSH while checking for Docker." >&2
+    else
+      echo "The DevKit Docker check failed with status $DOCKER_PROBE_RC." >&2
+    fi
+  fi
 fi
 """
 

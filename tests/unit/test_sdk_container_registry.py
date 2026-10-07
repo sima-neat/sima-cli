@@ -203,6 +203,10 @@ class TestSdkContainerRegistry(unittest.TestCase):
         self.assertIn("Docker is not installed on the DevKit", script)
         self.assertIn("first 'dk container' command", script)
         self.assertNotIn("dk container setup --yes", script)
+        self.assertIn('DOCKER_PROBE_RC=$?', script)
+        self.assertIn('[ "$DOCKER_PROBE_RC" -eq 1 ]', script)
+        self.assertIn('[ "$DOCKER_PROBE_RC" -eq 255 ]', script)
+        self.assertIn("Could not connect to the DevKit over SSH", script)
         self.assertIn("sima-cli-registry-address", script)
         self.assertIn("systemctl restart docker", script)
         syntax = subprocess.run(

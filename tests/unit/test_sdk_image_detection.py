@@ -3103,6 +3103,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             "10.0.0.244",
             noninteractive=False,
             yes_to_all=True,
+            require_udp=True,
         )
 
     def test_setup_minimal_skips_extension_directory_and_passes_flags(self):

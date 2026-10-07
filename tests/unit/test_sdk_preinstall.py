@@ -455,6 +455,7 @@ class TestSdkPreinstall(unittest.TestCase):
              patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="en0"), \
              patch("sima_cli.sdk.preinstall._colima_supports_network_address_flag", return_value=True), \
              patch("sima_cli.sdk.preinstall._colima_supports_bridged_network_flags", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", side_effect=["ssh", "grpc"]), \
              patch("sima_cli.sdk.preinstall._colima_profile_recreation_safety", return_value=(True, "")), \
              patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
              patch(
@@ -468,6 +469,7 @@ class TestSdkPreinstall(unittest.TestCase):
             restarted = warn_if_colima_devkit_network_may_need_bridged(
                 "10.0.0.244",
                 yes_to_all=True,
+                require_udp=True,
             )
 
         self.assertTrue(restarted)
@@ -497,6 +499,8 @@ class TestSdkPreinstall(unittest.TestCase):
                 "bridged",
                 "--network-interface",
                 "en0",
+                "--port-forwarder",
+                "grpc",
                 "--save-config",
             ],
         )

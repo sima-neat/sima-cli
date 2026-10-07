@@ -562,6 +562,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
     devkit_ip: str,
     noninteractive: bool = False,
     yes_to_all: bool = False,
+    require_udp: bool = False,
 ) -> bool:
     if platform.system() != "Darwin" or not devkit_ip or not _is_docker_using_colima():
         return False
@@ -593,6 +594,10 @@ def warn_if_colima_devkit_network_may_need_bridged(
     if supports_bridged_flags:
         start_flags.extend(["--network-mode", "bridged", "--network-interface", interface])
         start_display_flags.extend(["--network-mode", "bridged", "--network-interface", interface])
+    enable_udp = require_udp and _colima_port_forwarder(profile) != "grpc"
+    if enable_udp:
+        start_flags.extend(["--port-forwarder", "grpc"])
+        start_display_flags.extend(["--port-forwarder", "grpc"])
     start_flags.append("--save-config")
     start_display_flags.append("--save-config")
     target_start_command = f"colima start{profile_display} {' '.join(start_display_flags)}"
@@ -611,6 +616,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
                 "After confirmation, sima-cli will save the profile configuration, recreate the VM without",
                 "the --data option, restore the configuration, and start Colima with:",
                 f"[cyan]{target_start_command}[/cyan]",
+                "" if not enable_udp else "This also enables the gRPC port forwarder required for Insight UDP traffic.",
                 "" if supports_network_address else "",
                 "" if supports_network_address else (
                     "[yellow]Your Colima version does not expose the network-address flag. "
@@ -702,6 +708,8 @@ def warn_if_colima_devkit_network_may_need_bridged(
         )
         if not _is_colima_network_suitable_for_devkit(profile, interface):
             raise RuntimeError("Colima did not report a bridged, reachable address after recreation.")
+        if enable_udp and _colima_port_forwarder(profile) != "grpc":
+            raise RuntimeError("Colima did not report the gRPC port forwarder after recreation.")
         console.print("[green]✅ Colima recreated with reachable VM networking for DevKit-Sync.[/green]")
         return True
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:

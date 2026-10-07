@@ -1200,17 +1200,18 @@ def setup_and_start(
         _reject_if_windows_native_neat_sdk(selected_images, console)
         if any(is_neat_sdk_image(img) for img in selected_images):
             _warn_if_snap_docker_neat_sdk(selected_images, console)
-            ensure_colima_resources_for_neat_sdk(
-                yes_to_all=yes_to_all,
-                noninteractive=noninteractive,
-                require_udp=not skip_insight,
-            )
             if devkit_ip:
                 warn_if_colima_devkit_network_may_need_bridged(
                     devkit_ip,
                     noninteractive=noninteractive,
                     yes_to_all=yes_to_all,
+                    require_udp=not skip_insight,
                 )
+            ensure_colima_resources_for_neat_sdk(
+                yes_to_all=yes_to_all,
+                noninteractive=noninteractive,
+                require_udp=not skip_insight,
+            )
 
     container_build_images = {
         image for image in selected_images

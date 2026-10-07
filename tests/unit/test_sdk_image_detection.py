@@ -230,12 +230,13 @@ class TestSdkImageDetection(unittest.TestCase):
         with patch("sima_cli.sdk.utils.run_command") as run:
             configure_container_docker_builder("sdk", "devuser")
 
-        self.assertEqual(run.call_count, 4)
+        self.assertEqual(run.call_count, 5)
         self.assertIn("groupmod", run.call_args_list[0].args[0][-1])
-        self.assertIn("HOME=/home/devuser", run.call_args_list[1].args[0])
-        self.assertEqual(run.call_args_list[2].args[0][-2:], ["buildx", "version"])
+        self.assertEqual(run.call_args_list[1].args[0], ["docker", "restart", "sdk"])
+        self.assertIn("HOME=/home/devuser", run.call_args_list[2].args[0])
+        self.assertEqual(run.call_args_list[3].args[0][-2:], ["buildx", "version"])
         self.assertEqual(
-            run.call_args_list[3].args[0][-3:],
+            run.call_args_list[4].args[0][-3:],
             ["buildx", "inspect", "--bootstrap"],
         )
 

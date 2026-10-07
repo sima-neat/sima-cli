@@ -409,8 +409,8 @@ def _host_colima_resource_limits() -> tuple:
     return max_cpus, max_memory
 
 
-def _prompt_colima_resource_targets(cpus: int, memory_gb: float) -> tuple:
-    """Prompt for valid Colima resources, using Neat minimums as defaults."""
+def _default_colima_resource_targets(cpus: int, memory_gb: float) -> tuple:
+    """Use half the host by default without reducing an existing allocation."""
     max_cpus, max_memory = _host_colima_resource_limits()
     if max_cpus < NEAT_COLIMA_MIN_CPUS or max_memory < NEAT_COLIMA_MIN_MEMORY_GB:
         raise RuntimeError(
@@ -419,11 +419,21 @@ def _prompt_colima_resource_targets(cpus: int, memory_gb: float) -> tuple:
             f"{NEAT_COLIMA_MIN_CPUS} CPUs / {NEAT_COLIMA_MIN_MEMORY_GB} GB RAM."
         )
 
-    default_cpus = min(max(cpus, NEAT_COLIMA_MIN_CPUS), max_cpus)
-    default_memory = min(
-        max(memory_gb, float(NEAT_COLIMA_MIN_MEMORY_GB)),
-        float(max_memory),
+    recommended_cpus = max(NEAT_COLIMA_MIN_CPUS, max_cpus // 2)
+    recommended_memory = max(
+        float(NEAT_COLIMA_MIN_MEMORY_GB),
+        max_memory / 2,
     )
+    return (
+        min(max(cpus, recommended_cpus), max_cpus),
+        min(max(memory_gb, recommended_memory), float(max_memory)),
+    )
+
+
+def _prompt_colima_resource_targets(cpus: int, memory_gb: float) -> tuple:
+    """Prompt for valid Colima resources, using half the host as defaults."""
+    max_cpus, max_memory = _host_colima_resource_limits()
+    default_cpus, default_memory = _default_colima_resource_targets(cpus, memory_gb)
 
     while True:
         raw_cpus = input(
@@ -667,13 +677,17 @@ def warn_if_colima_devkit_network_may_need_bridged(
         current_cpus < NEAT_COLIMA_MIN_CPUS
         or current_memory < NEAT_COLIMA_MIN_MEMORY_GB
     )
-    target_cpus = max(current_cpus, NEAT_COLIMA_MIN_CPUS)
-    target_memory = max(current_memory, float(NEAT_COLIMA_MIN_MEMORY_GB))
-    if resize_resources and not (yes_to_all or noninteractive):
-        target_cpus, target_memory = _prompt_colima_resource_targets(
+    target_cpus, target_memory = current_cpus, current_memory
+    if resize_resources:
+        target_cpus, target_memory = _default_colima_resource_targets(
             current_cpus,
             current_memory,
         )
+        if not (yes_to_all or noninteractive):
+            target_cpus, target_memory = _prompt_colima_resource_targets(
+                current_cpus,
+                current_memory,
+            )
     if resize_resources:
         resource_flags = [
             "--cpus", str(target_cpus),
@@ -915,8 +929,7 @@ def ensure_colima_resources_for_neat_sdk(
         )
     )
 
-    target_cpus = NEAT_COLIMA_MIN_CPUS
-    target_memory = float(NEAT_COLIMA_MIN_MEMORY_GB)
+    target_cpus, target_memory = _default_colima_resource_targets(cpus, memory_gb)
     if not (yes_to_all or noninteractive):
         target_cpus, target_memory = _prompt_colima_resource_targets(cpus, memory_gb)
 

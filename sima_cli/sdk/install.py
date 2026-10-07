@@ -54,6 +54,10 @@ from sima_cli.sdk.utils import (
     is_snap_docker_cli,
     check_os,
     container_user_mapping_unavailable,
+    container_has_docker_socket_mount,
+    configure_container_docker_builder,
+    sdk_image_uses_automatic_container_build,
+    validate_host_container_build_toolchain,
     detect_current_user,
     select_containers,
 )
@@ -1148,6 +1152,21 @@ def setup_and_start(
                     yes_to_all=yes_to_all,
                 )
 
+    container_build_images = {
+        image for image in selected_images
+        if sdk_image_uses_automatic_container_build(image)
+    }
+    if container_build_images:
+        builder_socket = validate_host_container_build_toolchain()
+        click.echo(f"✅ Host Docker daemon and socket are ready ({builder_socket}).")
+        console.print(Panel(
+            "Neat SDK 3.0+ automatically receives the host Docker daemon socket. Commands in the SDK "
+            "can create privileged sibling containers and otherwise control the Docker host.",
+            title="Docker Builder Host Access",
+            border_style="yellow",
+            expand=False,
+        ))
+
 
     # Step 2: Check running containers
     print("\n🔍 Checking for running SDK containers...")
@@ -1216,6 +1235,7 @@ def setup_and_start(
     studio_choice = None
 
     for img in selected_images:
+        container_build = img in container_build_images
         container_name = sanitize_container_name(img)
         print_section(f"🔄 CONTAINER START SEQUENCE for {container_name}")
         existing_container = confirm_to_remove_exiting_container(
@@ -1264,6 +1284,7 @@ def setup_and_start(
                 publish_edgematic_studio_port=publish_studio_port,
                 minimal=minimal,
                 all_extensions=all_extensions,
+                container_build=container_build,
             )
         else:
             if (edgematic_studio or edgematic_studio_port) and is_neat_sdk_image(img):
@@ -1279,6 +1300,15 @@ def setup_and_start(
                     f"Cannot apply {option} to an existing Neat SDK container because Docker "
                     "port mappings are immutable. Remove and recreate the container when prompted, "
                     f"or run: docker rm -f {existing_container}"
+                )
+            if (
+                container_build
+                and is_neat_sdk_image(img)
+                and not container_has_docker_socket_mount(existing_container)
+            ):
+                raise RuntimeError(
+                    f"Existing SDK 3.0+ container '{existing_container}' has no Docker socket mount. "
+                    "Docker mounts are immutable; remove and recreate it when prompted."
                 )
 
             if not is_container_running(existing_container):
@@ -1298,6 +1328,8 @@ def setup_and_start(
                     )
                 else:
                     configure_container_user(existing_container, login_name, user_uid, user_gid)
+                if container_build and is_neat_sdk_image(img):
+                    configure_container_docker_builder(existing_container, login_name)
 
             if all_extensions and is_neat_sdk_image(img):
                 if check_os() not in ["linux", "macos"]:

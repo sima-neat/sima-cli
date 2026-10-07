@@ -358,7 +358,22 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt.",
 )
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, edgematic_studio, edgematic_studio_port, minimal, workspace, persistent_network_profile, image_selectors, all_extensions):
+def setup(
+    ctx,
+    yes,
+    noninteractive,
+    devkit,
+    no_insight,
+    insight_video_channels,
+    no_model_sdk,
+    edgematic_studio,
+    edgematic_studio_port,
+    minimal,
+    workspace,
+    persistent_network_profile,
+    image_selectors,
+    all_extensions,
+):
     """Initialize SDK environment and select components to start."""
     devkit_ip = _resolve_devkit_ip(devkit)
     try:

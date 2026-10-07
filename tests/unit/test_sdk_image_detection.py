@@ -60,11 +60,14 @@ from sima_cli.sdk.utils import (
     _sudoers_drop_in_script,
     _prepare_log_host_dir,
     bootstrap_devkit_container,
+    configure_container_docker_builder,
+    container_has_docker_socket_mount,
     container_matches_sdk_keyword,
     ensure_model_sdk_extension_installed,
     ensure_edgematic_studio_installed,
     ensure_codex_vscode_extension_installed,
     extract_short_name,
+    get_sdk_platform_version,
     get_local_sima_images,
     get_workspace,
     install_neat_playbooks,
@@ -75,9 +78,13 @@ from sima_cli.sdk.utils import (
     is_snap_docker_cli,
     prompt_multi_select,
     resolve_edgematic_studio_choice,
+    resolve_container_build_socket_gid,
+    resolve_container_build_socket_source,
+    sdk_image_uses_automatic_container_build,
     sanitize_container_hostname,
     sanitize_container_name,
     start_docker_container,
+    validate_host_container_build_toolchain,
 )
 
 
@@ -101,6 +108,137 @@ def _last_docker_run_command(run_mock):
 
 
 class TestSdkImageDetection(unittest.TestCase):
+    def test_sdk_platform_version_uses_image_label(self):
+        result = Mock(returncode=0, stdout="3.0.0~git20261006\n")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            self.assertEqual(
+                get_sdk_platform_version("ghcr.io/sima-neat/sdk:latest"),
+                "3.0.0~git20261006",
+            )
+
+    def test_sdk_platform_version_falls_back_to_release_tag(self):
+        result = Mock(returncode=0, stdout="<no value>\n")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            self.assertEqual(
+                get_sdk_platform_version("ghcr.io/sima-neat/sdk:v3.1.0-daily"),
+                "v3.1.0-daily",
+            )
+
+    def test_container_build_is_automatic_for_sdk_3_and_newer(self):
+        with patch("sima_cli.sdk.utils.get_sdk_platform_version", return_value="3.0.0"):
+            self.assertTrue(
+                sdk_image_uses_automatic_container_build("ghcr.io/sima-neat/sdk:latest")
+            )
+        with patch("sima_cli.sdk.utils.get_sdk_platform_version", return_value="2.1.3.1"):
+            self.assertFalse(
+                sdk_image_uses_automatic_container_build("ghcr.io/sima-neat/sdk:latest")
+            )
+
+    def test_host_container_build_preflight_checks_daemon_and_socket(self):
+        result = Mock(returncode=0, stdout="ok\n", stderr="")
+        with patch("sima_cli.sdk.utils.check_os", return_value="linux"), \
+             patch("sima_cli.sdk.utils.shutil.which", return_value="/usr/bin/docker"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result) as run, \
+             patch("sima_cli.sdk.utils.resolve_container_build_socket_source", return_value="/run/docker.sock"), \
+             patch("sima_cli.sdk.utils.os.path.exists", return_value=True):
+            self.assertEqual(validate_host_container_build_toolchain(), "/run/docker.sock")
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["docker", "version", "--format", "{{.Client.Version}}/{{.Server.Version}}"],
+        )
+
+    def test_host_container_build_preflight_reports_unreachable_daemon(self):
+        result = Mock(returncode=1, stdout="", stderr="Cannot connect to Docker")
+        with patch("sima_cli.sdk.utils.check_os", return_value="linux"), \
+             patch("sima_cli.sdk.utils.shutil.which", return_value="/usr/bin/docker"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "daemon is not reachable"):
+                validate_host_container_build_toolchain()
+
+    def test_container_build_socket_uses_active_linux_unix_context(self):
+        result = Mock(returncode=0, stdout="unix:///run/user/1000/docker.sock\n")
+        with patch.dict("os.environ", {}, clear=True), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            self.assertEqual(
+                resolve_container_build_socket_source("linux"),
+                "/run/user/1000/docker.sock",
+            )
+
+    def test_container_build_socket_uses_daemon_vm_path_on_macos(self):
+        with patch.dict(
+            "os.environ",
+            {"DOCKER_HOST": "unix:///Users/dev/.colima/default/docker.sock"},
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_container_build_socket_source("macos"),
+                "/var/run/docker.sock",
+            )
+
+    def test_container_build_socket_respects_docker_context_over_docker_host(self):
+        result = Mock(returncode=0, stdout="unix:///run/user/1000/context.sock\n", stderr="")
+        with patch.dict(
+            "os.environ",
+            {
+                "DOCKER_CONTEXT": "rootless",
+                "DOCKER_HOST": "tcp://stale.example:2376",
+            },
+            clear=True,
+        ), patch("sima_cli.sdk.utils.subprocess.run", return_value=result) as run:
+            self.assertEqual(
+                resolve_container_build_socket_source("linux"),
+                "/run/user/1000/context.sock",
+            )
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "docker", "context", "inspect", "--format",
+                "{{.Endpoints.docker.Host}}", "rootless",
+            ],
+        )
+
+    def test_container_build_socket_rejects_tcp_endpoint(self):
+        with patch.dict("os.environ", {"DOCKER_HOST": "tcp://builder.example:2376"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "local Unix Docker endpoint"):
+                resolve_container_build_socket_source("linux")
+
+    def test_container_build_socket_gid_is_probed_in_selected_image(self):
+        result = Mock(returncode=0, stdout="991\n", stderr="")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result) as run:
+            self.assertEqual(
+                resolve_container_build_socket_gid(
+                    "ghcr.io/sima-neat/sdk:3.0.0",
+                    "/var/run/docker.sock",
+                ),
+                991,
+            )
+
+        command = run.call_args.args[0]
+        self.assertIn("--network=none", command)
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock", command)
+        self.assertIn("ghcr.io/sima-neat/sdk:3.0.0", command)
+
+    def test_detects_existing_container_build_socket_mount(self):
+        result = Mock(returncode=0, stdout="/workspace\n/var/run/docker.sock\n")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            self.assertTrue(container_has_docker_socket_mount("sdk"))
+
+    def test_configure_container_docker_builder_verifies_user_access(self):
+        with patch("sima_cli.sdk.utils.run_command") as run:
+            configure_container_docker_builder("sdk", "devuser")
+
+        self.assertEqual(run.call_count, 4)
+        self.assertIn("groupmod", run.call_args_list[0].args[0][-1])
+        self.assertIn("HOME=/home/devuser", run.call_args_list[1].args[0])
+        self.assertEqual(run.call_args_list[2].args[0][-2:], ["buildx", "version"])
+        self.assertEqual(
+            run.call_args_list[3].args[0][-3:],
+            ["buildx", "inspect", "--bootstrap"],
+        )
+
     def test_ros2_sdk_is_discovered_and_classified(self):
         with patch("sima_cli.sdk.utils.subprocess.check_output", return_value=SAMPLE_DOCKER_IMAGES):
             images = get_local_sima_images()
@@ -2570,6 +2708,48 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn(f"{neat_config.config_host_dir}:/home/docker/.insight-config", docker_cmd)
         self.assertIn(f"{neat_config.cert_host_dir}:/sdk-cert", docker_cmd)
 
+    def test_start_neat_container_mounts_builder_socket_when_opted_in(self):
+        with TemporaryDirectory() as tmpdir:
+            neat_config = NeatRunConfig(
+                port_map={"schema": "sima.neat.port-map.v1"},
+                port_args=[],
+                config_host_dir=f"{tmpdir}/insight-config",
+                cert_host_dir=f"{tmpdir}/sdk-cert",
+                port_map_host_path=f"{tmpdir}/insight-config/port-map.json",
+                cert_file_host_path=f"{tmpdir}/sdk-cert/neat-sdk.pem",
+                key_file_host_path=f"{tmpdir}/sdk-cert/neat-sdk-key.pem",
+                webrtc_host_ip="127.0.0.1",
+                code_ui_token="token",
+            )
+            docker_result = Mock(returncode=0, stdout="container-id\n", stderr="")
+            with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="aarch64"), \
+                 patch("sima_cli.sdk.utils.os.makedirs"), \
+                 patch("sima_cli.sdk.utils.configure_container"), \
+                 patch("sima_cli.sdk.utils.configure_container_docker_builder") as configure_builder, \
+                 patch("sima_cli.sdk.utils.resolve_container_build_socket_source", return_value="/run/user/1000/docker.sock"), \
+                 patch("sima_cli.sdk.utils.resolve_container_build_socket_gid", return_value=991), \
+                 patch("sima_cli.sdk.utils.detect_current_user", return_value=("devuser", 1000, 1000)), \
+                 patch("sima_cli.sdk.neat.prepare_neat_container_run", return_value=neat_config), \
+                 patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils.subprocess.run", return_value=docker_result) as run:
+                start_docker_container(
+                    uid=1000,
+                    gid=1000,
+                    port=0,
+                    workspace=tmpdir,
+                    image="ghcr.io/sima-neat/sdk:latest",
+                    container_build=True,
+                )
+
+        docker_cmd = _last_docker_run_command(run)
+        self.assertIn("/run/user/1000/docker.sock:/var/run/docker.sock", docker_cmd)
+        self.assertIn("--group-add", docker_cmd)
+        self.assertEqual(docker_cmd[docker_cmd.index("--group-add") + 1], "991")
+        self.assertIn("DOCKER_HOST=unix:///var/run/docker.sock", docker_cmd)
+        self.assertIn("SIMA_SDK_CONTAINER_BUILD=1", docker_cmd)
+        configure_builder.assert_called_once_with("ghcr.io-sima-neat-sdk-latest", "devuser")
+
     def test_start_ros2_container_only_maps_workspace_and_configures_user(self):
         with TemporaryDirectory() as tmpdir, \
              patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
@@ -2996,6 +3176,37 @@ table ip6 nm-shared-enx6c1ff720d573 {
             setup_start.call_args.kwargs["image_selectors"],
             ("ghcr.io/sima-neat/sdk:latest",),
         )
+
+    def test_sdk_setup_does_not_expose_container_build_option(self):
+        runner = CliRunner()
+        result = runner.invoke(sdk, ["setup", "--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("--container-build", result.output)
+
+    def test_setup_automatically_enables_container_build_for_sdk_3(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.sdk_image_uses_automatic_container_build", return_value=True), \
+             patch("sima_cli.sdk.install.validate_host_container_build_toolchain") as preflight, \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/ext"), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container:
+            setup_and_start(
+                no_model_sdk=True,
+                yes_to_all=True,
+                noninteractive=True,
+            )
+
+        preflight.assert_called_once_with()
+        self.assertTrue(start_container.call_args.kwargs["container_build"])
 
     def test_setup_warns_for_snap_docker_with_neat_sdk(self):
         image = "ghcr.io/sima-neat/sdk:latest"

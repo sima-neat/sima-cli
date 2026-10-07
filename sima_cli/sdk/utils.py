@@ -58,6 +58,8 @@ CODEX_EXTENSION_INSTALL_ENV = "SIMA_CLI_INSTALL_CODEX_EXTENSION"
 CLAUDE_EXTENSION_DEFAULT_ID = "anthropic.claude-code"
 CLAUDE_EXTENSION_ID_ENV = "SIMA_CLI_CLAUDE_EXTENSION_ID"
 EDGEMATIC_STUDIO_INSTALL_REF = "main"
+SDK_PLATFORM_VERSION_LABEL = "com.sima.sdk.platform.version"
+CONTAINER_BUILD_MIN_PLATFORM = (3, 0, 0)
 
 def _devcontainer_metadata_label(remote_user: str, workspace_folder: str = "/workspace") -> str:
     """
@@ -85,6 +87,175 @@ def check_os() -> str:
     if sys.platform in ("win32", "cygwin"):
         return "windows"
     return "not_supported"
+
+
+def get_sdk_platform_version(image: str) -> str:
+    """Read the SDK platform version used to gate automatic builder access."""
+    result = subprocess.run(
+        [
+            "docker",
+            "image",
+            "inspect",
+            "--format",
+            f'{{{{ index .Config.Labels "{SDK_PLATFORM_VERSION_LABEL}" }}}}',
+            image,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    label_value = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    if result.returncode == 0 and label_value not in ("", "<no value>"):
+        return label_value
+
+    # Local development images may predate the label while still using a
+    # release-like tag such as 3.0.0 or v3.0.0-daily.
+    tag = image.rsplit(":", 1)[1] if ":" in image.rsplit("/", 1)[-1] else ""
+    return tag if re.match(r"^v?\d+\.\d+(?:\.\d+)?", tag) else ""
+
+
+def sdk_image_uses_automatic_container_build(image: str) -> bool:
+    if not is_neat_sdk_image(image):
+        return False
+
+    version = get_sdk_platform_version(image)
+    match = re.match(r"^v?(\d+)\.(\d+)(?:\.(\d+))?", version)
+    if not match:
+        return False
+    parsed = tuple(int(part or 0) for part in match.groups())
+    return parsed >= CONTAINER_BUILD_MIN_PLATFORM
+
+
+def validate_host_container_build_toolchain() -> str:
+    """Fail clearly unless the host can provide a local Docker daemon socket."""
+    if check_os() not in ("linux", "macos"):
+        raise RuntimeError(
+            "Neat SDK 3.0+ container builds require a Linux or macOS Docker host."
+        )
+    if shutil.which("docker") is None:
+        raise RuntimeError(
+            "Neat SDK 3.0+ requires Docker on the host. Install Docker Engine "
+            "or Docker Desktop and rerun setup."
+        )
+
+    result = subprocess.run(
+        ["docker", "version", "--format", "{{.Client.Version}}/{{.Server.Version}}"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        suffix = f" {detail}" if detail else ""
+        raise RuntimeError(f"Docker is installed, but its daemon is not reachable.{suffix}")
+
+    socket_source = resolve_container_build_socket_source()
+    if check_os() == "linux" and not os.path.exists(socket_source):
+        raise RuntimeError(
+            f"The active Docker Unix socket does not exist: {socket_source}"
+        )
+    return socket_source
+
+
+def resolve_container_build_socket_source(platform_os: str = None) -> str:
+    """Return the daemon-side Unix socket to mount into the Neat SDK."""
+    platform_os = platform_os or check_os()
+    if platform_os not in ("linux", "macos"):
+        raise RuntimeError(
+            "Automatic SDK container builds support Linux and macOS Docker hosts only."
+        )
+
+    context_name = os.environ.get("DOCKER_CONTEXT", "").strip()
+    endpoint = ""
+    if context_name:
+        result = subprocess.run(
+            [
+                "docker", "context", "inspect", "--format",
+                "{{.Endpoints.docker.Host}}", context_name,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            suffix = f" {detail}" if detail else ""
+            raise RuntimeError(
+                f"Unable to inspect Docker context {context_name!r}.{suffix}"
+            )
+        endpoint = result.stdout.strip()
+    else:
+        endpoint = os.environ.get("DOCKER_HOST", "").strip()
+        if not endpoint:
+            result = subprocess.run(
+                ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                endpoint = result.stdout.strip()
+
+    if not endpoint:
+        endpoint = "unix:///var/run/docker.sock"
+    if not endpoint.startswith("unix://"):
+        raise RuntimeError(
+            "Automatic SDK container builds require a local Unix Docker endpoint; "
+            f"the active endpoint is {endpoint!r}."
+        )
+
+    if platform_os == "macos":
+        # Docker Desktop and Colima expose the engine socket at this path inside
+        # their Linux VM, even when the host client uses a forwarded socket in
+        # ~/.docker or ~/.colima.
+        return "/var/run/docker.sock"
+
+    socket_path = endpoint[len("unix://"):]
+    if not os.path.isabs(socket_path):
+        raise RuntimeError(f"Docker socket path must be absolute: {socket_path}")
+    return socket_path
+
+
+def resolve_container_build_socket_gid(image: str, socket_source: str) -> int:
+    """Read the mounted socket GID before starting long-lived SDK services."""
+    result = subprocess.run(
+        [
+            "docker", "run", "--rm", "--network=none",
+            "--entrypoint", "stat",
+            "-v", f"{socket_source}:/var/run/docker.sock",
+            image, "-c", "%g", "/var/run/docker.sock",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    gid = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    if result.returncode != 0 or not gid.isdigit():
+        detail = (result.stderr or result.stdout).strip()
+        suffix = f" {detail}" if detail else ""
+        raise RuntimeError(
+            "Unable to determine the Docker socket group for the SDK container."
+            f"{suffix}"
+        )
+    return int(gid)
+
+
+def container_has_docker_socket_mount(container_name: str) -> bool:
+    result = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            "{{range .Mounts}}{{println .Destination}}{{end}}",
+            container_name,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    return "/var/run/docker.sock" in result.stdout.splitlines()
 
 
 def _decode_subprocess_output(output) -> str:
@@ -1661,6 +1832,37 @@ def configure_container_user(
         run_command(["docker", "exec", "-u", "root", sdk_container_name, "sh", "-c", command])
 
 
+def configure_container_docker_builder(sdk_container_name: str, login_name: str) -> None:
+    """Match the SDK docker group to the mounted socket and verify Buildx."""
+    access_script = (
+        "set -eu; "
+        "test -S /var/run/docker.sock; "
+        "socket_gid=$(stat -c %g /var/run/docker.sock); "
+        "if getent group docker >/dev/null; then "
+        "groupmod -o -g \"${socket_gid}\" docker; "
+        "else groupadd -o -g \"${socket_gid}\" docker; fi; "
+        f"usermod -aG docker {shlex.quote(login_name)}"
+    )
+    run_command([
+        "docker", "exec", "-u", "root", sdk_container_name,
+        "bash", "-lc", access_script,
+    ])
+    user_exec = [
+        "docker", "exec", "-u", login_name,
+        "-e", f"HOME=/home/{login_name}", sdk_container_name,
+    ]
+    run_command(user_exec + [
+        "docker", "version", "--format", "{{.Client.Version}}/{{.Server.Version}}",
+    ])
+    run_command(user_exec + [
+        "docker", "buildx", "version",
+    ])
+    run_command(user_exec + [
+        "docker", "buildx", "inspect", "--bootstrap",
+    ])
+    print(f"✅ Docker Buildx enabled in '{sdk_container_name}' for user '{login_name}'.")
+
+
 def install_neat_playbooks(sdk_container_name: str, login_name: str) -> None:
     image_ref = _get_container_image_ref(sdk_container_name)
     if not image_ref or not is_neat_sdk_image(image_ref):
@@ -1938,6 +2140,7 @@ def start_docker_container(
     publish_edgematic_studio_port=False,
     minimal=False,
     all_extensions=False,
+    container_build=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -1993,6 +2196,17 @@ def start_docker_container(
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/{remote_user}/.openvscode-server/extensions"])
         docker_cmd.extend(["-e", "OPENVSCODE_WORKSPACE=/workspace"])
         docker_cmd.extend(["-v", f"{workspace}:/workspace"])
+        if container_build:
+            docker_socket_source = resolve_container_build_socket_source()
+            docker_socket_gid = resolve_container_build_socket_gid(
+                image, docker_socket_source
+            )
+            docker_cmd.extend([
+                "-v", f"{docker_socket_source}:/var/run/docker.sock",
+                "--group-add", str(docker_socket_gid),
+                "-e", "DOCKER_HOST=unix:///var/run/docker.sock",
+                "-e", "SIMA_SDK_CONTAINER_BUILD=1",
+            ])
 
     # ─────────────────────────────────────────────
     # Add --platform=linux/amd64 for macOS ARM
@@ -2146,6 +2360,13 @@ def start_docker_container(
         user_and_workspace_only=ros2_sdk_image,
         all_extensions=all_extensions,
     )
+
+    if neat_sdk_image and container_build:
+        if check_os() in ["linux", "macos"]:
+            builder_user = detect_current_user()[0]
+        else:
+            builder_user = "docker"
+        configure_container_docker_builder(container_name, builder_user)
 
     if devkit_env and neat_sdk_image:
         bootstrap_devkit_container(container_name, devkit_env)

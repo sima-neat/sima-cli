@@ -2461,12 +2461,62 @@ def bootstrap_devkit_container(container_name: str, devkit_env: dict):
         default=True,
     )
     registry_devkit_address = str(devkit_env.get("container_registry_devkit_address", ""))
+    install_devkit_docker = _value_truthy(
+        devkit_env.get("install_devkit_docker"),
+        default=False,
+    )
+
+    docker_setup = ""
+    if registry_devkit_address or install_devkit_docker:
+        docker_setup = f"""
+DOCKER_STATUS=not_checked
+if [ "${{SRC_RC:-1}}" -ne 0 ]; then
+  DOCKER_STATUS=blocked
+elif ssh -T -p "${{DEVKIT_SYNC_DEVKIT_PORT:-22}}" -o BatchMode=yes -o ConnectTimeout=8 \
+    "${{DEVKIT_SYNC_DEVKIT_USER:-sima}}@${{DEVKIT_SYNC_DEVKIT_IP:-{shlex.quote(devkit_ip)}}}" \
+    'command -v docker >/dev/null 2>&1'; then
+  DOCKER_STATUS=ready
+else
+  INSTALL_DOCKER={shlex.quote("1" if install_devkit_docker else "0")}
+  if [ "$INSTALL_DOCKER" != 1 ] && [ -t 0 ] && [ -t 1 ]; then
+    cat <<'SIMA_DOCKER_PROMPT'
+Docker is required to deploy SDK-built container images to the DevKit.
+The Modalix setup stores Docker and containerd data under /data, enables the
+services, and adds the DevKit user to the docker group.
+SIMA_DOCKER_PROMPT
+    read -r -p 'Install Docker on the DevKit now? [y/N]: ' answer
+    case "$answer" in
+      y|Y|yes|YES|Yes) INSTALL_DOCKER=1 ;;
+      *) INSTALL_DOCKER=0 ;;
+    esac
+  fi
+  if [ "$INSTALL_DOCKER" = 1 ]; then
+    echo "Installing and configuring Docker on the DevKit."
+    if dk container setup --yes; then
+      DOCKER_STATUS=installed
+    else
+      DOCKER_STATUS=install_failed
+      BOOTSTRAP_RC=1
+    fi
+  else
+    DOCKER_STATUS=skipped
+    echo "Docker installation was skipped. Container deployment is not available yet."
+    echo "Rerun SDK setup with --install-devkit-docker, or run 'dk container setup' in the SDK shell."
+  fi
+fi
+"""
 
     registry_setup = ""
     if registry_devkit_address:
         registry_setup = f"""
 REGISTRY_STATUS=not_started
-if [ "${{SRC_RC:-1}}" -ne 0 ]; then
+if [ "${{SRC_RC:-1}}" -ne 0 ] || [ "${{DOCKER_STATUS:-blocked}}" = blocked ]; then
+  REGISTRY_STATUS=blocked
+  BOOTSTRAP_RC=1
+elif [ "${{DOCKER_STATUS:-skipped}}" = skipped ]; then
+  REGISTRY_STATUS=skipped_no_docker
+elif [ "${{DOCKER_STATUS:-blocked}}" != ready ] && \
+     [ "${{DOCKER_STATUS:-blocked}}" != installed ]; then
   REGISTRY_STATUS=blocked
   BOOTSTRAP_RC=1
 else
@@ -2476,11 +2526,6 @@ else
       bash -s -- {shlex.quote(registry_devkit_address)} <<'SIMA_REGISTRY_REMOTE'
 set -e
 registry="$1"
-
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker is not installed on the DevKit. Install Docker, then run SDK setup again." >&2
-  exit 2
-fi
 
 python3 - "$registry" <<'PY'
 import sys
@@ -2580,12 +2625,14 @@ else
     BOOTSTRAP_STATUS=sourced_no_dk
   fi
 fi
+{docker_setup}
 {registry_setup}
 if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ] && [ "$BOOTSTRAP_STATUS" != source_failed ] && [ "${{DEVKIT_SYNC_METHOD:-none}}" != rsync ]; then
   BOOTSTRAP_STATUS=rsync_fallback_failed
   BOOTSTRAP_RC=1
 fi
 echo "__SIMA_DEVKIT_BOOTSTRAP_STATUS=$BOOTSTRAP_STATUS"
+echo "__SIMA_DEVKIT_DOCKER_STATUS=${{DOCKER_STATUS:-skipped}}"
 echo "__SIMA_DEVKIT_REGISTRY_STATUS=${{REGISTRY_STATUS:-skipped}}"
 exit "$BOOTSTRAP_RC"
 """
@@ -2622,10 +2669,13 @@ exit "$BOOTSTRAP_RC"
     )
 
     status = ""
+    docker_status = ""
     registry_status = ""
     for line in (proc.stdout or "").splitlines():
         if line.startswith("__SIMA_DEVKIT_BOOTSTRAP_STATUS="):
             status = line.split("=", 1)[1].strip()
+        elif line.startswith("__SIMA_DEVKIT_DOCKER_STATUS="):
+            docker_status = line.split("=", 1)[1].strip()
         elif line.startswith("__SIMA_DEVKIT_REGISTRY_STATUS="):
             registry_status = line.split("=", 1)[1].strip()
 
@@ -2660,6 +2710,11 @@ exit "$BOOTSTRAP_RC"
             print(
                 "ℹ️  In the SDK shell, use 'dk container deploy <image>:<tag>' "
                 "to download and run an image on the DevKit."
+            )
+        elif docker_status == "skipped":
+            print(
+                "ℹ️  Docker installation was not approved. The SDK is ready, but "
+                "DevKit container deployment remains disabled."
             )
         return
 

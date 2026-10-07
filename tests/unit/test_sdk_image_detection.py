@@ -3199,6 +3199,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     "10.42.0.2",
                     "--container-registry-port",
                     "5050",
+                    "--install-devkit-docker",
                     "-y",
                     "-n",
                 ],
@@ -3207,6 +3208,15 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(setup_start.call_args.kwargs["container_registry_port"], 5050)
         self.assertFalse(setup_start.call_args.kwargs["no_container_registry"])
+        self.assertTrue(setup_start.call_args.kwargs["install_devkit_docker"])
+
+    def test_sdk_setup_requires_devkit_for_docker_install(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"):
+            result = runner.invoke(sdk, ["setup", "--install-devkit-docker"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("requires --devkit", result.output)
 
     def test_sdk_setup_rejects_registry_port_when_registry_is_skipped(self):
         runner = CliRunner()
@@ -3296,7 +3306,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
             noninteractive=True,
             yes_to_all=True,
         )
-        self.assertEqual(start_container.call_args.kwargs["devkit_env"], registry_env)
+        self.assertEqual(
+            start_container.call_args.kwargs["devkit_env"],
+            {**registry_env, "install_devkit_docker": False},
+        )
 
     def test_setup_warns_for_snap_docker_with_neat_sdk(self):
         image = "ghcr.io/sima-neat/sdk:latest"

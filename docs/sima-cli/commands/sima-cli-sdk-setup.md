@@ -28,6 +28,7 @@ sima-cli sdk setup [OPTIONS]
 | `--persistent-network-profile` | Allow setup to install a persistent NetworkManager shared-network repair profile without prompting. |
 | `--no-container-registry` | Skip the local registry that lets a configured DevKit download images built in the SDK. |
 | `--container-registry-port` | Use this host port for the local DevKit container registry. Existing stored images are kept. |
+| `--install-devkit-docker` | Install and configure Docker on the DevKit if it is missing. Requires --devkit and passwordless sudo. |
 | `--image` | Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt. |
 
 ## Arguments
@@ -80,6 +81,9 @@ Options:
                                   Use this host port for the local DevKit
                                   container registry. Existing stored images
                                   are kept.  [1<=x<=65535]
+  --install-devkit-docker         Install and configure Docker on the DevKit
+                                  if it is missing. Requires --devkit and
+                                  passwordless sudo.
   --image TEXT                    Start only the SDK image matching this
                                   repository:tag or tag (e.g. 'ghcr.io/sima-
                                   neat/sdk:latest' or 'latest'). Repeatable;

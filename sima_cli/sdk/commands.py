@@ -362,6 +362,11 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Use this host port for the local DevKit container registry. Existing stored images are kept.",
 )
 @click.option(
+    "--install-devkit-docker",
+    is_flag=True,
+    help="Install and configure Docker on the DevKit if it is missing. Requires --devkit and passwordless sudo.",
+)
+@click.option(
     "--image",
     "image_selectors",
     multiple=True,
@@ -384,6 +389,7 @@ def setup(
     persistent_network_profile,
     no_container_registry,
     container_registry_port,
+    install_devkit_docker,
     image_selectors,
     all_extensions,
 ):
@@ -393,6 +399,8 @@ def setup(
             "--no-container-registry cannot be used with --container-registry-port."
         )
     devkit_ip = _resolve_devkit_ip(devkit)
+    if install_devkit_docker and not devkit_ip:
+        raise click.UsageError("--install-devkit-docker requires --devkit.")
     try:
         setup_and_start(
             noninteractive=noninteractive,
@@ -408,6 +416,7 @@ def setup(
             persistent_network_profile=persistent_network_profile,
             no_container_registry=no_container_registry,
             container_registry_port=container_registry_port,
+            install_devkit_docker=install_devkit_docker,
             image_selectors=image_selectors,
             all_extensions=all_extensions,
         )

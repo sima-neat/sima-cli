@@ -4,6 +4,42 @@
 
 명령 참조: [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
 
+## 컨테이너 이미지 빌드 및 공유
+
+DevKit과 함께 SDK 3.0 이상을 설정하면 sima-cli는 작은 로컬 컨테이너 레지스트리 생성을 제안합니다. 레지스트리는 호스트에 이미지를 저장하므로 SDK 컨테이너가 교체되어도 이미지를 계속 사용할 수 있습니다.
+
+레지스트리는 포트 5050에서 시작합니다. 해당 포트를 이미 사용 중이면 sima-cli가 자동으로 다음 사용 가능한 포트를 선택하고 선택한 주소를 표시합니다.
+
+설정은 SDK 셸 안에서 사용할 수 있는 두 주소도 제공합니다.
+
+- `SIMA_CONTAINER_REGISTRY`는 SDK가 이미지를 푸시하는 데 사용하는 주소입니다.
+- `SIMA_DEVKIT_CONTAINER_REGISTRY`는 DevKit이 동일한 이미지를 풀하는 데 사용하는 주소입니다.
+
+Dockerfile에 애플리케이션을 정의한 다음 SDK 안에서 ARM64 이미지를 빌드하고 푸시합니다.
+
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --tag "${SIMA_CONTAINER_REGISTRY}/hello-neat:develop" \
+  --push \
+  .
+```
+
+`dk container deploy`를 사용하여 동일한 레지스트리에서 이미지를 다운로드하고 연결된 DevKit에서 실행합니다.
+
+```bash
+dk container deploy hello-neat:develop \
+  --detach \
+  --name hello-neat \
+  --network host
+```
+
+짧은 이미지 이름만으로 충분합니다. `dk`는 sima-cli가 설정한 DevKit 레지스트리 주소를 사용합니다. 먼저 명시적으로 이미지를 갱신하지 않고 시작하려면 `dk container run hello-neat:develop ...`를 사용합니다.
+
+레지스트리는 로컬 개발 네트워크에서 HTTP를 사용합니다. sima-cli는 DevKit의 Docker 설정을 업데이트하고 이 설정이 변경되면 Docker를 한 번 재시작합니다. SDK용 루프백과 DevKit 방향 네트워크 경로에만 레지스트리를 공개하며, 호스트의 모든 인터페이스에 공개하지 않습니다.
+
+이 단계를 건너뛰려면 `--no-container-registry`를 사용합니다. 기존 레지스트리를 중지하거나 제거하지는 않습니다. 다른 포트를 선택하려면 `--container-registry-port <port>`로 설정을 다시 실행합니다. 포트가 변경되어도 기존에 저장된 이미지는 유지됩니다.
+
 ## Edgematic Studio 선택 설치
 
 기본 설정에서는 Edgematic Studio 질문을 표시하거나 Studio를 설치하거나 포트를 공개하지 않습니다. `-y`와 `--noninteractive`에도 동일하게 적용됩니다.

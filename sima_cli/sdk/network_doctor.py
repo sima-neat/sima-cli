@@ -514,13 +514,18 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
         f"interface={network.get('interface') or 'unset'} "
         f"ipAddress={network.get('ip_address') or 'unset'}"
     )
-    route_interface = preinstall._route_interface_for_target(report.devkit_ip)
-    interface = (
-        route_interface
-        if preinstall._is_safe_colima_bridge_interface(route_interface)
-        else "en0"
-    )
-    if preinstall._is_colima_network_suitable_for_devkit(profile, interface):
+    if report.devkit_ip:
+        route_interface = preinstall._route_interface_for_target(report.devkit_ip)
+        interface = (
+            route_interface
+            if preinstall._is_safe_colima_bridge_interface(route_interface)
+            else "en0"
+        )
+        expected_interface = interface
+    else:
+        interface = str(network.get("interface") or "").strip() or "en0"
+        expected_interface = ""
+    if preinstall._is_colima_network_suitable_for_devkit(profile, expected_interface):
         report.add(
             "info",
             "colima-network-address-enabled",

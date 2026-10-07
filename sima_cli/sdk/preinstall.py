@@ -460,6 +460,7 @@ def _stage_colima_profile_config(profile: str, interface: str) -> tuple:
     if not config_path.is_file():
         raise RuntimeError(f"Could not find Colima profile configuration at {config_path}.")
 
+    config_mode = config_path.stat().st_mode & 0o777
     try:
         with config_path.open("r", encoding="utf-8") as stream:
             config = yaml.safe_load(stream)
@@ -488,7 +489,6 @@ def _stage_colima_profile_config(profile: str, interface: str) -> tuple:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             yaml.safe_dump(config, stream, sort_keys=False)
-        os.chmod(snapshot_path, config_path.stat().st_mode & 0o777)
     except Exception:
         try:
             os.close(descriptor)
@@ -496,12 +496,27 @@ def _stage_colima_profile_config(profile: str, interface: str) -> tuple:
             pass
         snapshot_path.unlink(missing_ok=True)
         raise
-    return config_path, snapshot_path
+    return config_path, snapshot_path, config_mode
 
 
-def _restore_colima_profile_config(config_path: Path, snapshot_path: Path) -> None:
+def _restore_colima_profile_config(
+    config_path: Path,
+    snapshot_path: Path,
+    config_mode: int,
+) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(snapshot_path, config_path)
+    descriptor = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as destination, snapshot_path.open("rb") as source:
+            shutil.copyfileobj(source, destination)
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+    os.chmod(config_path, config_mode)
 
 
 def _colima_store_path(profile: str) -> Path:
@@ -650,7 +665,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
         return False
 
     try:
-        config_path, snapshot_path = _stage_colima_profile_config(profile, interface)
+        config_path, snapshot_path, config_mode = _stage_colima_profile_config(profile, interface)
     except (OSError, RuntimeError) as exc:
         console.print(
             "[yellow]⚠️  Could not safely preserve the Colima profile configuration; "
@@ -662,7 +677,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
     try:
         subprocess.run([colima_cmd, "stop", *profile_args], check=True)
         subprocess.run([colima_cmd, "delete", *profile_args, "--force"], check=True)
-        _restore_colima_profile_config(config_path, snapshot_path)
+        _restore_colima_profile_config(config_path, snapshot_path, config_mode)
         config_restored = True
         subprocess.run(
             [colima_cmd, "start", *profile_args, *start_flags],

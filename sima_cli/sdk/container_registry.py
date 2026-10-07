@@ -70,17 +70,34 @@ def existing_container_registry_port() -> Optional[int]:
     return int(existing["port"]) if existing else None
 
 
-def _require_available_host_port(port: int) -> None:
+def _host_port_is_available(port: int) -> bool:
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         probe.bind(("0.0.0.0", port))
-    except OSError as exc:
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
+def find_available_container_registry_port(start_port: int = DEFAULT_REGISTRY_PORT) -> int:
+    for port in range(start_port, 65536):
+        if _host_port_is_available(port):
+            if port != start_port:
+                print(f"ℹ️  Port {start_port} is busy, so the local registry will use port {port}.")
+            return port
+    raise RuntimeError(
+        f"Could not find a free port for the local container registry at or above {start_port}."
+    )
+
+
+def _require_available_host_port(port: int) -> None:
+    if not _host_port_is_available(port):
         raise RuntimeError(
             f"Port {port} is already in use on this host. Run SDK setup again with "
             f"--container-registry-port <free-port>."
-        ) from exc
-    finally:
-        probe.close()
+        )
 
 
 def _wait_for_registry(port: int) -> None:
@@ -109,7 +126,9 @@ def ensure_container_registry(host_ip: str, requested_port: Optional[int] = None
         raise RuntimeError("Could not determine the SDK host address for the DevKit registry.")
 
     existing = _inspect_registry()
-    port = requested_port or (int(existing["port"]) if existing else DEFAULT_REGISTRY_PORT)
+    port = requested_port or (
+        int(existing["port"]) if existing else find_available_container_registry_port()
+    )
     if not 1 <= port <= 65535:
         raise RuntimeError("The container registry port must be between 1 and 65535.")
 

@@ -23,9 +23,9 @@ from sima_cli.sdk.preinstall import (
 )
 from sima_cli.sdk.config import IMAGE_CONFIG
 from sima_cli.sdk.container_registry import (
-    DEFAULT_REGISTRY_PORT,
     ensure_container_registry,
     existing_container_registry_port,
+    find_available_container_registry_port,
 )
 from sima_cli.sdk.linux_shared_network import (
     configure_linux_shared_devkit_network,
@@ -786,7 +786,9 @@ def _setup_devkit_container_registry(
         return devkit_env
 
     current_port = existing_container_registry_port()
-    default_port = container_registry_port or current_port or DEFAULT_REGISTRY_PORT
+    selected_port = container_registry_port or current_port
+    if selected_port is None:
+        selected_port = find_available_container_registry_port()
     if not (noninteractive or yes_to_all):
         if not click.confirm(
             "Set up a local container registry so the DevKit can download images built in the SDK?",
@@ -797,17 +799,10 @@ def _setup_devkit_container_registry(
                 "You can enable it the next time you run SDK setup."
             )
             return devkit_env
-        if container_registry_port is None:
-            default_port = click.prompt(
-                "Port for the local container registry",
-                type=click.IntRange(1, 65535),
-                default=default_port,
-                show_default=True,
-            )
 
     config = ensure_container_registry(
         str(devkit_env.get("host_ip", "")),
-        requested_port=int(default_port),
+        requested_port=int(selected_port),
     )
     updated = dict(devkit_env)
     updated.update(

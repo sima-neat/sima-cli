@@ -10,6 +10,9 @@ When you set up an SDK 3.0 or newer with a DevKit, sima-cli offers to create a
 small local container registry. The registry stores images on the host so they
 remain available when the SDK container is replaced.
 
+The registry starts on port 5050. If that port is already in use, sima-cli
+automatically selects the next free port and prints the address it selected.
+
 Setup also makes two addresses available inside the SDK shell:
 
 - `SIMA_CONTAINER_REGISTRY` is the address the SDK uses to push an image.
@@ -27,13 +30,19 @@ docker buildx build \
   .
 ```
 
-The setup output shows the DevKit address. On the DevKit, use that address to
-pull and run the image. For example:
+Use `dk container deploy` to download the image from the same registry and run
+it on the connected DevKit:
 
 ```bash
-sudo docker pull 192.168.1.10:5050/hello-neat:develop
-sudo docker run --rm 192.168.1.10:5050/hello-neat:develop
+dk container deploy hello-neat:develop \
+  --detach \
+  --name hello-neat \
+  --network host
 ```
+
+The short image name is enough. `dk` uses the DevKit registry address configured
+by sima-cli. Use `dk container run hello-neat:develop ...` to start an image
+without explicitly refreshing it first.
 
 The registry uses HTTP on the local development network. sima-cli updates the
 DevKit Docker settings and restarts Docker once when this setting changes.

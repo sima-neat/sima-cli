@@ -9,6 +9,7 @@ from sima_cli.sdk.container_registry import (
     REGISTRY_VOLUME_NAME,
     _require_available_host_port,
     ensure_container_registry,
+    find_available_container_registry_port,
 )
 from sima_cli.sdk.install import _setup_devkit_container_registry
 from sima_cli.sdk.utils import (
@@ -27,6 +28,19 @@ class TestSdkContainerRegistry(unittest.TestCase):
                 _require_available_host_port(port)
         finally:
             listener.close()
+
+    def test_chooses_next_registry_port_when_default_is_busy(self):
+        with patch(
+            "sima_cli.sdk.container_registry._host_port_is_available",
+            side_effect=[False, False, True],
+        ) as available:
+            port = find_available_container_registry_port(5050)
+
+        self.assertEqual(port, 5052)
+        self.assertEqual(
+            [item.args[0] for item in available.call_args_list],
+            [5050, 5051, 5052],
+        )
 
     def test_creates_persistent_registry_and_returns_both_addresses(self):
         completed = Mock(returncode=0, stdout="registry-id\n", stderr="")
@@ -86,24 +100,25 @@ class TestSdkContainerRegistry(unittest.TestCase):
         self.assertEqual(result, devkit_env)
         ensure.assert_not_called()
 
-    def test_setup_adds_registry_addresses_to_devkit_environment(self):
+    def test_setup_adds_negotiated_registry_addresses_to_devkit_environment(self):
         devkit_env = {"host_ip": "10.42.0.1", "devkit_ip": "10.42.0.2"}
         config = ContainerRegistryConfig(
-            port=5050,
-            sdk_address="localhost:5050",
-            devkit_address="10.42.0.1:5050",
+            port=5052,
+            sdk_address="localhost:5052",
+            devkit_address="10.42.0.1:5052",
         )
         with patch("sima_cli.sdk.install.existing_container_registry_port", return_value=None), \
+             patch("sima_cli.sdk.install.find_available_container_registry_port", return_value=5052) as select_port, \
              patch("sima_cli.sdk.install.ensure_container_registry", return_value=config) as ensure:
             result = _setup_devkit_container_registry(
                 devkit_env,
-                container_registry_port=5050,
                 noninteractive=True,
             )
 
-        ensure.assert_called_once_with("10.42.0.1", requested_port=5050)
-        self.assertEqual(result["container_registry_sdk_address"], "localhost:5050")
-        self.assertEqual(result["container_registry_devkit_address"], "10.42.0.1:5050")
+        select_port.assert_called_once_with()
+        ensure.assert_called_once_with("10.42.0.1", requested_port=5052)
+        self.assertEqual(result["container_registry_sdk_address"], "localhost:5052")
+        self.assertEqual(result["container_registry_devkit_address"], "10.42.0.1:5052")
 
     def test_saves_registry_addresses_for_existing_sdk_container(self):
         completed = Mock(returncode=0, stdout="", stderr="")

@@ -2657,6 +2657,10 @@ exit "$BOOTSTRAP_RC"
             print(
                 f"✅ DevKit container registry access is ready ({registry_devkit_address})."
             )
+            print(
+                "ℹ️  In the SDK shell, use 'dk container deploy <image>:<tag>' "
+                "to download and run an image on the DevKit."
+            )
         return
 
     # First-time setup often needs interactive password entry for ssh-copy-id.

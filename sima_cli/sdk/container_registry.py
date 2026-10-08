@@ -83,9 +83,9 @@ def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str
     if platform.system() != "Darwin":
         return host_ip
 
-    # Colima's Docker daemon runs in a VM and cannot publish a port directly on
-    # a macOS interface address. Only a bridged VM address is reachable from a
-    # peer on the DevKit-facing LAN; shared-mode addresses are host-local.
+    # Colima's Docker daemon runs in a VM. A direct LAN needs the VM's bridged
+    # address; macOS Internet Sharing needs Colima host-address forwarding so
+    # Docker can publish on the Mac's DevKit-facing bridge address.
     from sima_cli.sdk.preinstall import (
         _boolish,
         _colima_network_config,
@@ -110,6 +110,18 @@ def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str
             raise RuntimeError(
                 "The local registry could not identify a safe physical interface for the DevKit route."
             )
+        if route_interface.strip().lower().startswith("bridge"):
+            if (
+                _boolish(network.get("address"))
+                or mode != "shared"
+                or not _boolish(network.get("host_addresses"))
+            ):
+                raise RuntimeError(
+                    "The local registry needs Colima shared networking with host-address forwarding "
+                    "for a DevKit connected through macOS Internet Sharing. Rerun SDK setup and "
+                    "allow sima-cli to recreate the profile."
+                )
+            return host_ip
         if configured_interface != expected_interface:
             raise RuntimeError(
                 f"The Colima profile is bridged to {configured_interface}, but the DevKit route uses "

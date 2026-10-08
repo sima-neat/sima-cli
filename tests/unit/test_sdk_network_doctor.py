@@ -159,7 +159,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
             report = net.build_network_doctor_report()
 
         self.assertTrue(any(f.code == "colima-network-address-enabled" for f in report.findings))
-        suitable.assert_called_once_with("default", "")
+        suitable.assert_called_once_with("default", "", internet_sharing=False)
 
     def test_report_warns_when_colima_network_address_disabled_on_macos(self):
         with patch.object(net, "_is_linux_host", return_value=False), \
@@ -196,7 +196,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
             report = net.build_network_doctor_report(devkit_ip="192.168.2.3")
 
         self.assertFalse(any(f.code == "colima-bridge-route-unsafe" for f in report.findings))
-        suitable.assert_called_once_with("default", "en7")
+        suitable.assert_called_once_with("default", "en7", internet_sharing=True)
 
     def test_report_rejects_unsafe_colima_route_on_macos(self):
         with patch.object(net, "_is_linux_host", return_value=False), \

@@ -26,6 +26,7 @@ from sima_cli.sdk.container_registry import (
     ensure_container_registry,
     existing_container_registry_port,
     find_available_container_registry_port,
+    repair_existing_container_registry,
     resolve_container_registry_bind_ip,
 )
 from sima_cli.sdk.linux_shared_network import (
@@ -1281,6 +1282,8 @@ def setup_and_start(
             noninteractive=noninteractive,
             yes_to_all=yes_to_all,
         )
+    elif container_build_images and not no_container_registry:
+        repair_existing_container_registry()
     skip_model_sdk = no_model_sdk or minimal
     if (
         insight_video_channels > DEFAULT_INSIGHT_VIDEO_CHANNELS

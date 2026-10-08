@@ -266,7 +266,13 @@ def _colima_instance_config(profile: str) -> dict:
     else:
         short_name = profile[len("colima-"):] if profile.startswith("colima-") else profile
         profile_id = f"colima-{short_name}"
-    path = _colima_config_path(profile).parent.parent / "_lima" / profile_id / "colima.yaml"
+    configured_lima_home = os.environ.get("LIMA_HOME")
+    lima_home = (
+        Path(configured_lima_home).expanduser()
+        if configured_lima_home
+        else _colima_config_path(profile).parent.parent / "_lima"
+    )
+    path = lima_home / profile_id / "colima.yaml"
     try:
         with path.open("r", encoding="utf-8") as stream:
             data = yaml.safe_load(stream) or {}
@@ -513,6 +519,7 @@ def _is_safe_colima_bridge_interface(interface: str) -> bool:
         "tailscale",
         "zt",
         "ppp",
+        "ipsec",
         "bridge",
         "vmnet",
         "vboxnet",

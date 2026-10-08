@@ -8,6 +8,7 @@ from unittest.mock import patch
 from sima_cli.sdk.preinstall import (
     _detect_colima_profile,
     _colima_config_path,
+    _colima_instance_config,
     _colima_network_config,
     _colima_port_forwarder,
     _colima_profile_recreation_safety,
@@ -30,9 +31,25 @@ from sima_cli.sdk.preinstall import (
 
 class TestSdkPreinstall(unittest.TestCase):
     def test_colima_bridge_interface_rejects_known_vpn_prefixes(self):
-        for interface in ("utun7", "ppp0", "tailscale0", "ztabc123", "wg0"):
+        for interface in ("utun7", "ppp0", "ipsec0", "tailscale0", "ztabc123", "wg0"):
             with self.subTest(interface=interface):
                 self.assertFalse(_is_safe_colima_bridge_interface(interface))
+
+    def test_colima_instance_config_honors_lima_home(self):
+        with TemporaryDirectory() as tmpdir:
+            lima_home = Path(tmpdir) / "lima"
+            instance_config = lima_home / "colima-work" / "colima.yaml"
+            instance_config.parent.mkdir(parents=True)
+            instance_config.write_text(
+                "network:\n  address: true\n  mode: bridged\n  interface: en7\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict("os.environ", {"LIMA_HOME": str(lima_home)}, clear=True):
+                config = _colima_instance_config("work")
+
+        self.assertEqual(config["network"]["mode"], "bridged")
+        self.assertEqual(config["network"]["interface"], "en7")
 
     def test_colima_network_config_uses_generated_instance_mode(self):
         with patch(

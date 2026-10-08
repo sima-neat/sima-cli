@@ -7,9 +7,11 @@ from sima_cli.sdk.container_registry import (
     ContainerRegistryConfig,
     REGISTRY_CONTAINER_NAME,
     REGISTRY_VOLUME_NAME,
+    _inspect_registry,
     _require_available_host_port,
     ensure_container_registry,
     find_available_container_registry_port,
+    repair_existing_container_registry,
     resolve_container_registry_bind_ip,
 )
 from sima_cli.sdk.install import _setup_devkit_container_registry
@@ -63,10 +65,36 @@ class TestSdkContainerRegistry(unittest.TestCase):
         port_check.assert_called_once_with(5000)
         wait.assert_called_once_with(5000)
 
+    def test_reads_published_registry_ports(self):
+        inspected = Mock(
+            returncode=0,
+            stdout=(
+                'container-registry|5050|10.42.0.1|true|'
+                '{"5000/tcp":[{"HostIp":"127.0.0.1","HostPort":"5050"},'
+                '{"HostIp":"10.42.0.1","HostPort":"5050"}]}\n'
+            ),
+        )
+        with patch("sima_cli.sdk.container_registry.subprocess.run", return_value=inspected):
+            existing = _inspect_registry()
+
+        self.assertEqual(existing["published"], {"127.0.0.1:5050", "10.42.0.1:5050"})
+
+    def test_reads_registry_without_published_ports(self):
+        inspected = Mock(returncode=0, stdout='container-registry|5050|10.42.0.1|true|{"5000/tcp":null}\n')
+        with patch("sima_cli.sdk.container_registry.subprocess.run", return_value=inspected):
+            existing = _inspect_registry()
+
+        self.assertEqual(existing["published"], set())
+
     def test_reuses_running_registry(self):
         with patch(
             "sima_cli.sdk.container_registry._inspect_registry",
-            return_value={"port": 5000, "bind_ip": "10.42.0.1", "running": True},
+            return_value={
+                "port": 5000,
+                "bind_ip": "10.42.0.1",
+                "running": True,
+                "published": {"127.0.0.1:5000", "10.42.0.1:5000"},
+            },
         ), patch("sima_cli.sdk.container_registry._wait_for_registry") as wait, \
              patch("sima_cli.sdk.container_registry.subprocess.run") as run:
             config = ensure_container_registry("10.42.0.1")
@@ -74,6 +102,55 @@ class TestSdkContainerRegistry(unittest.TestCase):
         self.assertEqual(config.port, 5000)
         run.assert_not_called()
         wait.assert_called_once_with(5000)
+
+    def _assert_recreates_registry(self, existing):
+        completed = Mock(returncode=0, stdout="registry-id\n", stderr="")
+        with patch("sima_cli.sdk.container_registry._inspect_registry", return_value=existing), \
+             patch("sima_cli.sdk.container_registry._require_available_host_port") as port_check, \
+             patch("sima_cli.sdk.container_registry._wait_for_registry"), \
+             patch("sima_cli.sdk.container_registry.subprocess.run", return_value=completed) as run:
+            ensure_container_registry("10.42.0.1")
+
+        port_check.assert_not_called()
+        commands = [item.args[0] for item in run.call_args_list]
+        self.assertIn(["docker", "rm", "-f", REGISTRY_CONTAINER_NAME], commands)
+        registry_run = next(command for command in commands if command[:3] == ["docker", "run", "-d"])
+        self.assertIn("127.0.0.1:5050:5000", registry_run)
+        self.assertIn("10.42.0.1:5050:5000", registry_run)
+        self.assertFalse(any(command[:3] == ["docker", "volume", "rm"] for command in commands))
+
+    def test_recreates_running_registry_without_published_ports(self):
+        self._assert_recreates_registry(
+            {"port": 5050, "bind_ip": "10.42.0.1", "running": True, "published": set()}
+        )
+
+    def test_recreates_stopped_registry(self):
+        self._assert_recreates_registry(
+            {"port": 5050, "bind_ip": "10.42.0.1", "running": False, "published": set()}
+        )
+
+    def test_repair_recreates_registry_from_recorded_address(self):
+        with patch(
+            "sima_cli.sdk.container_registry._inspect_registry",
+            return_value={"port": 5050, "bind_ip": "10.42.0.1", "running": True, "published": set()},
+        ), patch("sima_cli.sdk.container_registry.ensure_container_registry") as ensure:
+            repair_existing_container_registry()
+
+        ensure.assert_called_once_with("10.42.0.1", requested_port=5050)
+
+    def test_repair_leaves_healthy_registry_unchanged(self):
+        with patch(
+            "sima_cli.sdk.container_registry._inspect_registry",
+            return_value={
+                "port": 5050,
+                "bind_ip": "10.42.0.1",
+                "running": True,
+                "published": {"127.0.0.1:5050", "10.42.0.1:5050"},
+            },
+        ), patch("sima_cli.sdk.container_registry.ensure_container_registry") as ensure:
+            repair_existing_container_registry()
+
+        ensure.assert_not_called()
 
     def test_reconfigures_port_without_deleting_registry_volume(self):
         completed = Mock(returncode=0, stdout="registry-id\n", stderr="")

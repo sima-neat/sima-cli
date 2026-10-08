@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import platform
 import socket
 import subprocess
@@ -37,7 +38,8 @@ def _inspect_registry() -> Optional[dict]:
             "{{index .Config.Labels \"com.sima.sdk.service\"}}|"
             "{{index .Config.Labels \"com.sima.sdk.registry.port\"}}|"
             "{{index .Config.Labels \"com.sima.sdk.registry.bind-ip\"}}|"
-            "{{.State.Running}}",
+            "{{.State.Running}}|"
+            "{{json .NetworkSettings.Ports}}",
             REGISTRY_CONTAINER_NAME,
         ],
         text=True,
@@ -47,13 +49,13 @@ def _inspect_registry() -> Optional[dict]:
     if result.returncode != 0:
         return None
 
-    parts = result.stdout.strip().split("|", 3)
-    if len(parts) != 4:
+    parts = result.stdout.strip().split("|", 4)
+    if len(parts) != 5:
         raise RuntimeError(
             "The existing local registry has invalid setup information. "
             "Remove it or choose a different container name."
         )
-    managed_value, port_text, bind_ip, running_text = parts
+    managed_value, port_text, bind_ip, running_text, ports_json = parts
     if managed_value != REGISTRY_MANAGED_VALUE:
         raise RuntimeError(
             f"A Docker container named '{REGISTRY_CONTAINER_NAME}' already exists, but it was not "
@@ -66,11 +68,28 @@ def _inspect_registry() -> Optional[dict]:
             "The existing local registry does not record a valid port. "
             "Remove it and run SDK setup again."
         ) from exc
+    registry_bindings = (json.loads(ports_json or "null") or {}).get("5000/tcp") or []
     return {
         "port": port,
         "bind_ip": bind_ip if bind_ip not in ("", "<no value>") else None,
         "running": running_text.lower() == "true",
+        "published": {f"{item['HostIp']}:{item['HostPort']}" for item in registry_bindings},
     }
+
+
+def _publishes_expected_ports(existing: dict, port: int, host_ip: str) -> bool:
+    # Docker publishes ports only when the container starts. A registry that
+    # started before Colima added the host address runs without any ports.
+    expected = {f"127.0.0.1:{port}", f"{host_ip}:{port}"}
+    return existing["running"] and expected <= existing["published"]
+
+
+def repair_existing_container_registry() -> None:
+    existing = _inspect_registry()
+    if not existing or not existing["bind_ip"]:
+        return
+    if not _publishes_expected_ports(existing, existing["port"], existing["bind_ip"]):
+        ensure_container_registry(existing["bind_ip"], requested_port=existing["port"])
 
 
 def existing_container_registry_port() -> Optional[int]:
@@ -217,7 +236,17 @@ def ensure_container_registry(host_ip: str, requested_port: Optional[int] = None
             change = f"port from {existing['port']} to {port}"
         else:
             change = f"DevKit-facing address to {host_ip}"
-        print(f"ℹ️  Changing the local container registry {change}. Stored images will be kept.")
+        recreate_reason = f"Changing the local container registry {change}"
+    elif existing and not _publishes_expected_ports(existing, port, host_ip):
+        recreate_reason = (
+            f"Recreating the local container registry so it publishes port {port} "
+            f"on 127.0.0.1 and {host_ip}"
+        )
+    else:
+        recreate_reason = None
+
+    if recreate_reason:
+        print(f"ℹ️  {recreate_reason}. Stored images will be kept.")
         subprocess.run(
             ["docker", "rm", "-f", REGISTRY_CONTAINER_NAME],
             text=True,
@@ -226,20 +255,13 @@ def ensure_container_registry(host_ip: str, requested_port: Optional[int] = None
         )
         existing = None
 
-    if not existing:
+    # A recreated registry keeps its own port; probing it right after removal
+    # can fail on connections the old container left in TIME_WAIT.
+    if not existing and not recreate_reason:
         _require_available_host_port(port)
 
     if existing:
-        if not existing["running"]:
-            print("ℹ️  Starting the existing local container registry.")
-            subprocess.run(
-                ["docker", "start", REGISTRY_CONTAINER_NAME],
-                text=True,
-                capture_output=True,
-                check=True,
-            )
-        else:
-            print("ℹ️  Reusing the existing local container registry.")
+        print("ℹ️  Reusing the existing local container registry.")
     else:
         print("ℹ️  Setting up a local container registry for SDK-built images.")
         subprocess.run(

@@ -159,7 +159,7 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
             report = net.build_network_doctor_report()
 
         self.assertTrue(any(f.code == "colima-network-address-enabled" for f in report.findings))
-        suitable.assert_called_once_with("default", "", internet_sharing=False)
+        suitable.assert_called_once_with("default", "")
 
     def test_report_warns_when_colima_network_address_disabled_on_macos(self):
         with patch.object(net, "_is_linux_host", return_value=False), \
@@ -191,12 +191,18 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
                  return_value={"address": True, "mode": "bridged", "interface": "en7", "ip_address": "192.168.2.2"},
              ), \
              patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge100"), \
+             patch("sima_cli.sdk.preinstall._interface_ipv4_address", return_value="192.168.2.1"), \
              patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en7"), \
              patch("sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit", return_value=True) as suitable:
             report = net.build_network_doctor_report(devkit_ip="192.168.2.3")
 
         self.assertFalse(any(f.code == "colima-bridge-route-unsafe" for f in report.findings))
-        suitable.assert_called_once_with("default", "en7", internet_sharing=True)
+        suitable.assert_called_once_with(
+            "default",
+            "en7",
+            internet_sharing=True,
+            expected_host_ip="192.168.2.1",
+        )
 
     def test_report_rejects_unsafe_colima_route_on_macos(self):
         with patch.object(net, "_is_linux_host", return_value=False), \

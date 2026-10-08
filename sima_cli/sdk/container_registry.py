@@ -115,6 +115,7 @@ def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str
                 _boolish(network.get("address"))
                 or mode != "shared"
                 or not _boolish(network.get("host_addresses"))
+                or host_ip not in network.get("forwarded_host_ips", [])
             ):
                 raise RuntimeError(
                     "The local registry needs Colima shared networking with host-address forwarding "

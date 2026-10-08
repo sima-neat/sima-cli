@@ -291,6 +291,22 @@ def _colima_network_config(profile: str) -> dict:
     )
     status_network = status.get("network") if isinstance(status.get("network"), dict) else {}
     config_network = config.get("network") if isinstance(config.get("network"), dict) else {}
+    forwarded_host_ips = []
+    instance_forwards = instance.get("portForwards")
+    if not isinstance(instance_forwards, list):
+        instance_forwards = []
+    for forward in instance_forwards:
+        if not isinstance(forward, dict):
+            continue
+        host_ip = str(forward.get("hostIP") or "").strip()
+        if (
+            host_ip
+            and host_ip == str(forward.get("guestIP") or "").strip()
+            and str(forward.get("proto") or "").lower() == "tcp"
+            and forward.get("hostPortRange") == [1, 65535]
+            and forward.get("guestPortRange") == [1, 65535]
+        ):
+            forwarded_host_ips.append(host_ip)
 
     return {
         "address": status_network.get(
@@ -306,6 +322,7 @@ def _colima_network_config(profile: str) -> dict:
             "hostAddresses",
             instance_network.get("hostAddresses", config_network.get("hostAddresses")),
         ),
+        "forwarded_host_ips": forwarded_host_ips,
         "ip_address": status.get("ip_address") or status.get("address"),
         "cpu": status.get("cpu", config.get("cpu")),
         "memory": status.get("memory", config.get("memory")),
@@ -416,6 +433,7 @@ def _is_colima_network_suitable_for_devkit(
     expected_interface: str = "",
     network: dict = None,
     internet_sharing: bool = False,
+    expected_host_ip: str = "",
 ) -> bool:
     network = network if network is not None else _colima_network_config(profile)
     if internet_sharing:
@@ -427,6 +445,8 @@ def _is_colima_network_suitable_for_devkit(
             not _boolish(network.get("address"))
             and mode == "shared"
             and _boolish(network.get("host_addresses"))
+            and bool(expected_host_ip)
+            and expected_host_ip in network.get("forwarded_host_ips", [])
         )
     # Colima persists a LAN-reachable VM address as:
     #   network.address: true
@@ -526,6 +546,21 @@ def _route_interface_for_target(target_ip: str) -> str:
         return ""
 
     match = re.search(r"^\s*interface:\s*(\S+)\s*$", output, flags=re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _interface_ipv4_address(interface: str) -> str:
+    if platform.system() != "Darwin" or not interface:
+        return ""
+    try:
+        output = subprocess.check_output(
+            ["ifconfig", interface],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return ""
+    match = re.search(r"^\s*inet\s+(\d+(?:\.\d+){3})\s", output, flags=re.MULTILINE)
     return match.group(1) if match else ""
 
 
@@ -755,6 +790,11 @@ def warn_if_colima_devkit_network_may_need_bridged(
     profile = _detect_colima_profile()
     route_interface = _route_interface_for_target(devkit_ip)
     internet_sharing = (route_interface or "").strip().lower().startswith("bridge")
+    expected_host_ip = _interface_ipv4_address(route_interface) if internet_sharing else ""
+    if internet_sharing and not expected_host_ip:
+        raise RuntimeError(
+            f"Could not identify an IPv4 address on Internet Sharing bridge '{route_interface}'."
+        )
     interface = _resolve_safe_colima_bridge_interface(route_interface)
     if not interface:
         console.print(
@@ -772,6 +812,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
         interface,
         network=network,
         internet_sharing=internet_sharing,
+        expected_host_ip=expected_host_ip,
     ):
         return False
     # Always name the detected profile explicitly. Colima otherwise falls back
@@ -978,6 +1019,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
             interface,
             network=updated_network,
             internet_sharing=internet_sharing,
+            expected_host_ip=expected_host_ip,
         ):
             expected = (
                 "shared networking with host-address forwarding"

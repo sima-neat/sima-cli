@@ -128,7 +128,12 @@ class TestSdkContainerRegistry(unittest.TestCase):
              patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
              patch(
                  "sima_cli.sdk.preinstall._colima_network_config",
-                return_value={"address": False, "mode": "shared", "host_addresses": True},
+                return_value={
+                    "address": False,
+                    "mode": "shared",
+                    "host_addresses": True,
+                    "forwarded_host_ips": ["192.168.2.1"],
+                },
              ), \
              patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge100"), \
              patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en7"):
@@ -144,6 +149,24 @@ class TestSdkContainerRegistry(unittest.TestCase):
              patch(
                  "sima_cli.sdk.preinstall._colima_network_config",
                  return_value={"address": True, "mode": "bridged", "interface": "en7", "ip_address": "192.168.2.2"},
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge100"), \
+             patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en7"), \
+             self.assertRaisesRegex(RuntimeError, "host-address forwarding"):
+            resolve_container_registry_bind_ip("192.168.2.1", "192.168.2.3")
+
+    def test_colima_rejects_stale_internet_sharing_forward(self):
+        with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": True,
+                     "forwarded_host_ips": ["10.0.0.210"],
+                 },
              ), \
              patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge100"), \
              patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en7"), \

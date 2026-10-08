@@ -513,12 +513,16 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
         f"mode={network.get('mode') or 'unset'} "
         f"interface={network.get('interface') or 'unset'} "
         f"hostAddresses={network.get('host_addresses')} "
+        f"hostForwards={','.join(network.get('forwarded_host_ips', [])) or 'unset'} "
         f"ipAddress={network.get('ip_address') or 'unset'}"
     )
     internet_sharing = False
+    expected_host_ip = ""
     if report.devkit_ip:
         route_interface = preinstall._route_interface_for_target(report.devkit_ip)
         internet_sharing = (route_interface or "").strip().lower().startswith("bridge")
+        if internet_sharing:
+            expected_host_ip = preinstall._interface_ipv4_address(route_interface)
         expected_interface = preinstall._resolve_safe_colima_bridge_interface(route_interface)
         if not expected_interface:
             report.add(
@@ -530,11 +534,18 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
             return
     else:
         expected_interface = ""
-    if preinstall._is_colima_network_suitable_for_devkit(
-        profile,
-        expected_interface,
-        internet_sharing=internet_sharing,
-    ):
+    if internet_sharing:
+        network_is_suitable = preinstall._is_colima_network_suitable_for_devkit(
+            profile,
+            expected_interface,
+            internet_sharing=True,
+            expected_host_ip=expected_host_ip,
+        )
+    else:
+        network_is_suitable = preinstall._is_colima_network_suitable_for_devkit(
+            profile, expected_interface
+        )
+    if network_is_suitable:
         report.add(
             "info",
             "colima-network-address-enabled",

@@ -25,6 +25,8 @@ from sima_cli.sdk.preinstall import (
     _parse_colima_status,
     _prompt_colima_resource_targets,
     _interface_ipv4_address,
+    _interface_ipv4_network,
+    _set_colima_devkit_route_provision,
     _is_safe_colima_bridge_interface,
     _resolve_safe_colima_bridge_interface,
     warn_if_colima_devkit_network_may_need_bridged,
@@ -40,6 +42,35 @@ class TestSdkPreinstall(unittest.TestCase):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall.subprocess.check_output", return_value=output):
             self.assertEqual(_interface_ipv4_address("bridge101"), "192.168.2.1")
+
+    def test_interface_ipv4_network_reads_hex_netmask(self):
+        output = (
+            "bridge101: flags=8a63<UP,RUNNING>\n"
+            "\tinet 192.168.2.1 netmask 0xffffff00 broadcast 192.168.2.255\n"
+        )
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall.subprocess.check_output", return_value=output):
+            self.assertEqual(_interface_ipv4_network("bridge101"), "192.168.2.0/24")
+
+    def test_colima_route_provision_replaces_previous_sima_cli_entry(self):
+        config = {
+            "provision": [
+                {"mode": "system", "script": "echo keep"},
+                {
+                    "mode": "system",
+                    "script": "# sima-cli: route Internet Sharing clients through macOS\nold",
+                },
+            ]
+        }
+
+        _set_colima_devkit_route_provision(config, "192.168.2.0/24")
+
+        self.assertEqual(config["provision"][0]["script"], "echo keep")
+        self.assertEqual(len(config["provision"]), 2)
+        self.assertIn(
+            "ip route del table local local 192.168.2.0/24 dev lo",
+            config["provision"][1]["script"],
+        )
 
     def test_colima_bridge_interface_rejects_known_vpn_prefixes(self):
         for interface in ("utun7", "ppp0", "ipsec0", "tailscale0", "ztabc123", "wg0", "vmenet0"):
@@ -290,12 +321,17 @@ class TestSdkPreinstall(unittest.TestCase):
                     "default",
                     "en14",
                     internet_sharing=True,
+                    shared_network="192.168.2.0/24",
                 )
 
             staged = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 staged["network"],
                 {"address": False, "mode": "shared", "hostAddresses": True},
+            )
+            self.assertIn(
+                "192.168.2.0/24",
+                staged["provision"][-1]["script"],
             )
             snapshot_path.unlink()
 
@@ -739,6 +775,7 @@ class TestSdkPreinstall(unittest.TestCase):
              ]), \
              patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge101"), \
              patch("sima_cli.sdk.preinstall._interface_ipv4_address", return_value="192.168.2.1"), \
+             patch("sima_cli.sdk.preinstall._interface_ipv4_network", return_value="192.168.2.0/24"), \
              patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en14"), \
              patch("sima_cli.sdk.preinstall._colima_supports_network_address_flag", return_value=True), \
              patch("sima_cli.sdk.preinstall._colima_supports_bridged_network_flags", side_effect=AssertionError("bridged flags are not needed")), \
@@ -750,6 +787,7 @@ class TestSdkPreinstall(unittest.TestCase):
                  return_value=(Path("/profile/colima.yaml"), Path("/tmp/missing-colima-snapshot"), 0o600, 0o700),
              ) as stage, \
              patch("sima_cli.sdk.preinstall._restore_colima_profile_config"), \
+             patch("sima_cli.sdk.preinstall._ensure_colima_internet_sharing_route") as ensure_route, \
              patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
              patch("sima_cli.sdk.preinstall.console.print") as console_print, \
              patch("builtins.input", return_value="y") as prompt:
@@ -765,7 +803,17 @@ class TestSdkPreinstall(unittest.TestCase):
             "Apply the Colima network update for Internet Sharing now? "
             "Running containers will stop briefly; Docker data will be kept. [y/N]: "
         )
-        stage.assert_called_once_with("default", "en14", internet_sharing=True)
+        stage.assert_called_once_with(
+            "default",
+            "en14",
+            internet_sharing=True,
+            shared_network="192.168.2.0/24",
+        )
+        ensure_route.assert_called_once_with(
+            "default",
+            "192.168.2.2",
+            "192.168.2.0/24",
+        )
         self.assertEqual(
             run.call_args_list[2].args[0],
             [
@@ -788,6 +836,7 @@ class TestSdkPreinstall(unittest.TestCase):
              patch("sima_cli.sdk.preinstall._colima_network_config", return_value={"address": False, "mode": "shared"}), \
              patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge101"), \
              patch("sima_cli.sdk.preinstall._interface_ipv4_address", return_value="192.168.2.1"), \
+             patch("sima_cli.sdk.preinstall._interface_ipv4_network", return_value="192.168.2.0/24"), \
              patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en14"), \
              patch("sima_cli.sdk.preinstall._colima_supports_network_address_flag", return_value=True), \
              patch("sima_cli.sdk.preinstall._colima_supports_host_addresses_flag", return_value=False), \

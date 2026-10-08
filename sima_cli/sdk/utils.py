@@ -2460,6 +2460,9 @@ def bootstrap_devkit_container(container_name: str, devkit_env: dict):
     _configure_container_registry_environment(container_name, devkit_env)
     bootstrap_interactive = bool(devkit_env.get("bootstrap_interactive", False))
     noninteractive = bool(devkit_env.get("noninteractive", False))
+    devkit_user = str(devkit_env.get("devkit_user") or "sima")
+    devkit_password = str(devkit_env.get("devkit_password") or "")
+    devkit_port = int(devkit_env.get("devkit_port") or 22)
     host_ip = devkit_env.get("host_ip", "")
     host_export = devkit_env.get("workspace", "")
     host_platform = devkit_env.get("host_platform", "")
@@ -2478,19 +2481,53 @@ export DEVKIT_HOST_EXPORT_PATH={shlex.quote(host_export)}
 export DEVKIT_HOST_PLATFORM={shlex.quote(host_platform)}
 export DEVKIT_HOST_NFS_AVAILABLE={shlex.quote("1" if host_nfs_available else "0")}
 export DEVKIT_SYNC_NONINTERACTIVE={shlex.quote("1" if noninteractive else "0")}
+export DEVKIT_SYNC_PASSWORD={shlex.quote(devkit_password)}
 if [ ! -e /workspace ] && [ ! -L /workspace ]; then
   ln -s /home/docker/sima-cli /workspace 2>/dev/null || true
 fi
 if [ ! -f /usr/local/bin/devkit.sh ]; then
   BOOTSTRAP_STATUS=missing_script
+  BOOTSTRAP_RC=1
 else
-  source /usr/local/bin/devkit.sh {shlex.quote(devkit_ip)}
+  if [ -z "$DEVKIT_SYNC_PASSWORD" ]; then
+    echo "DevKit password is required to install the SDK container SSH key." >&2
+    BOOTSTRAP_STATUS=credential_setup_failed
+    BOOTSTRAP_RC=1
+  elif ! command -v sshpass >/dev/null 2>&1; then
+    echo "sshpass is required in the SDK container to install the DevKit SSH key." >&2
+    BOOTSTRAP_STATUS=credential_setup_failed
+    BOOTSTRAP_RC=1
+  else
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+    if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
+      ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "devkit-sync@$(hostname)" >/dev/null
+    fi
+    ssh-keygen -R {shlex.quote(devkit_ip)} -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1 || true
+    ssh-keygen -R {shlex.quote(f"[{devkit_ip}]:{devkit_port}")} -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1 || true
+    ssh-keyscan -H -p {devkit_port} {shlex.quote(devkit_ip)} >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+    chmod 600 "$HOME/.ssh/known_hosts"
+    if ! SSHPASS="$DEVKIT_SYNC_PASSWORD" sshpass -e ssh-copy-id -f \
+      -i "$HOME/.ssh/id_ed25519.pub" -p {devkit_port} \
+      -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+      -o ConnectTimeout=8 -o StrictHostKeyChecking=yes \
+      {shlex.quote(devkit_user)}@{shlex.quote(devkit_ip)}; then
+      echo "Could not install the SDK container SSH key. Check the DevKit username and password." >&2
+      BOOTSTRAP_STATUS=credential_setup_failed
+      BOOTSTRAP_RC=1
+    fi
+  fi
+  if [ "$BOOTSTRAP_RC" -eq 0 ]; then
+    source /usr/local/bin/devkit.sh {shlex.quote(devkit_ip)} {shlex.quote(devkit_user)} {devkit_port}
+  else
+    false
+  fi
   SRC_RC=$?
   if [ "$SRC_RC" -ne 0 ]; then
-    BOOTSTRAP_STATUS=source_failed
-    if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ]; then
-      BOOTSTRAP_RC=$SRC_RC
+    if [ "$BOOTSTRAP_STATUS" != credential_setup_failed ]; then
+      BOOTSTRAP_STATUS=source_failed
     fi
+    BOOTSTRAP_RC=$SRC_RC
   elif command -v dk >/dev/null 2>&1; then
     BOOTSTRAP_STATUS=sourced_with_dk
   else
@@ -2522,14 +2559,10 @@ exit "$BOOTSTRAP_RC"
                     "'dk container' command."
                 )
             return
-        if not host_nfs_available:
-            raise RuntimeError(
-                "Host NFS is unavailable and rsync fallback setup failed in SDK container "
-                f"'{container_name}'. Check DevKit SSH access, rsync availability, and remote "
-                "workspace permissions."
-            )
-        print(f"⚠️ DevKit bootstrap failed in container '{container_name}' (interactive, exit={proc.returncode}).")
-        return
+        raise RuntimeError(
+            f"DevKit pairing failed in SDK container '{container_name}'. "
+            "Check the DevKit username and password, then rerun SDK setup."
+        )
 
     proc = subprocess.run(
         ["docker", "exec", "-i", container_name, "bash", "-lc", script],
@@ -2603,6 +2636,12 @@ exit "$BOOTSTRAP_RC"
         print(
             f"⚠️ DevKit bootstrap interactive retry failed in container '{container_name}' "
             f"(exit={interactive_proc.returncode})."
+        )
+
+    if status == "credential_setup_failed":
+        raise RuntimeError(
+            f"DevKit SSH key setup failed in SDK container '{container_name}'. "
+            "Check the DevKit username and password, then rerun SDK setup."
         )
 
     if not host_nfs_available:

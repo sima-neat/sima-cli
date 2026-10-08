@@ -13,6 +13,7 @@ Performs essential environment checks before SDK installation:
 import sys
 import json
 import os
+import ipaddress
 import subprocess
 import platform
 import re
@@ -31,6 +32,7 @@ import yaml
 console = Console()
 NEAT_COLIMA_MIN_CPUS = 4
 NEAT_COLIMA_MIN_MEMORY_GB = 8
+COLIMA_DEVKIT_ROUTE_MARKER = "# sima-cli: route Internet Sharing clients through macOS"
 
 # ---------------------------------------------------------------------
 # Load system requirements from JSON
@@ -564,6 +566,134 @@ def _interface_ipv4_address(interface: str) -> str:
     return match.group(1) if match else ""
 
 
+def _interface_ipv4_network(interface: str) -> str:
+    if platform.system() != "Darwin" or not interface:
+        return ""
+    try:
+        output = subprocess.check_output(
+            ["ifconfig", interface],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return ""
+    match = re.search(
+        r"^\s*inet\s+(\d+(?:\.\d+){3})\s+netmask\s+(0x[0-9a-fA-F]+|\d+(?:\.\d+){3})\s",
+        output,
+        flags=re.MULTILINE,
+    )
+    if not match:
+        return ""
+    address, raw_mask = match.groups()
+    try:
+        netmask = (
+            str(ipaddress.IPv4Address(int(raw_mask, 16)))
+            if raw_mask.lower().startswith("0x")
+            else raw_mask
+        )
+        return str(ipaddress.IPv4Network(f"{address}/{netmask}", strict=False))
+    except ValueError:
+        return ""
+
+
+def _colima_devkit_route_script(shared_network: str) -> str:
+    return (
+        f"{COLIMA_DEVKIT_ROUTE_MARKER}\n"
+        f"ip route del table local local {shared_network} dev lo 2>/dev/null || true"
+    )
+
+
+def _set_colima_devkit_route_provision(config: dict, shared_network: str) -> None:
+    provision = config.get("provision")
+    if not isinstance(provision, list):
+        provision = []
+    provision = [
+        entry
+        for entry in provision
+        if not (
+            isinstance(entry, dict)
+            and COLIMA_DEVKIT_ROUTE_MARKER in str(entry.get("script") or "")
+        )
+    ]
+    provision.append(
+        {
+            "mode": "system",
+            "script": _colima_devkit_route_script(shared_network),
+        }
+    )
+    config["provision"] = provision
+
+
+def _write_colima_config(config_path: Path, config: dict) -> None:
+    mode = config_path.stat().st_mode & 0o777
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".sima-cli-colima-",
+        suffix=".yaml",
+        dir=str(config_path.parent),
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(config, stream, sort_keys=False)
+        temporary_path.chmod(mode)
+        os.replace(temporary_path, config_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _ensure_colima_internet_sharing_route(
+    profile: str,
+    devkit_ip: str,
+    shared_network: str,
+) -> None:
+    if not shared_network:
+        raise RuntimeError("Could not determine the macOS Internet Sharing subnet.")
+    config_path = _colima_config_path(profile)
+    config = _colima_config(profile)
+    if not config_path.is_file() or not config:
+        raise RuntimeError("Could not update the Colima profile with the DevKit route repair.")
+    _set_colima_devkit_route_provision(config, shared_network)
+    _write_colima_config(config_path, config)
+
+    colima_cmd = shutil.which("colima")
+    if not colima_cmd:
+        raise RuntimeError("Colima executable was not found on PATH.")
+    route_script = _colima_devkit_route_script(shared_network)
+    subprocess.run(
+        [
+            colima_cmd,
+            "ssh",
+            "--profile",
+            profile,
+            "--",
+            "sudo",
+            "sh",
+            "-lc",
+            route_script,
+        ],
+        check=True,
+    )
+    route = subprocess.check_output(
+        [
+            colima_cmd,
+            "ssh",
+            "--profile",
+            profile,
+            "--",
+            "ip",
+            "route",
+            "get",
+            devkit_ip,
+        ],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+    if re.search(r"\blocal\b.*\bdev\s+lo\b", route):
+        raise RuntimeError(
+            f"Colima still routes DevKit {devkit_ip} to its own loopback interface."
+        )
+
+
 def _is_safe_colima_bridge_interface(interface: str) -> bool:
     normalized = (interface or "").strip().lower()
     if not normalized:
@@ -667,6 +797,7 @@ def _stage_colima_profile_config(
     profile: str,
     interface: str,
     internet_sharing: bool = False,
+    shared_network: str = "",
 ) -> tuple:
     """Stage the selected network strategy outside the directory Colima deletes."""
     config_path = _colima_config_path(profile)
@@ -692,6 +823,9 @@ def _stage_colima_profile_config(
         network["mode"] = "shared"
         network["hostAddresses"] = True
         network.pop("interface", None)
+        if not shared_network:
+            raise RuntimeError("Could not determine the macOS Internet Sharing subnet.")
+        _set_colima_devkit_route_provision(config, shared_network)
     else:
         # Colima accepts subnet and nat66Prefix only in shared mode. Remove
         # them from the staged copy before the old VM is deleted.
@@ -791,9 +925,14 @@ def warn_if_colima_devkit_network_may_need_bridged(
     route_interface = _route_interface_for_target(devkit_ip)
     internet_sharing = (route_interface or "").strip().lower().startswith("bridge")
     expected_host_ip = _interface_ipv4_address(route_interface) if internet_sharing else ""
+    shared_network = _interface_ipv4_network(route_interface) if internet_sharing else ""
     if internet_sharing and not expected_host_ip:
         raise RuntimeError(
             f"Could not identify an IPv4 address on Internet Sharing bridge '{route_interface}'."
+        )
+    if internet_sharing and not shared_network:
+        raise RuntimeError(
+            f"Could not identify the IPv4 subnet on Internet Sharing bridge '{route_interface}'."
         )
     interface = _resolve_safe_colima_bridge_interface(route_interface)
     if not interface:
@@ -814,6 +953,12 @@ def warn_if_colima_devkit_network_may_need_bridged(
         internet_sharing=internet_sharing,
         expected_host_ip=expected_host_ip,
     ):
+        if internet_sharing:
+            _ensure_colima_internet_sharing_route(
+                profile,
+                devkit_ip,
+                shared_network,
+            )
         return False
     # Always name the detected profile explicitly. Colima otherwise falls back
     # to COLIMA_PROFILE, which could retarget these destructive commands after
@@ -976,6 +1121,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
             profile,
             interface,
             internet_sharing=internet_sharing,
+            shared_network=shared_network,
         )
     except (OSError, RuntimeError) as exc:
         console.print(
@@ -1015,6 +1161,12 @@ def warn_if_colima_devkit_network_may_need_bridged(
                 else "a bridged, reachable address"
             )
             raise RuntimeError(f"Colima did not report {expected} after recreation.")
+        if internet_sharing:
+            _ensure_colima_internet_sharing_route(
+                profile,
+                devkit_ip,
+                shared_network,
+            )
         if enable_udp and _colima_port_forwarder(profile) != "grpc":
             raise RuntimeError("Colima did not report the gRPC port forwarder after recreation.")
         if resize_resources:

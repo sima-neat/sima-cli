@@ -310,5 +310,25 @@ class TestSdkContainerRegistry(unittest.TestCase):
         )
         print_mock.assert_any_call("docker exec failed")
 
+    def test_bootstrap_raises_when_credential_setup_fails(self):
+        result = Mock(
+            returncode=1,
+            stdout="__SIMA_DEVKIT_BOOTSTRAP_STATUS=credential_setup_failed\n",
+            stderr="invalid credentials\n",
+        )
+        with patch("sima_cli.sdk.utils._configure_container_registry_environment"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "username and password"):
+                bootstrap_devkit_container(
+                    "sdk-container",
+                    {
+                        "devkit_ip": "10.42.0.2",
+                        "devkit_user": "sima",
+                        "devkit_password": "wrong",
+                        "host_nfs_available": True,
+                        "noninteractive": True,
+                    },
+                )
+
 if __name__ == "__main__":
     unittest.main()

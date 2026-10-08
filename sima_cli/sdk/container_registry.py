@@ -91,7 +91,7 @@ def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str
         _colima_network_config,
         _detect_colima_profile,
         _is_docker_using_colima,
-        _is_safe_colima_bridge_interface,
+        _resolve_safe_colima_bridge_interface,
         _route_interface_for_target,
     )
 
@@ -105,14 +105,15 @@ def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str
     configured_interface = str(network.get("interface") or "en0").strip()
     if devkit_ip:
         route_interface = _route_interface_for_target(devkit_ip)
-        if not _is_safe_colima_bridge_interface(route_interface):
+        expected_interface = _resolve_safe_colima_bridge_interface(route_interface)
+        if not expected_interface:
             raise RuntimeError(
                 "The local registry could not identify a safe physical interface for the DevKit route."
             )
-        if configured_interface != route_interface:
+        if configured_interface != expected_interface:
             raise RuntimeError(
                 f"The Colima profile is bridged to {configured_interface}, but the DevKit route uses "
-                f"{route_interface}. Rerun SDK setup and allow sima-cli to recreate the profile."
+                f"{expected_interface}. Rerun SDK setup and allow sima-cli to recreate the profile."
             )
     if not _boolish(network.get("address")) or mode != "bridged" or not bind_ip:
         raise RuntimeError(

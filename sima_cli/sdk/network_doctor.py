@@ -514,7 +514,20 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
         f"interface={network.get('interface') or 'unset'} "
         f"ipAddress={network.get('ip_address') or 'unset'}"
     )
-    if preinstall._is_colima_network_suitable_for_devkit(profile):
+    if report.devkit_ip:
+        route_interface = preinstall._route_interface_for_target(report.devkit_ip)
+        if not preinstall._is_safe_colima_bridge_interface(route_interface):
+            report.add(
+                "error",
+                "colima-bridge-route-unsafe",
+                "The DevKit route does not use a physical interface that Colima can bridge safely.",
+                f"routeInterface={route_interface or 'unresolved'}; connect the DevKit through a physical LAN interface",
+            )
+            return
+        expected_interface = route_interface
+    else:
+        expected_interface = ""
+    if preinstall._is_colima_network_suitable_for_devkit(profile, expected_interface):
         report.add(
             "info",
             "colima-network-address-enabled",
@@ -523,15 +536,14 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
         )
         return
 
-    interface = preinstall._route_interface_for_target(report.devkit_ip) or "en0"
     report.add(
         "warning",
         "colima-network-address-disabled",
         "Colima reachable VM addressing is not enabled; SDK containers may be unable to reach the DevKit.",
         (
             f"{detail}\n"
-            "Run: colima stop && "
-            f"colima start --network-address --network-mode bridged --network-interface {interface} --save-config"
+            "Run the guarded Colima profile recreation in SDK setup: "
+            f"sima-cli sdk setup --devkit {report.devkit_ip or '<devkit-ip>'}"
         ),
     )
 

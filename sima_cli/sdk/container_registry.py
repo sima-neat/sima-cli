@@ -78,19 +78,21 @@ def existing_container_registry_port() -> Optional[int]:
     return int(existing["port"]) if existing else None
 
 
-def resolve_container_registry_bind_ip(host_ip: str) -> str:
+def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str:
     """Return the Docker-host address on the DevKit-facing network path."""
     if platform.system() != "Darwin":
         return host_ip
 
     # Colima's Docker daemon runs in a VM and cannot publish a port directly on
-    # a macOS interface address. With reachable networking enabled, its own VM
-    # address is the scoped endpoint that the DevKit can access.
+    # a macOS interface address. Only a bridged VM address is reachable from a
+    # peer on the DevKit-facing LAN; shared-mode addresses are host-local.
     from sima_cli.sdk.preinstall import (
         _boolish,
         _colima_network_config,
         _detect_colima_profile,
         _is_docker_using_colima,
+        _is_safe_colima_bridge_interface,
+        _route_interface_for_target,
     )
 
     if not _is_docker_using_colima():
@@ -99,11 +101,23 @@ def resolve_container_registry_bind_ip(host_ip: str) -> str:
     profile = _detect_colima_profile()
     network = _colima_network_config(profile)
     bind_ip = str(network.get("ip_address") or "").strip()
-    if not _boolish(network.get("address")) or not bind_ip:
+    mode = str(network.get("mode") or "").strip().lower()
+    configured_interface = str(network.get("interface") or "en0").strip()
+    if devkit_ip:
+        route_interface = _route_interface_for_target(devkit_ip)
+        if not _is_safe_colima_bridge_interface(route_interface):
+            raise RuntimeError(
+                "The local registry could not identify a safe physical interface for the DevKit route."
+            )
+        if configured_interface != route_interface:
+            raise RuntimeError(
+                f"The Colima profile is bridged to {configured_interface}, but the DevKit route uses "
+                f"{route_interface}. Rerun SDK setup and allow sima-cli to recreate the profile."
+            )
+    if not _boolish(network.get("address")) or mode != "bridged" or not bind_ip:
         raise RuntimeError(
-            "The local registry needs a reachable Colima network address so it can be limited "
-            "to the DevKit-facing path. Rerun SDK setup and allow sima-cli to restart Colima "
-            "with reachable networking."
+            "The local registry needs a Colima address bridged to the DevKit-facing network. "
+            "Rerun SDK setup and allow sima-cli to restart Colima in bridged mode."
         )
     return bind_ip
 

@@ -1847,6 +1847,13 @@ def configure_container_docker_builder(sdk_container_name: str, login_name: str)
         "docker", "exec", "-u", "root", sdk_container_name,
         "bash", "-lc", access_script,
     ])
+    # The image can start OpenVSCode before the host user and docker group are
+    # remapped.  Those already-running processes retain their original
+    # supplementary groups, so terminals spawned by OpenVSCode cannot access
+    # the socket even though a fresh ``docker exec`` can.  Restart the
+    # container after updating /etc/group so every long-lived SDK process
+    # inherits the socket group.
+    run_command(["docker", "restart", sdk_container_name])
     user_exec = [
         "docker", "exec", "-u", login_name,
         "-e", f"HOME=/home/{login_name}", sdk_container_name,

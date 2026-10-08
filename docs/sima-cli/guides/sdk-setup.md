@@ -52,8 +52,9 @@ SDK setup does not install or configure Docker on the DevKit. The first
 `dk container` command handles any required Docker installation and configures
 Docker to use the local registry, restarting Docker only if the registry setting
 changes. This keeps Docker completely optional for users who do not use
-container deployment. Installing Docker requires explicit approval, passwordless
-`sudo`, and Internet access to Docker's Debian repository.
+container deployment. Installing Docker requires explicit approval and Internet
+access to Docker's Debian repository. Passwordless `sudo` is not a prerequisite;
+sima-cli configures it for the DevKit user during setup.
 
 Use `--no-container-registry` to skip this step. It does not stop or remove an
 existing registry. To select a different port, run setup again with

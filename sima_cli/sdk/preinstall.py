@@ -17,6 +17,7 @@ import subprocess
 import platform
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
@@ -258,18 +259,45 @@ def _colima_config(profile: str) -> dict:
         return {}
 
 
+def _colima_instance_config(profile: str) -> dict:
+    """Read Colima's generated instance config, which reflects immutable VM settings."""
+    if profile in ("", "default", "colima"):
+        profile_id = "colima"
+    else:
+        short_name = profile[len("colima-"):] if profile.startswith("colima-") else profile
+        profile_id = f"colima-{short_name}"
+    configured_lima_home = os.environ.get("LIMA_HOME")
+    lima_home = (
+        Path(configured_lima_home).expanduser()
+        if configured_lima_home
+        else _colima_config_path(profile).parent.parent / "_lima"
+    )
+    path = lima_home / profile_id / "colima.yaml"
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            data = yaml.safe_load(stream) or {}
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _colima_network_config(profile: str) -> dict:
     status = _colima_status(profile)
     config = _colima_config(profile)
+    instance = _colima_instance_config(profile)
 
-    network = config.get("network") if isinstance(config.get("network"), dict) else {}
+    instance_network = (
+        instance.get("network") if isinstance(instance.get("network"), dict) else {}
+    )
     status_network = status.get("network") if isinstance(status.get("network"), dict) else {}
 
     return {
-        "address": status_network.get("address", network.get("address")),
-        "mode": status_network.get("mode", network.get("mode")),
-        "interface": status_network.get("interface", network.get("interface")),
+        "address": status_network.get("address", instance_network.get("address")),
+        "mode": status_network.get("mode", instance_network.get("mode")),
+        "interface": status_network.get("interface", instance_network.get("interface")),
         "ip_address": status.get("ip_address") or status.get("address"),
+        "cpu": status.get("cpu", config.get("cpu")),
+        "memory": status.get("memory", config.get("memory")),
     }
 
 
@@ -372,15 +400,98 @@ def _boolish(value: Any) -> bool:
     return bool(value)
 
 
-def _is_colima_network_suitable_for_devkit(profile: str) -> bool:
-    network = _colima_network_config(profile)
-    # Colima 0.10 can persist reachable VM addressing as:
+def _is_colima_network_suitable_for_devkit(
+    profile: str,
+    expected_interface: str = "",
+    network: dict = None,
+) -> bool:
+    network = network if network is not None else _colima_network_config(profile)
+    # Colima persists a LAN-reachable VM address as:
     #   network.address: true
-    #   network.mode: shared
-    # The mode does not need to be "bridged" for the DevKit warning to be
-    # satisfied; the important signal is that Colima has an address reachable
-    # from the host/LAN path instead of the default isolated VM networking.
-    return _boolish(network.get("address")) and bool(network.get("ip_address"))
+    #   network.mode: bridged
+    # A shared-mode address is reachable from macOS but not from a DevKit on
+    # the physical LAN, so it cannot be advertised as a registry endpoint.
+    mode = str(network.get("mode") or "").strip().lower()
+    configured_interface = str(network.get("interface") or "en0").strip()
+    interface_matches = (
+        not expected_interface
+        or configured_interface == expected_interface
+    )
+    return (
+        _boolish(network.get("address"))
+        and mode == "bridged"
+        and bool(network.get("ip_address"))
+        and interface_matches
+    )
+
+
+def _host_colima_resource_limits() -> tuple:
+    """Return the host CPU count and whole GiB available to Colima."""
+    import psutil
+
+    max_cpus = psutil.cpu_count(logical=True) or os.cpu_count() or 0
+    max_memory = int(psutil.virtual_memory().total // (1024 ** 3))
+    return max_cpus, max_memory
+
+
+def _default_colima_resource_targets(cpus: int, memory_gb: float) -> tuple:
+    """Use half the host by default without reducing an existing allocation."""
+    max_cpus, max_memory = _host_colima_resource_limits()
+    if max_cpus < NEAT_COLIMA_MIN_CPUS or max_memory < NEAT_COLIMA_MIN_MEMORY_GB:
+        raise RuntimeError(
+            "The host does not have enough CPU or memory for the Neat SDK: "
+            f"found {max_cpus} CPUs / {max_memory} GB RAM, required at least "
+            f"{NEAT_COLIMA_MIN_CPUS} CPUs / {NEAT_COLIMA_MIN_MEMORY_GB} GB RAM."
+        )
+
+    recommended_cpus = max(NEAT_COLIMA_MIN_CPUS, max_cpus // 2)
+    recommended_memory = max(
+        float(NEAT_COLIMA_MIN_MEMORY_GB),
+        max_memory / 2,
+    )
+    return (
+        min(max(cpus, recommended_cpus), max_cpus),
+        min(max(memory_gb, recommended_memory), float(max_memory)),
+    )
+
+
+def _prompt_colima_resource_targets(cpus: int, memory_gb: float) -> tuple:
+    """Prompt for valid Colima resources, using half the host as defaults."""
+    max_cpus, max_memory = _host_colima_resource_limits()
+    default_cpus, default_memory = _default_colima_resource_targets(cpus, memory_gb)
+
+    while True:
+        raw_cpus = input(
+            f"Colima CPU count [{default_cpus}] "
+            f"({NEAT_COLIMA_MIN_CPUS}-{max_cpus}): "
+        ).strip()
+        try:
+            target_cpus = int(raw_cpus) if raw_cpus else default_cpus
+        except ValueError:
+            target_cpus = 0
+        if NEAT_COLIMA_MIN_CPUS <= target_cpus <= max_cpus:
+            break
+        console.print(
+            f"[yellow]Enter between {NEAT_COLIMA_MIN_CPUS} and {max_cpus} CPUs.[/yellow]"
+        )
+
+    while True:
+        raw_memory = input(
+            f"Colima memory in GB [{default_memory:g}] "
+            f"({NEAT_COLIMA_MIN_MEMORY_GB}-{max_memory}): "
+        ).strip()
+        try:
+            target_memory = float(raw_memory) if raw_memory else default_memory
+        except ValueError:
+            target_memory = 0
+        if NEAT_COLIMA_MIN_MEMORY_GB <= target_memory <= max_memory:
+            break
+        console.print(
+            f"[yellow]Enter between {NEAT_COLIMA_MIN_MEMORY_GB} and "
+            f"{max_memory} GB of memory.[/yellow]"
+        )
+
+    return target_cpus, target_memory
 
 
 def _route_interface_for_target(target_ip: str) -> str:
@@ -405,6 +516,10 @@ def _is_safe_colima_bridge_interface(interface: str) -> bool:
         "tun",
         "tap",
         "wg",
+        "tailscale",
+        "zt",
+        "ppp",
+        "ipsec",
         "bridge",
         "vmnet",
         "vboxnet",
@@ -440,30 +555,140 @@ def _colima_supports_bridged_network_flags() -> bool:
     return "--network-mode" in output and "--network-interface" in output
 
 
+def _stage_colima_profile_config(profile: str, interface: str) -> tuple:
+    """Stage a bridged profile config outside the directory Colima deletes."""
+    config_path = _colima_config_path(profile)
+    if not config_path.is_file():
+        raise RuntimeError(f"Could not find Colima profile configuration at {config_path}.")
+
+    config_mode = config_path.stat().st_mode & 0o777
+    config_dir_mode = config_path.parent.stat().st_mode & 0o777
+    try:
+        with config_path.open("r", encoding="utf-8") as stream:
+            config = yaml.safe_load(stream)
+    except Exception as exc:
+        raise RuntimeError(f"Could not read Colima profile configuration at {config_path}.") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError(f"Colima profile configuration at {config_path} is not a mapping.")
+
+    network = config.get("network")
+    if not isinstance(network, dict):
+        network = {}
+        config["network"] = network
+    # Colima accepts subnet and nat66Prefix only in shared mode. Remove them
+    # from the staged copy before the old VM is deleted.
+    network.pop("subnet", None)
+    network.pop("nat66Prefix", None)
+    network["address"] = True
+    network["mode"] = "bridged"
+    network["interface"] = interface
+
+    descriptor, snapshot_name = tempfile.mkstemp(
+        prefix=f"sima-cli-colima-{profile}-",
+        suffix=".yaml",
+    )
+    snapshot_path = Path(snapshot_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(config, stream, sort_keys=False)
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        snapshot_path.unlink(missing_ok=True)
+        raise
+    return config_path, snapshot_path, config_mode, config_dir_mode
+
+
+def _restore_colima_profile_config(
+    config_path: Path,
+    snapshot_path: Path,
+    config_mode: int,
+    config_dir_mode: int,
+) -> None:
+    config_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    os.chmod(config_path.parent, config_dir_mode)
+    descriptor = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as destination, snapshot_path.open("rb") as source:
+            shutil.copyfileobj(source, destination)
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+    os.chmod(config_path, config_mode)
+
+
+def _colima_store_path(profile: str) -> Path:
+    if profile in ("", "default", "colima"):
+        profile_id = "colima"
+    else:
+        short_name = profile[len("colima-"):] if profile.startswith("colima-") else profile
+        profile_id = f"colima-{short_name}"
+    return _colima_config_path(profile).parent.parent / "_store" / f"{profile_id}.json"
+
+
+def _colima_profile_recreation_safety(profile: str) -> tuple:
+    """Return whether Colima can recreate this profile without known data loss."""
+    config = _colima_config(profile)
+    kubernetes = config.get("kubernetes") if isinstance(config.get("kubernetes"), dict) else {}
+    if _boolish(kubernetes.get("enabled")):
+        return False, "Kubernetes is enabled in the profile configuration. Colima does not preserve its data."
+
+    status = _colima_status(profile)
+    if "kubernetes" not in status:
+        return False, "The live Colima Kubernetes state could not be verified."
+    if _boolish(status.get("kubernetes")):
+        return False, "Kubernetes is running in the profile. Colima does not preserve its data."
+
+    store_path = _colima_store_path(profile)
+    try:
+        with store_path.open("r", encoding="utf-8") as stream:
+            store = json.load(stream)
+    except Exception:
+        return False, "Colima's separate runtime-disk state could not be verified."
+
+    if not isinstance(store, dict) or not _boolish(store.get("disk_formatted")):
+        return False, "This profile does not use Colima's separate runtime disk. It may be a legacy profile."
+    if str(store.get("disk_runtime") or "").strip().lower() != "docker":
+        return False, "The separate runtime disk is not recorded as a Docker data disk."
+    return True, ""
+
+
 def warn_if_colima_devkit_network_may_need_bridged(
     devkit_ip: str,
     noninteractive: bool = False,
     yes_to_all: bool = False,
+    require_udp: bool = False,
 ) -> bool:
     if platform.system() != "Darwin" or not devkit_ip or not _is_docker_using_colima():
         return False
 
     profile = _detect_colima_profile()
-    if _is_colima_network_suitable_for_devkit(profile):
-        return False
-
     route_interface = _route_interface_for_target(devkit_ip)
-    if _is_safe_colima_bridge_interface(route_interface):
-        interface = route_interface
-        interface_warning = ""
-    else:
-        interface = "en0"
-        interface_warning = (
+    if not _is_safe_colima_bridge_interface(route_interface):
+        console.print(
             f"[yellow]Route to DevKit resolved through '{route_interface or 'unknown'}', "
-            "which is not a safe Colima bridged interface. Falling back to en0.[/yellow]"
+            "which is not a physical interface that Colima can bridge safely. "
+            "The Colima profile was not changed. Connect the DevKit through a physical LAN "
+            "interface and rerun SDK setup.[/yellow]"
         )
-    profile_args = [] if profile == "default" else ["--profile", profile]
-    profile_display = "" if profile == "default" else f" --profile {profile}"
+        raise RuntimeError(
+            "Could not identify a safe physical interface for the route to the DevKit."
+        )
+    interface = route_interface
+    network = _colima_network_config(profile)
+    if _is_colima_network_suitable_for_devkit(profile, interface, network=network):
+        return False
+    # Always name the detected profile explicitly. Colima otherwise falls back
+    # to COLIMA_PROFILE, which could retarget these destructive commands after
+    # the safety checks inspected a different profile.
+    profile_args = ["--profile", profile]
+    profile_display = f" --profile {profile}"
     supports_network_address = _colima_supports_network_address_flag()
     supports_bridged_flags = _colima_supports_bridged_network_flags()
     start_flags = ["--network-address"]
@@ -471,13 +696,37 @@ def warn_if_colima_devkit_network_may_need_bridged(
     if supports_bridged_flags:
         start_flags.extend(["--network-mode", "bridged", "--network-interface", interface])
         start_display_flags.extend(["--network-mode", "bridged", "--network-interface", interface])
+    enable_udp = require_udp and _colima_port_forwarder(profile) != "grpc"
+    if enable_udp:
+        start_flags.extend(["--port-forwarder", "grpc"])
+        start_display_flags.extend(["--port-forwarder", "grpc"])
+    current_cpus, current_memory = _parse_colima_status(network)
+    resources_known = bool(network.get("cpu") and network.get("memory"))
+    resize_resources = resources_known and (
+        current_cpus < NEAT_COLIMA_MIN_CPUS
+        or current_memory < NEAT_COLIMA_MIN_MEMORY_GB
+    )
+    target_cpus, target_memory = current_cpus, current_memory
+    if resize_resources:
+        target_cpus, target_memory = _default_colima_resource_targets(
+            current_cpus,
+            current_memory,
+        )
+        if not (yes_to_all or noninteractive):
+            target_cpus, target_memory = _prompt_colima_resource_targets(
+                current_cpus,
+                current_memory,
+            )
+    if resize_resources:
+        resource_flags = [
+            "--cpu", str(target_cpus),
+            "--memory", f"{target_memory:g}",
+        ]
+        start_flags.extend(resource_flags)
+        start_display_flags.extend(resource_flags)
     start_flags.append("--save-config")
     start_display_flags.append("--save-config")
-    command_lines = [
-        f"colima stop{profile_display}",
-        f"colima start{profile_display} {' '.join(start_display_flags)}",
-    ]
-    command_text = "\n".join(command_lines)
+    target_start_command = f"colima start{profile_display} {' '.join(start_display_flags)}"
 
     console.print(
         Panel(
@@ -487,9 +736,16 @@ def warn_if_colima_devkit_network_may_need_bridged(
                 "The macOS host may be able to SSH to the DevKit while the SDK container cannot, because the",
                 "container reaches the LAN through the Colima VM network path.",
                 "",
-                "Recommended Colima setup:",
-                f"[cyan]{command_lines[0]}[/cyan]",
-                f"[cyan]{command_lines[1]}[/cyan]",
+                "Colima cannot change network mode after a profile is created. The profile VM must be",
+                "recreated. This operation stops all running containers in the profile.",
+                "",
+                "After confirmation, sima-cli will save the profile configuration, recreate the VM without",
+                "the --data option, restore the configuration, and start Colima with:",
+                f"[cyan]{target_start_command}[/cyan]",
+                "" if not enable_udp else "This also enables the gRPC port forwarder required for Insight UDP traffic.",
+                "" if not resize_resources else (
+                    f"This also configures {target_cpus} CPUs and {target_memory:g} GB RAM for the Neat SDK."
+                ),
                 "" if supports_network_address else "",
                 "" if supports_network_address else (
                     "[yellow]Your Colima version does not expose the network-address flag. "
@@ -497,9 +753,8 @@ def warn_if_colima_devkit_network_may_need_bridged(
                 ),
                 "" if supports_bridged_flags else (
                     "[yellow]This Colima version does not expose --network-mode/--network-interface; "
-                    "using --network-address only.[/yellow]"
+                    "upgrade Colima before rerunning SDK setup.[/yellow]"
                 ),
-                interface_warning,
             ]),
             title="Colima DevKit-Sync Network Warning",
             border_style="red",
@@ -507,16 +762,40 @@ def warn_if_colima_devkit_network_may_need_bridged(
         )
     )
 
-    if not supports_network_address:
+    if not supports_network_address or not supports_bridged_flags:
+        missing_feature = (
+            "the network-address flag"
+            if not supports_network_address
+            else "the bridged network flags"
+        )
         console.print(
             "[yellow]⚠️  Not restarting Colima automatically because this Colima version "
-            "does not support the required network-address flag.[/yellow]"
+            f"does not support {missing_feature}. Upgrade Colima, then rerun SDK setup.[/yellow]"
         )
         return False
 
-    should_restart = yes_to_all or noninteractive
+    recreation_is_safe, unsafe_reason = _colima_profile_recreation_safety(profile)
+    if not recreation_is_safe:
+        raise RuntimeError(
+            f"sima-cli will not recreate Colima profile '{profile}': {unsafe_reason} "
+            "Back up or migrate the profile data, recreate the profile with bridged networking, "
+            "and then rerun SDK setup. The profile was not changed."
+        )
+
+    if noninteractive and not yes_to_all:
+        raise RuntimeError(
+            "Colima must recreate its VM profile to use bridged networking. "
+            "Rerun interactively or pass --yes to approve this change. "
+            "Colima reports a separate Docker data disk, but it does not guarantee against data loss."
+        )
+
+    should_restart = yes_to_all
     if not should_restart:
-        choice = input("Restart Colima in bridged network mode now? [y/N]: ").strip().lower()
+        choice = input(
+            "Recreate the Colima VM profile with bridged networking now? "
+            "Colima reports a separate Docker data disk, but data loss is still possible. "
+            "Confirm that important data is backed up. [y/N]: "
+        ).strip().lower()
         should_restart = choice in ("y", "yes")
         if not should_restart:
             console.print("[yellow]⚠️  Continuing with current Colima network. DevKit-Sync may fail from the SDK container.[/yellow]")
@@ -528,19 +807,64 @@ def warn_if_colima_devkit_network_may_need_bridged(
         return False
 
     try:
+        config_path, snapshot_path, config_mode, config_dir_mode = _stage_colima_profile_config(
+            profile,
+            interface,
+        )
+    except (OSError, RuntimeError) as exc:
+        console.print(
+            "[yellow]⚠️  Could not safely preserve the Colima profile configuration; "
+            f"the profile was not changed: {exc}[/yellow]"
+        )
+        return False
+
+    config_restored = False
+    recreation_started = False
+    try:
         subprocess.run([colima_cmd, "stop", *profile_args], check=True)
+        recreation_started = True
+        subprocess.run([colima_cmd, "delete", *profile_args, "--force"], check=True)
+        _restore_colima_profile_config(
+            config_path,
+            snapshot_path,
+            config_mode,
+            config_dir_mode,
+        )
+        config_restored = True
         subprocess.run(
             [colima_cmd, "start", *profile_args, *start_flags],
             check=True,
         )
-        console.print("[green]✅ Colima restarted with reachable VM networking for DevKit-Sync.[/green]")
+        updated_network = _colima_network_config(profile)
+        if not _is_colima_network_suitable_for_devkit(
+            profile,
+            interface,
+            network=updated_network,
+        ):
+            raise RuntimeError("Colima did not report a bridged, reachable address after recreation.")
+        if enable_udp and _colima_port_forwarder(profile) != "grpc":
+            raise RuntimeError("Colima did not report the gRPC port forwarder after recreation.")
+        if resize_resources:
+            updated_cpus, updated_memory = _parse_colima_status(updated_network)
+            if updated_cpus < target_cpus or updated_memory < target_memory:
+                raise RuntimeError("Colima did not report the requested CPU and memory after recreation.")
+        console.print("[green]✅ Colima recreated with reachable VM networking for DevKit-Sync.[/green]")
         return True
-    except subprocess.CalledProcessError:
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         console.print(
-            "[yellow]⚠️  Could not restart Colima with bridged networking automatically. "
-            f"Run manually:\n{command_text}[/yellow]"
+            "[yellow]⚠️  Could not recreate Colima with bridged networking automatically: "
+            f"{exc}\nFix the reported problem, then rerun SDK setup.[/yellow]"
         )
+        if recreation_started:
+            raise
         return False
+    finally:
+        if config_restored:
+            snapshot_path.unlink(missing_ok=True)
+        else:
+            console.print(
+                f"[yellow]The saved Colima profile configuration remains at {snapshot_path}.[/yellow]"
+            )
 
 
 def check_colima_resources() -> list:
@@ -568,7 +892,11 @@ def check_colima_resources() -> list:
     return [["Colima", required, found, "⚠️ WARNING"]]
 
 
-def _restart_colima_with_resources(profile: str) -> None:
+def _restart_colima_with_resources(
+    profile: str,
+    cpus: int = NEAT_COLIMA_MIN_CPUS,
+    memory_gb: float = NEAT_COLIMA_MIN_MEMORY_GB,
+) -> None:
     colima_cmd = shutil.which("colima")
     if not colima_cmd:
         raise RuntimeError("Colima is not installed or is not available on PATH.")
@@ -580,9 +908,9 @@ def _restart_colima_with_resources(profile: str) -> None:
         "--profile",
         profile,
         "--cpu",
-        str(NEAT_COLIMA_MIN_CPUS),
+        str(cpus),
         "--memory",
-        str(NEAT_COLIMA_MIN_MEMORY_GB),
+        f"{memory_gb:g}",
     ], check=True)
 
 
@@ -630,11 +958,15 @@ def ensure_colima_resources_for_neat_sdk(
         )
     )
 
+    target_cpus, target_memory = _default_colima_resource_targets(cpus, memory_gb)
+    if not (yes_to_all or noninteractive):
+        target_cpus, target_memory = _prompt_colima_resource_targets(cpus, memory_gb)
+
     should_restart = yes_to_all or noninteractive
     if not should_restart:
         choice = input(
-            f"Restart Colima with {NEAT_COLIMA_MIN_CPUS} CPUs and "
-            f"{NEAT_COLIMA_MIN_MEMORY_GB} GB RAM now? [Y/n]: "
+            f"Restart Colima with {target_cpus} CPUs and "
+            f"{target_memory:g} GB RAM now? [Y/n]: "
         ).strip().lower()
         should_restart = choice in ("", "y", "yes")
 
@@ -643,10 +975,10 @@ def ensure_colima_resources_for_neat_sdk(
         return udp_restarted
 
     console.print(
-        f"[yellow]⚙️  Restarting Colima with {NEAT_COLIMA_MIN_CPUS} CPUs and "
-        f"{NEAT_COLIMA_MIN_MEMORY_GB} GB RAM...[/yellow]"
+        f"[yellow]⚙️  Restarting Colima with {target_cpus} CPUs and "
+        f"{target_memory:g} GB RAM...[/yellow]"
     )
-    _restart_colima_with_resources(profile)
+    _restart_colima_with_resources(profile, target_cpus, target_memory)
     console.print("[green]✅ Colima restarted with sufficient resources for Neat SDK.[/green]")
     return True
 

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from sima_cli.sdk.preinstall import (
     _detect_colima_profile,
     _colima_config_path,
+    _colima_network_config,
     _colima_port_forwarder,
     _colima_profile_recreation_safety,
     _colima_store_path,
@@ -22,11 +23,32 @@ from sima_cli.sdk.preinstall import (
     _default_colima_resource_targets,
     _parse_colima_status,
     _prompt_colima_resource_targets,
+    _is_safe_colima_bridge_interface,
     warn_if_colima_devkit_network_may_need_bridged,
 )
 
 
 class TestSdkPreinstall(unittest.TestCase):
+    def test_colima_bridge_interface_rejects_known_vpn_prefixes(self):
+        for interface in ("utun7", "ppp0", "tailscale0", "ztabc123", "wg0"):
+            with self.subTest(interface=interface):
+                self.assertFalse(_is_safe_colima_bridge_interface(interface))
+
+    def test_colima_network_config_uses_generated_instance_mode(self):
+        with patch(
+            "sima_cli.sdk.preinstall._colima_status",
+            return_value={"ip_address": "192.168.64.2", "cpu": 4, "memory": 8589934592},
+        ), patch(
+            "sima_cli.sdk.preinstall._colima_config",
+            return_value={"network": {"address": True, "mode": "bridged", "interface": "en0"}},
+        ), patch(
+            "sima_cli.sdk.preinstall._colima_instance_config",
+            return_value={"network": {"address": True, "mode": "shared", "interface": "en0"}},
+        ):
+            network = _colima_network_config("default")
+
+        self.assertEqual(network["mode"], "shared")
+
     def test_colima_profile_recreation_safety_requires_separate_docker_disk(self):
         with TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "default" / "colima.yaml"
@@ -536,7 +558,7 @@ class TestSdkPreinstall(unittest.TestCase):
                 "en0",
                 "--port-forwarder",
                 "grpc",
-                "--cpus",
+                "--cpu",
                 "16",
                 "--memory",
                 "32",
@@ -663,7 +685,7 @@ class TestSdkPreinstall(unittest.TestCase):
                 "bridged",
                 "--network-interface",
                 "en7",
-                "--cpus",
+                "--cpu",
                 "10",
                 "--memory",
                 "20",

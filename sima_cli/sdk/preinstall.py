@@ -259,17 +259,36 @@ def _colima_config(profile: str) -> dict:
         return {}
 
 
+def _colima_instance_config(profile: str) -> dict:
+    """Read Colima's generated instance config, which reflects immutable VM settings."""
+    if profile in ("", "default", "colima"):
+        profile_id = "colima"
+    else:
+        short_name = profile[len("colima-"):] if profile.startswith("colima-") else profile
+        profile_id = f"colima-{short_name}"
+    path = _colima_config_path(profile).parent.parent / "_lima" / profile_id / "colima.yaml"
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            data = yaml.safe_load(stream) or {}
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _colima_network_config(profile: str) -> dict:
     status = _colima_status(profile)
     config = _colima_config(profile)
+    instance = _colima_instance_config(profile)
 
-    network = config.get("network") if isinstance(config.get("network"), dict) else {}
+    instance_network = (
+        instance.get("network") if isinstance(instance.get("network"), dict) else {}
+    )
     status_network = status.get("network") if isinstance(status.get("network"), dict) else {}
 
     return {
-        "address": status_network.get("address", network.get("address")),
-        "mode": status_network.get("mode", network.get("mode")),
-        "interface": status_network.get("interface", network.get("interface")),
+        "address": status_network.get("address", instance_network.get("address")),
+        "mode": status_network.get("mode", instance_network.get("mode")),
+        "interface": status_network.get("interface", instance_network.get("interface")),
         "ip_address": status.get("ip_address") or status.get("address"),
         "cpu": status.get("cpu", config.get("cpu")),
         "memory": status.get("memory", config.get("memory")),
@@ -491,6 +510,9 @@ def _is_safe_colima_bridge_interface(interface: str) -> bool:
         "tun",
         "tap",
         "wg",
+        "tailscale",
+        "zt",
+        "ppp",
         "bridge",
         "vmnet",
         "vboxnet",
@@ -690,7 +712,7 @@ def warn_if_colima_devkit_network_may_need_bridged(
             )
     if resize_resources:
         resource_flags = [
-            "--cpus", str(target_cpus),
+            "--cpu", str(target_cpus),
             "--memory", f"{target_memory:g}",
         ]
         start_flags.extend(resource_flags)
@@ -878,7 +900,7 @@ def _restart_colima_with_resources(
         "start",
         "--profile",
         profile,
-        "--cpus",
+        "--cpu",
         str(cpus),
         "--memory",
         f"{memory_gb:g}",

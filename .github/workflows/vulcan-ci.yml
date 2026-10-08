@@ -18,9 +18,7 @@ permissions:
   packages: read
 
 concurrency:
-  # A branch push and its pull_request event should share one run instead of
-  # provisioning two fresh WSL environments for the same commit.
-  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref_type == 'branch' }}
 
 env:

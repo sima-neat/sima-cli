@@ -25,6 +25,7 @@ from sima_cli.sdk.preinstall import (
     _parse_colima_status,
     _prompt_colima_resource_targets,
     _is_safe_colima_bridge_interface,
+    _resolve_safe_colima_bridge_interface,
     warn_if_colima_devkit_network_may_need_bridged,
 )
 
@@ -34,6 +35,62 @@ class TestSdkPreinstall(unittest.TestCase):
         for interface in ("utun7", "ppp0", "ipsec0", "tailscale0", "ztabc123", "wg0"):
             with self.subTest(interface=interface):
                 self.assertFalse(_is_safe_colima_bridge_interface(interface))
+
+    def test_colima_bridge_interface_resolves_internet_sharing_member(self):
+        outputs = {
+            ("ifconfig", "bridge100"): """bridge100: flags=8a63<UP,RUNNING>
+\tmember: en7 flags=3<LEARNING,DISCOVER>
+\tstatus: active
+""",
+            ("ifconfig", "en7"): """en7: flags=8963<UP,RUNNING>
+\tmedia: autoselect (1000baseT <full-duplex>)
+\tstatus: active
+""",
+        }
+
+        with patch(
+            "sima_cli.sdk.preinstall.subprocess.check_output",
+            side_effect=lambda command, **_kwargs: outputs[tuple(command)],
+        ):
+            interface = _resolve_safe_colima_bridge_interface("bridge100")
+
+        self.assertEqual(interface, "en7")
+
+    def test_colima_bridge_interface_refuses_ambiguous_active_members(self):
+        outputs = {
+            ("ifconfig", "bridge100"): """bridge100: flags=8a63<UP,RUNNING>
+\tmember: en7 flags=3<LEARNING,DISCOVER>
+\tmember: en8 flags=3<LEARNING,DISCOVER>
+\tstatus: active
+""",
+            ("ifconfig", "en7"): "en7: flags=8963<UP,RUNNING>\n\tstatus: active\n",
+            ("ifconfig", "en8"): "en8: flags=8963<UP,RUNNING>\n\tstatus: active\n",
+        }
+
+        with patch(
+            "sima_cli.sdk.preinstall.subprocess.check_output",
+            side_effect=lambda command, **_kwargs: outputs[tuple(command)],
+        ):
+            interface = _resolve_safe_colima_bridge_interface("bridge100")
+
+        self.assertEqual(interface, "")
+
+    def test_colima_bridge_interface_refuses_inactive_member(self):
+        outputs = {
+            ("ifconfig", "bridge100"): """bridge100: flags=8a63<UP,RUNNING>
+\tmember: en7 flags=3<LEARNING,DISCOVER>
+\tstatus: active
+""",
+            ("ifconfig", "en7"): "en7: flags=8863<UP>\n\tstatus: inactive\n",
+        }
+
+        with patch(
+            "sima_cli.sdk.preinstall.subprocess.check_output",
+            side_effect=lambda command, **_kwargs: outputs[tuple(command)],
+        ):
+            interface = _resolve_safe_colima_bridge_interface("bridge100")
+
+        self.assertEqual(interface, "")
 
     def test_colima_instance_config_honors_lima_home(self):
         with TemporaryDirectory() as tmpdir:

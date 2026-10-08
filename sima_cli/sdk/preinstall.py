@@ -532,6 +532,51 @@ def _is_safe_colima_bridge_interface(interface: str) -> bool:
     return True
 
 
+def _resolve_safe_colima_bridge_interface(route_interface: str) -> str:
+    """Resolve a DevKit route to the physical interface Colima should bridge.
+
+    macOS Internet Sharing assigns the DevKit-facing address to a ``bridgeN``
+    interface while the cable remains attached to an ``enN`` member. Colima
+    must be configured with that physical member, not the software bridge.
+    Fail closed unless the bridge has exactly one active, safe member.
+    """
+    if _is_safe_colima_bridge_interface(route_interface):
+        return route_interface
+
+    normalized = (route_interface or "").strip().lower()
+    if not normalized.startswith("bridge"):
+        return ""
+
+    try:
+        bridge_output = subprocess.check_output(
+            ["ifconfig", route_interface],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return ""
+
+    members = []
+    for member in re.findall(r"^\s*member:\s*(\S+)", bridge_output, flags=re.MULTILINE):
+        if member not in members and _is_safe_colima_bridge_interface(member):
+            members.append(member)
+
+    active_members = []
+    for member in members:
+        try:
+            member_output = subprocess.check_output(
+                ["ifconfig", member],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            continue
+        if re.search(r"^\s*status:\s*active\s*$", member_output, flags=re.MULTILINE):
+            active_members.append(member)
+
+    return active_members[0] if len(active_members) == 1 else ""
+
+
 def _colima_start_help() -> str:
     colima_cmd = shutil.which("colima")
     if not colima_cmd:
@@ -670,7 +715,8 @@ def warn_if_colima_devkit_network_may_need_bridged(
 
     profile = _detect_colima_profile()
     route_interface = _route_interface_for_target(devkit_ip)
-    if not _is_safe_colima_bridge_interface(route_interface):
+    interface = _resolve_safe_colima_bridge_interface(route_interface)
+    if not interface:
         console.print(
             f"[yellow]Route to DevKit resolved through '{route_interface or 'unknown'}', "
             "which is not a physical interface that Colima can bridge safely. "
@@ -680,7 +726,6 @@ def warn_if_colima_devkit_network_may_need_bridged(
         raise RuntimeError(
             "Could not identify a safe physical interface for the route to the DevKit."
         )
-    interface = route_interface
     network = _colima_network_config(profile)
     if _is_colima_network_suitable_for_devkit(profile, interface, network=network):
         return False

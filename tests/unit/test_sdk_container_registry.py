@@ -122,6 +122,21 @@ class TestSdkContainerRegistry(unittest.TestCase):
                 "10.42.0.10",
             )
 
+    def test_colima_uses_internet_sharing_bridge_member_for_devkit_binding(self):
+        with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": True, "mode": "bridged", "interface": "en7", "ip_address": "192.168.2.2"},
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge100"), \
+             patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en7"):
+            self.assertEqual(
+                resolve_container_registry_bind_ip("192.168.2.1", "192.168.2.3"),
+                "192.168.2.2",
+            )
+
     def test_colima_rejects_bridge_on_wrong_devkit_interface(self):
         with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \

@@ -29,7 +29,7 @@ class ContainerRegistryConfig:
     devkit_address: str
 
 
-def _inspect_registry() -> Optional[dict]:
+def _inspect_registry(ignore_unmanaged: bool = False) -> Optional[dict]:
     result = subprocess.run(
         [
             "docker",
@@ -57,6 +57,8 @@ def _inspect_registry() -> Optional[dict]:
         )
     managed_value, port_text, bind_ip, running_text, ports_json = parts
     if managed_value != REGISTRY_MANAGED_VALUE:
+        if ignore_unmanaged:
+            return None
         raise RuntimeError(
             f"A Docker container named '{REGISTRY_CONTAINER_NAME}' already exists, but it was not "
             "created by sima-cli. Rename or remove that container, then run SDK setup again."
@@ -110,7 +112,7 @@ def _registry_bind_ip_is_available(host_ip: str) -> bool:
 
 
 def repair_existing_container_registry() -> None:
-    existing = _inspect_registry()
+    existing = _inspect_registry(ignore_unmanaged=True)
     if not existing or not existing["bind_ip"]:
         return
     if not _publishes_expected_ports(existing, existing["port"], existing["bind_ip"]):

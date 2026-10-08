@@ -86,6 +86,26 @@ class TestSdkContainerRegistry(unittest.TestCase):
 
         self.assertEqual(existing["published"], set())
 
+    def test_explicit_registry_inspection_rejects_unmanaged_container(self):
+        inspected = Mock(
+            returncode=0,
+            stdout='<no value>|<no value>|<no value>|true|{"5000/tcp":null}\n',
+        )
+        with patch("sima_cli.sdk.container_registry.subprocess.run", return_value=inspected), \
+             self.assertRaisesRegex(RuntimeError, "not created by sima-cli"):
+            _inspect_registry()
+
+    def test_automatic_registry_repair_ignores_unmanaged_container(self):
+        inspected = Mock(
+            returncode=0,
+            stdout='<no value>|<no value>|<no value>|true|{"5000/tcp":null}\n',
+        )
+        with patch("sima_cli.sdk.container_registry.subprocess.run", return_value=inspected), \
+             patch("sima_cli.sdk.container_registry.ensure_container_registry") as ensure:
+            repair_existing_container_registry()
+
+        ensure.assert_not_called()
+
     def test_reuses_running_registry(self):
         with patch(
             "sima_cli.sdk.container_registry._inspect_registry",

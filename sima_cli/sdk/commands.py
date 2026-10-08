@@ -189,7 +189,6 @@ def _resolve_devkit_credentials(
     devkit_ip: str,
     *,
     noninteractive: bool,
-    yes_to_all: bool,
 ) -> Tuple[str, str]:
     if not devkit_ip:
         return "", ""
@@ -198,26 +197,12 @@ def _resolve_devkit_credentials(
     default_password = os.environ.get("SIMA_DEVKIT_PASSWORD")
     if default_password is None and username == "sima":
         default_password = "edgeai"
+    password = default_password or ""
 
-    if not (noninteractive or yes_to_all):
-        username = click.prompt("DevKit username", default=username).strip()
-        if not username:
-            raise click.ClickException("DevKit username cannot be empty.")
-        if "SIMA_DEVKIT_PASSWORD" not in os.environ:
-            default_password = "edgeai" if username == "sima" else None
-        password = click.prompt(
-            "DevKit password",
-            default=default_password,
-            hide_input=True,
-            show_default=False,
-        )
-    else:
-        password = default_password
-
-    if not password:
+    if noninteractive and not password:
         raise click.ClickException(
             "A DevKit password is required to install the SDK container SSH key. "
-            "Set SIMA_DEVKIT_PASSWORD or rerun setup interactively."
+            "Set SIMA_DEVKIT_PASSWORD for noninteractive setup."
         )
     return username, password
 
@@ -451,7 +436,6 @@ def setup(
     devkit_user, devkit_password = _resolve_devkit_credentials(
         devkit_ip,
         noninteractive=noninteractive,
-        yes_to_all=yes,
     )
     try:
         setup_and_start(

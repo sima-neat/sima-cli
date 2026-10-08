@@ -330,5 +330,30 @@ class TestSdkContainerRegistry(unittest.TestCase):
                     },
                 )
 
+    def test_bootstrap_prompts_once_after_default_credentials_fail(self):
+        failed = Mock(returncode=41, stdout="", stderr="")
+        succeeded = Mock(returncode=0, stdout="", stderr="")
+        with patch("sima_cli.sdk.utils._configure_container_registry_environment"), \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, succeeded]) as run, \
+             patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
+             patch("sima_cli.sdk.utils.sys.stdout.isatty", return_value=True), \
+             patch("builtins.input", return_value="operator"), \
+             patch("sima_cli.sdk.utils.getpass.getpass", return_value="secret"):
+            bootstrap_devkit_container(
+                "sdk-container",
+                {
+                    "devkit_ip": "10.42.0.2",
+                    "devkit_user": "sima",
+                    "devkit_password": "edgeai",
+                    "host_nfs_available": True,
+                    "bootstrap_interactive": True,
+                },
+            )
+
+        self.assertEqual(run.call_count, 2)
+        retry_script = run.call_args_list[1].args[0][-1]
+        self.assertIn("export DEVKIT_SYNC_PASSWORD=secret", retry_script)
+        self.assertIn("operator@10.42.0.2", retry_script)
+
 if __name__ == "__main__":
     unittest.main()

@@ -641,14 +641,31 @@ class TestSdkImageDetection(unittest.TestCase):
         self.assertEqual(setup_start.call_args.kwargs["devkit_user"], "sima")
         self.assertEqual(setup_start.call_args.kwargs["devkit_password"], "edgeai")
 
-    def test_sdk_setup_prompts_for_devkit_credentials(self):
+    def test_sdk_setup_uses_default_devkit_credentials_without_prompting(self):
         runner = CliRunner()
         with patch("sima_cli.sdk.commands.check_and_start_docker"), \
              patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
             result = runner.invoke(
                 sdk,
                 ["setup", "--devkit", "10.42.0.78"],
-                input="operator\nsecret\n",
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("DevKit username", result.output)
+        self.assertEqual(setup_start.call_args.kwargs["devkit_user"], "sima")
+        self.assertEqual(setup_start.call_args.kwargs["devkit_password"], "edgeai")
+
+    def test_sdk_setup_uses_devkit_credentials_from_environment(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(
+                sdk,
+                ["setup", "--devkit", "10.42.0.78"],
+                env={
+                    "SIMA_DEVKIT_USER": "operator",
+                    "SIMA_DEVKIT_PASSWORD": "secret",
+                },
             )
 
         self.assertEqual(result.exit_code, 0, result.output)

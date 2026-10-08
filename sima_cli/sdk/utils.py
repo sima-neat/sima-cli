@@ -2492,10 +2492,10 @@ else
   if [ -z "$DEVKIT_SYNC_PASSWORD" ]; then
     echo "DevKit password is required to install the SDK container SSH key." >&2
     BOOTSTRAP_STATUS=credential_setup_failed
-    BOOTSTRAP_RC=1
+    BOOTSTRAP_RC=41
   elif ! command -v sshpass >/dev/null 2>&1; then
     echo "sshpass is required in the SDK container to install the DevKit SSH key." >&2
-    BOOTSTRAP_STATUS=credential_setup_failed
+    BOOTSTRAP_STATUS=missing_sshpass
     BOOTSTRAP_RC=1
   else
     mkdir -p "$HOME/.ssh"
@@ -2514,15 +2514,15 @@ else
       {shlex.quote(devkit_user)}@{shlex.quote(devkit_ip)}; then
       echo "Could not install the SDK container SSH key. Check the DevKit username and password." >&2
       BOOTSTRAP_STATUS=credential_setup_failed
-      BOOTSTRAP_RC=1
+      BOOTSTRAP_RC=41
     fi
   fi
   if [ "$BOOTSTRAP_RC" -eq 0 ]; then
     source /usr/local/bin/devkit.sh {shlex.quote(devkit_ip)} {shlex.quote(devkit_user)} {devkit_port}
+    SRC_RC=$?
   else
-    false
+    SRC_RC=$BOOTSTRAP_RC
   fi
-  SRC_RC=$?
   if [ "$SRC_RC" -ne 0 ]; then
     if [ "$BOOTSTRAP_STATUS" != credential_setup_failed ]; then
       BOOTSTRAP_STATUS=source_failed
@@ -2559,6 +2559,21 @@ exit "$BOOTSTRAP_RC"
                     "'dk container' command."
                 )
             return
+        if proc.returncode == 41 and not devkit_env.get("credential_prompted"):
+            print("ℹ️  The DevKit login did not work. Enter the device credentials to retry.")
+            retry_user = input(f"DevKit username [{devkit_user}]: ").strip() or devkit_user
+            retry_password = getpass.getpass("DevKit password: ")
+            if not retry_password:
+                raise RuntimeError("DevKit password cannot be empty.")
+            retry_env = dict(devkit_env)
+            retry_env.update(
+                {
+                    "devkit_user": retry_user,
+                    "devkit_password": retry_password,
+                    "credential_prompted": True,
+                }
+            )
+            return bootstrap_devkit_container(container_name, retry_env)
         raise RuntimeError(
             f"DevKit pairing failed in SDK container '{container_name}'. "
             "Check the DevKit username and password, then rerun SDK setup."

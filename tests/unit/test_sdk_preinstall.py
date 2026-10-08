@@ -750,13 +750,21 @@ class TestSdkPreinstall(unittest.TestCase):
                  return_value=(Path("/profile/colima.yaml"), Path("/tmp/missing-colima-snapshot"), 0o600, 0o700),
              ) as stage, \
              patch("sima_cli.sdk.preinstall._restore_colima_profile_config"), \
-             patch("sima_cli.sdk.preinstall.subprocess.run") as run:
-            restarted = warn_if_colima_devkit_network_may_need_bridged(
-                "192.168.2.2",
-                yes_to_all=True,
-            )
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
+             patch("sima_cli.sdk.preinstall.console.print") as console_print, \
+             patch("builtins.input", return_value="y") as prompt:
+            restarted = warn_if_colima_devkit_network_may_need_bridged("192.168.2.2")
 
         self.assertTrue(restarted)
+        panel = console_print.call_args_list[0].args[0]
+        self.assertEqual(panel.title, "Colima Network Update")
+        self.assertNotIn("\n\n\n", panel.renderable)
+        self.assertIn("one-time network update", panel.renderable)
+        self.assertNotIn("data loss", panel.renderable.lower())
+        prompt.assert_called_once_with(
+            "Apply the Colima network update for Internet Sharing now? "
+            "Running containers will stop briefly; Docker data will be kept. [y/N]: "
+        )
         stage.assert_called_once_with("default", "en14", internet_sharing=True)
         self.assertEqual(
             run.call_args_list[2].args[0],

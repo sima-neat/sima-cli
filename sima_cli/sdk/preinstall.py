@@ -873,59 +873,48 @@ def warn_if_colima_devkit_network_may_need_bridged(
     start_display_flags.append("--save-config")
     target_start_command = f"colima start{profile_display} {' '.join(start_display_flags)}"
 
-    console.print(
-        Panel(
-            "\n".join([
-                (
-                    "[bold red]Colima is not configured for macOS Internet Sharing and DevKit-Sync.[/bold red]"
-                    if internet_sharing
-                    else "[bold red]Colima is not configured with a bridged/reachable network for DevKit-Sync.[/bold red]"
-                ),
-                "",
-                "The macOS host may be able to SSH to the DevKit while the SDK container cannot, because the",
-                "container reaches the LAN through the Colima VM network path.",
-                "",
-                (
-                    "macOS Internet Sharing already owns the DevKit-facing bridge. Colima must use shared"
-                    if internet_sharing
-                    else "Colima cannot change network mode after a profile is created. The profile VM must be"
-                ),
-                (
-                    "networking with host-address forwarding instead of creating a competing vmnet bridge."
-                    if internet_sharing
-                    else "recreated. This operation stops all running containers in the profile."
-                ),
-                (
-                    "The profile VM must be recreated. This operation stops all running containers in the profile."
-                    if internet_sharing else ""
-                ),
-                "",
-                "After confirmation, sima-cli will save the profile configuration, recreate the VM without",
-                "the --data option, restore the configuration, and start Colima with:",
-                f"[cyan]{target_start_command}[/cyan]",
-                "" if not enable_udp else "This also enables the gRPC port forwarder required for Insight UDP traffic.",
-                "" if not resize_resources else (
-                    f"This also configures {target_cpus} CPUs and {target_memory:g} GB RAM for the Neat SDK."
-                ),
-                "" if supports_network_address else "",
-                "" if supports_network_address else (
-                    "[yellow]Your Colima version does not expose the network-address flag. "
-                    "Upgrade Colima before running this command.[/yellow]"
-                ),
-                "" if (internet_sharing or supports_bridged_flags) else (
-                    "[yellow]This Colima version does not expose --network-mode/--network-interface; "
-                    "upgrade Colima before rerunning SDK setup.[/yellow]"
-                ),
-                "" if (not internet_sharing or supports_host_addresses) else (
-                    "[yellow]This Colima version does not expose --network-host-addresses; "
-                    "upgrade Colima before rerunning SDK setup.[/yellow]"
-                ),
-            ]),
-            title="Colima DevKit-Sync Network Warning",
-            border_style="red",
-            expand=False,
+    panel_lines = [
+        (
+            "Colima needs a one-time network update for a DevKit connected through "
+            "macOS Internet Sharing."
+            if internet_sharing
+            else "Colima needs a one-time bridged-network update to reach the DevKit."
+        ),
+        "",
+        "The update recreates the Colima VM and briefly stops its containers. "
+        "The separate Docker data disk is kept.",
+        "",
+        "sima-cli will run:",
+        f"[cyan]{target_start_command}[/cyan]",
+    ]
+    if enable_udp:
+        panel_lines.append("Insight UDP forwarding will also be enabled.")
+    if resize_resources:
+        panel_lines.append(
+            f"Colima will also use {target_cpus} CPUs and {target_memory:g} GB RAM."
         )
-    )
+    if not supports_network_address:
+        panel_lines.append(
+            "[yellow]Upgrade Colima before continuing; this version does not support "
+            "network addresses.[/yellow]"
+        )
+    if not internet_sharing and not supports_bridged_flags:
+        panel_lines.append(
+            "[yellow]Upgrade Colima before continuing; this version does not support "
+            "bridged-network selection.[/yellow]"
+        )
+    if internet_sharing and not supports_host_addresses:
+        panel_lines.append(
+            "[yellow]Upgrade Colima before continuing; this version does not support "
+            "host-address forwarding.[/yellow]"
+        )
+
+    console.print(Panel(
+        "\n".join(panel_lines),
+        title="Colima Network Update",
+        border_style="yellow",
+        expand=False,
+    ))
 
     network_features_supported = (
         supports_network_address
@@ -957,21 +946,20 @@ def warn_if_colima_devkit_network_may_need_bridged(
 
     if noninteractive and not yes_to_all:
         raise RuntimeError(
-            "Colima must recreate its VM profile to change its network strategy. "
-            "Rerun interactively or pass --yes to approve this change. "
-            "Colima reports a separate Docker data disk, but it does not guarantee against data loss."
+            "Colima needs a one-time VM recreation to update its network. "
+            "Rerun interactively or pass --yes. Running containers will stop briefly; "
+            "the separate Docker data disk will be kept."
         )
 
     should_restart = yes_to_all
     if not should_restart:
         choice = input(
             (
-                "Recreate the Colima VM profile with Internet Sharing-compatible networking now? "
+                "Apply the Colima network update for Internet Sharing now? "
                 if internet_sharing
-                else "Recreate the Colima VM profile with bridged networking now? "
+                else "Apply the Colima bridged-network update now? "
             )
-            + "Colima reports a separate Docker data disk, but data loss is still possible. "
-            "Confirm that important data is backed up. [y/N]: "
+            + "Running containers will stop briefly; Docker data will be kept. [y/N]: "
         ).strip().lower()
         should_restart = choice in ("y", "yes")
         if not should_restart:

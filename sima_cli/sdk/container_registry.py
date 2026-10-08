@@ -84,11 +84,43 @@ def _publishes_expected_ports(existing: dict, port: int, host_ip: str) -> bool:
     return existing["running"] and expected <= existing["published"]
 
 
+def _registry_bind_ip_is_available(host_ip: str) -> bool:
+    # A bridged Colima address belongs to the VM rather than macOS, so recognize
+    # the active VM address before checking addresses assigned to the host.
+    if platform.system() == "Darwin":
+        from sima_cli.sdk.preinstall import (
+            _colima_network_config,
+            _detect_colima_profile,
+            _is_docker_using_colima,
+        )
+
+        if _is_docker_using_colima():
+            network = _colima_network_config(_detect_colima_profile())
+            if host_ip == str(network.get("ip_address") or "").strip():
+                return True
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((host_ip, 0))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def repair_existing_container_registry() -> None:
     existing = _inspect_registry()
     if not existing or not existing["bind_ip"]:
         return
     if not _publishes_expected_ports(existing, existing["port"], existing["bind_ip"]):
+        if not _registry_bind_ip_is_available(existing["bind_ip"]):
+            print(
+                f"⚠️ Local container registry repair deferred because its recorded "
+                f"DevKit-facing address {existing['bind_ip']} is not currently available. "
+                "Reconnect that interface and rerun SDK setup."
+            )
+            return
         ensure_container_registry(existing["bind_ip"], requested_port=existing["port"])
 
 

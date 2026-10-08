@@ -2524,7 +2524,7 @@ else
     SRC_RC=$BOOTSTRAP_RC
   fi
   if [ "$SRC_RC" -ne 0 ]; then
-    if [ "$BOOTSTRAP_STATUS" != credential_setup_failed ]; then
+    if [ "$BOOTSTRAP_STATUS" != credential_setup_failed ] && [ "$BOOTSTRAP_STATUS" != missing_sshpass ]; then
       BOOTSTRAP_STATUS=source_failed
     fi
     BOOTSTRAP_RC=$SRC_RC
@@ -2534,7 +2534,7 @@ else
     BOOTSTRAP_STATUS=sourced_no_dk
   fi
 fi
-if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ] && [ "$BOOTSTRAP_STATUS" != source_failed ] && [ "${{DEVKIT_SYNC_METHOD:-none}}" != rsync ]; then
+if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ] && [ "$BOOTSTRAP_STATUS" != source_failed ] && [ "$BOOTSTRAP_STATUS" != credential_setup_failed ] && [ "$BOOTSTRAP_STATUS" != missing_sshpass ] && [ "${{DEVKIT_SYNC_METHOD:-none}}" != rsync ]; then
   BOOTSTRAP_STATUS=rsync_fallback_failed
   BOOTSTRAP_RC=1
 fi
@@ -2657,6 +2657,12 @@ exit "$BOOTSTRAP_RC"
         raise RuntimeError(
             f"DevKit SSH key setup failed in SDK container '{container_name}'. "
             "Check the DevKit username and password, then rerun SDK setup."
+        )
+
+    if status == "missing_sshpass":
+        raise RuntimeError(
+            f"DevKit SSH key setup failed in SDK container '{container_name}': "
+            "the SDK image does not provide sshpass."
         )
 
     if not host_nfs_available:

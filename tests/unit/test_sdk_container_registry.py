@@ -133,10 +133,34 @@ class TestSdkContainerRegistry(unittest.TestCase):
         with patch(
             "sima_cli.sdk.container_registry._inspect_registry",
             return_value={"port": 5050, "bind_ip": "10.42.0.1", "running": True, "published": set()},
+        ), patch(
+            "sima_cli.sdk.container_registry._registry_bind_ip_is_available",
+            return_value=True,
         ), patch("sima_cli.sdk.container_registry.ensure_container_registry") as ensure:
             repair_existing_container_registry()
 
         ensure.assert_called_once_with("10.42.0.1", requested_port=5050)
+
+    def test_repair_is_deferred_when_recorded_address_is_offline(self):
+        existing = {
+            "port": 5050,
+            "bind_ip": "10.42.0.1",
+            "running": False,
+            "published": set(),
+        }
+        with patch(
+            "sima_cli.sdk.container_registry._inspect_registry",
+            return_value=existing,
+        ), patch(
+            "sima_cli.sdk.container_registry._registry_bind_ip_is_available",
+            return_value=False,
+        ), patch("sima_cli.sdk.container_registry.ensure_container_registry") as ensure, \
+             patch("builtins.print") as print_mock:
+            repair_existing_container_registry()
+
+        ensure.assert_not_called()
+        print_mock.assert_called_once()
+        self.assertIn("repair deferred", print_mock.call_args.args[0])
 
     def test_repair_leaves_healthy_registry_unchanged(self):
         with patch(
@@ -406,6 +430,32 @@ class TestSdkContainerRegistry(unittest.TestCase):
                         "noninteractive": True,
                     },
                 )
+
+    def test_bootstrap_raises_when_sdk_image_is_missing_sshpass(self):
+        result = Mock(
+            returncode=1,
+            stdout="__SIMA_DEVKIT_BOOTSTRAP_STATUS=missing_sshpass\n",
+            stderr="sshpass is required\n",
+        )
+        with patch("sima_cli.sdk.utils._configure_container_registry_environment"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result) as run:
+            with self.assertRaisesRegex(RuntimeError, "does not provide sshpass"):
+                bootstrap_devkit_container(
+                    "sdk-container",
+                    {
+                        "devkit_ip": "10.42.0.2",
+                        "devkit_user": "sima",
+                        "devkit_password": "edgeai",
+                        "host_nfs_available": True,
+                        "noninteractive": True,
+                    },
+                )
+
+        script = run.call_args.args[0][-1]
+        self.assertIn(
+            '"$BOOTSTRAP_STATUS" != missing_sshpass',
+            script,
+        )
 
     def test_bootstrap_prompts_once_after_default_credentials_fail(self):
         failed = Mock(returncode=41, stdout="", stderr="")

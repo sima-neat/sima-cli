@@ -272,7 +272,7 @@ def _colima_instance_config(profile: str) -> dict:
         if configured_lima_home
         else _colima_config_path(profile).parent.parent / "_lima"
     )
-    path = lima_home / profile_id / "colima.yaml"
+    path = lima_home / profile_id / "lima.yaml"
     try:
         with path.open("r", encoding="utf-8") as stream:
             data = yaml.safe_load(stream) or {}

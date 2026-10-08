@@ -123,7 +123,7 @@ class TestSdkPreinstall(unittest.TestCase):
     def test_colima_instance_config_honors_lima_home(self):
         with TemporaryDirectory() as tmpdir:
             lima_home = Path(tmpdir) / "lima"
-            instance_config = lima_home / "colima-work" / "colima.yaml"
+            instance_config = lima_home / "colima-work" / "lima.yaml"
             instance_config.parent.mkdir(parents=True)
             instance_config.write_text(
                 "network:\n  address: true\n  mode: bridged\n  interface: en7\n",

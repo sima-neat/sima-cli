@@ -521,6 +521,7 @@ def _is_safe_colima_bridge_interface(interface: str) -> bool:
         "ppp",
         "ipsec",
         "bridge",
+        "vmenet",
         "vmnet",
         "vboxnet",
         "awdl",

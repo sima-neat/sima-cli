@@ -63,12 +63,20 @@ class TestSdkPreinstall(unittest.TestCase):
             ]
         }
 
-        _set_colima_devkit_route_provision(config, "192.168.2.0/24")
+        _set_colima_devkit_route_provision(
+            config,
+            "192.168.2.0/24",
+            "192.168.2.1",
+        )
 
         self.assertEqual(config["provision"][0]["script"], "echo keep")
         self.assertEqual(len(config["provision"]), 2)
         self.assertIn(
             "ip route del table local local 192.168.2.0/24 dev lo",
+            config["provision"][1]["script"],
+        )
+        self.assertIn(
+            "ip route replace table local local 192.168.2.1/32 dev lo",
             config["provision"][1]["script"],
         )
 
@@ -322,6 +330,7 @@ class TestSdkPreinstall(unittest.TestCase):
                     "en14",
                     internet_sharing=True,
                     shared_network="192.168.2.0/24",
+                    host_ip="192.168.2.1",
                 )
 
             staged = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
@@ -808,11 +817,13 @@ class TestSdkPreinstall(unittest.TestCase):
             "en14",
             internet_sharing=True,
             shared_network="192.168.2.0/24",
+            host_ip="192.168.2.1",
         )
         ensure_route.assert_called_once_with(
             "default",
             "192.168.2.2",
             "192.168.2.0/24",
+            "192.168.2.1",
         )
         self.assertEqual(
             run.call_args_list[2].args[0],

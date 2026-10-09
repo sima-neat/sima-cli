@@ -609,9 +609,23 @@ def _set_colima_devkit_route_provision(
     shared_network: str,
     host_ip: str,
 ) -> None:
+    _remove_colima_devkit_route_provision(config)
     provision = config.get("provision")
     if not isinstance(provision, list):
         provision = []
+    provision.append(
+        {
+            "mode": "system",
+            "script": _colima_devkit_route_script(shared_network, host_ip),
+        }
+    )
+    config["provision"] = provision
+
+
+def _remove_colima_devkit_route_provision(config: dict) -> None:
+    provision = config.get("provision")
+    if not isinstance(provision, list):
+        return
     provision = [
         entry
         for entry in provision
@@ -620,13 +634,10 @@ def _set_colima_devkit_route_provision(
             and COLIMA_DEVKIT_ROUTE_MARKER in str(entry.get("script") or "")
         )
     ]
-    provision.append(
-        {
-            "mode": "system",
-            "script": _colima_devkit_route_script(shared_network, host_ip),
-        }
-    )
-    config["provision"] = provision
+    if provision:
+        config["provision"] = provision
+    else:
+        config.pop("provision", None)
 
 
 def _write_colima_config(config_path: Path, config: dict) -> None:
@@ -865,6 +876,7 @@ def _stage_colima_profile_config(
         network["mode"] = "bridged"
         network["interface"] = interface
         network.pop("hostAddresses", None)
+        _remove_colima_devkit_route_provision(config)
 
     descriptor, snapshot_name = tempfile.mkstemp(
         prefix=f"sima-cli-colima-{profile}-",

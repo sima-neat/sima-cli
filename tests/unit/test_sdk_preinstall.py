@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sima_cli.sdk.preinstall import (
+    COLIMA_DEVKIT_ROUTE_MARKER,
     _detect_colima_profile,
     _colima_config_path,
     _colima_instance_config,
@@ -277,6 +278,11 @@ class TestSdkPreinstall(unittest.TestCase):
             original = (
                 "cpu: 10\n"
                 "portForwarder: grpc\n"
+                "provision:\n"
+                "- mode: system\n"
+                "  script: echo keep\n"
+                "- mode: system\n"
+                f"  script: '{COLIMA_DEVKIT_ROUTE_MARKER} old'\n"
                 "network:\n"
                 "  mode: shared\n"
                 "  subnet: 192.168.5.0/24\n"
@@ -304,6 +310,10 @@ class TestSdkPreinstall(unittest.TestCase):
             restored = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             self.assertEqual(restored["cpu"], 10)
             self.assertEqual(restored["portForwarder"], "grpc")
+            self.assertEqual(
+                restored["provision"],
+                [{"mode": "system", "script": "echo keep"}],
+            )
             self.assertEqual(
                 restored["network"],
                 {"address": True, "mode": "bridged", "interface": "en7"},

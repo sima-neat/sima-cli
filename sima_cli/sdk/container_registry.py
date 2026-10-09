@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import platform
 import socket
 import subprocess
@@ -28,7 +29,7 @@ class ContainerRegistryConfig:
     devkit_address: str
 
 
-def _inspect_registry() -> Optional[dict]:
+def _inspect_registry(ignore_unmanaged: bool = False) -> Optional[dict]:
     result = subprocess.run(
         [
             "docker",
@@ -37,7 +38,8 @@ def _inspect_registry() -> Optional[dict]:
             "{{index .Config.Labels \"com.sima.sdk.service\"}}|"
             "{{index .Config.Labels \"com.sima.sdk.registry.port\"}}|"
             "{{index .Config.Labels \"com.sima.sdk.registry.bind-ip\"}}|"
-            "{{.State.Running}}",
+            "{{.State.Running}}|"
+            "{{json .NetworkSettings.Ports}}",
             REGISTRY_CONTAINER_NAME,
         ],
         text=True,
@@ -47,14 +49,16 @@ def _inspect_registry() -> Optional[dict]:
     if result.returncode != 0:
         return None
 
-    parts = result.stdout.strip().split("|", 3)
-    if len(parts) != 4:
+    parts = result.stdout.strip().split("|", 4)
+    if len(parts) != 5:
         raise RuntimeError(
             "The existing local registry has invalid setup information. "
             "Remove it or choose a different container name."
         )
-    managed_value, port_text, bind_ip, running_text = parts
+    managed_value, port_text, bind_ip, running_text, ports_json = parts
     if managed_value != REGISTRY_MANAGED_VALUE:
+        if ignore_unmanaged:
+            return None
         raise RuntimeError(
             f"A Docker container named '{REGISTRY_CONTAINER_NAME}' already exists, but it was not "
             "created by sima-cli. Rename or remove that container, then run SDK setup again."
@@ -66,11 +70,60 @@ def _inspect_registry() -> Optional[dict]:
             "The existing local registry does not record a valid port. "
             "Remove it and run SDK setup again."
         ) from exc
+    registry_bindings = (json.loads(ports_json or "null") or {}).get("5000/tcp") or []
     return {
         "port": port,
         "bind_ip": bind_ip if bind_ip not in ("", "<no value>") else None,
         "running": running_text.lower() == "true",
+        "published": {f"{item['HostIp']}:{item['HostPort']}" for item in registry_bindings},
     }
+
+
+def _publishes_expected_ports(existing: dict, port: int, host_ip: str) -> bool:
+    # Docker publishes ports only when the container starts. A registry that
+    # started before Colima added the host address runs without any ports.
+    expected = {f"127.0.0.1:{port}", f"{host_ip}:{port}"}
+    return existing["running"] and expected <= existing["published"]
+
+
+def _registry_bind_ip_is_available(host_ip: str) -> bool:
+    # A bridged Colima address belongs to the VM rather than macOS, so recognize
+    # the active VM address before checking addresses assigned to the host.
+    if platform.system() == "Darwin":
+        from sima_cli.sdk.preinstall import (
+            _colima_network_config,
+            _detect_colima_profile,
+            _is_docker_using_colima,
+        )
+
+        if _is_docker_using_colima():
+            network = _colima_network_config(_detect_colima_profile())
+            if host_ip == str(network.get("ip_address") or "").strip():
+                return True
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((host_ip, 0))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def repair_existing_container_registry() -> None:
+    existing = _inspect_registry(ignore_unmanaged=True)
+    if not existing or not existing["bind_ip"]:
+        return
+    if not _publishes_expected_ports(existing, existing["port"], existing["bind_ip"]):
+        if not _registry_bind_ip_is_available(existing["bind_ip"]):
+            print(
+                f"⚠️ Local container registry repair deferred because its recorded "
+                f"DevKit-facing address {existing['bind_ip']} is not currently available. "
+                "Reconnect that interface and rerun SDK setup."
+            )
+            return
+        ensure_container_registry(existing["bind_ip"], requested_port=existing["port"])
 
 
 def existing_container_registry_port() -> Optional[int]:
@@ -83,9 +136,9 @@ def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str
     if platform.system() != "Darwin":
         return host_ip
 
-    # Colima's Docker daemon runs in a VM and cannot publish a port directly on
-    # a macOS interface address. Only a bridged VM address is reachable from a
-    # peer on the DevKit-facing LAN; shared-mode addresses are host-local.
+    # Colima's Docker daemon runs in a VM. A direct LAN needs the VM's bridged
+    # address; macOS Internet Sharing needs Colima host-address forwarding so
+    # Docker can publish on the Mac's DevKit-facing bridge address.
     from sima_cli.sdk.preinstall import (
         _boolish,
         _colima_network_config,
@@ -110,6 +163,19 @@ def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str
             raise RuntimeError(
                 "The local registry could not identify a safe physical interface for the DevKit route."
             )
+        if route_interface.strip().lower().startswith("bridge"):
+            if (
+                _boolish(network.get("address"))
+                or mode != "shared"
+                or not _boolish(network.get("host_addresses"))
+                or host_ip not in network.get("forwarded_host_ips", [])
+            ):
+                raise RuntimeError(
+                    "The local registry needs Colima shared networking with host-address forwarding "
+                    "for a DevKit connected through macOS Internet Sharing. Rerun SDK setup and "
+                    "allow sima-cli to recreate the profile."
+                )
+            return host_ip
         if configured_interface != expected_interface:
             raise RuntimeError(
                 f"The Colima profile is bridged to {configured_interface}, but the DevKit route uses "
@@ -204,7 +270,17 @@ def ensure_container_registry(host_ip: str, requested_port: Optional[int] = None
             change = f"port from {existing['port']} to {port}"
         else:
             change = f"DevKit-facing address to {host_ip}"
-        print(f"ℹ️  Changing the local container registry {change}. Stored images will be kept.")
+        recreate_reason = f"Changing the local container registry {change}"
+    elif existing and not _publishes_expected_ports(existing, port, host_ip):
+        recreate_reason = (
+            f"Recreating the local container registry so it publishes port {port} "
+            f"on 127.0.0.1 and {host_ip}"
+        )
+    else:
+        recreate_reason = None
+
+    if recreate_reason:
+        print(f"ℹ️  {recreate_reason}. Stored images will be kept.")
         subprocess.run(
             ["docker", "rm", "-f", REGISTRY_CONTAINER_NAME],
             text=True,
@@ -213,20 +289,13 @@ def ensure_container_registry(host_ip: str, requested_port: Optional[int] = None
         )
         existing = None
 
-    if not existing:
+    # A recreated registry keeps its own port; probing it right after removal
+    # can fail on connections the old container left in TIME_WAIT.
+    if not existing and not recreate_reason:
         _require_available_host_port(port)
 
     if existing:
-        if not existing["running"]:
-            print("ℹ️  Starting the existing local container registry.")
-            subprocess.run(
-                ["docker", "start", REGISTRY_CONTAINER_NAME],
-                text=True,
-                capture_output=True,
-                check=True,
-            )
-        else:
-            print("ℹ️  Reusing the existing local container registry.")
+        print("ℹ️  Reusing the existing local container registry.")
     else:
         print("ℹ️  Setting up a local container registry for SDK-built images.")
         subprocess.run(

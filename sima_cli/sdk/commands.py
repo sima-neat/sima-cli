@@ -17,11 +17,13 @@ Usage:
     sima-cli sdk elxr : go to elxr container
 """
 
+import os
+
 import click
 import ipaddress
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 from rich.console import Console
 from rich.panel import Panel
 from sima_cli.sdk.install import setup_and_start
@@ -181,6 +183,28 @@ def _resolve_devkit_ipv4(devkit: Optional[str]) -> str:
             "Use --devkit <IPv4> for repair, or use 'sima-cli sdk doctor network' for read-only diagnostics."
         )
     return value
+
+
+def _resolve_devkit_credentials(
+    devkit_ip: str,
+    *,
+    noninteractive: bool,
+) -> Tuple[str, str]:
+    if not devkit_ip:
+        return "", ""
+
+    username = os.environ.get("SIMA_DEVKIT_USER", "sima").strip() or "sima"
+    default_password = os.environ.get("SIMA_DEVKIT_PASSWORD")
+    if default_password is None and username == "sima":
+        default_password = "edgeai"
+    password = default_password or ""
+
+    if noninteractive and not password:
+        raise click.ClickException(
+            "A DevKit password is required to install the SDK container SSH key. "
+            "Set SIMA_DEVKIT_PASSWORD for noninteractive setup."
+        )
+    return username, password
 
 
 def _container_name(container) -> str:
@@ -409,11 +433,17 @@ def setup(
             "--no-container-registry cannot be used with --container-registry-port."
         )
     devkit_ip = _resolve_devkit_ip(devkit)
+    devkit_user, devkit_password = _resolve_devkit_credentials(
+        devkit_ip,
+        noninteractive=noninteractive,
+    )
     try:
         setup_and_start(
             noninteractive=noninteractive,
             yes_to_all=yes,
             devkit_ip=devkit_ip,
+            devkit_user=devkit_user,
+            devkit_password=devkit_password,
             no_insight=no_insight,
             insight_video_channels=insight_video_channels,
             no_model_sdk=no_model_sdk,

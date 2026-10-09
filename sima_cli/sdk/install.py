@@ -26,6 +26,7 @@ from sima_cli.sdk.container_registry import (
     ensure_container_registry,
     existing_container_registry_port,
     find_available_container_registry_port,
+    repair_existing_container_registry,
     resolve_container_registry_bind_ip,
 )
 from sima_cli.sdk.linux_shared_network import (
@@ -639,6 +640,8 @@ def _setup_devkit_share(
     devkit_ip: str,
     workspace: str,
     selected_images: List[str],
+    devkit_user: str = "sima",
+    devkit_password: str = "edgeai",
     noninteractive: bool = False,
     yes_to_all: bool = False,
     persistent_network_profile: bool = False,
@@ -686,6 +689,8 @@ def _setup_devkit_share(
                     print("✅ Host NFS export configured for workspace {} -> {}".format(workspace, devkit_ip))
                 return {
                     "devkit_ip": devkit_ip,
+                    "devkit_user": devkit_user,
+                    "devkit_password": devkit_password,
                     "host_ip": host_ip,
                     "workspace": workspace,
                     "host_platform": host_os,
@@ -707,6 +712,8 @@ def _setup_devkit_share(
             )
             return {
                 "devkit_ip": devkit_ip,
+                "devkit_user": devkit_user,
+                "devkit_password": devkit_password,
                 "host_ip": host_ip,
                 "workspace": workspace,
                 "host_platform": host_os,
@@ -727,6 +734,8 @@ def _setup_devkit_share(
         )
         return {
             "devkit_ip": devkit_ip,
+            "devkit_user": devkit_user,
+            "devkit_password": devkit_password,
             "host_ip": existing_export.server,
             "workspace": existing_export.export_path,
             "host_platform": host_os,
@@ -760,6 +769,8 @@ def _setup_devkit_share(
 
     return {
         "devkit_ip": devkit_ip,
+        "devkit_user": devkit_user,
+        "devkit_password": devkit_password,
         "host_ip": host_ip,
         "workspace": workspace,
         "host_platform": host_os,
@@ -1149,6 +1160,8 @@ def setup_and_start(
     start_only: bool = False,
     yes_to_all: bool = False,
     devkit_ip: str = "",
+    devkit_user: str = "sima",
+    devkit_password: str = "edgeai",
     no_insight: bool = False,
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
     no_model_sdk: bool = False,
@@ -1255,6 +1268,8 @@ def setup_and_start(
         devkit_ip,
         workspace,
         selected_images,
+        devkit_user=devkit_user,
+        devkit_password=devkit_password,
         noninteractive=noninteractive,
         yes_to_all=yes_to_all,
         persistent_network_profile=persistent_network_profile,
@@ -1267,6 +1282,8 @@ def setup_and_start(
             noninteractive=noninteractive,
             yes_to_all=yes_to_all,
         )
+    elif container_build_images and not no_container_registry:
+        repair_existing_container_registry()
     skip_model_sdk = no_model_sdk or minimal
     if (
         insight_video_channels > DEFAULT_INSIGHT_VIDEO_CHANNELS

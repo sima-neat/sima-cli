@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sima_cli.sdk.preinstall import (
+    COLIMA_DEVKIT_ROUTE_MARKER,
     _detect_colima_profile,
     _colima_config_path,
     _colima_instance_config,
@@ -24,6 +25,9 @@ from sima_cli.sdk.preinstall import (
     _default_colima_resource_targets,
     _parse_colima_status,
     _prompt_colima_resource_targets,
+    _interface_ipv4_address,
+    _interface_ipv4_network,
+    _set_colima_devkit_route_provision,
     _is_safe_colima_bridge_interface,
     _resolve_safe_colima_bridge_interface,
     warn_if_colima_devkit_network_may_need_bridged,
@@ -31,6 +35,52 @@ from sima_cli.sdk.preinstall import (
 
 
 class TestSdkPreinstall(unittest.TestCase):
+    def test_interface_ipv4_address_reads_internet_sharing_bridge(self):
+        output = (
+            "bridge101: flags=8a63<UP,RUNNING>\n"
+            "\tinet 192.168.2.1 netmask 0xffffff00 broadcast 192.168.2.255\n"
+        )
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall.subprocess.check_output", return_value=output):
+            self.assertEqual(_interface_ipv4_address("bridge101"), "192.168.2.1")
+
+    def test_interface_ipv4_network_reads_hex_netmask(self):
+        output = (
+            "bridge101: flags=8a63<UP,RUNNING>\n"
+            "\tinet 192.168.2.1 netmask 0xffffff00 broadcast 192.168.2.255\n"
+        )
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall.subprocess.check_output", return_value=output):
+            self.assertEqual(_interface_ipv4_network("bridge101"), "192.168.2.0/24")
+
+    def test_colima_route_provision_replaces_previous_sima_cli_entry(self):
+        config = {
+            "provision": [
+                {"mode": "system", "script": "echo keep"},
+                {
+                    "mode": "system",
+                    "script": "# sima-cli: route Internet Sharing clients through macOS\nold",
+                },
+            ]
+        }
+
+        _set_colima_devkit_route_provision(
+            config,
+            "192.168.2.0/24",
+            "192.168.2.1",
+        )
+
+        self.assertEqual(config["provision"][0]["script"], "echo keep")
+        self.assertEqual(len(config["provision"]), 2)
+        self.assertIn(
+            "ip route del table local local 192.168.2.0/24 dev lo",
+            config["provision"][1]["script"],
+        )
+        self.assertIn(
+            "ip route replace table local local 192.168.2.1/32 dev lo",
+            config["provision"][1]["script"],
+        )
+
     def test_colima_bridge_interface_rejects_known_vpn_prefixes(self):
         for interface in ("utun7", "ppp0", "ipsec0", "tailscale0", "ztabc123", "wg0", "vmenet0"):
             with self.subTest(interface=interface):
@@ -113,7 +163,7 @@ class TestSdkPreinstall(unittest.TestCase):
     def test_colima_instance_config_honors_lima_home(self):
         with TemporaryDirectory() as tmpdir:
             lima_home = Path(tmpdir) / "lima"
-            instance_config = lima_home / "colima-work" / "colima.yaml"
+            instance_config = lima_home / "colima-work" / "lima.yaml"
             instance_config.parent.mkdir(parents=True)
             instance_config.write_text(
                 "network:\n  address: true\n  mode: bridged\n  interface: en7\n",
@@ -140,6 +190,27 @@ class TestSdkPreinstall(unittest.TestCase):
             network = _colima_network_config("default")
 
         self.assertEqual(network["mode"], "shared")
+
+    def test_colima_network_config_reads_active_host_address_forward(self):
+        forward = {
+            "guestIP": "192.168.2.1",
+            "guestPortRange": [1, 65535],
+            "hostIP": "192.168.2.1",
+            "hostPortRange": [1, 65535],
+            "proto": "tcp",
+        }
+        with patch("sima_cli.sdk.preinstall._colima_status", return_value={}), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_config",
+                 return_value={"network": {"address": False, "mode": "shared", "hostAddresses": True}},
+             ), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_instance_config",
+                 return_value={"portForwards": [forward]},
+             ):
+            network = _colima_network_config("default")
+
+        self.assertEqual(network["forwarded_host_ips"], ["192.168.2.1"])
 
     def test_colima_profile_recreation_safety_requires_separate_docker_disk(self):
         with TemporaryDirectory() as tmpdir:
@@ -207,6 +278,11 @@ class TestSdkPreinstall(unittest.TestCase):
             original = (
                 "cpu: 10\n"
                 "portForwarder: grpc\n"
+                "provision:\n"
+                "- mode: system\n"
+                "  script: echo keep\n"
+                "- mode: system\n"
+                f"  script: '{COLIMA_DEVKIT_ROUTE_MARKER} old'\n"
                 "network:\n"
                 "  mode: shared\n"
                 "  subnet: 192.168.5.0/24\n"
@@ -235,11 +311,47 @@ class TestSdkPreinstall(unittest.TestCase):
             self.assertEqual(restored["cpu"], 10)
             self.assertEqual(restored["portForwarder"], "grpc")
             self.assertEqual(
+                restored["provision"],
+                [{"mode": "system", "script": "echo keep"}],
+            )
+            self.assertEqual(
                 restored["network"],
                 {"address": True, "mode": "bridged", "interface": "en7"},
             )
             self.assertEqual(config_path.stat().st_mode & 0o777, 0o640)
             self.assertEqual(config_path.parent.stat().st_mode & 0o777, 0o710)
+            snapshot_path.unlink()
+
+    def test_colima_profile_config_uses_host_forwarding_for_internet_sharing(self):
+        with TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "colima" / "default" / "colima.yaml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                "network:\n"
+                "  address: true\n"
+                "  mode: bridged\n"
+                "  interface: en14\n",
+                encoding="utf-8",
+            )
+
+            with patch("sima_cli.sdk.preinstall._colima_config_path", return_value=config_path):
+                _, snapshot_path, _, _ = _stage_colima_profile_config(
+                    "default",
+                    "en14",
+                    internet_sharing=True,
+                    shared_network="192.168.2.0/24",
+                    host_ip="192.168.2.1",
+                )
+
+            staged = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                staged["network"],
+                {"address": False, "mode": "shared", "hostAddresses": True},
+            )
+            self.assertIn(
+                "192.168.2.0/24",
+                staged["provision"][-1]["script"],
+            )
             snapshot_path.unlink()
 
     def test_colima_config_path_honors_documented_precedence(self):
@@ -657,6 +769,103 @@ class TestSdkPreinstall(unittest.TestCase):
                 "--save-config",
             ],
         )
+
+    def test_colima_internet_sharing_uses_shared_host_address_forwarding(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_network_config", side_effect=[
+                 {
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": True,
+                     "forwarded_host_ips": [],
+                     "cpu": 10,
+                     "memory": 21474836480,
+                 },
+                 {
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": True,
+                     "forwarded_host_ips": ["192.168.2.1"],
+                     "cpu": 10,
+                     "memory": 21474836480,
+                 },
+             ]), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge101"), \
+             patch("sima_cli.sdk.preinstall._interface_ipv4_address", return_value="192.168.2.1"), \
+             patch("sima_cli.sdk.preinstall._interface_ipv4_network", return_value="192.168.2.0/24"), \
+             patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en14"), \
+             patch("sima_cli.sdk.preinstall._colima_supports_network_address_flag", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_supports_bridged_network_flags", side_effect=AssertionError("bridged flags are not needed")), \
+             patch("sima_cli.sdk.preinstall._colima_supports_host_addresses_flag", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_profile_recreation_safety", return_value=(True, "")), \
+             patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
+             patch(
+                 "sima_cli.sdk.preinstall._stage_colima_profile_config",
+                 return_value=(Path("/profile/colima.yaml"), Path("/tmp/missing-colima-snapshot"), 0o600, 0o700),
+             ) as stage, \
+             patch("sima_cli.sdk.preinstall._restore_colima_profile_config"), \
+             patch("sima_cli.sdk.preinstall._ensure_colima_internet_sharing_route") as ensure_route, \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
+             patch("sima_cli.sdk.preinstall.console.print") as console_print, \
+             patch("builtins.input", return_value="y") as prompt:
+            restarted = warn_if_colima_devkit_network_may_need_bridged("192.168.2.2")
+
+        self.assertTrue(restarted)
+        panel = console_print.call_args_list[0].args[0]
+        self.assertEqual(panel.title, "Colima Network Update")
+        self.assertNotIn("\n\n\n", panel.renderable)
+        self.assertIn("one-time network update", panel.renderable)
+        self.assertNotIn("data loss", panel.renderable.lower())
+        prompt.assert_called_once_with(
+            "Apply the Colima network update for Internet Sharing now? "
+            "Running containers will stop briefly; Docker data will be kept. [y/N]: "
+        )
+        stage.assert_called_once_with(
+            "default",
+            "en14",
+            internet_sharing=True,
+            shared_network="192.168.2.0/24",
+            host_ip="192.168.2.1",
+        )
+        ensure_route.assert_called_once_with(
+            "default",
+            "192.168.2.2",
+            "192.168.2.0/24",
+            "192.168.2.1",
+        )
+        self.assertEqual(
+            run.call_args_list[2].args[0],
+            [
+                "/opt/homebrew/bin/colima",
+                "start",
+                "--profile",
+                "default",
+                "--network-address=false",
+                "--network-mode",
+                "shared",
+                "--network-host-addresses",
+                "--save-config",
+            ],
+        )
+
+    def test_colima_internet_sharing_requires_host_address_support(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_network_config", return_value={"address": False, "mode": "shared"}), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge101"), \
+             patch("sima_cli.sdk.preinstall._interface_ipv4_address", return_value="192.168.2.1"), \
+             patch("sima_cli.sdk.preinstall._interface_ipv4_network", return_value="192.168.2.0/24"), \
+             patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en14"), \
+             patch("sima_cli.sdk.preinstall._colima_supports_network_address_flag", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_supports_host_addresses_flag", return_value=False), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run:
+            restarted = warn_if_colima_devkit_network_may_need_bridged("192.168.2.2")
+
+        self.assertFalse(restarted)
+        run.assert_not_called()
 
     def test_colima_devkit_network_warning_noninteractive_requires_explicit_yes(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \

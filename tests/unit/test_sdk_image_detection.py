@@ -638,6 +638,39 @@ class TestSdkImageDetection(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(setup_start.call_args.kwargs["persistent_network_profile"])
+        self.assertEqual(setup_start.call_args.kwargs["devkit_user"], "sima")
+        self.assertEqual(setup_start.call_args.kwargs["devkit_password"], "edgeai")
+
+    def test_sdk_setup_uses_default_devkit_credentials_without_prompting(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(
+                sdk,
+                ["setup", "--devkit", "10.42.0.78"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("DevKit username", result.output)
+        self.assertEqual(setup_start.call_args.kwargs["devkit_user"], "sima")
+        self.assertEqual(setup_start.call_args.kwargs["devkit_password"], "edgeai")
+
+    def test_sdk_setup_uses_devkit_credentials_from_environment(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(
+                sdk,
+                ["setup", "--devkit", "10.42.0.78"],
+                env={
+                    "SIMA_DEVKIT_USER": "operator",
+                    "SIMA_DEVKIT_PASSWORD": "secret",
+                },
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(setup_start.call_args.kwargs["devkit_user"], "operator")
+        self.assertEqual(setup_start.call_args.kwargs["devkit_password"], "secret")
 
     def test_sdk_network_repair_persist_option_is_forwarded(self):
         runner = CliRunner()
@@ -802,6 +835,8 @@ class TestSdkImageDetection(unittest.TestCase):
                 "sdk-container",
                 {
                     "devkit_ip": "10.0.0.20",
+                    "devkit_user": "operator",
+                    "devkit_password": "secret",
                     "host_ip": "10.0.0.76",
                     "workspace": "/workspace",
                     "host_platform": "linux",
@@ -813,6 +848,9 @@ class TestSdkImageDetection(unittest.TestCase):
         script = run.call_args.args[0][-1]
         self.assertIn("export DEVKIT_HOST_NFS_AVAILABLE=0", script)
         self.assertIn('DEVKIT_SYNC_METHOD:-none', script)
+        self.assertIn("export DEVKIT_SYNC_PASSWORD=secret", script)
+        self.assertIn("PreferredAuthentications=password", script)
+        self.assertIn("operator@10.0.0.20", script)
 
     def test_bootstrap_fails_when_required_rsync_fallback_cannot_start(self):
         result = Mock(

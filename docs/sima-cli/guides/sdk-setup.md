@@ -48,6 +48,21 @@ The registry uses HTTP on the local development network. It is exposed only on
 loopback for SDK use and on the DevKit-facing network path; it is not published
 on every host interface.
 
+On macOS, setup distinguishes physical LAN routes from Cloudex or other routed
+tunnels. A physical route uses a Colima bridged address. A `utun`, WireGuard, or
+similar tunnel cannot carry an Ethernet bridge, so setup keeps Colima in shared
+mode and enables `network.hostAddresses` instead. This lets the SDK container
+follow the Mac's tunnel route while publishing the registry on the Mac tunnel
+address used by the DevKit. Because Colima normally copies the tunnel's subnet
+prefix, setup removes the broad subnet route from the VM's local routing table
+while retaining the Mac address as a `/32` local route; otherwise the VM can
+mistake the DevKit peer for a local address. The repair is persisted across
+Colima restarts. If the active profile was previously bridged for a physical
+connection, setup uses the guarded profile-recreation workflow to switch it to
+shared mode while preserving its verified separate Docker data disk. Profiles
+that cannot be recreated safely, including Kubernetes-enabled profiles, are not
+changed. Reconnect the tunnel and rerun setup if its host address changes.
+
 SDK setup does not install or configure Docker on the DevKit. The first
 `dk container` command handles any required Docker installation and configures
 Docker to use the local registry, restarting Docker only if the registry setting

@@ -38,6 +38,8 @@ dk container deploy hello-neat:develop \
 
 登錄庫會在本機開發網路上使用 HTTP。登錄庫只會公開在 SDK 使用的迴路介面和面向 DevKit 的網路路徑上，不會公開在主機的所有介面上。
 
+在 macOS 上，設定會區分實體 LAN 路由與 Cloudex 或其他路由式通道。實體路由會使用 Colima 橋接位址。`utun`、WireGuard 或類似通道無法承載 Ethernet 橋接，因此設定會讓 Colima 保持共用模式，改為啟用 `network.hostAddresses`。如此一來，SDK 容器便能沿用 Mac 的通道路由，同時在 DevKit 所使用的 Mac 通道位址上公開登錄庫。由於 Colima 通常也會複製通道的子網路前綴，設定會從 VM 的本機路由表移除過度寬廣的子網路路由，同時將 Mac 位址保留為 `/32` 本機路由；否則 VM 可能會將 DevKit 對等端誤認為本機位址。此修復會在 Colima 重新啟動後保留。若作用中的設定檔先前是為實體連線設定成橋接模式，設定會使用受保護的設定檔重建流程切換至共用模式，同時保留經驗證的獨立 Docker 資料磁碟。無法安全重建的設定檔（包括已啟用 Kubernetes 的設定檔）不會變更。若通道的主機位址發生變更，請重新連線通道並再次執行設定。
+
 SDK 設定不會在 DevKit 上安裝或設定 Docker。第一個 `dk container` 命令會處理任何必要的 Docker 安裝，並設定 Docker 使用本機登錄庫；只有在登錄庫設定變更時才會重新啟動 Docker。如此一來，對不使用容器部署的使用者而言，Docker 仍完全是選用項目。安裝 Docker 需要明確核准，並能透過網際網路存取 Docker 的 Debian 軟體庫。免密碼 `sudo` 並非必要條件；sima-cli 會在設定期間為 DevKit 使用者完成設定。
 
 使用 `--no-container-registry` 可略過此步驟。這不會停止或移除現有的登錄庫。若要選擇其他連接埠，請使用 `--container-registry-port <port>` 重新執行設定。變更連接埠時，已儲存的映像檔會保留。

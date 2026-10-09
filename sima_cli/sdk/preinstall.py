@@ -18,6 +18,7 @@ import subprocess
 import platform
 import re
 import shutil
+import socket
 import tempfile
 from pathlib import Path
 from rich.console import Console
@@ -288,6 +289,9 @@ def _colima_network_config(profile: str) -> dict:
     config = _colima_config(profile)
     instance = _colima_instance_config(profile)
 
+    config_network = (
+        config.get("network") if isinstance(config.get("network"), dict) else {}
+    )
     instance_network = (
         instance.get("network") if isinstance(instance.get("network"), dict) else {}
     )
@@ -732,6 +736,20 @@ def _ensure_colima_internet_sharing_route(
         )
 
 
+def _route_source_ipv4_for_target(target_ip: str) -> str:
+    """Return the host IPv4 selected by the kernel for a target route."""
+    if not target_ip:
+        return ""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect((target_ip, 80))
+        return str(probe.getsockname()[0] or "")
+    except OSError:
+        return ""
+    finally:
+        probe.close()
+
+
 def _is_safe_colima_bridge_interface(interface: str) -> bool:
     normalized = (interface or "").strip().lower()
     if not normalized:
@@ -756,6 +774,19 @@ def _is_safe_colima_bridge_interface(interface: str) -> bool:
     )):
         return False
     return True
+
+
+def _is_tunnel_route_interface(interface: str) -> bool:
+    normalized = (interface or "").strip().lower()
+    return normalized.startswith((
+        "utun",
+        "tun",
+        "wg",
+        "tailscale",
+        "zt",
+        "ppp",
+        "ipsec",
+    ))
 
 
 def _resolve_safe_colima_bridge_interface(route_interface: str) -> str:
@@ -831,12 +862,307 @@ def _colima_supports_host_addresses_flag() -> bool:
     return "--network-host-addresses" in output and "--network-mode" in output
 
 
+def _is_colima_tunnel_network_suitable(network: dict, host_ip: str = "") -> bool:
+    """Return whether Colima can publish ports on a routed host tunnel IP."""
+    mode = str(network.get("mode") or "shared").strip().lower()
+    return (
+        mode == "shared"
+        and not _boolish(network.get("address"))
+        and _boolish(network.get("host_addresses"))
+        and (
+            not host_ip
+            or host_ip in network.get("forwarded_host_ips", [])
+        )
+    )
+
+
+def _colima_vm_has_host_address(profile: str, host_ip: str) -> bool:
+    """Check whether Colima replicated a current Mac address into its VM."""
+    colima_cmd = shutil.which("colima")
+    if not colima_cmd or not host_ip:
+        return False
+    try:
+        output = subprocess.check_output(
+            [colima_cmd, "ssh", "--profile", profile, "--", "ip", "-o", "-4", "addr", "show"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return False
+    return bool(re.search(rf"\binet\s+{re.escape(host_ip)}/", output))
+
+
+def _colima_vm_host_address(profile: str, host_ip: str) -> tuple:
+    """Return the VM interface and prefix used for a replicated Mac address."""
+    colima_cmd = shutil.which("colima")
+    if not colima_cmd or not host_ip:
+        return "", 0
+    try:
+        output = subprocess.check_output(
+            [colima_cmd, "ssh", "--profile", profile, "--", "ip", "-o", "-4", "addr", "show"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return "", 0
+    match = re.search(
+        rf"^\d+:\s+(\S+)\s+inet\s+{re.escape(host_ip)}/(\d+)\b",
+        output,
+        flags=re.MULTILINE,
+    )
+    return (match.group(1), int(match.group(2))) if match else ("", 0)
+
+
+def _colima_vm_tunnel_route_ready(profile: str, host_ip: str, target_ip: str) -> bool:
+    """Check that a replicated tunnel address does not capture its peer subnet."""
+    interface, _prefix = _colima_vm_host_address(profile, host_ip)
+    if not interface or not target_ip:
+        return False
+    colima_cmd = shutil.which("colima")
+    if not colima_cmd:
+        return False
+    try:
+        target_route = subprocess.check_output(
+            [
+                colima_cmd, "ssh", "--profile", profile, "--",
+                "ip", "route", "get", target_ip,
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        host_route = subprocess.check_output(
+            [
+                colima_cmd, "ssh", "--profile", profile, "--",
+                "ip", "route", "get", host_ip,
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return False
+    target_is_local = bool(re.search(r"\blocal\b.*\bdev\s+lo\b", target_route))
+    host_is_local = bool(re.search(r"\blocal\b.*\bdev\s+lo\b", host_route))
+    return not target_is_local and host_is_local
+
+
+def _colima_tunnel_forwarded_network(profile: str, host_ip: str) -> str:
+    """Return the subnet Colima copied for a forwarded tunnel address."""
+    _interface, prefix = _colima_vm_host_address(profile, host_ip)
+    if not prefix:
+        return ""
+    try:
+        return str(ipaddress.IPv4Network(f"{host_ip}/{prefix}", strict=False))
+    except ValueError:
+        return ""
+
+
+def _ensure_colima_tunnel_network(
+    profile: str,
+    route_interface: str,
+    host_ip: str,
+    devkit_ip: str,
+    network: dict,
+    noninteractive: bool,
+    yes_to_all: bool,
+    require_udp: bool,
+) -> bool:
+    """Enable host-address forwarding for a DevKit reached through a tunnel.
+
+    A utun/tun/wg interface is an L3 route and cannot be a Colima bridged
+    interface. Colima shared networking can still follow the host route, while
+    host-address forwarding lets published TCP ports bind to the host's tunnel
+    address for the DevKit's return path.
+    """
+    if (
+        _is_colima_tunnel_network_suitable(network, host_ip)
+        and _colima_vm_has_host_address(profile, host_ip)
+    ):
+        forwarded_network = _colima_tunnel_forwarded_network(profile, host_ip)
+        _ensure_colima_internet_sharing_route(
+            profile,
+            devkit_ip,
+            forwarded_network,
+            host_ip,
+        )
+        if not _colima_vm_tunnel_route_ready(profile, host_ip, devkit_ip):
+            raise RuntimeError(
+                f"Colima still routes Cloudex DevKit {devkit_ip} inside its own VM instead "
+                "of through the macOS tunnel."
+            )
+        return False
+
+    if not host_ip:
+        raise RuntimeError(
+            f"Could not determine the Mac source address for tunnel route '{route_interface}'."
+        )
+
+    mode = str(network.get("mode") or "shared").strip().lower()
+    recreate_profile = mode != "shared" or _boolish(network.get("address"))
+    if not _colima_supports_host_addresses_flag():
+        raise RuntimeError(
+            "This Colima version does not support --network-host-addresses, which is "
+            "required to publish SDK services on the Cloudex tunnel address. Upgrade "
+            "Colima and rerun SDK setup."
+        )
+    if recreate_profile and not _colima_supports_network_address_flag():
+        raise RuntimeError(
+            "This Colima version cannot disable its bridged network address while "
+            "switching to Cloudex. Upgrade Colima and rerun SDK setup."
+        )
+    if recreate_profile:
+        recreation_is_safe, unsafe_reason = _colima_profile_recreation_safety(profile)
+        if not recreation_is_safe:
+            raise RuntimeError(
+                f"sima-cli will not recreate Colima profile '{profile}' for Cloudex: "
+                f"{unsafe_reason} Back up or migrate the profile data, recreate the "
+                "profile with shared networking and host-address forwarding, and then "
+                "rerun SDK setup. The profile was not changed."
+            )
+
+    profile_args = ["--profile", profile]
+    start_flags = (
+        [
+            "--network-address=false",
+            "--network-mode",
+            "shared",
+            "--network-host-addresses",
+        ]
+        if recreate_profile
+        else ["--network-host-addresses"]
+    )
+    enable_udp = require_udp and _colima_port_forwarder(profile) != "grpc"
+    if enable_udp:
+        start_flags.extend(["--port-forwarder", "grpc"])
+    start_flags.append("--save-config")
+    command_steps = [f"colima stop --profile {profile}"]
+    if recreate_profile:
+        command_steps.append(f"colima delete --profile {profile} --force")
+        command_steps.append("restore the saved profile configuration")
+    command_steps.append(
+        f"colima start --profile {profile} {' '.join(start_flags)}"
+    )
+    command = " && ".join(command_steps)
+    console.print(
+        Panel(
+            "\n".join([
+                f"The DevKit route uses tunnel interface '{route_interface}' from {host_ip}.",
+                "Colima will use shared mode and publish container ports on the Mac's tunnel address.",
+                (
+                    "The profile must be recreated to replace its bridged network. "
+                    "The separate Docker data disk will be kept."
+                    if recreate_profile
+                    else "Restarting this Colima profile interrupts its running containers."
+                ),
+                "",
+                f"[cyan]{command}[/cyan]",
+            ]),
+            title="Colima Cloudex Network Setup",
+            border_style="yellow",
+            expand=False,
+        )
+    )
+
+    if noninteractive and not yes_to_all:
+        raise RuntimeError(
+            f"Colima must {'recreate' if recreate_profile else 'restart'} to enable "
+            "Cloudex host-address forwarding. "
+            "Rerun interactively or pass --yes to approve this change."
+        )
+    should_restart = yes_to_all
+    if not should_restart:
+        choice = input(
+            f"{'Recreate' if recreate_profile else 'Restart'} this Colima profile with "
+            "Cloudex host-address forwarding now? [y/N]: "
+        ).strip().lower()
+        should_restart = choice in ("y", "yes")
+    if not should_restart:
+        raise RuntimeError(
+            "Cloudex networking was not enabled because the Colima restart was declined."
+        )
+
+    colima_cmd = shutil.which("colima")
+    if not colima_cmd:
+        raise RuntimeError(f"Colima was not found on PATH. Run `{command}` manually.")
+    snapshot_path = None
+    config_restored = False
+    recreation_started = False
+    try:
+        if recreate_profile:
+            config_path, snapshot_path, config_mode, config_dir_mode = (
+                _stage_colima_profile_config(
+                    profile,
+                    "",
+                    internet_sharing=True,
+                    defer_route_repair=True,
+                )
+            )
+        subprocess.run([colima_cmd, "stop", *profile_args], check=True)
+        if recreate_profile:
+            recreation_started = True
+            subprocess.run([colima_cmd, "delete", *profile_args, "--force"], check=True)
+            _restore_colima_profile_config(
+                config_path,
+                snapshot_path,
+                config_mode,
+                config_dir_mode,
+            )
+            config_restored = True
+        subprocess.run([colima_cmd, "start", *profile_args, *start_flags], check=True)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        message = (
+            "Could not safely recreate Colima for Cloudex routing. Fix the reported "
+            "problem and rerun SDK setup."
+            if recreate_profile
+            else f"Could not restart Colima for Cloudex routing. Run `{command}` manually."
+        )
+        raise RuntimeError(message) from exc
+    finally:
+        if snapshot_path is not None:
+            if config_restored or not recreation_started:
+                snapshot_path.unlink(missing_ok=True)
+            else:
+                console.print(
+                    f"[yellow]The saved Colima profile configuration remains at "
+                    f"{snapshot_path}.[/yellow]"
+                )
+
+    updated_network = _colima_network_config(profile)
+    if not _is_colima_tunnel_network_suitable(updated_network, host_ip):
+        raise RuntimeError(
+            "Colima restarted, but did not report shared networking with host-address "
+            "forwarding enabled."
+        )
+    if not _colima_vm_has_host_address(profile, host_ip):
+        raise RuntimeError(
+            f"Colima restarted, but did not replicate current tunnel address {host_ip}."
+        )
+    forwarded_network = _colima_tunnel_forwarded_network(profile, host_ip)
+    _ensure_colima_internet_sharing_route(
+        profile,
+        devkit_ip,
+        forwarded_network,
+        host_ip,
+    )
+    if not _colima_vm_tunnel_route_ready(profile, host_ip, devkit_ip):
+        raise RuntimeError(
+            f"Colima routes Cloudex DevKit {devkit_ip} inside its own VM instead of "
+            "through the macOS tunnel."
+        )
+    if enable_udp and _colima_port_forwarder(profile) != "grpc":
+        raise RuntimeError("Colima did not report the gRPC port forwarder after restart.")
+    console.print(
+        "[green]✅ Colima host-address forwarding enabled for the Cloudex route.[/green]"
+    )
+    return True
+
+
 def _stage_colima_profile_config(
     profile: str,
     interface: str,
     internet_sharing: bool = False,
     shared_network: str = "",
     host_ip: str = "",
+    defer_route_repair: bool = False,
 ) -> tuple:
     """Stage the selected network strategy outside the directory Colima deletes."""
     config_path = _colima_config_path(profile)
@@ -862,11 +1188,14 @@ def _stage_colima_profile_config(
         network["mode"] = "shared"
         network["hostAddresses"] = True
         network.pop("interface", None)
-        if not shared_network:
-            raise RuntimeError("Could not determine the macOS Internet Sharing subnet.")
-        if not host_ip:
-            raise RuntimeError("Could not determine the macOS Internet Sharing address.")
-        _set_colima_devkit_route_provision(config, shared_network, host_ip)
+        if defer_route_repair:
+            _remove_colima_devkit_route_provision(config)
+        else:
+            if not shared_network:
+                raise RuntimeError("Could not determine the macOS Internet Sharing subnet.")
+            if not host_ip:
+                raise RuntimeError("Could not determine the macOS Internet Sharing address.")
+            _set_colima_devkit_route_provision(config, shared_network, host_ip)
     else:
         # Colima accepts subnet and nat66Prefix only in shared mode. Remove
         # them from the staged copy before the old VM is deleted.
@@ -965,6 +1294,20 @@ def warn_if_colima_devkit_network_may_need_bridged(
 
     profile = _detect_colima_profile()
     route_interface = _route_interface_for_target(devkit_ip)
+    network = _colima_network_config(profile)
+    if _is_tunnel_route_interface(route_interface):
+        host_ip = _route_source_ipv4_for_target(devkit_ip)
+        return _ensure_colima_tunnel_network(
+            profile,
+            route_interface,
+            host_ip,
+            devkit_ip,
+            network,
+            noninteractive,
+            yes_to_all,
+            require_udp,
+        )
+
     internet_sharing = (route_interface or "").strip().lower().startswith("bridge")
     expected_host_ip = _interface_ipv4_address(route_interface) if internet_sharing else ""
     shared_network = _interface_ipv4_network(route_interface) if internet_sharing else ""
@@ -987,7 +1330,6 @@ def warn_if_colima_devkit_network_may_need_bridged(
         raise RuntimeError(
             "Could not identify a safe physical interface for the route to the DevKit."
         )
-    network = _colima_network_config(profile)
     if _is_colima_network_suitable_for_devkit(
         profile,
         interface,

@@ -136,14 +136,18 @@ def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str
     if platform.system() != "Darwin":
         return host_ip
 
-    # Colima's Docker daemon runs in a VM. A direct LAN needs the VM's bridged
-    # address; macOS Internet Sharing needs Colima host-address forwarding so
-    # Docker can publish on the Mac's DevKit-facing bridge address.
+    # Colima's Docker daemon runs in a VM. Direct LAN routes need the VM's
+    # bridged address. macOS Internet Sharing and routed tunnels use Colima's
+    # host-address forwarding so Docker can bind the Mac's DevKit-facing IP.
     from sima_cli.sdk.preinstall import (
         _boolish,
         _colima_network_config,
+        _colima_vm_has_host_address,
+        _colima_vm_tunnel_route_ready,
         _detect_colima_profile,
+        _is_colima_tunnel_network_suitable,
         _is_docker_using_colima,
+        _is_tunnel_route_interface,
         _resolve_safe_colima_bridge_interface,
         _route_interface_for_target,
     )
@@ -158,6 +162,28 @@ def resolve_container_registry_bind_ip(host_ip: str, devkit_ip: str = "") -> str
     configured_interface = str(network.get("interface") or "en0").strip()
     if devkit_ip:
         route_interface = _route_interface_for_target(devkit_ip)
+        if _is_tunnel_route_interface(route_interface):
+            if not _is_colima_tunnel_network_suitable(network, host_ip):
+                raise RuntimeError(
+                    "The local registry needs Colima shared networking with host-address "
+                    "forwarding for the Cloudex tunnel route. Rerun SDK setup and allow "
+                    "sima-cli to restart Colima."
+                )
+            if not host_ip:
+                raise RuntimeError(
+                    "Could not determine the Mac source address for the Cloudex DevKit route."
+                )
+            if not _colima_vm_has_host_address(profile, host_ip):
+                raise RuntimeError(
+                    f"Colima has not replicated current Cloudex tunnel address {host_ip}. "
+                    "Rerun SDK setup after connecting Cloudex."
+                )
+            if not _colima_vm_tunnel_route_ready(profile, host_ip, devkit_ip):
+                raise RuntimeError(
+                    f"Colima is treating Cloudex DevKit {devkit_ip} as a local VM address. "
+                    "Rerun SDK setup to repair the tunnel route."
+                )
+            return host_ip
         expected_interface = _resolve_safe_colima_bridge_interface(route_interface)
         if not expected_interface:
             raise RuntimeError(

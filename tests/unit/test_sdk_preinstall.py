@@ -14,6 +14,9 @@ from sima_cli.sdk.preinstall import (
     _colima_port_forwarder,
     _colima_profile_recreation_safety,
     _colima_store_path,
+    _colima_vm_host_address,
+    _colima_vm_tunnel_route_ready,
+    _colima_tunnel_forwarded_network,
     _restore_colima_profile_config,
     _stage_colima_profile_config,
     _ensure_colima_udp_forwarding_for_insight,
@@ -80,6 +83,67 @@ class TestSdkPreinstall(unittest.TestCase):
             "ip route replace table local local 192.168.2.1/32 dev lo",
             config["provision"][1]["script"],
         )
+
+    def test_colima_vm_host_address_reads_replicated_prefix(self):
+        output = (
+            "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever\n"
+            "1: lo    inet 10.252.132.1/24 scope global lo\\       valid_lft forever\n"
+        )
+        with patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
+             patch("sima_cli.sdk.preinstall.subprocess.check_output", return_value=output):
+            self.assertEqual(
+                _colima_vm_host_address("default", "10.252.132.1"),
+                ("lo", 24),
+            )
+
+    def test_colima_vm_tunnel_route_requires_local_host_and_nonlocal_peer(self):
+        with patch(
+            "sima_cli.sdk.preinstall._colima_vm_host_address",
+            return_value=("lo", 24),
+        ), patch(
+            "sima_cli.sdk.preinstall.shutil.which",
+            return_value="/opt/homebrew/bin/colima",
+        ), patch(
+            "sima_cli.sdk.preinstall.subprocess.check_output",
+            side_effect=[
+                "10.252.132.2 via 192.168.5.2 dev eth0 src 192.168.5.1\n",
+                "local 10.252.132.1 dev lo table local src 10.252.132.1\n",
+            ],
+        ):
+            self.assertTrue(
+                _colima_vm_tunnel_route_ready(
+                    "default", "10.252.132.1", "10.252.132.2"
+                )
+            )
+
+        with patch(
+            "sima_cli.sdk.preinstall._colima_vm_host_address",
+            return_value=("lo", 24),
+        ), patch(
+            "sima_cli.sdk.preinstall.shutil.which",
+            return_value="/opt/homebrew/bin/colima",
+        ), patch(
+            "sima_cli.sdk.preinstall.subprocess.check_output",
+            side_effect=[
+                "local 10.252.132.2 dev lo table local src 10.252.132.1\n",
+                "local 10.252.132.1 dev lo table local src 10.252.132.1\n",
+            ],
+        ):
+            self.assertFalse(
+                _colima_vm_tunnel_route_ready(
+                    "default", "10.252.132.1", "10.252.132.2"
+                )
+            )
+
+    def test_colima_tunnel_forwarded_network_uses_replicated_prefix(self):
+        with patch(
+            "sima_cli.sdk.preinstall._colima_vm_host_address",
+            return_value=("lo", 24),
+        ):
+            self.assertEqual(
+                _colima_tunnel_forwarded_network("default", "10.252.132.1"),
+                "10.252.132.0/24",
+            )
 
     def test_colima_bridge_interface_rejects_known_vpn_prefixes(self):
         for interface in ("utun7", "ppp0", "ipsec0", "tailscale0", "ztabc123", "wg0", "vmenet0"):
@@ -354,6 +418,37 @@ class TestSdkPreinstall(unittest.TestCase):
             )
             snapshot_path.unlink()
 
+    def test_colima_profile_config_defers_tunnel_route_until_vm_exists(self):
+        with TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "colima" / "default" / "colima.yaml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                "provision:\n"
+                "- mode: system\n"
+                f"  script: '{COLIMA_DEVKIT_ROUTE_MARKER} stale'\n"
+                "network:\n"
+                "  address: true\n"
+                "  mode: bridged\n"
+                "  interface: en7\n",
+                encoding="utf-8",
+            )
+
+            with patch("sima_cli.sdk.preinstall._colima_config_path", return_value=config_path):
+                _, snapshot_path, _, _ = _stage_colima_profile_config(
+                    "default",
+                    "",
+                    internet_sharing=True,
+                    defer_route_repair=True,
+                )
+
+            staged = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                staged["network"],
+                {"address": False, "mode": "shared", "hostAddresses": True},
+            )
+            self.assertNotIn("provision", staged)
+            snapshot_path.unlink()
+
     def test_colima_config_path_honors_documented_precedence(self):
         with TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
@@ -441,6 +536,17 @@ class TestSdkPreinstall(unittest.TestCase):
             self.assertTrue(_ensure_colima_udp_forwarding_for_insight(yes_to_all=True))
 
         self.assertEqual(run.call_count, 2)
+
+    def test_colima_udp_check_missing_executable_reports_manual_remediation(self):
+        with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="ssh"), \
+             patch("sima_cli.sdk.preinstall.shutil.which", return_value=None), \
+             patch("builtins.input", return_value="y"):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"Colima was not found on PATH\. Run `colima stop --profile work && ",
+            ):
+                _ensure_colima_udp_forwarding_for_insight()
 
     def test_colima_resource_check_forwards_yes_to_udp_repair(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
@@ -994,19 +1100,199 @@ class TestSdkPreinstall(unittest.TestCase):
             ],
         )
 
-    def test_colima_devkit_network_warning_refuses_unsafe_route_interface(self):
+    def test_colima_devkit_network_warning_enables_tunnel_host_addresses(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
              patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
              patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun7"), \
-             patch("sima_cli.sdk.preinstall._colima_network_config") as network_config, \
+             patch("sima_cli.sdk.preinstall._route_source_ipv4_for_target", return_value="100.96.0.2"), \
+             patch("sima_cli.sdk.preinstall._colima_network_config", side_effect=[
+                 {"address": False, "mode": "shared", "host_addresses": False},
+                 {
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": True,
+                     "forwarded_host_ips": ["100.96.0.2"],
+                 },
+             ]), \
+             patch("sima_cli.sdk.preinstall._colima_vm_has_host_address", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_tunnel_forwarded_network", return_value="100.96.0.0/24"), \
+             patch("sima_cli.sdk.preinstall._ensure_colima_internet_sharing_route"), \
+             patch("sima_cli.sdk.preinstall._colima_vm_tunnel_route_ready", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_supports_host_addresses_flag", return_value=True), \
+             patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
              patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
-             patch("builtins.input", side_effect=AssertionError("should not prompt")):
-            with self.assertRaisesRegex(RuntimeError, "safe physical interface"):
-                warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
+             patch("builtins.input", return_value="y"):
+            restarted = warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
 
-        network_config.assert_not_called()
+        self.assertTrue(restarted)
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["/opt/homebrew/bin/colima", "stop", "--profile", "default"],
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "/opt/homebrew/bin/colima",
+                "start",
+                "--profile",
+                "default",
+                "--network-host-addresses",
+                "--save-config",
+            ],
+        )
+
+    def test_colima_devkit_network_recreates_bridged_profile_for_tunnel(self):
+        snapshot = Path("/tmp/missing-cloudex-colima-snapshot")
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun9"), \
+             patch("sima_cli.sdk.preinstall._route_source_ipv4_for_target", return_value="10.252.132.1"), \
+             patch("sima_cli.sdk.preinstall._colima_network_config", side_effect=[
+                 {"address": True, "mode": "bridged", "interface": "en7"},
+                 {
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": True,
+                     "forwarded_host_ips": ["10.252.132.1"],
+                 },
+             ]), \
+             patch("sima_cli.sdk.preinstall._colima_supports_host_addresses_flag", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_supports_network_address_flag", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_profile_recreation_safety", return_value=(True, "")), \
+             patch(
+                 "sima_cli.sdk.preinstall._stage_colima_profile_config",
+                 return_value=(Path("/profile/colima.yaml"), snapshot, 0o600, 0o700),
+             ) as stage, \
+             patch("sima_cli.sdk.preinstall._restore_colima_profile_config") as restore, \
+             patch("sima_cli.sdk.preinstall._colima_vm_has_host_address", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_tunnel_forwarded_network", return_value="10.252.132.0/24"), \
+             patch("sima_cli.sdk.preinstall._ensure_colima_internet_sharing_route"), \
+             patch("sima_cli.sdk.preinstall._colima_vm_tunnel_route_ready", return_value=True), \
+             patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run:
+            changed = warn_if_colima_devkit_network_may_need_bridged(
+                "10.252.132.2",
+                yes_to_all=True,
+            )
+
+        self.assertTrue(changed)
+        stage.assert_called_once_with(
+            "default",
+            "",
+            internet_sharing=True,
+            defer_route_repair=True,
+        )
+        restore.assert_called_once()
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["/opt/homebrew/bin/colima", "stop", "--profile", "default"],
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/opt/homebrew/bin/colima", "delete", "--profile", "default", "--force"],
+        )
+        self.assertEqual(
+            run.call_args_list[2].args[0],
+            [
+                "/opt/homebrew/bin/colima",
+                "start",
+                "--profile",
+                "default",
+                "--network-address=false",
+                "--network-mode",
+                "shared",
+                "--network-host-addresses",
+                "--save-config",
+            ],
+        )
+
+    def test_colima_devkit_network_refuses_unsafe_bridged_profile_migration(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun9"), \
+             patch("sima_cli.sdk.preinstall._route_source_ipv4_for_target", return_value="10.252.132.1"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": True, "mode": "bridged", "interface": "en7"},
+             ), \
+             patch("sima_cli.sdk.preinstall._colima_supports_host_addresses_flag", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_supports_network_address_flag", return_value=True), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_profile_recreation_safety",
+                 return_value=(False, "Kubernetes is enabled."),
+             ), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run, \
+             self.assertRaisesRegex(RuntimeError, "will not recreate.*Kubernetes"):
+            warn_if_colima_devkit_network_may_need_bridged(
+                "10.252.132.2",
+                yes_to_all=True,
+            )
+
         run.assert_not_called()
+
+    def test_colima_devkit_network_reuses_configured_tunnel_forwarding(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun9"), \
+             patch("sima_cli.sdk.preinstall._route_source_ipv4_for_target", return_value="100.96.0.2"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": True,
+                     "forwarded_host_ips": ["100.96.0.2"],
+                 },
+             ), \
+             patch("sima_cli.sdk.preinstall._colima_vm_has_host_address", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_tunnel_forwarded_network", return_value="100.96.0.0/24"), \
+             patch("sima_cli.sdk.preinstall._ensure_colima_internet_sharing_route") as ensure_route, \
+             patch("sima_cli.sdk.preinstall._colima_vm_tunnel_route_ready", return_value=True), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run:
+            restarted = warn_if_colima_devkit_network_may_need_bridged("10.0.0.244")
+
+        self.assertFalse(restarted)
+        run.assert_not_called()
+        ensure_route.assert_called_once_with(
+            "default", "10.0.0.244", "100.96.0.0/24", "100.96.0.2"
+        )
+
+    def test_colima_devkit_network_refreshes_stale_tunnel_address(self):
+        with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun9"), \
+             patch("sima_cli.sdk.preinstall._route_source_ipv4_for_target", return_value="10.252.132.1"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 side_effect=[
+                     {"address": False, "mode": "shared", "host_addresses": True},
+                     {
+                         "address": False,
+                         "mode": "shared",
+                         "host_addresses": True,
+                         "forwarded_host_ips": ["10.252.132.1"],
+                     },
+                 ],
+             ), \
+             patch("sima_cli.sdk.preinstall._colima_vm_has_host_address", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_tunnel_forwarded_network", return_value="10.252.132.0/24"), \
+             patch("sima_cli.sdk.preinstall._ensure_colima_internet_sharing_route"), \
+             patch("sima_cli.sdk.preinstall._colima_vm_tunnel_route_ready", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_supports_host_addresses_flag", return_value=True), \
+             patch("sima_cli.sdk.preinstall.shutil.which", return_value="/opt/homebrew/bin/colima"), \
+             patch("sima_cli.sdk.preinstall.subprocess.run") as run:
+            restarted = warn_if_colima_devkit_network_may_need_bridged(
+                "10.252.132.2",
+                yes_to_all=True,
+            )
+
+        self.assertTrue(restarted)
+        self.assertEqual(len(run.call_args_list), 2)
 
     def test_colima_devkit_network_warning_does_not_restart_when_bridged_flags_are_unsupported(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \

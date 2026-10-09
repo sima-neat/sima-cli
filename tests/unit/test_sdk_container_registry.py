@@ -294,6 +294,43 @@ class TestSdkContainerRegistry(unittest.TestCase):
              self.assertRaisesRegex(RuntimeError, "host-address forwarding"):
             resolve_container_registry_bind_ip("192.168.2.1", "192.168.2.3")
 
+    def test_colima_uses_host_tunnel_address_for_cloudex_binding(self):
+        with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": True,
+                     "forwarded_host_ips": ["100.96.0.2"],
+                 },
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun9"), \
+             patch("sima_cli.sdk.preinstall._colima_vm_has_host_address", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_vm_tunnel_route_ready", return_value=True):
+            self.assertEqual(
+                resolve_container_registry_bind_ip("100.96.0.2", "100.96.0.10"),
+                "100.96.0.2",
+            )
+
+    def test_colima_rejects_cloudex_binding_without_host_addresses(self):
+        with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": False,
+                 },
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun9"), \
+             self.assertRaisesRegex(RuntimeError, "host-address forwarding"):
+            resolve_container_registry_bind_ip("100.96.0.2", "100.96.0.10")
+
     def test_colima_rejects_bridge_on_wrong_devkit_interface(self):
         with patch("sima_cli.sdk.container_registry.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \

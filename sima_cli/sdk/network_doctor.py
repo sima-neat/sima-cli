@@ -520,6 +520,33 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
     expected_host_ip = ""
     if report.devkit_ip:
         route_interface = preinstall._route_interface_for_target(report.devkit_ip)
+        if preinstall._is_tunnel_route_interface(route_interface):
+            host_ip = preinstall._route_source_ipv4_for_target(report.devkit_ip)
+            tunnel_ready = (
+                preinstall._is_colima_tunnel_network_suitable(network, host_ip)
+                and preinstall._colima_vm_has_host_address(profile, host_ip)
+                and preinstall._colima_vm_tunnel_route_ready(
+                    profile,
+                    host_ip,
+                    report.devkit_ip,
+                )
+            )
+            if tunnel_ready:
+                report.add(
+                    "info",
+                    "colima-tunnel-route",
+                    f"Colima host-address forwarding is enabled for tunnel route {route_interface}.",
+                    f"hostIp={host_ip}; {detail}",
+                )
+            else:
+                report.add(
+                    "error",
+                    "colima-tunnel-forwarding-disabled",
+                    "Colima is not ready to publish ports on the current DevKit tunnel address.",
+                    f"routeInterface={route_interface}; hostIp={host_ip or 'unresolved'}; "
+                    f"{detail}; rerun SDK setup after connecting the tunnel",
+                )
+            return
         internet_sharing = (route_interface or "").strip().lower().startswith("bridge")
         if internet_sharing:
             expected_host_ip = preinstall._interface_ipv4_address(route_interface)
@@ -577,9 +604,9 @@ def build_network_doctor_report(container: str = "", devkit_ip: str = "") -> Net
             "Linux network repair is only supported on Ubuntu/Linux hosts.",
             "macOS and Windows should use diagnostics only; do not run iptables/nft/NetworkManager repair logic.",
         )
-        return report
-
-    if devkit_ip:
+        if not container:
+            return report
+    elif devkit_ip:
         route = probe_route_to_devkit(devkit_ip)
         report.route = route
         if route.classification == "vpn":
@@ -697,13 +724,25 @@ def build_network_doctor_report(container: str = "", devkit_ip: str = "") -> Net
     if _container_running(inspect):
         if not _container_default_route_confirmed(resolved_container, inspect):
             report.add("warning", "container-default-route", "Could not confirm a default route inside the SDK container.")
-        if devkit_ip and not _docker_exec_success(resolved_container, f"timeout 2 bash -lc '</dev/tcp/{devkit_ip}/22' >/dev/null 2>&1 || ping -c 1 -W 1 {devkit_ip} >/dev/null 2>&1"):
-            report.add(
-                "warning",
-                "container-devkit-reachability",
-                "Could not confirm SDK container reachability to the DevKit.",
-                "This may require DevKit SSH/firewall access; run doctor from the final host setup for confirmation.",
+        if devkit_ip:
+            reachable = _docker_exec_success(
+                resolved_container,
+                f"timeout 2 bash -lc '</dev/tcp/{devkit_ip}/22' >/dev/null 2>&1 || "
+                f"ping -c 1 -W 1 {devkit_ip} >/dev/null 2>&1",
             )
+            if reachable:
+                report.add(
+                    "info",
+                    "container-devkit-reachability",
+                    f"SDK container can reach DevKit {devkit_ip}.",
+                )
+            else:
+                report.add(
+                    "warning",
+                    "container-devkit-reachability",
+                    "Could not confirm SDK container reachability to the DevKit.",
+                    "This may require DevKit SSH/firewall access; run doctor from the final host setup for confirmation.",
+                )
 
     return report
 
@@ -933,15 +972,35 @@ def ensure_existing_neat_container_startable(container: str) -> None:
 
 def validate_running_neat_container_network(container: str, devkit_ip: str = "") -> None:
     report = build_network_doctor_report(container=container, devkit_ip=devkit_ip)
+    tunnel_route = any(
+        finding.code == "colima-tunnel-route" for finding in report.findings
+    )
     blocking = [
         finding
         for finding in report.findings
-        if finding.severity == "error"
-        and finding.code in {"missing-simasdkbridge", "host-network-mode", "port-map-mismatch"}
+        if (
+            finding.severity == "error"
+            and finding.code in {
+                "missing-simasdkbridge",
+                "host-network-mode",
+                "port-map-mismatch",
+                "colima-tunnel-forwarding-disabled",
+            }
+        ) or (
+            tunnel_route
+            and finding.code == "container-devkit-reachability"
+            and finding.severity == "warning"
+        )
     ]
     if blocking:
         print_network_doctor_report(report)
         raise RuntimeError(blocking[0].message)
+    if tunnel_route and any(
+        finding.code == "container-devkit-reachability"
+        and finding.severity == "info"
+        for finding in report.findings
+    ):
+        print(f"✅ SDK container can reach DevKit {devkit_ip} through the Cloudex tunnel.")
 
 
 def repair_linux_devkit_network(container: str = "", devkit_ip: str = "", persist: bool = False) -> NetworkDoctorReport:

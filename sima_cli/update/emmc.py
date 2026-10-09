@@ -1,7 +1,7 @@
 """Device-side preparation for whole-eMMC recovery writes."""
 
 
-def prepare_emmc(device='/dev/mmcblk0'):
+def prepare_emmc(device='/dev/mmcblk0', udev_sync=True):
     """Unmount by block-device identity, then release LVM mappings; fail closed.
 
     Kept self-contained so netboot can execute it on the recovery device.
@@ -60,9 +60,41 @@ def prepare_emmc(device='/dev/mmcblk0'):
         raise RuntimeError('eMMC still has mounted filesystems; refusing to flash')
     for node in reversed(list(blocks.values())):
         if node['type'] == 'lvm':
-            subprocess.run(['lvchange', '-an', node['name']], check=True)
+            command = ['lvchange', '-an']
+            if not udev_sync:
+                command.append('--noudevsync')
+            subprocess.run(command + [node['name']], check=True)
     remaining = devices()
     if mounts(remaining) or any(node['type'] not in ('disk', 'part') for node in remaining.values()):
         raise RuntimeError('eMMC still has active mounts or device mappings; refusing to flash')
     subprocess.run(['sync'], check=True)
     print('eMMC filesystems unmounted and mappings released.', flush=True)
+
+
+def finalize_emmc(device='/dev/mmcblk0'):
+    """Finalize a whole-device write without racing LVM autoactivation.
+
+    udev can reactivate an LVM volume after the pre-write preparation while a
+    large image is being copied. Pause new udev work only for the short
+    post-write critical section, release any mappings that reappeared, repair
+    the backup GPT for a larger target device, and refresh the kernel view.
+
+    Kept self-contained except for ``prepare_emmc`` so netboot can execute both
+    function sources on the recovery device.
+    """
+    import subprocess
+
+    subprocess.run(['udevadm', 'settle'], check=True)
+    queue_paused = False
+    try:
+        subprocess.run(['udevadm', 'control', '--stop-exec-queue'], check=True)
+        queue_paused = True
+        prepare_emmc(device, udev_sync=False)
+        subprocess.run(['parted', '--script', '--fix', device, 'print'], check=True)
+        subprocess.run(['blockdev', '--rereadpt', device], check=True)
+    finally:
+        if queue_paused:
+            subprocess.run(['udevadm', 'control', '--start-exec-queue'], check=True)
+            subprocess.run(['udevadm', 'settle'], check=True)
+
+    print('eMMC partition table repaired and refreshed.', flush=True)

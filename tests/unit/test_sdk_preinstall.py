@@ -537,6 +537,17 @@ class TestSdkPreinstall(unittest.TestCase):
 
         self.assertEqual(run.call_count, 2)
 
+    def test_colima_udp_check_missing_executable_reports_manual_remediation(self):
+        with patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="work"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="ssh"), \
+             patch("sima_cli.sdk.preinstall.shutil.which", return_value=None), \
+             patch("builtins.input", return_value="y"):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"Colima was not found on PATH\. Run `colima stop --profile work && ",
+            ):
+                _ensure_colima_udp_forwarding_for_insight()
+
     def test_colima_resource_check_forwards_yes_to_udp_repair(self):
         with patch("sima_cli.sdk.preinstall.platform.system", return_value="Darwin"), \
              patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \

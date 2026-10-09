@@ -406,12 +406,7 @@ def _ensure_colima_udp_forwarding_for_insight(
 
     colima_cmd = shutil.which("colima")
     if not colima_cmd:
-        raise RuntimeError(
-            "Colima was not found on PATH; the profile was not changed. Install or "
-            "upgrade Colima, then rerun SDK setup."
-            if recreate_profile
-            else f"Colima was not found on PATH. Run `{command}` manually."
-        )
+        raise RuntimeError(f"Colima was not found on PATH. Run `{command}` manually.")
 
     try:
         subprocess.run([colima_cmd, "stop", *profile_args], check=True)

@@ -32,6 +32,17 @@ def test_other_device_does_not_trigger_flash():
     flash.assert_not_called()
 
 
+def test_autoflash_propagates_flash_failure():
+    manager = netboot.ClientManager()
+    manager.clients = {'192.0.2.2': {'state': 'Connected'}}
+    with patch.object(netboot, 'init_ssh_session'), \
+            patch('sima_cli.update.remote.run_remote_command_capture',
+                  return_value=(0, 'root=/dev/ram0 rw', '')), \
+            patch.object(netboot, 'flash_emmc', return_value=False):
+        with pytest.raises(click.ClickException, match='Automatic eMMC flash failed'):
+            netboot.auto_flash(manager, '192.0.2.2')
+
+
 def test_failed_ssh_wait_does_not_mark_connected():
     manager=netboot.ClientManager();manager.clients={'192.0.2.2':{'state':'Booting'}}
     def wait(*args,**kwargs):

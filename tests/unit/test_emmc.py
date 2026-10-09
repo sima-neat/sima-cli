@@ -1,11 +1,12 @@
 import io
 import json
+import shlex
 import subprocess
 from unittest.mock import patch
 
 import pytest
 
-from sima_cli.update.emmc import prepare_emmc
+from sima_cli.update.emmc import finalize_emmc, prepare_emmc
 from sima_cli.update import netboot
 
 
@@ -69,14 +70,63 @@ def test_mapping_remaining_aborts():
         harness('', remaining=True)
 
 
+def test_prepare_lvm_without_udev_sync():
+    calls = []
+
+    with patch('builtins.open', side_effect=lambda path, *args, **kwargs: io.StringIO(
+            '' if path == '/proc/self/mountinfo' else 'Filename Type Size Used Priority\n')), \
+            patch('subprocess.check_output', side_effect=[tree(), tree(), tree(False)]), \
+            patch('subprocess.run', side_effect=lambda args, **kwargs: calls.append(args)):
+        prepare_emmc(udev_sync=False)
+
+    assert ['lvchange', '-an', '--noudevsync', '/dev/mapper/vg-data'] in calls
+
+
+def test_finalize_pauses_udev_releases_mappings_and_repairs_gpt():
+    calls = []
+
+    with patch('sima_cli.update.emmc.prepare_emmc') as prepare, \
+            patch('subprocess.run', side_effect=lambda args, **kwargs: calls.append(args)):
+        finalize_emmc()
+
+    prepare.assert_called_once_with('/dev/mmcblk0', udev_sync=False)
+    assert calls == [
+        ['udevadm', 'settle'],
+        ['udevadm', 'control', '--stop-exec-queue'],
+        ['parted', '--script', '--fix', '/dev/mmcblk0', 'print'],
+        ['blockdev', '--rereadpt', '/dev/mmcblk0'],
+        ['udevadm', 'control', '--start-exec-queue'],
+        ['udevadm', 'settle'],
+    ]
+
+
+def test_finalize_resumes_udev_after_partition_refresh_failure():
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[0] == 'blockdev':
+            raise subprocess.CalledProcessError(1, args)
+
+    with patch('sima_cli.update.emmc.prepare_emmc'), patch('subprocess.run', side_effect=run):
+        with pytest.raises(subprocess.CalledProcessError):
+            finalize_emmc()
+
+    assert calls[-2:] == [
+        ['udevadm', 'control', '--start-exec-queue'],
+        ['udevadm', 'settle'],
+    ]
+
+
 def test_preparation_failure_prevents_dd(capsys):
     with patch.object(netboot, '_select_flash_target', return_value='192.0.2.1'), \
             patch.object(netboot, 'copy_file_to_remote_board', return_value=True), \
             patch.object(netboot, 'init_ssh_session', return_value=object()), \
             patch.object(netboot, 'run_remote_command', side_effect=RuntimeError('busy')) as run:
-        netboot.flash_emmc(None, ['/images/test.img.gz'])
+        flashed = netboot.flash_emmc(None, ['/images/test.img.gz'])
     run.assert_called_once()
     assert run.call_args.kwargs == {'check': True, 'command_label': 'Preparing eMMC for flashing'}
+    assert flashed is False
     assert 'Flash completed' not in capsys.readouterr().out
 
 
@@ -85,26 +135,42 @@ def test_failed_image_write_never_reports_success(capsys):
             patch.object(netboot, 'copy_file_to_remote_board', return_value=True), \
             patch.object(netboot, 'init_ssh_session', return_value=object()), \
             patch.object(netboot, 'run_remote_command', side_effect=[None, RuntimeError('write failed')]) as run:
-        netboot.flash_emmc(None, ['/images/test.img.gz'])
+        flashed = netboot.flash_emmc(None, ['/images/test.img.gz'])
     command = run.call_args.args[1]
     assert 'pipefail' in command and 'conv=fsync' in command
     assert run.call_args.kwargs == {'check': True}
+    assert flashed is False
     assert 'Flash completed' not in capsys.readouterr().out
 
 
-def test_raw_image_refreshes_partition_table_after_dd(capsys):
+def test_finalization_failure_returns_false(capsys):
+    with patch.object(netboot, '_select_flash_target', return_value='192.0.2.1'), \
+            patch.object(netboot, 'copy_file_to_remote_board', return_value=True), \
+            patch.object(netboot, 'init_ssh_session', return_value=object()), \
+            patch.object(netboot, 'run_remote_command',
+                         side_effect=[None, None, RuntimeError('refresh failed')]):
+        flashed = netboot.flash_emmc(None, ['/images/test.img.gz'])
+
+    assert flashed is False
+    assert 'Flash completed' not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('image', ['/images/test.img.gz', '/images/test.wic.gz'])
+def test_all_images_finalize_partition_table_after_write(image, capsys):
     with patch.object(netboot, '_select_flash_target', return_value='192.0.2.1'), \
             patch.object(netboot, 'copy_file_to_remote_board', return_value=True), \
             patch.object(netboot, 'init_ssh_session', return_value=object()), \
             patch.object(netboot, 'run_remote_command') as run:
-        netboot.flash_emmc(None, ['/images/test.img.gz'])
+        flashed = netboot.flash_emmc(None, [image])
 
-    refresh = run.call_args_list[2]
-    assert refresh.args[1] == (
-        'sudo blockdev --rereadpt /dev/mmcblk0 && sudo udevadm settle'
-    )
-    assert refresh.kwargs == {
+    finalization = run.call_args_list[2]
+    remote_source = shlex.split(finalization.args[1])[-1]
+    assert 'finalize_emmc()' in remote_source
+    assert "['parted', '--script', '--fix', device, 'print']" in remote_source
+    assert "['blockdev', '--rereadpt', device]" in remote_source
+    assert finalization.kwargs == {
         'check': True,
-        'command_label': 'Refreshing eMMC partitions',
+        'command_label': 'Finalizing eMMC partitions',
     }
+    assert flashed is True
     assert 'Flash completed' in capsys.readouterr().out

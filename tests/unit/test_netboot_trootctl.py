@@ -27,7 +27,10 @@ def test_running_firmware_selects_troot_command_before_emmc(version, command):
         assert run.call_args_list[0].args[1] == command
         assert run.call_args_list[0].kwargs == {'check': True}
         assert 'dd of=/dev/mmcblk0' in run.call_args_list[-2].args[1]
-        assert 'blockdev --rereadpt /dev/mmcblk0' in run.call_args_list[-1].args[1]
+        assert run.call_args_list[-1].kwargs == {
+            'check': True,
+            'command_label': 'Finalizing eMMC partitions',
+        }
 
 
 @pytest.mark.parametrize('version', ['', 'unknown'])

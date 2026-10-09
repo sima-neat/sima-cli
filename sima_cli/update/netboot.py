@@ -640,17 +640,17 @@ def flash_emmc(
             "⚠️  No eMMC image was prepared. TFTP netboot is available, "
             "but eMMC flashing is disabled for this session."
         )
-        return
+        return False
     selected_ip = _select_flash_target(client_manager, override_ip=override_ip)
     if not selected_ip:
-        return
+        return False
     if configuration is not None and configuration.changed:
         if not _same_netboot_device(configuration, selected_ip):
             click.echo(
                 f"❌ Refusing to flash {selected_ip}: it could not be verified as "
                 f"the device whose U-Boot environment was saved at {configuration.devkit}."
             )
-            return
+            return False
         if selected_ip != configuration.devkit:
             configuration.devkit = selected_ip
 
@@ -665,7 +665,7 @@ def flash_emmc(
         match = re.match(r"^(\d+)\.(\d+)(?=$|[._-])", running_version.strip().strip('"\''))
         if not match:
             click.echo("❌ Cannot determine the running firmware version. Aborting before tRoot programming.")
-            return
+            return False
         if tuple(map(int, match.groups())) >= (3, 0):
             troot_command = "sudo sh -c 'cd /tmp && exec simaai-trootctl full-flash'"
         else:
@@ -677,7 +677,7 @@ def flash_emmc(
         )
         if not success:
             click.echo(f"❌ Failed to copy {troot_image_path} to {selected_ip}. Aborting.")
-            return
+            return False
     else:
         click.echo("⚠️  tRoot image troot_blob.be was not found; continuing with eMMC image transfer.")
 
@@ -688,8 +688,9 @@ def flash_emmc(
         )
         if not success:
             click.echo(f"❌ Failed to copy {path} to {selected_ip}. Aborting.")
-            return
+            return False
 
+    ssh = None
     try:
         ssh = init_ssh_session(selected_ip, password=DEFAULT_PASSWORD)
 
@@ -698,7 +699,7 @@ def flash_emmc(
             run_remote_command(ssh, troot_command, check=True)
 
         # Match mounts through the entire block-device tree, including LVM.
-        from sima_cli.update.emmc import prepare_emmc
+        from sima_cli.update.emmc import finalize_emmc, prepare_emmc
         preparation = inspect.getsource(prepare_emmc) + '\nprepare_emmc()\n'
         run_remote_command(ssh, 'sudo python3 -c ' + shlex.quote(preparation), check=True,
                            command_label='Preparing eMMC for flashing')
@@ -713,10 +714,6 @@ def flash_emmc(
             flash_cmd = f"sudo bmaptool copy {remote_path} /dev/mmcblk0"
             run_remote_command(ssh, flash_cmd, check=True)
 
-            # Step d: Fix GPT for Yocto
-            fix_cmd = 'sudo printf "fix\n" | sudo parted ---pretend-input-tty /dev/mmcblk0 print'
-            run_remote_command(ssh, fix_cmd, check=True)
-
         elif img_path:
             filename = os.path.basename(img_path)
             remote_path = shlex.quote(f"/tmp/{filename}")
@@ -724,19 +721,29 @@ def flash_emmc(
                 f"gzip -dc {remote_path} | dd of=/dev/mmcblk0 bs=16M conv=fsync status=progress"
             )
             run_remote_command(ssh, flash_cmd, check=True)
-            run_remote_command(
-                ssh,
-                'sudo blockdev --rereadpt /dev/mmcblk0 && sudo udevadm settle',
-                check=True,
-                command_label='Refreshing eMMC partitions',
-            )
         else:
             click.echo("❌ No .wic.gz or .img image found in emmc_image_paths.")
-            return
+            return False
+
+        finalization = (inspect.getsource(prepare_emmc) + '\n' +
+                        inspect.getsource(finalize_emmc) + '\nfinalize_emmc()\n')
+        run_remote_command(
+            ssh,
+            'sudo python3 -c ' + shlex.quote(finalization),
+            check=True,
+            command_label='Finalizing eMMC partitions',
+        )
 
         click.echo("✅ Flash completed. Please reboot the board to boot from eMMC.")
+        return True
     except Exception as e:
         click.echo(f"❌ Flashing failed: {e}")
+        return False
+    finally:
+        if ssh is not None:
+            close = getattr(ssh, 'close', None)
+            if close is not None:
+                close()
 
 
 class ClientManager:
@@ -1125,8 +1132,10 @@ def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
                 raise click.ClickException('Automatic flashing stopped: the selected DevKit is not confirmed '
                                            'to be running the network boot image.')
             click.echo(f'Starting automatic flash on {selected_ip}.')
-            flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
-                       troot_image_path=troot_image_path, configuration=configuration)
+            flashed = flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
+                                 troot_image_path=troot_image_path, configuration=configuration)
+            if not flashed:
+                raise click.ClickException('Automatic eMMC flash failed.')
             return
         if time.monotonic() >= deadline:
             raise click.ClickException(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')

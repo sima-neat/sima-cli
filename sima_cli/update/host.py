@@ -11,6 +11,7 @@ import click
 import requests
 
 from sima_cli.download import download_file_from_url
+from sima_cli.utils.network import configure_session_for_url
 
 
 HOST_PACKAGE_BASE_URL = "https://artifacts.neat.sima.ai/daily-platform-images"
@@ -64,8 +65,7 @@ def list_host_packages() -> List[Dict]:
     """Return indexed daily builds that contain the Linux host package."""
     try:
         with requests.Session() as session:
-            # Never send ambient proxy or .netrc credentials to the public mirror.
-            session.trust_env = False
+            configure_session_for_url(session, HOST_PACKAGE_INDEX_URL)
             response = session.get(HOST_PACKAGE_INDEX_URL, timeout=15)
             response.raise_for_status()
             index = response.json()

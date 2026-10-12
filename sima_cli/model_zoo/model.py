@@ -12,6 +12,7 @@ from rich.panel import Panel
 from sima_cli.utils.config import get_auth_token
 from sima_cli.utils.config_loader import artifactory_url
 from sima_cli.download import download_file_from_url
+from sima_cli.utils.network import configure_session_for_url
 from collections import defaultdict
 from urllib.parse import urljoin
 import tempfile
@@ -206,8 +207,7 @@ def _describe_model_internal(ver: str, boardtype: str, model_name: str):
         "Authorization": f"Bearer {get_auth_token(internal=True)}",
     }
 
-    session = requests.Session()
-    session.trust_env = False
+    session = configure_session_for_url(requests.Session(), ARTIFACTORY_BASE_URL)
     response = session.post(
         f"{ARTIFACTORY_BASE_URL}/api/search/aql",
         data=aql_query,
@@ -290,8 +290,7 @@ def _describe_model_internal(ver: str, boardtype: str, model_name: str):
         f"{yaml_item['path']}/{yaml_item['name']}"
     )
 
-    session = requests.Session()
-    session.trust_env = False  # Ignore .netrc and other env-based config
+    session = configure_session_for_url(requests.Session(), yaml_url)
     r = session.get(
         yaml_url,
         headers={"Authorization": f"Bearer {get_auth_token(internal=True)}"},
@@ -336,8 +335,7 @@ def _download_model_internal(ver: str, boardtype: str, model_name: str):
         "Authorization": f"Bearer {get_auth_token(internal=True)}",
     }
 
-    session = requests.Session()
-    session.trust_env = False
+    session = configure_session_for_url(requests.Session(), ARTIFACTORY_BASE_URL)
     response = session.post(
         f"{ARTIFACTORY_BASE_URL}/api/search/aql",
         data=aql_query,
@@ -449,7 +447,7 @@ def _download_model_internal(ver: str, boardtype: str, model_name: str):
                     external_model_path = download_file_from_url(
                         first_line,
                         dest_folder=dest_dir,
-                        internal=True,
+                        internal=False,
                     )
                     click.echo(
                         f"✅ External model downloaded to: {external_model_path}"
@@ -486,8 +484,7 @@ def _list_available_models_internal(version: str, boardtype: str):
         "Authorization": f"Bearer {get_auth_token(internal=True)}"
     }
 
-    session = requests.Session()
-    session.trust_env = False 
+    session = configure_session_for_url(requests.Session(), aql_url)
     response = session.post(aql_url, data=aql_query, headers=headers)
     if response.status_code != 200:
         click.echo(f"❌ Failed to retrieve model list (status {response.status_code})")

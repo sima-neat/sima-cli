@@ -17,6 +17,7 @@ from InquirerPy import inquirer
 from sima_cli.utils.config import get_auth_token
 from sima_cli.utils.config_loader import artifactory_url
 from sima_cli.download import download_file_from_url
+from sima_cli.utils.network import configure_session_for_url
 
 ARTIFACTORY_BASE_URL = artifactory_url() + "/artifactory"
 
@@ -26,9 +27,7 @@ ARTIFACTORY_BASE_URL = artifactory_url() + "/artifactory"
 # ─────────────────────────────────────────────
 
 def _internal_session():
-    session = requests.Session()
-    session.trust_env = False  # Ignore .netrc and other env-based config
-    return session
+    return configure_session_for_url(requests.Session(), ARTIFACTORY_BASE_URL)
 
 def _is_valid_url(url: str) -> bool:
     """Return True if a string is a valid URL."""

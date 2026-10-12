@@ -81,7 +81,7 @@ def test_list_host_packages_uses_index_and_sorts_newest_first(session_factory):
         VERSION,
         "3.0.0_daily_develop_B1768",
     ]
-    assert session.trust_env is False
+    assert session.trust_env is True
     session.get.assert_called_once_with(
         "https://artifacts.neat.sima.ai/daily-platform-images/index.json",
         timeout=15,

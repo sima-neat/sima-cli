@@ -10,6 +10,7 @@ import requests
 from sima_cli.utils.config import get_auth_token, get_auth_username, set_auth_username
 from sima_cli.utils.config_loader import load_resource_config, artifactory_url
 from sima_cli.utils.artifactory import validate_token
+from sima_cli.utils.network import configure_session_for_url
 from sima_cli.auth.devportal import (
     resolve_public_registry,
     ensure_docker_available,
@@ -371,8 +372,7 @@ def _select_artifactory_version(image_name: str) -> str:
     )
 
     try:
-        session = requests.Session()
-        session.trust_env = False
+        session = configure_session_for_url(requests.Session(), tags_url)
         resp = session.get(tags_url, headers=headers, timeout=10)
         if resp.status_code != 200:
             raise click.ClickException(

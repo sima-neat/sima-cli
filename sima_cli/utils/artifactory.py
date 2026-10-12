@@ -3,6 +3,7 @@ import os
 import requests
 import socket
 from typing import Optional, Tuple
+from sima_cli.utils.network import configure_session_for_url
 
 def exchange_identity_token(
     identity_token: str,
@@ -37,8 +38,7 @@ def exchange_identity_token(
         data["scope"] = scope
 
     try:
-        session = requests.Session()
-        session.trust_env = False 
+        session = configure_session_for_url(requests.Session(), exchange_url)
         response = session.post(exchange_url, headers=headers, data=data)
         response.raise_for_status()
         result = response.json()
@@ -62,8 +62,7 @@ def validate_token(token: str, validate_url: str) -> Tuple[bool, Optional[str]]:
     """
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        session = requests.Session()
-        session.trust_env = False
+        session = configure_session_for_url(requests.Session(), validate_url)
         response = session.get(validate_url, headers=headers)
         response.raise_for_status()
         data = response.json() if "application/json" in response.headers.get("Content-Type", "") else {}

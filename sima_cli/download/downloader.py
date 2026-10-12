@@ -6,6 +6,7 @@ from typing import List
 from sima_cli.utils.config import get_auth_token
 from sima_cli.auth.login import login
 from sima_cli.install.github_assets import download_github_asset
+from sima_cli.utils.network import configure_session_for_url, is_internal_artifactory_url
 
 def _list_directory_files(url: str, internal: bool = False) -> List[str]:
     """
@@ -27,12 +28,10 @@ def _list_directory_files(url: str, internal: bool = False) -> List[str]:
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        if internal:
-            session = requests.Session()
-            session.trust_env = False
-            response = session.get(url, headers=headers, timeout=10)
-        else:
-            response = requests.get(url, headers=headers, timeout=10)
+        if internal and not is_internal_artifactory_url(url):
+            headers.pop("Authorization", None)
+        session = configure_session_for_url(requests.Session(), url)
+        response = session.get(url, headers=headers, timeout=10)
         response.raise_for_status()
 
         if "text/html" not in response.headers.get("Content-Type", ""):
@@ -80,15 +79,14 @@ def download_file_from_url(url: str, dest_folder: str = ".", internal: bool = Fa
     existing_size = 0
 
     try:
-        if internal:
+        if internal and is_internal_artifactory_url(url):
             auth_token = get_auth_token(internal=True)
             if auth_token:
                 headers["Authorization"] = f"Bearer {auth_token}"
-            session = requests.Session()
-            session.trust_env = False
+            session = configure_session_for_url(requests.Session(), url)
             request_fn = session.get
             head_fn = session.head
-        elif 'https://docs.sima.ai' in url or 'https://docs-dev.sima.ai' in url:
+        elif parsed_url.hostname in ('docs.sima.ai', 'docs-dev.sima.ai'):
             session = login('external')
             request_fn = session.get
             head_fn = session.head
@@ -96,9 +94,7 @@ def download_file_from_url(url: str, dest_folder: str = ".", internal: bool = Fa
             token = os.getenv("GITHUB_TOKEN", None)
             return download_github_asset(url, token=token)
         else:
-            session = requests.Session()
-            if parsed_url.hostname == 'artifacts.neat.sima.ai':
-                session.trust_env = False
+            session = configure_session_for_url(requests.Session(), url)
             request_fn = session.get
             head_fn = session.head            
 
@@ -161,18 +157,17 @@ def check_url_available(url: str, internal: bool = False) -> bool:
     """
     headers = {}
     try:
-        if internal:
+        if internal and is_internal_artifactory_url(url):
             auth_token = get_auth_token(internal=True)
             if auth_token:
                 headers["Authorization"] = f"Bearer {auth_token}"
-            session = requests.Session()
-            session.trust_env = False  # Ignore .netrc and other env-based config
+            session = configure_session_for_url(requests.Session(), url)
             head_fn = session.head
-        elif 'https://docs.sima.ai' in url or 'https://docs-dev.sima.ai':
+        elif urlparse(url).hostname in ('docs.sima.ai', 'docs-dev.sima.ai'):
             session = login('external')
             head_fn = session.head
         else:
-            session = requests.Session()
+            session = configure_session_for_url(requests.Session(), url)
             head_fn = session.head
 
         resp = head_fn(url, headers=headers, timeout=10, allow_redirects=True)

@@ -11,6 +11,7 @@ import requests
 from sima_cli.auth.devportal import login_external
 from sima_cli.update.query import ARTIFACTORY_BASE_URL
 from sima_cli.utils.config import get_auth_token
+from sima_cli.utils.network import configure_session_for_url
 
 
 DAILY_MIRROR = 'https://artifacts.neat.sima.ai/daily-platform-images/'
@@ -65,8 +66,7 @@ def mirror_bundles(board, requested, netboot=False):
     """Read complete SWU bundles or netboot artifact sets from the daily manifest."""
     try:
         with requests.Session() as session:
-            # No Artifactory credentials or ambient .netrc credentials on the mirror.
-            session.trust_env = False
+            configure_session_for_url(session, DAILY_MIRROR)
             response = session.get(DAILY_MIRROR + 'index.json', timeout=30)
             response.raise_for_status()
             index = response.json()
@@ -182,8 +182,7 @@ def internal_bundles(board, keyword):
                 'name': {'$match': f'elxr-palette-{board}-*.swu'}}
     headers = _internal_headers()
     headers['Content-Type'] = 'text/plain'
-    session = requests.Session()
-    session.trust_env = False
+    session = configure_session_for_url(requests.Session(), ARTIFACTORY_BASE_URL)
     try:
         response = session.post(ARTIFACTORY_BASE_URL + '/api/search/aql',
                                 data='items.find(' + json.dumps(criteria) + ').include("repo","path","name","created","size")',
@@ -273,12 +272,11 @@ def bundle_size(source, internal=False):
     headers = {}
     if internal:
         headers = _internal_headers()
-        session = requests.Session()
-        session.trust_env = False
+        session = configure_session_for_url(requests.Session(), source)
     elif urlparse(source).hostname in ('docs.sima.ai', 'docs-dev.sima.ai'):
         session = _portal_session()
     else:
-        session = requests.Session()
+        session = configure_session_for_url(requests.Session(), source)
     response = session.head(source, headers=headers, timeout=30)
     response.raise_for_status()
     if 'text/html' in response.headers.get('Content-Type', '').lower():

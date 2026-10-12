@@ -11,7 +11,7 @@ import requests
 from sima_cli.auth.devportal import login_external
 from sima_cli.update.query import ARTIFACTORY_BASE_URL
 from sima_cli.utils.config import get_auth_token
-from sima_cli.utils.network import configure_session_for_url
+from sima_cli.utils.network import configure_session_for_url, rewrite_cacheable_url
 
 
 DAILY_MIRROR = 'https://artifacts.neat.sima.ai/daily-platform-images/'
@@ -64,10 +64,11 @@ def _matching_builds(builds, requested):
 
 def mirror_bundles(board, requested, netboot=False):
     """Read complete SWU bundles or netboot artifact sets from the daily manifest."""
+    index_url = rewrite_cacheable_url(DAILY_MIRROR + 'index.json')
     try:
         with requests.Session() as session:
-            configure_session_for_url(session, DAILY_MIRROR)
-            response = session.get(DAILY_MIRROR + 'index.json', timeout=30)
+            configure_session_for_url(session, index_url)
+            response = session.get(index_url, timeout=30)
             response.raise_for_status()
             index = response.json()
         if index.get('schema_version') != 1 or index.get('platform') != board:
@@ -269,6 +270,7 @@ def resolve_bundle(requested, board, internal=False, *, allow_external_fallback=
 def bundle_size(source, internal=False):
     if urlparse(source).scheme not in ('http', 'https') and Path(source).is_file():
         return Path(source).stat().st_size
+    source = rewrite_cacheable_url(source)
     headers = {}
     if internal:
         headers = _internal_headers()

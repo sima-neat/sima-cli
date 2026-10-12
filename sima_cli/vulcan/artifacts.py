@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import requests
 from InquirerPy import inquirer
 
+from sima_cli.utils.network import configure_session_for_url, rewrite_cacheable_url
 
 ENV_BASE_URLS = {
     "dev": "https://artifacts.neat.paconsultings.com",
@@ -66,9 +67,10 @@ class InstallMetadataResult:
 
 class ArtifactClient:
     def __init__(self, session: Optional[requests.Session] = None) -> None:
-        self.session = session or requests.Session()
+        self.session = configure_session_for_url(session or requests.Session(), "")
 
     def read_bytes(self, url: str, headers: Optional[Dict[str, str]] = None) -> bytes:
+        url = rewrite_cacheable_url(url)
         try:
             response = self.session.get(url, timeout=60, headers=headers)
             response.raise_for_status()

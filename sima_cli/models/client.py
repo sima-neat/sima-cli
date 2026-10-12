@@ -10,6 +10,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from sima_cli.utils.network import configure_session_for_url, rewrite_cacheable_url
+
 ORGANIZATION = "sima-neat"
 REPOSITORY = "models"
 STAGING_BASE_URL = "https://models-registry.stg.neat.sima.ai"
@@ -47,7 +49,7 @@ def resolve_base_url(staging: bool = False, override: Optional[str] = None) -> s
 
 
 def _new_session() -> requests.Session:
-    session = requests.Session()
+    session = configure_session_for_url(requests.Session(), "")
     retries = Retry(
         total=3,
         connect=3,
@@ -513,6 +515,7 @@ class RegistryClient:
         return artifact
 
     def _download_once(self, url: str, partial: Path, expected_size: int, expected_sha: str) -> None:
+        url = rewrite_cacheable_url(url)
         try:
             response = self.session.get(url, stream=True, timeout=self.timeout)
         except requests.RequestException as exc:

@@ -11,7 +11,7 @@ import click
 import requests
 
 from sima_cli.download import download_file_from_url
-from sima_cli.utils.network import configure_session_for_url
+from sima_cli.utils.network import configure_session_for_url, rewrite_cacheable_url
 
 
 HOST_PACKAGE_BASE_URL = "https://artifacts.neat.sima.ai/daily-platform-images"
@@ -63,10 +63,11 @@ def resolve_host_package_url(version_or_url: str) -> str:
 
 def list_host_packages() -> List[Dict]:
     """Return indexed daily builds that contain the Linux host package."""
+    index_url = rewrite_cacheable_url(HOST_PACKAGE_INDEX_URL)
     try:
         with requests.Session() as session:
-            configure_session_for_url(session, HOST_PACKAGE_INDEX_URL)
-            response = session.get(HOST_PACKAGE_INDEX_URL, timeout=15)
+            configure_session_for_url(session, index_url)
+            response = session.get(index_url, timeout=15)
             response.raise_for_status()
             index = response.json()
     except (requests.RequestException, json.JSONDecodeError, ValueError) as exc:

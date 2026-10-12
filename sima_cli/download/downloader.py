@@ -1,12 +1,19 @@
 import os
-import requests
-from urllib.parse import urlparse
-from tqdm import tqdm
 from typing import List
-from sima_cli.utils.config import get_auth_token
+from urllib.parse import urlparse
+
+import requests
+from tqdm import tqdm
+
 from sima_cli.auth.login import login
 from sima_cli.install.github_assets import download_github_asset
-from sima_cli.utils.network import configure_session_for_url, is_internal_artifactory_url
+from sima_cli.utils.config import get_auth_token
+from sima_cli.utils.network import (
+    configure_session_for_url,
+    is_internal_artifactory_url,
+    rewrite_cacheable_url,
+)
+
 
 def _list_directory_files(url: str, internal: bool = False) -> List[str]:
     """
@@ -65,6 +72,7 @@ def download_file_from_url(url: str, dest_folder: str = ".", internal: bool = Fa
     Raises:
         Exception: if download fails.
     """
+    url = rewrite_cacheable_url(url)
     parsed_url = urlparse(url)
     file_name = os.path.basename(parsed_url.path)
     if not file_name:
@@ -157,6 +165,7 @@ def check_url_available(url: str, internal: bool = False) -> bool:
     """
     headers = {}
     try:
+        url = rewrite_cacheable_url(url)
         if internal and is_internal_artifactory_url(url):
             auth_token = get_auth_token(internal=True)
             if auth_token:

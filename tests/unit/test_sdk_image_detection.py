@@ -42,6 +42,7 @@ from sima_cli.sdk.neat import (
     EDGEMATIC_STUDIO_CONTAINER_PORT,
     allocate_neat_ports,
     is_docker_port_collision_error,
+    finalize_code_ui_auth,
     prepare_neat_container_run,
     print_neat_setup_summary,
     reserved_ports_from_neat_port_map,
@@ -52,6 +53,7 @@ from sima_cli.sdk.utils import (
     _configure_group_file,
     container_user_mapping_unavailable,
     _copy_sima_cli_auth_cache_to_container,
+    _container_code_ui_backend,
     _devcontainer_metadata_label,
     _extract_sdk_base_version,
     _ensure_passwd_user,
@@ -2203,6 +2205,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
             port_map_path = Path(config.port_map_host_path)
             self.assertTrue(port_map_path.exists())
+            self.assertFalse(token_cache_path.exists())
+            with patch.dict(os.environ, {"SIMA_CLI_HOME": str(Path(tmpdir) / ".sima-cli")}):
+                finalize_code_ui_auth(config)
             self.assertTrue(token_cache_path.exists())
             self.assertEqual(token_cache_path.stat().st_mode & 0o777, 0o600)
             self.assertIn("insight-config", config.config_host_dir)
@@ -2250,6 +2255,33 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertEqual(config.port_map_host_path, "")
             certs.assert_not_called()
             webrtc.assert_not_called()
+
+    def test_finalize_code_server_credentials_uses_password_and_clean_url(self):
+        with TemporaryDirectory() as tmpdir, \
+             patch.dict(os.environ, {"SIMA_CLI_HOME": str(Path(tmpdir) / ".sima-cli")}):
+            config = NeatRunConfig(
+                port_map={"codeUI": {"host": 9999}},
+                port_args=[],
+                config_host_dir="",
+                cert_host_dir="",
+                port_map_host_path="",
+                cert_file_host_path="",
+                key_file_host_path="",
+                code_ui_token="secret-password",
+                code_ui_backend="code-server",
+                code_ui_container_name="sdk-latest",
+                code_ui_base_url="https://localhost:10000",
+            )
+
+            finalize_code_ui_auth(config)
+
+            cache = json.loads(_code_ui_token_cache_path().read_text(encoding="utf-8"))
+            code_ui = cache["containers"]["sdk-latest"]["codeUI"]
+            self.assertEqual(code_ui["backend"], "code-server")
+            self.assertEqual(code_ui["password"], "secret-password")
+            self.assertEqual(code_ui["url"], "https://localhost:10000/?folder=/workspace")
+            self.assertNotIn("token", code_ui)
+            self.assertNotIn("secret-password", code_ui["url"])
 
     def test_prepare_neat_container_run_minimal_skips_insight_certificates(self):
         with TemporaryDirectory() as tmpdir:
@@ -2534,6 +2566,37 @@ table ip6 nm-shared-enx6c1ff720d573 {
         panel_text = str(console_print.call_args.args[0].renderable)
         self.assertIn("Open this URL in your browser.", panel_text)
 
+    def test_print_neat_setup_summary_uses_code_server_password_contract(self):
+        config = NeatRunConfig(
+            port_map={
+                "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+            },
+            port_args=[],
+            config_host_dir="",
+            cert_host_dir="/tmp/sdk-cert",
+            port_map_host_path="",
+            cert_file_host_path="",
+            key_file_host_path="",
+            code_ui_token="code-password",
+            code_ui_backend="code-server",
+        )
+
+        with patch("builtins.print"), \
+             patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="localhost"), \
+             patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
+             patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser_open, \
+             patch("sima_cli.sdk.neat.console.print") as console_print:
+            print_neat_setup_summary(config)
+
+        clean_url = "https://localhost:20786/?folder=/workspace"
+        browser_open.assert_called_once_with(clean_url)
+        panel_text = str(console_print.call_args.args[0].renderable)
+        self.assertIn(clean_url, panel_text)
+        self.assertIn("Password:", panel_text)
+        self.assertIn("code-password", panel_text)
+        self.assertNotIn("tkn=", panel_text)
+
     def test_detect_browser_host_prefers_physical_ip_over_vpn(self):
         with patch("sima_cli.sdk.neat._collect_physical_ipv4s_for_certs", return_value=["192.168.76.4"]), \
              patch("sima_cli.sdk.neat.get_local_ip_candidates", return_value=[("utun4", "172.16.1.254")]):
@@ -2724,6 +2787,13 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("OPENVSCODE_SERVER_USER=devuser", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/devuser/.openvscode-server/extensions", docker_cmd)
         self.assertIn("OPENVSCODE_WORKSPACE=/workspace", docker_cmd)
+        self.assertIn("CODE_SERVER_USER=devuser", docker_cmd)
+        self.assertIn("CODE_SERVER_EXTENSIONS_DIR=/home/devuser/.local/share/code-server/extensions", docker_cmd)
+        self.assertIn("CODE_SERVER_WORKSPACE=/workspace", docker_cmd)
+        self.assertIn("CODE_SERVER_PASSWORD=code-token", docker_cmd)
+        self.assertIn("CODE_SERVER_CERT=/sdk-cert/neat-sdk.pem", docker_cmd)
+        self.assertIn("CODE_SERVER_CERT_KEY=/sdk-cert/neat-sdk-key.pem", docker_cmd)
+        self.assertIn("CODE_SERVER_HTTPS_PORT=10000", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_TOKEN=code-token", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_CERT=/sdk-cert/neat-sdk.pem", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_CERT_KEY=/sdk-cert/neat-sdk-key.pem", docker_cmd)
@@ -3492,7 +3562,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.configure_container"), \
                  patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=[first_config, second_config]) as prepare, \
                  patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
-                 patch("sima_cli.sdk.utils._container_openvscode_available", return_value=True), \
+                 patch("sima_cli.sdk.utils._container_code_ui_backend", return_value="openvscode"), \
                  patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
                 start_docker_container(
                     uid=1000,
@@ -3566,7 +3636,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.configure_container"), \
                  patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=prepare_side_effect), \
                  patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
-                 patch("sima_cli.sdk.utils._container_openvscode_available", return_value=True), \
+                 patch("sima_cli.sdk.utils._container_code_ui_backend", return_value="openvscode"), \
                  patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
                 start_docker_container(
                     uid=1000,
@@ -4392,8 +4462,36 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_count, 1)
         prompt.assert_not_called()
 
+    def test_detects_code_server_before_openvscode(self):
+        detected = Mock(returncode=0, stdout="code-server")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=detected) as run:
+            self.assertEqual(_container_code_ui_backend("container"), "code-server")
+
+        detection_script = run.call_args.args[0][-1]
+        self.assertLess(
+            detection_script.index("/opt/code-server/bin/code-server"),
+            detection_script.index("/opt/openvscode-server/bin/openvscode-server"),
+        )
+
+    def test_vscode_extension_uses_code_server_paths(self):
+        server_available = Mock(returncode=0, stdout="code-server")
+        manifest_missing = Mock(returncode=44)
+        install_result = Mock(returncode=0, stdout="installed\n", stderr="")
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:3.0.0"), \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, manifest_missing, install_result]) as run:
+            ensure_codex_vscode_extension_installed(
+                "container", "docker", auto_install=True, uid=1000, gid=1000,
+            )
+
+        install_cmd = run.call_args_list[-1].args[0][-1]
+        self.assertIn("/opt/code-server/bin/code-server", install_cmd)
+        self.assertIn("/home/docker/.local/share/code-server/extensions", install_cmd)
+        self.assertIn("/home/docker/.local/share/code-server/User/settings.json", install_cmd)
+        self.assertIn("supervisorctl restart code-server", install_cmd)
+        self.assertNotIn("/opt/openvscode-server", install_cmd)
+
     def test_vscode_extension_skips_when_checklist_is_empty(self):
-        server_available = Mock(returncode=0)
+        server_available = Mock(returncode=0, stdout="openvscode")
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
              patch("sima_cli.sdk.utils.subprocess.run", return_value=server_available) as run, \
              patch("sima_cli.sdk.utils.select_browser_extensions", return_value=[]) as select:
@@ -4403,7 +4501,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         select.assert_called_once_with(False, True)
 
     def test_codex_vscode_extension_auto_installs_without_prompt(self):
-        server_available = Mock(returncode=0)
+        server_available = Mock(returncode=0, stdout="openvscode")
         manifest_missing = Mock(returncode=44)
         install_result = Mock(returncode=0, stdout="installed\n", stderr="")
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \

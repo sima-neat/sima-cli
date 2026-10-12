@@ -108,8 +108,9 @@ def _rerun_current_command() -> None:
 
 # Command groups whose stdout is a machine-readable document: root diagnostics go to stderr for them.
 QUIET_STDOUT_SUBCOMMANDS = ("models", "peripherals")
-# DevKit-local diagnostics must work offline and never prompt: no PyPI update check before them.
-NO_UPDATE_CHECK_SUBCOMMANDS = ("peripherals",)
+# Command groups that only read the DevKit they run on: no PyPI update check and no Artifactory
+# gate before them, so they work offline and never prompt or exit early.
+LOCAL_ONLY_SUBCOMMANDS = ("peripherals",)
 
 
 def _initialize_main_context(ctx, internal, yes):
@@ -119,7 +120,7 @@ def _initialize_main_context(ctx, internal, yes):
     if auto_accept_update:
         os.environ["SIMA_CLI_AUTO_ACCEPT_UPDATE"] = "1"
     try:
-        if (ctx.invoked_subcommand not in NO_UPDATE_CHECK_SUBCOMMANDS
+        if (ctx.invoked_subcommand not in LOCAL_ONLY_SUBCOMMANDS
                 and check_for_update('sima-cli') and _should_rerun_after_update(sys.argv)):
             _rerun_current_command()
     finally:
@@ -136,14 +137,15 @@ def _initialize_main_context(ctx, internal, yes):
     if not internal:
         internal = os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
 
-    defer_artifactory_access = ctx.invoked_subcommand == "update" or ctx.meta.get("daily_netboot", False)
+    local_only = ctx.invoked_subcommand in LOCAL_ONLY_SUBCOMMANDS
+    defer_artifactory_access = local_only or ctx.invoked_subcommand == "update" or ctx.meta.get("daily_netboot", False)
     if internal and not internal_resource_exists() and not defer_artifactory_access:
         click.echo("❌ You have specified -i or --internal argument to access internal resources, but you do not have an internal resource map configured.")
         click.echo("Refer to the confluence page to find out how to configure internal resource map.")
         exit(0)
 
     internal_reachable = True
-    if internal:
+    if internal and not local_only:
         internal_reachable = check_artifactory_reachability()
 
     if internal and not internal_reachable and not defer_artifactory_access and not _allows_external_prerelease_fallback(sys.argv):

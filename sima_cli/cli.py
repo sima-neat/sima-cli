@@ -42,6 +42,7 @@ from sima_cli.upgrade.selfupdate import register_selfupdate_command
 from sima_cli.playbooks import register_playbook_commands
 from sima_cli.vulcan import register_vulcan_commands
 from sima_cli.models import register_models_commands
+from sima_cli.peripherals import register_peripherals_commands
 from sima_cli.cloudex import register_cloudex_commands
 from sima_cli.vulcan.commands import (
     ENV_METAVAR,
@@ -216,6 +217,7 @@ register_sdk_commands(main)
 register_playbook_commands(main)
 register_vulcan_commands(main)
 register_models_commands(main)
+register_peripherals_commands(main)
 register_cloudex_commands(main)
 
 

@@ -100,8 +100,8 @@ def peripherals() -> None:
 def list_command(as_json: bool, refresh: bool, socket_path: str) -> None:
     """Show the connected cameras and microphones.
 
-    SUPPORT is "Supported" when a Neat application can capture from the camera, or "Unsupported"
-    with the reason under the table.
+    SUPPORT is "Supported" when a Neat application can capture from the camera. `describe` says why
+    when it is "Unsupported".
     """
     output = _Output(as_json, "peripherals.list", None)
     client = _require_devkit(output, socket_path)
@@ -118,9 +118,6 @@ def list_command(as_json: bool, refresh: bool, socket_path: str) -> None:
     else:
         click.echo(tabulate(list_rows(summaries), headers=["ID", "TYPE", "CONNECTION", "DEVICE", "STATUS", "SUPPORT"],
                             tablefmt="plain"))
-        unsupported = [s for s in summaries if s["support"] == "unsupported"]
-        for summary in unsupported:
-            click.echo(f"  {summary['id']}: {summary['support_reason']}")
     for warning in warnings:
         click.echo(f"Warning: {warning}", err=True)
 

@@ -55,7 +55,7 @@ def use_client(monkeypatch, client):
     return client
 
 
-def test_list_prints_the_table_and_reasons(on_devkit, catalog, monkeypatch):
+def test_list_prints_only_the_table(on_devkit, catalog, monkeypatch):
     use_client(monkeypatch, FakeClient(catalog))
     result = runner().invoke(commands.peripherals, ["list"])
     assert result.exit_code == 0, result.output
@@ -63,7 +63,8 @@ def test_list_prints_the_table_and_reasons(on_devkit, catalog, monkeypatch):
     assert lines[0].split() == ["ID", "TYPE", "CONNECTION", "DEVICE", "STATUS", "SUPPORT"]
     assert "camera:imx477 5-001a" in lines[1] and lines[1].endswith("Supported")
     assert "HD Pro Webcam C920" in lines[2] and lines[2].endswith("Unsupported")
-    assert any("USB cameras have no camera overlay on this board." in line for line in lines)
+    # Reasons belong to `describe`; the list stays one line per device.
+    assert len(lines) == 4 and "overlay" not in result.output
 
 
 def test_list_json_is_the_versioned_envelope_on_stdout_only(on_devkit, catalog, monkeypatch):

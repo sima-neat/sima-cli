@@ -29,8 +29,8 @@ Usage: sima-cli peripherals list
 
   Show the connected cameras and microphones.
 
-  SUPPORT is "Supported" when a Neat application can capture from the camera,
-  or "Unsupported" with the reason under the table.
+  SUPPORT is "Supported" when a Neat application can capture from the camera.
+  `describe` says why when it is "Unsupported".
 
 Options:
   --refresh  Look for devices again first (after plugging one in).

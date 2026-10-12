@@ -61,7 +61,7 @@ def test_list_prints_the_table_and_reasons(on_devkit, catalog, monkeypatch):
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     assert lines[0].split() == ["ID", "TYPE", "CONNECTION", "DEVICE", "STATUS", "SUPPORT"]
-    assert "camera:imx477 5-001a" in lines[1] and lines[1].endswith("Available")
+    assert "camera:imx477 5-001a" in lines[1] and lines[1].endswith("Supported")
     assert "HD Pro Webcam C920" in lines[2] and lines[2].endswith("Unsupported")
     assert any("USB cameras have no camera overlay on this board." in line for line in lines)
 
@@ -101,7 +101,7 @@ def test_describe_by_id_shows_facts_and_every_mode(on_devkit, catalog, monkeypat
     assert "MIPI CSI-2" in result.output
     assert "Platform" in result.output and "3.0.0" in result.output
     assert "sizes set at run time" in result.output
-    assert "1920x1080" in result.output and "Available" in result.output
+    assert "1920x1080" in result.output and "Supported" in result.output
     assert "Neat's CameraInput outputs NV12 only." in result.output
 
 

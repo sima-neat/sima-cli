@@ -29,7 +29,7 @@ Usage: sima-cli peripherals list
 
   Show the connected cameras and microphones.
 
-  SUPPORT is "Available" when a Neat application can capture from the camera,
+  SUPPORT is "Supported" when a Neat application can capture from the camera,
   or "Unsupported" with the reason under the table.
 
 Options:

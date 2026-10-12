@@ -122,7 +122,7 @@ def mode_rows(device: Dict[str, Any]) -> List[Dict[str, Any]]:
 def support(device: Dict[str, Any]) -> Tuple[Optional[str], str]:
     """Sentinel's verdict for a device: ("available"|"unsupported", reason), or (None, "") when it makes none.
 
-    A camera is Available when any mode is. Otherwise its reason is the one most of its modes give, or
+    A camera is Supported when any mode is. Otherwise its reason is the one most of its modes give, or
     the ISP's reason when the ISP itself is unavailable. Sentinel judges no other device type."""
     if device.get("type") != "camera":
         return None, ""
@@ -210,7 +210,7 @@ def verdict_warnings(devices: Sequence[Dict[str, Any]]) -> List[str]:
 
 def support_label(summary: Dict[str, Any]) -> str:
     if summary["support"] == "available":
-        return "Available"
+        return "Supported"
     if summary["support"] == "unsupported":
         return "Unsupported"
     return "-"

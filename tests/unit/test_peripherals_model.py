@@ -90,7 +90,7 @@ def test_find_device_by_id_or_unique_name():
 def test_list_rows():
     cat = catalog("devkit-2.1.3")
     rows = model.list_rows([model.summarize(d) for d in cat["devices"]])
-    assert rows[0] == ["camera:imx477 5-001a", "Camera", "MIPI CSI-2", "imx477 5-001a", "Connected", "Available"]
+    assert rows[0] == ["camera:imx477 5-001a", "Camera", "MIPI CSI-2", "imx477 5-001a", "Connected", "Supported"]
     assert rows[1][5] == "Unsupported" and rows[2][5] == "-"
 
 

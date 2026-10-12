@@ -100,7 +100,7 @@ def peripherals() -> None:
 def list_command(as_json: bool, refresh: bool, socket_path: str) -> None:
     """Show the connected cameras and microphones.
 
-    SUPPORT is "Available" when a Neat application can capture from the camera, or "Unsupported"
+    SUPPORT is "Supported" when a Neat application can capture from the camera, or "Unsupported"
     with the reason under the table.
     """
     output = _Output(as_json, "peripherals.list", None)
@@ -188,7 +188,7 @@ def _print_description(description: Dict[str, Any]) -> None:
         for mode in modes:
             size = f"{mode['width']}x{mode['height']}" if mode.get("width") else "-"
             rates = ", ".join(f"{r:g}" for r in mode["rates"]) or "-"
-            verdict = "Available" if mode["available"] is True else "Unsupported" if mode["available"] is False else "-"
+            verdict = "Supported" if mode["available"] is True else "Unsupported" if mode["available"] is False else "-"
             rows.append([mode["format"], size, rates, verdict, mode["reason"]])
         click.echo(tabulate(rows, headers=["FORMAT", "SIZE", "FPS", "SUPPORT", "REASON"], tablefmt="plain"))
 

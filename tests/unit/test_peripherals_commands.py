@@ -106,6 +106,21 @@ def test_describe_by_id_shows_facts_and_every_mode(on_devkit, catalog, monkeypat
     assert "Neat's CameraInput outputs NV12 only." in result.output
 
 
+def test_describe_a_microphone_shows_its_nodes_and_sample_rates(on_devkit, catalog, monkeypatch):
+    """Codex on #290: microphone modes carry `rates_hz`, not frame intervals, and the usable node and
+    ALSA selector sit under `identity` and `capture_target`."""
+    use_client(monkeypatch, FakeClient(catalog))
+    result = runner().invoke(commands.peripherals, ["describe", "microphone:alsa:329f324bddfdde7b"])
+    assert result.exit_code == 0, result.output
+    facts = {" ".join(line.split()[:2]): line.split()[-1] for line in result.output.split("\n\n", 1)[0].splitlines()}
+    assert facts["Device node"] == "/dev/snd/pcmC0D0c"
+    assert facts["By id"] == "/dev/snd/by-id/usb-046d_HD_Pro_Webcam_C920_BE998CAF-02"
+    assert facts["ALSA device"] == "plughw:CARD=C920,DEV=0"
+    assert "SAMPLE RATE (Hz)" in result.output and "SUPPORT" not in result.output.split("\n\n", 1)[1]
+    rows = [line.split() for line in result.output.split("\n\n", 1)[1].splitlines()[1:]]
+    assert rows == [["S16_LE", "2", "16000"], ["S16_LE", "2", "24000"], ["S16_LE", "2", "32000"]]
+
+
 def test_describe_json_carries_the_device_record(on_devkit, catalog, monkeypatch):
     use_client(monkeypatch, FakeClient(catalog))
     result = runner().invoke(commands.peripherals, ["describe", "imx477", "--json"])

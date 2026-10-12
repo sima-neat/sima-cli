@@ -39,6 +39,19 @@ def test_mipi_camera_is_available_and_usb_camera_is_not_on_both_platforms(name):
     assert usb["available_modes"] == 0
 
 
+def test_microphone_modes_keep_their_sample_rates_and_channels():
+    cat = catalog("devkit-3.0")
+    microphone = next(d for d in cat["devices"] if d["type"] == "microphone")
+    rows = model.mode_rows(microphone)
+    assert [r["sample_rates_hz"] for r in rows] == [[16000], [24000], [32000]]
+    assert {r["channels"] for r in rows} == {2} and {r["sample_bits"] for r in rows} == {16}
+    assert all(r["available"] is None and "rates" not in r for r in rows)
+    # Sentinel's contract: a driver may publish a range instead of a list.
+    ranged = model.mode_rows({"type": "microphone", "modes": [{"format": "S24_3LE", "rate_range_hz": {"min": 8000, "max": 96000}}]})
+    assert ranged[0]["sample_rates_hz"] == [] and ranged[0]["sample_rate_range_hz"] == {"min": 8000, "max": 96000}
+    assert ranged[0]["channels"] is None
+
+
 def test_microphones_are_listed_without_an_application_verdict():
     mic = model.summarize(device(catalog("devkit-2.1.3"), "alsa"))
     assert mic["type_label"] == "Microphone"

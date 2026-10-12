@@ -101,21 +101,45 @@ def mode_rates(mode: Dict[str, Any]) -> List[float]:
     return seen
 
 
+def sample_rates(mode: Dict[str, Any]) -> Tuple[List[int], Optional[Dict[str, int]]]:
+    """A microphone mode's sample rates: the discrete `rates_hz` list, or a `rate_range_hz` {min, max}."""
+    rates = [int(r) for r in mode.get("rates_hz") or [] if isinstance(r, (int, float)) and r > 0]
+    span = mode.get("rate_range_hz")
+    if isinstance(span, dict) and isinstance(span.get("min"), (int, float)) and isinstance(span.get("max"), (int, float)):
+        return rates, {"min": int(span["min"]), "max": int(span["max"])}
+    return rates, None
+
+
 def mode_rows(device: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """One row per mode. A camera row carries size, frame rates and Sentinel's verdict; a microphone row
+    carries channels and sample rates (Sentinel gives microphones no verdict)."""
     rows = []
+    microphone = device.get("type") == "microphone"
     for mode in device.get("modes") or []:
         if not isinstance(mode, dict):
             continue
         available = mode.get("available")
-        rows.append({
+        row: Dict[str, Any] = {
             "format": mode.get("format"),
-            "width": mode.get("width"),
-            "height": mode.get("height"),
-            "rates": mode_rates(mode),
-            "source": "isp_output" if mode.get("isp_output") else "sensor_mode" if mode.get("sensor_mode") else None,
             "available": available if isinstance(available, bool) else None,
             "reason": str(mode.get("reason") or "") if available is False else "",
-        })
+        }
+        if microphone:
+            rates, span = sample_rates(mode)
+            row.update({
+                "channels": mode.get("channels") if isinstance(mode.get("channels"), int) else None,
+                "sample_bits": mode.get("sample_bits") if isinstance(mode.get("sample_bits"), int) else None,
+                "sample_rates_hz": rates,
+                "sample_rate_range_hz": span,
+            })
+        else:
+            row.update({
+                "width": mode.get("width"),
+                "height": mode.get("height"),
+                "rates": mode_rates(mode),
+                "source": "isp_output" if mode.get("isp_output") else "sensor_mode" if mode.get("sensor_mode") else None,
+            })
+        rows.append(row)
     return rows
 
 

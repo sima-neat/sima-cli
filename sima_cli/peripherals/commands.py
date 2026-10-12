@@ -178,6 +178,11 @@ def _print_description(description: Dict[str, Any]) -> None:
     isp = device.get("isp")
     if isinstance(isp, dict):
         lines.append(["ISP", f"{isp.get('state')}" + (f", sizes set at run time" if isp.get("sizing") == "runtime" else "")])
+    max_fps = device.get("max_fps")
+    if isinstance(max_fps, (int, float)) and max_fps > 0:
+        timing = device.get("sensor_timing") if isinstance(device.get("sensor_timing"), dict) else {}
+        at_size = f" at {timing['width']}x{timing['height']}" if timing.get("width") and timing.get("height") else ""
+        lines.append(["Sensor max rate", f"{max_fps:g} fps{at_size} (the sensor's limit; the ISP reports no per-mode rate)"])
     board = description.get("board") or {}
     if board.get("firmware"):
         lines.append(["Platform", str(board["firmware"])])

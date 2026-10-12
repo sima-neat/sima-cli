@@ -104,6 +104,8 @@ def test_describe_by_id_shows_facts_and_every_mode(on_devkit, catalog, monkeypat
     assert "sizes set at run time" in result.output
     assert "1920x1080" in result.output and "Supported" in result.output
     assert "Neat's CameraInput outputs NV12 only." in result.output
+    # Codex on #290: the DevKit's ISP reports no per-mode rate, so the sensor's limit is the frame-rate fact.
+    assert "Sensor max rate" in result.output and "125.54 fps at 1920x1080" in result.output
 
 
 def test_describe_a_microphone_shows_its_nodes_and_sample_rates(on_devkit, catalog, monkeypatch):
@@ -192,6 +194,29 @@ def test_through_the_root_cli_json_stdout_carries_only_the_document(on_devkit, c
     assert document["command"] == "peripherals.list"
     assert "Environment" not in result.stdout
     assert "Environment: board (modalix)" in result.stderr
+
+
+def test_through_the_root_cli_internal_mode_skips_the_artifactory_gates(on_devkit, catalog, monkeypatch):
+    """Codex on #290: with --internal (or SIMA_CLI_INTERNAL=1) the root group checks the internal
+    resource map and Artifactory reachability and exits 0 without running the command when either
+    fails. `peripherals` reads only the DevKit, so neither gate may run or stop it."""
+    from sima_cli import cli as root_cli
+
+    use_client(monkeypatch, FakeClient(catalog))
+    monkeypatch.setattr(root_cli, "get_environment_type", lambda: ("board", "modalix"))
+    monkeypatch.setattr(root_cli, "check_for_update", lambda package_name: False)
+    monkeypatch.setattr(root_cli, "internal_resource_exists", lambda: False)
+
+    def offline():
+        raise AssertionError("Artifactory reachability was checked before a peripherals command")
+
+    monkeypatch.setattr(root_cli, "check_artifactory_reachability", offline)
+    for argv in (["--internal", "peripherals", "list", "--json"], ["peripherals", "list", "--json"]):
+        monkeypatch.setenv("SIMA_CLI_INTERNAL", "0" if argv[0] == "--internal" else "1")
+        result = runner().invoke(root_cli.main, argv)
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["command"] == "peripherals.list"
+        assert "internal resource map" not in result.output
 
 
 def test_old_firmware_is_a_warning_and_the_usb_devices_still_list(on_devkit, catalog, monkeypatch):

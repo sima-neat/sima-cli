@@ -51,6 +51,71 @@ def test_public_session_does_not_apply_netrc_auth(monkeypatch):
     assert "Authorization" not in prepared.headers
 
 
+def test_internal_artifactory_session_applies_netrc_auth(monkeypatch):
+    monkeypatch.setattr(
+        requests.sessions, "get_netrc_auth", lambda _url: ("artifactory", "secret")
+    )
+    session = configure_session_for_url(
+        requests.Session(), "https://artifacts.eng.sima.ai/artifactory/file"
+    )
+
+    prepared = session.prepare_request(
+        requests.Request(
+            "GET", "https://artifacts.eng.sima.ai/artifactory/file"
+        )
+    )
+
+    assert prepared.headers["Authorization"].startswith("Basic ")
+
+
+def test_redirected_netrc_auth_is_scoped_to_internal_artifactory(monkeypatch):
+    monkeypatch.setattr(
+        requests.sessions, "get_netrc_auth", lambda _url: ("ambient", "secret")
+    )
+    session = configure_session_for_url(requests.Session(), "")
+    response = requests.Response()
+    response.request = requests.Request(
+        "GET", "https://artifacts.eng.sima.ai/artifactory/file"
+    ).prepare()
+
+    public_request = requests.Request(
+        "GET",
+        "https://signed-object.example/file",
+        headers={"Authorization": "Bearer internal-token"},
+    ).prepare()
+    session.rebuild_auth(public_request, response)
+    assert "Authorization" not in public_request.headers
+
+    response.request = requests.Request(
+        "GET", "https://artifacts.neat.sima.ai/file"
+    ).prepare()
+    internal_request = requests.Request(
+        "GET", "https://artifacts.eng.sima.ai/artifactory/file"
+    ).prepare()
+    session.rebuild_auth(internal_request, response)
+    assert internal_request.headers["Authorization"].startswith("Basic ")
+
+
+def test_redirect_preserves_explicit_artifactory_auth(monkeypatch):
+    monkeypatch.setattr(
+        requests.sessions, "get_netrc_auth", lambda _url: ("ambient", "secret")
+    )
+    session = configure_session_for_url(requests.Session(), "")
+    response = requests.Response()
+    response.request = requests.Request(
+        "GET", "https://artifacts.eng.sima.ai/artifactory/start"
+    ).prepare()
+    redirected = requests.Request(
+        "GET",
+        "https://artifacts.eng.sima.ai/artifactory/final",
+        headers={"Authorization": "Bearer explicit-token"},
+    ).prepare()
+
+    session.rebuild_auth(redirected, response)
+
+    assert redirected.headers["Authorization"] == "Bearer explicit-token"
+
+
 def test_redirects_recalculate_proxy_policy_for_destination(monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
     monkeypatch.delenv("NO_PROXY", raising=False)

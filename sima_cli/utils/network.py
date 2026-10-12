@@ -35,10 +35,14 @@ def is_internal_artifactory_url(url):
     return configured_origin is not None and _origin(url) == configured_origin
 
 
-class _NoNetrcAuth(AuthBase):
-    """Suppress Requests' implicit .netrc auth without changing headers."""
+class _InternalArtifactoryNetrcAuth(AuthBase):
+    """Apply .netrc credentials only to the configured Artifactory origin."""
 
     def __call__(self, request):
+        if is_internal_artifactory_url(request.url):
+            netrc_auth = requests.sessions.get_netrc_auth(request.url)
+            if netrc_auth is not None:
+                request.prepare_auth(netrc_auth)
         return request
 
 
@@ -63,18 +67,35 @@ def _rebuild_proxies(self, prepared_request, proxies):
     )
 
 
+def _rebuild_auth(self, prepared_request, response):
+    """Retain explicit auth and restrict redirected .netrc auth to Artifactory."""
+    headers = prepared_request.headers
+    if "Authorization" in headers and self.should_strip_auth(
+        response.request.url, prepared_request.url
+    ):
+        del headers["Authorization"]
+
+    if "Authorization" not in headers and is_internal_artifactory_url(
+        prepared_request.url
+    ):
+        netrc_auth = requests.sessions.get_netrc_auth(prepared_request.url)
+        if netrc_auth is not None:
+            prepared_request.prepare_auth(netrc_auth)
+
+
 def configure_session_for_url(session, _url):
-    """Apply per-request proxy routing without enabling implicit .netrc auth.
+    """Apply destination-scoped proxy, CA, and .netrc policy.
 
     HTTP_PROXY, HTTPS_PROXY, NO_PROXY, and REQUESTS_CA_BUNDLE remain active.
     The exact internal Artifactory origin bypasses proxies on both initial and
-    redirected requests. Public redirect targets re-evaluate the environment.
+    redirected requests and is the only origin allowed to use .netrc. Public
+    redirect targets re-evaluate the proxy environment without ambient auth.
     The *_url* argument is retained for the existing call-site API; routing is
     evaluated from each prepared request rather than fixed to that first URL.
     """
     session.trust_env = True
     if session.auth is None:
-        session.auth = _NoNetrcAuth()
+        session.auth = _InternalArtifactoryNetrcAuth()
     if isinstance(session, requests.sessions.Session) and not getattr(
         session, "_sima_origin_routing", False
     ):
@@ -82,6 +103,7 @@ def configure_session_for_url(session, _url):
             _merge_environment_settings, session
         )
         session.rebuild_proxies = MethodType(_rebuild_proxies, session)
+        session.rebuild_auth = MethodType(_rebuild_auth, session)
         session._sima_origin_routing = True
     return session
 

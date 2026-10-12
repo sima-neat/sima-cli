@@ -166,6 +166,29 @@ def test_sentinel_failures_map_to_exit_codes(on_devkit, monkeypatch, code, exit_
     assert document["result"] == "error" and document["error"]["code"] == code
 
 
+def test_through_the_root_cli_json_stdout_carries_only_the_document(on_devkit, catalog, monkeypatch):
+    """The root group prints an environment banner and may run a PyPI update check; neither may reach
+    the JSON on stdout, and the update check must not run at all (a DevKit may be offline, and its
+    prompt would abort a script)."""
+    from sima_cli import cli as root_cli
+
+    use_client(monkeypatch, FakeClient(catalog))
+    monkeypatch.setattr(root_cli, "get_environment_type", lambda: ("board", "modalix"))
+
+    def no_update_check(package_name):
+        raise AssertionError("the update check ran before a peripherals command")
+
+    monkeypatch.setattr(root_cli, "check_for_update", no_update_check)
+    monkeypatch.setattr(root_cli, "internal_resource_exists", lambda: True)
+    monkeypatch.setenv("SIMA_CLI_INTERNAL", "0")
+    result = runner().invoke(root_cli.main, ["peripherals", "list", "--json"])
+    assert result.exit_code == 0, result.output
+    document = json.loads(result.stdout)
+    assert document["command"] == "peripherals.list"
+    assert "Environment" not in result.stdout
+    assert "Environment: board (modalix)" in result.stderr
+
+
 def test_old_firmware_is_a_warning_and_the_usb_devices_still_list(on_devkit, catalog, monkeypatch):
     old = dict(catalog, devices=[d for d in catalog["devices"] if d.get("backend") != "mipi"],
                errors=[{"provider": "board.firmware", "code": "platform.unsupported",

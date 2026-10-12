@@ -106,6 +106,12 @@ def _rerun_current_command() -> None:
     os.execvpe(sys.executable, cmd, env)
 
 
+# Command groups whose stdout is a machine-readable document: root diagnostics go to stderr for them.
+QUIET_STDOUT_SUBCOMMANDS = ("models", "peripherals")
+# DevKit-local diagnostics must work offline and never prompt: no PyPI update check before them.
+NO_UPDATE_CHECK_SUBCOMMANDS = ("peripherals",)
+
+
 def _initialize_main_context(ctx, internal, yes):
     _configure_stdio_errors()
     auto_accept_update = yes or _update_auto_confirm_requested(sys.argv)
@@ -113,7 +119,8 @@ def _initialize_main_context(ctx, internal, yes):
     if auto_accept_update:
         os.environ["SIMA_CLI_AUTO_ACCEPT_UPDATE"] = "1"
     try:
-        if check_for_update('sima-cli') and _should_rerun_after_update(sys.argv):
+        if (ctx.invoked_subcommand not in NO_UPDATE_CHECK_SUBCOMMANDS
+                and check_for_update('sima-cli') and _should_rerun_after_update(sys.argv)):
             _rerun_current_command()
     finally:
         if auto_accept_update:
@@ -199,11 +206,11 @@ def main(ctx, internal, yes):
         ctx.ensure_object(dict)
         ctx.obj.update(internal=internal, yes=yes)
         return
-    # Model Registry JSON must remain parseable on stdout. Route root-level
-    # update and environment diagnostics to stderr for this command group.
+    # Model Registry and peripherals JSON must remain parseable on stdout. Route root-level
+    # update and environment diagnostics to stderr for these command groups.
     output_context = (
         redirect_stdout(sys.stderr)
-        if ctx.invoked_subcommand == "models"
+        if ctx.invoked_subcommand in QUIET_STDOUT_SUBCOMMANDS
         else nullcontext()
     )
     with output_context:

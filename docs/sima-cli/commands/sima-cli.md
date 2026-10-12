@@ -35,6 +35,7 @@ None.
 - [`sima-cli network`](./sima-cli-network.md): Setup Network IP address on the DevKit
 - [`sima-cli nvme`](./sima-cli-nvme.md): Perform NVMe operations on the Modalix DevKit.
 - [`sima-cli packages`](./sima-cli-packages.md): Manage sima-cli package registry (list, inspect, clean, etc.)
+- [`sima-cli peripherals`](./sima-cli-peripherals.md): Show the cameras and microphones plugged into this DevKit.
 - [`sima-cli playbooks`](./sima-cli-playbooks.md): Install and manage playbooks (Codex/Claude).
 - [`sima-cli sdcard`](./sima-cli-sdcard.md): Prepare the SD Card as a data storage device for MLSoc DevKit or Modalix Early Access Unit
 - [`sima-cli sdk`](./sima-cli-sdk.md): Manage and launch SiMa SDK 2.0 container environments (Beta).
@@ -73,6 +74,7 @@ Commands:
   network     Setup Network IP address on the DevKit
   nvme        Perform NVMe operations on the Modalix DevKit.
   packages    Manage sima-cli package registry (list, inspect, clean, etc.)
+  peripherals Show the cameras and microphones plugged into this DevKit.
   playbooks   Install and manage playbooks (Codex/Claude).
   sdcard      Prepare the SD Card as a data storage device for MLSoc...
   sdk         Manage and launch SiMa SDK 2.0 container environments (Beta).

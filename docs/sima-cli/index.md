@@ -103,6 +103,7 @@ pip install sima-cli
 | [`sima-cli network`](commands/sima-cli-network.md) | Setup Network IP address on the DevKit |
 | [`sima-cli nvme`](commands/sima-cli-nvme.md) | Perform NVMe operations on the Modalix DevKit. |
 | [`sima-cli packages`](commands/sima-cli-packages.md) | Manage sima-cli package registry (list, inspect, clean, etc.) |
+| [`sima-cli peripherals`](commands/sima-cli-peripherals.md) | Show the cameras and microphones plugged into this DevKit. |
 | [`sima-cli playbooks`](commands/sima-cli-playbooks.md) | Install and manage playbooks (Codex/Claude). |
 | [`sima-cli sdcard`](commands/sima-cli-sdcard.md) | Prepare the SD Card as a data storage device for MLSoc DevKit or Modalix Early Access Unit |
 | [`sima-cli sdk`](commands/sima-cli-sdk.md) | Manage and launch SiMa SDK 2.0 container environments (Beta). |
@@ -126,6 +127,7 @@ pip install sima-cli
 - [`sima-cli network`](commands/sima-cli-network.md)
 - [`sima-cli nvme`](commands/sima-cli-nvme.md)
 - [`sima-cli packages`](commands/sima-cli-packages.md)
+- [`sima-cli peripherals`](commands/sima-cli-peripherals.md)
 - [`sima-cli playbooks`](commands/sima-cli-playbooks.md)
 - [`sima-cli sdcard`](commands/sima-cli-sdcard.md)
 - [`sima-cli sdk`](commands/sima-cli-sdk.md)
@@ -148,6 +150,8 @@ pip install sima-cli
 - [`sima-cli packages build`](commands/sima-cli-packages-build.md)
 - [`sima-cli packages list`](commands/sima-cli-packages-list.md)
 - [`sima-cli packages show`](commands/sima-cli-packages-show.md)
+- [`sima-cli peripherals describe`](commands/sima-cli-peripherals-describe.md)
+- [`sima-cli peripherals list`](commands/sima-cli-peripherals-list.md)
 - [`sima-cli playbooks apply`](commands/sima-cli-playbooks-apply.md)
 - [`sima-cli playbooks delete`](commands/sima-cli-playbooks-delete.md)
 - [`sima-cli playbooks describe`](commands/sima-cli-playbooks-describe.md)

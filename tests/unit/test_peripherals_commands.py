@@ -81,17 +81,6 @@ def test_list_json_is_the_versioned_envelope_on_stdout_only(on_devkit, catalog, 
     assert result.stderr == ""
 
 
-def test_list_filters_by_type_including_types_this_cli_does_not_know(on_devkit, catalog, monkeypatch):
-    use_client(monkeypatch, FakeClient(catalog))
-    result = runner().invoke(commands.peripherals, ["list", "--type", "microphone", "--json"])
-    document = json.loads(result.stdout)
-    assert [p["type"] for p in document["peripherals"]] == ["microphone"]
-    # A type a newer Sentinel adds is a filter, not an error: automation keeps working when providers appear.
-    result = runner().invoke(commands.peripherals, ["list", "--type", "lidar"])
-    assert result.exit_code == 0
-    assert "No lidars detected." in result.stdout
-
-
 def test_a_camera_without_verdicts_warns_to_update_sentinel(on_devkit, catalog, monkeypatch):
     older = json.loads(json.dumps(catalog))
     for device in older["devices"]:

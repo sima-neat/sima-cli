@@ -18,12 +18,10 @@ from sima_cli.utils.env import get_sima_build_version, is_sima_board
 
 from .model import (
     ExitCode,
-    TYPES,
     catalog_warnings,
     describe,
     envelope,
     exit_code_for,
-    filter_devices,
     find_device,
     list_rows,
     summarize,
@@ -67,13 +65,11 @@ class _Output:
 
 def _common_options(function):
     function = click.option("--json", "as_json", is_flag=True, default=False,
-                            help="Print a versioned JSON document on stdout; implies --non-interactive.")(function)
+                            help="Print JSON instead of text.")(function)
     function = click.option("--refresh", is_flag=True, default=False,
-                            help="Rescan the board before reading (otherwise the catalog Sentinel holds is returned).")(function)
-    function = click.option("--non-interactive", is_flag=True, default=False,
-                            help="Never prompt; fail with a result code instead. Accepted for scripts: these commands do not prompt.")(function)
+                            help="Look for devices again first (after plugging one in).")(function)
     function = click.option("--socket", "socket_path", default=SOCKET_PATH, show_default=True, hidden=True,
-                            help="Sentinel's API socket.")(function)
+                            help="Development only: the local socket of the SiMa Sentinel service to read from.")(function)
     return function
 
 
@@ -94,26 +90,23 @@ def _read_catalog(output: _Output, client: SentinelClient, refresh: bool) -> Dic
         raise AssertionError("unreachable")
 
 
-@click.group("peripherals")
+@click.group("peripherals", options_metavar="", subcommand_metavar="<command>")
 def peripherals() -> None:
-    """Discover the peripherals attached to this DevKit, read from SiMa Sentinel.
-
-    Cameras and microphones are listed with a stable ID and, for cameras, Sentinel's verdict on
-    whether any of their modes can be used by Neat's CameraInput on this board. Discovery is
-    read-only and safe to run beside a running application.
-    """
+    """Show the cameras and microphones plugged into this DevKit."""
 
 
-@peripherals.command("list")
-@click.option("--type", "kind", default=None, metavar="TYPE",
-              help=f"Only devices of this type, as Sentinel names it: {', '.join(TYPES)}, or a type a newer Sentinel adds.")
+@peripherals.command("list", short_help="Show the connected cameras and microphones.", options_metavar="")
 @_common_options
-def list_command(kind: Optional[str], as_json: bool, refresh: bool, non_interactive: bool, socket_path: str) -> None:
-    """List connected peripherals with their type, connection, status and support."""
+def list_command(as_json: bool, refresh: bool, socket_path: str) -> None:
+    """Show the connected cameras and microphones.
+
+    SUPPORT is "Available" when a Neat application can capture from the camera, or "Unsupported"
+    with the reason under the table.
+    """
     output = _Output(as_json, "peripherals.list", None)
     client = _require_devkit(output, socket_path)
     catalog = _read_catalog(output, client, refresh)
-    devices = filter_devices(catalog.get("devices") or [], kind)
+    devices = [device for device in catalog.get("devices") or [] if isinstance(device, dict)]
     summaries = [summarize(device) for device in devices]
     warnings = catalog_warnings(catalog) + verdict_warnings(devices)
     if as_json:
@@ -121,8 +114,7 @@ def list_command(kind: Optional[str], as_json: bool, refresh: bool, non_interact
         click.echo(json.dumps(document, indent=2))
         return
     if not summaries:
-        what = f"{kind}s" if kind else "peripherals"
-        click.echo(f"No {what} detected.")
+        click.echo("No cameras or microphones detected.")
     else:
         click.echo(tabulate(list_rows(summaries), headers=["ID", "TYPE", "CONNECTION", "DEVICE", "STATUS", "SUPPORT"],
                             tablefmt="plain"))
@@ -133,11 +125,17 @@ def list_command(kind: Optional[str], as_json: bool, refresh: bool, non_interact
         click.echo(f"Warning: {warning}", err=True)
 
 
-@peripherals.command("describe")
-@click.argument("device_id")
+@peripherals.command("describe", short_help="Show one device in detail.", options_metavar="")
+@click.argument("device_id", metavar="<ID>")
 @_common_options
-def describe_command(device_id: str, as_json: bool, refresh: bool, non_interactive: bool, socket_path: str) -> None:
-    """Show one peripheral: identity, device nodes, every mode and Sentinel's verdict on each."""
+def describe_command(device_id: str, as_json: bool, refresh: bool, socket_path: str) -> None:
+    """Show one device in detail: every resolution and frame rate, and whether Neat can use it.
+
+    ID is from `sima-cli peripherals list`; the device's name works too, for example:
+
+    \b
+      sima-cli peripherals describe imx477
+    """
     output = _Output(as_json, "peripherals.describe", None)
     client = _require_devkit(output, socket_path)
     catalog = _read_catalog(output, client, refresh)
@@ -192,7 +190,7 @@ def _print_description(description: Dict[str, Any]) -> None:
             rates = ", ".join(f"{r:g}" for r in mode["rates"]) or "-"
             verdict = "Available" if mode["available"] is True else "Unsupported" if mode["available"] is False else "-"
             rows.append([mode["format"], size, rates, verdict, mode["reason"]])
-        click.echo(tabulate(rows, headers=["FORMAT", "SIZE", "FPS", "VERDICT", "REASON"], tablefmt="plain"))
+        click.echo(tabulate(rows, headers=["FORMAT", "SIZE", "FPS", "SUPPORT", "REASON"], tablefmt="plain"))
 
 
 def register_peripherals_commands(cli: click.Group) -> None:

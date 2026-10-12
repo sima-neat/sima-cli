@@ -39,7 +39,6 @@ EXIT_FOR_ERROR = {
 }
 
 TYPE_LABELS = {"camera": "Camera", "microphone": "Microphone"}
-TYPES = tuple(TYPE_LABELS)
 
 
 def exit_code_for(error_code: str) -> int:
@@ -162,10 +161,6 @@ def summarize(device: Dict[str, Any]) -> Dict[str, Any]:
         "modes": len(rows),
         "available_modes": sum(1 for row in rows if row["available"] is True),
     }
-
-
-def filter_devices(devices: Sequence[Dict[str, Any]], kind: Optional[str]) -> List[Dict[str, Any]]:
-    return [device for device in devices if isinstance(device, dict) and (not kind or device.get("type") == kind)]
 
 
 def find_device(devices: Sequence[Dict[str, Any]], wanted: str) -> Optional[Dict[str, Any]]:

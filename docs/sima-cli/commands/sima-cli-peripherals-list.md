@@ -1,24 +1,22 @@
 # `sima-cli peripherals list`
 
-List connected peripherals with their type, connection, status and support.
+Show the connected cameras and microphones.
 
 Parent command: [`sima-cli peripherals`](./sima-cli-peripherals.md)
 
 ## Usage
 
 ```bash
-sima-cli peripherals list [OPTIONS]
+sima-cli peripherals list
 ```
 
 ## Options
 
 | Name | Description |
 | --- | --- |
-| `--type` | Only devices of this type, as Sentinel names it: camera, microphone, or a type a newer Sentinel adds. |
-| `--socket` | Sentinel's API socket. (default: /run/simaai-sentinel/api.sock) |
-| `--non-interactive` | Never prompt; fail with a result code instead. Accepted for scripts: these commands do not prompt. |
-| `--refresh` | Rescan the board before reading (otherwise the catalog Sentinel holds is returned). |
-| `--json` | Print a versioned JSON document on stdout; implies --non-interactive. |
+| `--socket` | Development only: the local socket of the SiMa Sentinel service to read from. (default: /run/simaai-sentinel/api.sock) |
+| `--refresh` | Look for devices again first (after plugging one in). |
+| `--json` | Print JSON instead of text. |
 
 ## Arguments
 
@@ -27,18 +25,15 @@ None.
 ## Full Help
 
 ```text
-Usage: sima-cli peripherals list [OPTIONS]
+Usage: sima-cli peripherals list
 
-  List connected peripherals with their type, connection, status and support.
+  Show the connected cameras and microphones.
+
+  SUPPORT is "Available" when a Neat application can capture from the camera,
+  or "Unsupported" with the reason under the table.
 
 Options:
-  --type TYPE        Only devices of this type, as Sentinel names it: camera,
-                     microphone, or a type a newer Sentinel adds.
-  --non-interactive  Never prompt; fail with a result code instead. Accepted
-                     for scripts: these commands do not prompt.
-  --refresh          Rescan the board before reading (otherwise the catalog
-                     Sentinel holds is returned).
-  --json             Print a versioned JSON document on stdout; implies --non-
-                     interactive.
-  --help             Show this message and exit.
+  --refresh  Look for devices again first (after plugging one in).
+  --json     Print JSON instead of text.
+  --help     Show this message and exit.
 ```

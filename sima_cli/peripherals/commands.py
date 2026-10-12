@@ -63,6 +63,26 @@ class _Output:
         sys.exit(code)
 
 
+class _JsonUsageCommand(click.Command):
+    """A command whose usage errors (missing <ID>, unknown option, extra argument) are also JSON documents
+    when --json is on the command line. Click raises them before the callback runs, so the callback's
+    _Output never sees them."""
+
+    def parse_args(self, ctx: click.Context, args: List[str]) -> List[str]:
+        as_json = "--json" in args  # Click consumes `args` in place while parsing; read it first.
+        try:
+            return super().parse_args(ctx, args)
+        except click.UsageError as error:
+            if not as_json:
+                raise
+            _Output(True, f"peripherals.{self.name}", None).fail(ExitCode.INVALID_INPUT, {
+                "code": "invalid_input",
+                "message": error.format_message(),
+                "hint": f"Run `sima-cli peripherals {self.name} --help`.",
+            })
+            raise  # unreachable: fail() exits
+
+
 def _common_options(function):
     function = click.option("--json", "as_json", is_flag=True, default=False,
                             help="Print JSON instead of text.")(function)
@@ -95,7 +115,8 @@ def peripherals() -> None:
     """Show the cameras and microphones plugged into this DevKit."""
 
 
-@peripherals.command("list", short_help="Show the connected cameras and microphones.", options_metavar="")
+@peripherals.command("list", cls=_JsonUsageCommand, short_help="Show the connected cameras and microphones.",
+                     options_metavar="")
 @_common_options
 def list_command(as_json: bool, refresh: bool, socket_path: str) -> None:
     """Show the connected cameras and microphones.
@@ -122,7 +143,7 @@ def list_command(as_json: bool, refresh: bool, socket_path: str) -> None:
         click.echo(f"Warning: {warning}", err=True)
 
 
-@peripherals.command("describe", short_help="Show one device in detail.", options_metavar="")
+@peripherals.command("describe", cls=_JsonUsageCommand, short_help="Show one device in detail.", options_metavar="")
 @click.argument("device_id", metavar="<ID>")
 @_common_options
 def describe_command(device_id: str, as_json: bool, refresh: bool, socket_path: str) -> None:

@@ -144,6 +144,20 @@ def test_an_unknown_device_is_invalid_input_with_the_known_ids(on_devkit, catalo
     assert json.loads(as_json.stdout)["error"]["code"] == "unknown_device"
 
 
+def test_usage_errors_are_json_documents_too(on_devkit, catalog, monkeypatch):
+    """Codex on #290: Click rejects a missing <ID>, an unknown option or an extra argument before the
+    callback runs; with --json those must still be the versioned error document on stdout, exit 2."""
+    use_client(monkeypatch, FakeClient(catalog))
+    for argv in (["describe", "--json"], ["list", "--bogus", "--json"], ["list", "extra", "--json"]):
+        result = runner().invoke(commands.peripherals, argv)
+        assert result.exit_code == 2, argv
+        document = json.loads(result.stdout)
+        assert document["result"] == "error" and document["error"]["code"] == "invalid_input", argv
+        assert document["command"] == f"peripherals.{argv[0]}" and "--help" in document["error"]["hint"]
+    prose = runner().invoke(commands.peripherals, ["describe"])
+    assert prose.exit_code == 2 and prose.stdout == "" and "Missing argument" in prose.stderr
+
+
 def test_off_the_devkit_nothing_is_probed(monkeypatch):
     monkeypatch.setattr(commands, "is_sima_board", lambda: False)
     monkeypatch.setattr(commands, "get_sima_build_version", lambda: (None, None))

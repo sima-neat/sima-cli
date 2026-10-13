@@ -2493,7 +2493,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn(("udp", 17999), reserved)
         self.assertNotIn(("udp", 18080), reserved)
 
-    def test_print_neat_setup_summary_uses_table_with_detected_host_ip(self):
+    def test_sdk_2_1_3_openvscode_summary_keeps_token_url_contract(self):
         config = NeatRunConfig(
             port_map={
                 "schema": "sima.neat.port-map.v1",
@@ -2510,6 +2510,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
             key_file_host_path="/tmp/sdk-cert/neat-sdk-key.pem",
             webrtc_host_ip="10.0.0.23",
             code_ui_token="code-token",
+            code_ui_backend="openvscode",
+            code_ui_container_name="ghcr.io-sima-neat-sdk-v2.1.3.1",
         )
 
         with patch("builtins.print") as mock_print, \

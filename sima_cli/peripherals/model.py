@@ -38,35 +38,8 @@ EXIT_FOR_ERROR = {
     "platform.unsupported": ExitCode.UNSUPPORTED,
 }
 
-TYPE_LABELS = {"camera": "Camera", "microphone": "Microphone"}
-
-
 def exit_code_for(error_code: str) -> int:
     return EXIT_FOR_ERROR.get(error_code, ExitCode.SENTINEL_UNAVAILABLE)
-
-
-def type_label(device: Dict[str, Any]) -> str:
-    kind = str(device.get("type") or "")
-    return TYPE_LABELS.get(kind, kind.capitalize() or "Device")
-
-
-def connection_label(device: Dict[str, Any]) -> str:
-    backend = device.get("backend")
-    if device.get("type") == "camera":
-        return "MIPI CSI-2" if backend == "mipi" else "USB" if backend == "v4l2" else str(backend or "Unknown")
-    connection = device.get("connection")
-    return {"usb": "USB", "platform": "On-board"}.get(str(connection), "Unknown")
-
-
-def device_name(device: Dict[str, Any]) -> str:
-    """The readable name: the sensor's camera name, the USB product, the ALSA card name."""
-    for key in ("camera_name", "model", "name"):
-        value = device.get(key)
-        if isinstance(value, str) and value:
-            return value
-    identity = device.get("identity") or {}
-    product = identity.get("product") if isinstance(identity, dict) else None
-    return str(product or device.get("id") or "")
 
 
 def _discrete_rates(intervals: Any) -> List[float]:
@@ -81,7 +54,7 @@ def _discrete_rates(intervals: Any) -> List[float]:
 
 
 def mode_rates(mode: Dict[str, Any]) -> List[float]:
-    """Frame rates a mode advertises, from its discrete frame intervals (seconds per frame).
+    """Frame rates a camera mode advertises, from its discrete frame intervals (seconds per frame).
 
     Sentinel lists intervals per probed size (`{"width", "height", "intervals": [...]}`) for the mode's
     own size; a bare interval list is read too."""
@@ -110,58 +83,221 @@ def sample_rates(mode: Dict[str, Any]) -> Tuple[List[int], Optional[Dict[str, in
     return rates, None
 
 
-def mode_rows(device: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """One row per mode. A camera row carries size, frame rates and Sentinel's verdict; a microphone row
-    carries channels and sample rates (Sentinel gives microphones no verdict)."""
-    rows = []
-    microphone = device.get("type") == "microphone"
-    for mode in device.get("modes") or []:
-        if not isinstance(mode, dict):
-            continue
-        available = mode.get("available")
-        row: Dict[str, Any] = {
+def _scalar(value: Any) -> bool:
+    return isinstance(value, (str, int, float, bool)) or (
+        isinstance(value, list) and all(isinstance(v, (str, int, float, bool)) for v in value))
+
+
+def _verdict(mode: Dict[str, Any]) -> Dict[str, Any]:
+    available = mode.get("available")
+    return {"available": available if isinstance(available, bool) else None,
+            "reason": str(mode.get("reason") or "") if available is False else ""}
+
+
+class TypeAdapter:
+    """What the CLI knows about one peripheral type: how Sentinel's record for it becomes the CLI's
+    rows, facts and verdict. The base class is the adapter for a type the CLI has no knowledge of
+    (a provider a newer Sentinel adds): it passes each mode's scalar properties through unchanged and
+    claims no verdict beyond the one Sentinel wrote on the mode, so the device is listed and
+    describable without being misrepresented as a camera."""
+
+    type = ""
+    label = "Device"
+    mode_headers = ("FORMAT", "PROPERTIES", "SUPPORT", "REASON")
+
+    def connection(self, device: Dict[str, Any]) -> str:
+        connection = device.get("connection")
+        return {"usb": "USB", "platform": "On-board"}.get(str(connection), str(device.get("backend") or "Unknown"))
+
+    def facts(self, device: Dict[str, Any]) -> Dict[str, Any]:
+        """The CLI-owned facts for `describe`, in JSON form. Unknown types have none beyond the summary."""
+        return {}
+
+    def fact_lines(self, facts: Dict[str, Any]) -> List[Tuple[str, str]]:
+        """The same facts as (label, text) lines for the human description."""
+        return [(key.replace("_", " ").capitalize(), str(value)) for key, value in facts.items()]
+
+    def mode_rows(self, device: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows = []
+        for mode in device.get("modes") or []:
+            if isinstance(mode, dict):
+                rows.append(self.mode_row(mode))
+        return rows
+
+    def mode_row(self, mode: Dict[str, Any]) -> Dict[str, Any]:
+        properties = {k: v for k, v in mode.items() if k not in ("format", "available", "reason") and _scalar(v)}
+        return {"format": mode.get("format"), "properties": properties, **_verdict(mode)}
+
+    def mode_cells(self, row: Dict[str, Any]) -> List[str]:
+        properties = ", ".join(f"{k}={v}" for k, v in row["properties"].items()) or "-"
+        return [str(row["format"] or "-"), properties, verdict_label(row["available"]), row["reason"]]
+
+    def support(self, device: Dict[str, Any]) -> Tuple[Optional[str], str]:
+        """Sentinel's verdict for the device: ("available"|"unsupported", reason), or (None, "") when
+        Sentinel wrote none. Supported when any mode is; otherwise the reason most of its modes give."""
+        rows = self.mode_rows(device)
+        if any(row["available"] is True for row in rows):
+            return "available", ""
+        reasons = Counter(row["reason"] for row in rows if row["reason"])
+        if reasons:
+            return "unsupported", reasons.most_common(1)[0][0]
+        return None, ""
+
+
+class CameraAdapter(TypeAdapter):
+    type = "camera"
+    label = "Camera"
+    mode_headers = ("FORMAT", "SIZE", "FPS", "SUPPORT", "REASON")
+
+    def connection(self, device: Dict[str, Any]) -> str:
+        backend = device.get("backend")
+        return "MIPI CSI-2" if backend == "mipi" else "USB" if backend == "v4l2" else str(backend or "Unknown")
+
+    def facts(self, device: Dict[str, Any]) -> Dict[str, Any]:
+        facts: Dict[str, Any] = {}
+        for key in ("camera_name", "media_device", "bus_info", "csi_receiver", "device_path", "by_id_path"):
+            if isinstance(device.get(key), str) and device[key]:
+                facts[key] = device[key]
+        isp = device.get("isp")
+        if isinstance(isp, dict):
+            facts["isp"] = {"state": isp.get("state"), "sizing": isp.get("sizing")}
+            if isp.get("reason"):
+                facts["isp"]["reason"] = str(isp["reason"])
+        max_fps = device.get("max_fps")
+        if isinstance(max_fps, (int, float)) and max_fps > 0:
+            timing = device.get("sensor_timing") if isinstance(device.get("sensor_timing"), dict) else {}
+            facts["sensor_max_fps"] = {"fps": max_fps, "width": timing.get("width"), "height": timing.get("height")}
+        return facts
+
+    def fact_lines(self, facts: Dict[str, Any]) -> List[Tuple[str, str]]:
+        lines: List[Tuple[str, str]] = []
+        for key, value in facts.items():
+            if key == "isp":
+                text = str(value.get("state")) + (", sizes set at run time" if value.get("sizing") == "runtime" else "")
+                lines.append(("ISP", text + (f" ({value['reason']})" if value.get("reason") else "")))
+            elif key == "sensor_max_fps":
+                size = f" at {value['width']}x{value['height']}" if value.get("width") and value.get("height") else ""
+                lines.append(("Sensor max rate",
+                              f"{value['fps']:g} fps{size} (the sensor's limit; the ISP reports no per-mode rate)"))
+            else:
+                lines.append((key.replace("_", " ").capitalize(), str(value)))
+        return lines
+
+    def mode_row(self, mode: Dict[str, Any]) -> Dict[str, Any]:
+        return {
             "format": mode.get("format"),
-            "available": available if isinstance(available, bool) else None,
-            "reason": str(mode.get("reason") or "") if available is False else "",
+            "width": mode.get("width"),
+            "height": mode.get("height"),
+            "rates": mode_rates(mode),
+            "source": "isp_output" if mode.get("isp_output") else "sensor_mode" if mode.get("sensor_mode") else None,
+            **_verdict(mode),
         }
-        if microphone:
-            rates, span = sample_rates(mode)
-            row.update({
-                "channels": mode.get("channels") if isinstance(mode.get("channels"), int) else None,
-                "sample_bits": mode.get("sample_bits") if isinstance(mode.get("sample_bits"), int) else None,
-                "sample_rates_hz": rates,
-                "sample_rate_range_hz": span,
-            })
-        else:
-            row.update({
-                "width": mode.get("width"),
-                "height": mode.get("height"),
-                "rates": mode_rates(mode),
-                "source": "isp_output" if mode.get("isp_output") else "sensor_mode" if mode.get("sensor_mode") else None,
-            })
-        rows.append(row)
-    return rows
+
+    def mode_cells(self, row: Dict[str, Any]) -> List[str]:
+        size = f"{row['width']}x{row['height']}" if row.get("width") else "-"
+        rates = ", ".join(f"{r:g}" for r in row["rates"]) or "-"
+        return [str(row["format"] or "-"), size, rates, verdict_label(row["available"]), row["reason"]]
+
+    def support(self, device: Dict[str, Any]) -> Tuple[Optional[str], str]:
+        """A camera adds two cases to the generic rule: an unavailable ISP gives its own reason, and a
+        camera with no modes at all is Unsupported."""
+        verdict, reason = super().support(device)
+        if verdict is not None:
+            return verdict, reason
+        isp = device.get("isp")
+        if isinstance(isp, dict) and isp.get("state") == "unavailable" and isp.get("reason"):
+            return "unsupported", str(isp["reason"])
+        if not self.mode_rows(device):
+            return "unsupported", "The camera reports no modes."
+        return None, ""
+
+
+class MicrophoneAdapter(TypeAdapter):
+    type = "microphone"
+    label = "Microphone"
+    mode_headers = ("FORMAT", "CHANNELS", "SAMPLE RATE (Hz)")
+
+    def facts(self, device: Dict[str, Any]) -> Dict[str, Any]:
+        identity = device.get("identity") if isinstance(device.get("identity"), dict) else {}
+        capture = device.get("capture_target") if isinstance(device.get("capture_target"), dict) else {}
+        pairs = (("device_node", identity.get("pcm_node")), ("by_id", identity.get("by_id")),
+                 ("driver", identity.get("card_driver")), ("alsa_device", capture.get("selector")))
+        return {key: str(value) for key, value in pairs if value}
+
+    def fact_lines(self, facts: Dict[str, Any]) -> List[Tuple[str, str]]:
+        labels = {"device_node": "Device node", "by_id": "By id", "driver": "Driver", "alsa_device": "ALSA device"}
+        return [(labels.get(key, key), str(value)) for key, value in facts.items()]
+
+    def mode_row(self, mode: Dict[str, Any]) -> Dict[str, Any]:
+        rates, span = sample_rates(mode)
+        return {
+            "format": mode.get("format"),
+            "channels": mode.get("channels") if isinstance(mode.get("channels"), int) else None,
+            "sample_bits": mode.get("sample_bits") if isinstance(mode.get("sample_bits"), int) else None,
+            "sample_rates_hz": rates,
+            "sample_rate_range_hz": span,
+            **_verdict(mode),
+        }
+
+    def mode_cells(self, row: Dict[str, Any]) -> List[str]:
+        rates = ", ".join(str(r) for r in row["sample_rates_hz"])
+        span = row["sample_rate_range_hz"]
+        if span:
+            rates = ", ".join(filter(None, [rates, f"{span['min']}-{span['max']}"]))
+        return [str(row["format"] or "-"), str(row["channels"]) if row["channels"] is not None else "-", rates or "-"]
+
+    def support(self, device: Dict[str, Any]) -> Tuple[Optional[str], str]:
+        """Neat has no audio input today, so Sentinel judges no microphone and neither does the CLI."""
+        return None, ""
+
+
+ADAPTERS: Dict[str, TypeAdapter] = {adapter.type: adapter for adapter in (CameraAdapter(), MicrophoneAdapter())}
+
+
+def adapter_for_type(kind: Any) -> TypeAdapter:
+    """The adapter registered for a Sentinel device type, or the generic one for a type the CLI does
+    not know (its label is the type's name)."""
+    known = ADAPTERS.get(str(kind or ""))
+    if known is not None:
+        return known
+    generic = TypeAdapter()
+    generic.type = str(kind or "")
+    generic.label = generic.type.capitalize() or "Device"
+    return generic
+
+
+def adapter_for(device: Dict[str, Any]) -> TypeAdapter:
+    return adapter_for_type(device.get("type"))
+
+
+def type_label(device: Dict[str, Any]) -> str:
+    return adapter_for(device).label
+
+
+def connection_label(device: Dict[str, Any]) -> str:
+    return adapter_for(device).connection(device)
+
+
+def device_name(device: Dict[str, Any]) -> str:
+    """The readable name: the sensor's camera name, the USB product, the ALSA card name."""
+    for key in ("camera_name", "model", "name"):
+        value = device.get(key)
+        if isinstance(value, str) and value:
+            return value
+    identity = device.get("identity") or {}
+    product = identity.get("product") if isinstance(identity, dict) else None
+    return str(product or device.get("id") or "")
+
+
+def mode_rows(device: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """One row per mode, in the shape the device's type adapter defines."""
+    return adapter_for(device).mode_rows(device)
 
 
 def support(device: Dict[str, Any]) -> Tuple[Optional[str], str]:
-    """Sentinel's verdict for a device: ("available"|"unsupported", reason), or (None, "") when it makes none.
-
-    A camera is Supported when any mode is. Otherwise its reason is the one most of its modes give, or
-    the ISP's reason when the ISP itself is unavailable. Sentinel judges no other device type."""
-    if device.get("type") != "camera":
-        return None, ""
-    rows = mode_rows(device)
-    if any(row["available"] is True for row in rows):
-        return "available", ""
-    reasons = Counter(row["reason"] for row in rows if row["reason"])
-    if reasons:
-        return "unsupported", reasons.most_common(1)[0][0]
-    isp = device.get("isp")
-    if isinstance(isp, dict) and isp.get("state") == "unavailable" and isp.get("reason"):
-        return "unsupported", str(isp["reason"])
-    if not rows:
-        return "unsupported", "The camera reports no modes."
-    return None, ""
+    """Sentinel's verdict for a device, read by its type adapter: ("available"|"unsupported", reason),
+    or (None, "") when there is none."""
+    return adapter_for(device).support(device)
 
 
 def status(device: Dict[str, Any]) -> str:
@@ -171,13 +307,14 @@ def status(device: Dict[str, Any]) -> str:
 
 
 def summarize(device: Dict[str, Any]) -> Dict[str, Any]:
-    verdict, reason = support(device)
-    rows = mode_rows(device)
+    adapter = adapter_for(device)
+    verdict, reason = adapter.support(device)
+    rows = adapter.mode_rows(device)
     return {
         "id": device.get("id"),
         "type": device.get("type"),
-        "type_label": type_label(device),
-        "connection": connection_label(device),
+        "type_label": adapter.label,
+        "connection": adapter.connection(device),
         "name": device_name(device),
         "status": status(device),
         "support": verdict,
@@ -198,10 +335,16 @@ def find_device(devices: Sequence[Dict[str, Any]], wanted: str) -> Optional[Dict
 
 
 def describe(device: Dict[str, Any], board: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    description = {"summary": summarize(device), "modes": mode_rows(device), "device": device}
+    adapter = adapter_for(device)
+    description = {"summary": summarize(device), "facts": adapter.facts(device), "modes": adapter.mode_rows(device),
+                   "device": device}
     if isinstance(board, dict):
         description["board"] = board
     return description
+
+
+def verdict_label(available: Optional[bool]) -> str:
+    return "Supported" if available is True else "Unsupported" if available is False else "-"
 
 
 PLATFORM_UNSUPPORTED = "platform.unsupported"
@@ -233,11 +376,7 @@ def verdict_warnings(devices: Sequence[Dict[str, Any]]) -> List[str]:
 
 
 def support_label(summary: Dict[str, Any]) -> str:
-    if summary["support"] == "available":
-        return "Supported"
-    if summary["support"] == "unsupported":
-        return "Unsupported"
-    return "-"
+    return verdict_label(True if summary["support"] == "available" else False if summary["support"] == "unsupported" else None)
 
 
 def list_rows(summaries: Sequence[Dict[str, Any]]) -> List[List[str]]:

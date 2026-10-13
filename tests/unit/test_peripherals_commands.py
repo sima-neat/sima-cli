@@ -123,6 +123,21 @@ def test_describe_a_microphone_shows_its_nodes_and_sample_rates(on_devkit, catal
     assert rows == [["S16_LE", "2", "16000"], ["S16_LE", "2", "24000"], ["S16_LE", "2", "32000"]]
 
 
+def test_describe_an_unknown_type_prints_its_properties_not_a_camera_table(on_devkit, catalog, monkeypatch):
+    with_lidar = json.loads(json.dumps(catalog))
+    with_lidar["devices"].append({"id": "lidar:usb:1", "type": "lidar", "connection": "usb", "name": "Velo",
+                                  "modes": [{"format": "XYZI", "points_per_second": 300000}]})
+    use_client(monkeypatch, FakeClient(with_lidar))
+    listed = runner().invoke(commands.peripherals, ["list"])
+    assert listed.exit_code == 0 and "lidar:usb:1" in listed.output and "Lidar" in listed.output
+    result = runner().invoke(commands.peripherals, ["describe", "lidar:usb:1"])
+    assert result.exit_code == 0, result.output
+    assert "Lidar" in result.output and "USB" in result.output
+    table = result.output.split("\n\n", 1)[1]
+    assert table.split()[:4] == ["FORMAT", "PROPERTIES", "SUPPORT", "REASON"]
+    assert "points_per_second=300000" in table and "SIZE" not in table and "FPS" not in table
+
+
 def test_describe_json_carries_the_device_record(on_devkit, catalog, monkeypatch):
     use_client(monkeypatch, FakeClient(catalog))
     result = runner().invoke(commands.peripherals, ["describe", "imx477", "--json"])

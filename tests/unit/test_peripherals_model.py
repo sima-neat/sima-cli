@@ -52,6 +52,26 @@ def test_microphone_modes_keep_their_sample_rates_and_channels():
     assert ranged[0]["channels"] is None
 
 
+def test_a_type_the_cli_does_not_know_goes_through_the_generic_adapter():
+    """shanguangzai on #290: a provider a newer Sentinel adds (a speaker, a LiDAR) must not be read as a
+    camera. The generic adapter lists it, passes its mode properties through and claims no verdict."""
+    lidar = {"id": "lidar:usb:1", "type": "lidar", "connection": "usb", "name": "Velo", "availability": {"state": "unknown"},
+             "modes": [{"format": "XYZI", "points_per_second": 300000, "channels": 16, "extra": {"nested": 1}}]}
+    adapter = model.adapter_for(lidar)
+    assert type(adapter) is model.TypeAdapter and adapter.label == "Lidar" and adapter.type == "lidar"
+    summary = model.summarize(lidar)
+    assert (summary["type_label"], summary["connection"], summary["support"], summary["modes"]) == ("Lidar", "USB", None, 1)
+    rows = model.mode_rows(lidar)
+    assert rows == [{"format": "XYZI", "properties": {"points_per_second": 300000, "channels": 16}, "available": None, "reason": ""}]
+    assert adapter.mode_cells(rows[0]) == ["XYZI", "points_per_second=300000, channels=16", "-", ""]
+    assert model.describe(lidar, None)["facts"] == {}
+    # A verdict Sentinel writes on such a mode is honoured, with the camera-only clauses left out.
+    judged = dict(lidar, modes=[{"format": "XYZI", "available": False, "reason": "No Neat input reads point clouds."}])
+    assert model.support(judged) == ("unsupported", "No Neat input reads point clouds.")
+    assert model.support(dict(lidar, modes=[])) == (None, "")
+    assert [a.type for a in model.ADAPTERS.values()] == ["camera", "microphone"]
+
+
 def test_microphones_are_listed_without_an_application_verdict():
     mic = model.summarize(device(catalog("devkit-2.1.3"), "alsa"))
     assert mic["type_label"] == "Microphone"

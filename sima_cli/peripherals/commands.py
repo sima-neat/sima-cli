@@ -18,6 +18,7 @@ from sima_cli.utils.env import get_sima_build_version, is_sima_board
 
 from .model import (
     ExitCode,
+    adapter_for_type,
     catalog_warnings,
     describe,
     envelope,
@@ -178,7 +179,7 @@ def describe_command(device_id: str, as_json: bool, refresh: bool, socket_path: 
 
 def _print_description(description: Dict[str, Any]) -> None:
     summary = description["summary"]
-    device = description["device"]
+    adapter = adapter_for_type(summary["type"])
     lines: List[List[str]] = [
         ["ID", str(summary["id"])],
         ["Type", summary["type_label"]],
@@ -187,23 +188,7 @@ def _print_description(description: Dict[str, Any]) -> None:
         ["Status", summary["status"]],
         ["Support", support_label(summary) + (f" ({summary['support_reason']})" if summary["support_reason"] else "")],
     ]
-    for key in ("camera_name", "media_device", "bus_info", "csi_receiver", "device_path", "by_id_path"):
-        if device.get(key):
-            lines.append([key.replace("_", " ").capitalize(), str(device[key])])
-    identity = device.get("identity") if isinstance(device.get("identity"), dict) else {}
-    capture = device.get("capture_target") if isinstance(device.get("capture_target"), dict) else {}
-    for label, value in (("Device node", identity.get("pcm_node")), ("By id", identity.get("by_id")),
-                         ("Driver", identity.get("card_driver")), ("ALSA device", capture.get("selector"))):
-        if value:
-            lines.append([label, str(value)])
-    isp = device.get("isp")
-    if isinstance(isp, dict):
-        lines.append(["ISP", f"{isp.get('state')}" + (f", sizes set at run time" if isp.get("sizing") == "runtime" else "")])
-    max_fps = device.get("max_fps")
-    if isinstance(max_fps, (int, float)) and max_fps > 0:
-        timing = device.get("sensor_timing") if isinstance(device.get("sensor_timing"), dict) else {}
-        at_size = f" at {timing['width']}x{timing['height']}" if timing.get("width") and timing.get("height") else ""
-        lines.append(["Sensor max rate", f"{max_fps:g} fps{at_size} (the sensor's limit; the ISP reports no per-mode rate)"])
+    lines.extend([label, text] for label, text in adapter.fact_lines(description["facts"]))
     board = description.get("board") or {}
     if board.get("firmware"):
         lines.append(["Platform", str(board["firmware"])])
@@ -211,25 +196,10 @@ def _print_description(description: Dict[str, Any]) -> None:
         lines.append(["Overlays", ", ".join(str(o) for o in board["overlays"])])
     click.echo(tabulate(lines, tablefmt="plain"))
     modes = description["modes"]
-    if not modes:
-        return
-    click.echo("")
-    rows = []
-    if summary["type"] == "microphone":
-        for mode in modes:
-            rates = ", ".join(str(r) for r in mode["sample_rates_hz"])
-            span = mode["sample_rate_range_hz"]
-            if span:
-                rates = ", ".join(filter(None, [rates, f"{span['min']}-{span['max']}"]))
-            rows.append([mode["format"], mode["channels"] if mode["channels"] is not None else "-", rates or "-"])
-        click.echo(tabulate(rows, headers=["FORMAT", "CHANNELS", "SAMPLE RATE (Hz)"], tablefmt="plain"))
-        return
-    for mode in modes:
-        size = f"{mode['width']}x{mode['height']}" if mode.get("width") else "-"
-        rates = ", ".join(f"{r:g}" for r in mode["rates"]) or "-"
-        verdict = "Supported" if mode["available"] is True else "Unsupported" if mode["available"] is False else "-"
-        rows.append([mode["format"], size, rates, verdict, mode["reason"]])
-    click.echo(tabulate(rows, headers=["FORMAT", "SIZE", "FPS", "SUPPORT", "REASON"], tablefmt="plain"))
+    if modes:
+        click.echo("")
+        click.echo(tabulate([adapter.mode_cells(row) for row in modes], headers=list(adapter.mode_headers),
+                            tablefmt="plain"))
 
 
 def register_peripherals_commands(cli: click.Group) -> None:

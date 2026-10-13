@@ -997,6 +997,8 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         rows.append(("mainUI", f"{web_scheme}://{display_host}:{port_map['mainUI']['host']}"))
     if code_url:
         rows.append(("codeUI", code_url))
+        if config.code_ui_backend == "code-server" and config.code_ui_token:
+            rows.append(("codeUIPassword", config.code_ui_token))
         if "codeUIHttps" in port_map:
             rows.append(("codeUIHttp", f"http://{display_host}:{port_map['codeUI']['host']}"))
     show_edgematic_studio = "edgematicStudio" in port_map

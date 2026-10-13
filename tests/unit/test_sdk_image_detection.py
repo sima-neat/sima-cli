@@ -2524,6 +2524,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("Name       | Endpoint / Value", printed)
         self.assertIn("mainUI     | https://192.168.76.4:24031", printed)
         self.assertIn(f"codeUI     | {code_url}", printed)
+        self.assertNotIn("codeUIPassword", printed)
         self.assertIn("codeUIHttp | http://192.168.76.4:21333", printed)
         self.assertIn("videoUI    | https://192.168.76.4:20907", printed)
         self.assertIn("iceHost    | 10.0.0.23", printed)
@@ -2582,7 +2583,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             code_ui_backend="code-server",
         )
 
-        with patch("builtins.print"), \
+        with patch("builtins.print") as mock_print, \
              patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="localhost"), \
              patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
              patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser_open, \
@@ -2590,6 +2591,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
             print_neat_setup_summary(config)
 
         clean_url = "https://localhost:20786/?folder=/workspace"
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn(f"codeUI         | {clean_url}", printed)
+        self.assertIn("codeUIPassword | code-password", printed)
+        self.assertNotIn("code-password", clean_url)
         browser_open.assert_called_once_with(clean_url)
         panel_text = str(console_print.call_args.args[0].renderable)
         self.assertIn(clean_url, panel_text)

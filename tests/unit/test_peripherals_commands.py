@@ -138,15 +138,24 @@ def test_describe_an_unknown_type_prints_its_properties_not_a_camera_table(on_de
     assert "points_per_second=300000" in table and "SIZE" not in table and "FPS" not in table
 
 
-def test_describe_json_carries_the_device_record(on_devkit, catalog, monkeypatch):
+def test_describe_json_holds_only_projected_fields(on_devkit, catalog, monkeypatch):
+    """shanguangzai on #290: the versioned document must not pass Sentinel's `device` or `board`
+    records through, so a Sentinel change cannot alter the schema and `modes` has one source."""
     use_client(monkeypatch, FakeClient(catalog))
     result = runner().invoke(commands.peripherals, ["describe", "imx477", "--json"])
     document = json.loads(result.stdout)
     assert document["command"] == "peripherals.describe"
-    assert document["summary"]["support"] == "available"
-    assert document["device"]["id"] == "camera:imx477 5-001a"
-    assert document["board"]["firmware"] == "3.0.0"
+    assert document["summary"]["support"] == "available" and document["summary"]["id"] == "camera:imx477 5-001a"
+    assert "device" not in document and set(document["board"]) == {"firmware", "model", "overlays"}
+    assert document["board"]["firmware"] == "3.0.0" and document["board"]["overlays"] == ["modalix-som-waveshare-ARDU-IMX477-1CAM.dtbo"]
+    assert set(document["facts"]) == {"camera_name", "media_device", "bus_info", "csi_receiver", "isp", "sensor_max_fps"}
+    assert document["facts"]["isp"] == {"state": "available", "sizing": "runtime"}
+    assert document["facts"]["sensor_max_fps"] == {"fps": 125.54, "width": 1920, "height": 1080}
     assert any(mode["available"] is True for mode in document["modes"])
+    assert set(document["modes"][0]) == {"format", "width", "height", "rates", "source", "available", "reason"}
+    microphone = json.loads(runner().invoke(commands.peripherals, ["describe", "microphone:alsa:329f324bddfdde7b", "--json"]).stdout)
+    assert set(microphone["facts"]) == {"device_node", "by_id", "driver", "alsa_device"}
+    assert set(microphone["modes"][0]) == {"format", "channels", "sample_bits", "sample_rates_hz", "sample_rate_range_hz", "available", "reason"}
 
 
 def test_an_unknown_device_is_invalid_input_with_the_known_ids(on_devkit, catalog, monkeypatch):

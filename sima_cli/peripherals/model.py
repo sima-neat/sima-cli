@@ -10,6 +10,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+# The --json document. Its fields are the CLI's own projection of Sentinel's catalog: nothing from
+# Sentinel is passed through unprojected, so a Sentinel change cannot alter this shape silently.
 SCHEMA_VERSION = "1.0"
 
 
@@ -334,12 +336,24 @@ def find_device(devices: Sequence[Dict[str, Any]], wanted: str) -> Optional[Dict
     return matches[0] if len(matches) == 1 else None
 
 
+def board_facts(board: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The board facts the CLI schema owns: firmware, model and the enabled overlays."""
+    if not isinstance(board, dict):
+        return None
+    overlays = board.get("overlays")
+    return {"firmware": board.get("firmware"), "model": board.get("model"),
+            "overlays": [str(o) for o in overlays] if isinstance(overlays, list) else []}
+
+
 def describe(device: Dict[str, Any], board: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The describe document's payload. Every field is one the CLI schema owns and its type adapter
+    projects; Sentinel's record is not passed through, so a Sentinel upgrade cannot change this
+    document's shape without a change here (and a schema version bump)."""
     adapter = adapter_for(device)
-    description = {"summary": summarize(device), "facts": adapter.facts(device), "modes": adapter.mode_rows(device),
-                   "device": device}
-    if isinstance(board, dict):
-        description["board"] = board
+    description = {"summary": summarize(device), "facts": adapter.facts(device), "modes": adapter.mode_rows(device)}
+    facts = board_facts(board)
+    if facts is not None:
+        description["board"] = facts
     return description
 
 

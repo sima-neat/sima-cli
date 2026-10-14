@@ -47,6 +47,9 @@ def test_support_falls_back_to_the_isp_reason_and_to_no_modes():
         ("unsupported", "ISP node missing")
     assert model.support(mipi_camera(modes=[])) == ("unsupported", "The camera reports no modes.")
     assert model.support(without_verdicts(mipi_camera())) == (None, ""), "a Sentinel without the verdict judges nothing"
+    # Codex on #290: `available: false` is the verdict; a reason is optional explanation.
+    assert model.support(mipi_camera(modes=[mode("NV12", 1920, 1080, available=False)])) == ("unsupported", "")
+    assert model.support(mipi_camera(modes=[mode("NV12", 1920, 1080, available=False, reason="")])) == ("unsupported", "")
     assert model.support(microphone()) == (None, "")
 
 
@@ -113,6 +116,7 @@ def test_a_type_the_cli_does_not_know_goes_through_the_generic_adapter():
     judged = dict(lidar, modes=[{"format": "XYZI", "available": False, "reason": "No Neat input reads point clouds."}])
     assert model.support(judged) == ("unsupported", "No Neat input reads point clouds.")
     assert model.support(dict(lidar, modes=[])) == (None, "")
+    assert model.support(dict(lidar, modes=[{"format": "XYZI", "available": False}])) == ("unsupported", "")
     assert [a.type for a in model.ADAPTERS.values()] == ["camera", "microphone"]
     # A connection the CLI has no label for is shown as Sentinel wrote it, ahead of the backend.
     assert model.connection_label(dict(lidar, connection="ethernet", backend="udp")) == "ethernet"

@@ -137,13 +137,14 @@ class TypeAdapter:
 
     def support(self, device: Dict[str, Any]) -> Tuple[Optional[str], str]:
         """Sentinel's verdict for the device: ("available"|"unsupported", reason), or (None, "") when
-        Sentinel wrote none. Supported when any mode is; otherwise the reason most of its modes give."""
+        Sentinel wrote none. Supported when any mode is; Unsupported when Sentinel judged every mode
+        false, with the reason most of them give (a reason is explanatory; its absence changes nothing)."""
         rows = self.mode_rows(device)
         if any(row["available"] is True for row in rows):
             return "available", ""
-        reasons = Counter(row["reason"] for row in rows if row["reason"])
-        if reasons:
-            return "unsupported", reasons.most_common(1)[0][0]
+        if any(row["available"] is False for row in rows):
+            reasons = Counter(row["reason"] for row in rows if row["reason"])
+            return "unsupported", reasons.most_common(1)[0][0] if reasons else ""
         return None, ""
 
 

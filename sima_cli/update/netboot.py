@@ -627,6 +627,38 @@ def _same_netboot_device(configuration, candidate_ip):
             ssh.close()
 
 
+def _offer_reboot_into_emmc(selected_ip, configuration=None):
+    """Offer to restore local boot settings and reboot after a manual flash."""
+    if not click.confirm(
+        "Reboot the DevKit now and boot from the flashed eMMC image?",
+        default=True,
+    ):
+        click.echo(
+            "Reboot skipped. Quit the netboot session before rebooting so its "
+            "saved U-Boot environment can be restored."
+        )
+        return False
+
+    try:
+        if configuration is not None and configuration.changed:
+            from sima_cli.update.netboot_device import restore_environment
+            restore_environment(configuration, candidate_ips=[selected_ip])
+        _schedule_reboot_into_emmc(selected_ip)
+    except Exception as exc:
+        click.secho(
+            f"Flash completed, but reboot was not scheduled: {exc}",
+            fg="yellow",
+            err=True,
+        )
+        return False
+
+    click.secho(
+        f"Reboot was scheduled for {selected_ip}; the DevKit will start from eMMC.",
+        fg="green",
+    )
+    return True
+
+
 def flash_emmc(
     client_manager,
     emmc_image_paths,
@@ -634,6 +666,7 @@ def flash_emmc(
     troot_image_path=None,
     configuration=None,
     manual_reboot=True,
+    offer_reboot=False,
 ):
     """Flash eMMC on a selected client device."""
     if not emmc_image_paths:
@@ -735,7 +768,10 @@ def flash_emmc(
             command_label='Finalizing eMMC partitions',
         )
 
-        if manual_reboot:
+        if offer_reboot:
+            click.echo("✅ Flash completed.")
+            _offer_reboot_into_emmc(selected_ip, configuration=configuration)
+        elif manual_reboot:
             click.echo("✅ Flash completed. Please reboot the board to boot from eMMC.")
         else:
             click.echo("✅ Flash completed.")
@@ -1109,6 +1145,7 @@ def run_cli(client_manager, configuration=None):
                     override_ip=override_ip,
                     troot_image_path=troot_image_path,
                     configuration=configuration,
+                    offer_reboot=True,
                 )
             elif command == "":
                 continue

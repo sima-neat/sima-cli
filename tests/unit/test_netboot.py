@@ -91,6 +91,7 @@ class NetbootFlashTests(unittest.TestCase):
                 override_ip="192.168.4.20",
                 troot_image_path="/images/troot_blob.be",
                 configuration=None,
+                offer_reboot=True,
             )
         finally:
             netboot.emmc_image_paths = old_emmc

@@ -73,6 +73,35 @@ def test_autoflash_restores_environment_before_reboot():
     assert configuration.changed is False
 
 
+@pytest.mark.parametrize('confirmed', [False, True])
+def test_manual_flash_offer_restores_environment_before_reboot(confirmed):
+    configuration = netboot_device.NetbootConfiguration(
+        '192.0.2.2', changed=True
+    )
+    events = []
+
+    def restore(saved, candidate_ips):
+        assert saved is configuration
+        assert candidate_ips == ['192.0.2.2']
+        events.append('restore')
+        saved.changed = False
+
+    with patch.object(click, 'confirm', return_value=confirmed) as prompt, \
+            patch.object(netboot_device, 'restore_environment', side_effect=restore), \
+            patch.object(netboot, '_schedule_reboot_into_emmc',
+                         side_effect=lambda _ip: events.append('reboot')):
+        assert netboot._offer_reboot_into_emmc(
+            '192.0.2.2', configuration=configuration
+        ) is confirmed
+
+    assert prompt.call_args.args[0] == (
+        'Reboot the DevKit now and boot from the flashed eMMC image?'
+    )
+    assert prompt.call_args.kwargs == {'default': True}
+    assert events == (['restore', 'reboot'] if confirmed else [])
+    assert configuration.changed is (not confirmed)
+
+
 def test_failed_ssh_wait_does_not_mark_connected():
     manager=netboot.ClientManager();manager.clients={'192.0.2.2':{'state':'Booting'}}
     def wait(*args,**kwargs):

@@ -211,7 +211,7 @@ def test_host_address_uses_route_to_selected_devkit():
 
 @pytest.mark.parametrize('initial_mode,failure', [
     ('ro', None), ('rw', None), ('ro', 'rw'), ('ro', 'write'),
-    ('rw', 'normalized_write'), ('ro', 'ro'),
+    ('rw', 'normalized_write'), ('rw', 'normalized_validation'), ('ro', 'ro'),
 ])
 def test_boot_mount_and_rollback_script(tmp_path, initial_mode, failure):
     """Execute the actual shell script against fake mount/fw tools and temp files."""
@@ -243,7 +243,7 @@ elif name == 'mount':
     if failure == wanted:
         sys.exit(1)
     mode.write_text(wanted)
-elif name == 'python3' and failure == 'normalized_write':
+elif name == 'python3' and failure in ('normalized_write', 'normalized_validation'):
     (boot / 'uboot.env').write_text('normalized')
     (boot / 'uboot-redund.env').write_text('normalized')
 elif name == 'fw_setenv':
@@ -253,6 +253,8 @@ elif name == 'fw_setenv':
     if failure in ('write', 'normalized_write'):
         sys.exit(1)
 elif name == 'fw_printenv':
+    if failure == 'normalized_validation' and '-n' not in args:
+        sys.exit(1)
     if '-n' in args:
         print('net' if args[-1] == 'boot_targets' else '192.0.2.10')
     else:
@@ -273,13 +275,13 @@ elif name == 'fw_printenv':
         assert 'fw_setenv' not in commands
         assert 'Cannot remount' in result.stderr
         assert device.MANUAL_FALLBACK_READY not in result.stdout
-    elif failure in ('write', 'normalized_write'):
+    elif failure in ('write', 'normalized_write', 'normalized_validation'):
         assert 'Restored saved U-Boot' in result.stdout
         assert device.MANUAL_FALLBACK_READY in result.stdout
     elif failure == 'ro':
         assert 'Could not restore' in result.stderr
         assert device.MANUAL_FALLBACK_READY not in result.stdout
-    if failure in ('rw', 'write'):
+    if failure in ('rw', 'write', 'normalized_validation'):
         for name in ('uboot.env', 'uboot-redund.env'):
             assert (boot / name).read_text() == 'original ' + name
     if failure == 'normalized_write':

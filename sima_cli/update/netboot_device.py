@@ -395,6 +395,7 @@ def _uboot_script(devkit, server_ip, network):
         'set -eu',
         'config=$(mktemp)',
         'backup=',
+        'restore_backup=',
         'restore_ro=0',
         'backup_complete=0',
         'cleanup_complete=1',
@@ -403,7 +404,7 @@ def _uboot_script(devkit, server_ip, network):
         '  trap - EXIT',
         '  set +e',
         '  if [ "$status" -ne 0 ] && [ "$backup_complete" = 1 ]; then',
-        '    if cp -p "$backup/uboot.env" /boot/uboot.env && cp -p "$backup/uboot-redund.env" /boot/uboot-redund.env; then',
+        '    if cp -p "$restore_backup/uboot.env" /boot/uboot.env && cp -p "$restore_backup/uboot-redund.env" /boot/uboot-redund.env; then',
         '      echo "Restored saved U-Boot environment after preparation failed."',
         '    else',
         '      echo "ERROR: Could not restore U-Boot environment. Backup: $backup. DevKit will not be rebooted." >&2',
@@ -446,14 +447,18 @@ def _uboot_script(devkit, server_ip, network):
         '    restore_ro=1 ;;',
         'esac',
         'backup=$(mktemp -d /boot/sima-cli-netboot-backup.XXXXXX)',
-        'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
+        'mkdir "$backup/original"',
+        'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/original/"',
+        'restore_backup="$backup/original"',
         'backup_complete=1',
         'python3 -c ' + shlex.quote(helper) + ' "$config"',
+        'fw_printenv -c "$config" > "$backup/environment.txt"',
         # configure_environment may convert a legacy redundant environment to
         # the single-file format required by the installed bootloader. Make
-        # that normalized state the rollback point before applying netboot.
+        # that validated normalized state the rollback point before applying
+        # netboot, while retaining the original backup if validation fails.
         'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
-        'fw_printenv -c "$config" > "$backup/environment.txt"',
+        'restore_backup="$backup"',
         f'echo "{BACKUP_MARKER}$backup"',
         'export_dir=$(mktemp -d /tmp/sima-cli-netboot-export.XXXXXX)',
         'cp -p "$backup/uboot.env" "$backup/uboot-redund.env" "$export_dir/"',

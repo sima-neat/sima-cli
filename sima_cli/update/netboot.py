@@ -627,22 +627,18 @@ def _same_netboot_device(configuration, candidate_ip):
             ssh.close()
 
 
-def _offer_reboot_into_emmc(selected_ip, configuration=None):
-    """Offer to restore local boot settings and reboot after a manual flash."""
+def _offer_reboot_into_emmc(selected_ip):
+    """Offer to reboot into the environment written by the flashed image."""
     if not click.confirm(
         "Reboot the DevKit now and boot from the flashed eMMC image?",
         default=True,
     ):
         click.echo(
-            "Reboot skipped. Quit the netboot session before rebooting so its "
-            "saved U-Boot environment can be restored."
+            "Reboot skipped. The flashed eMMC image will be used on the next reboot."
         )
         return False
 
     try:
-        if configuration is not None and configuration.changed:
-            from sima_cli.update.netboot_device import restore_environment
-            restore_environment(configuration, candidate_ips=[selected_ip])
         _schedule_reboot_into_emmc(selected_ip)
     except Exception as exc:
         click.secho(
@@ -678,7 +674,7 @@ def flash_emmc(
     selected_ip = _select_flash_target(client_manager, override_ip=override_ip)
     if not selected_ip:
         return False
-    if configuration is not None and configuration.changed:
+    if configuration is not None and configuration.hardware_address:
         if not _same_netboot_device(configuration, selected_ip):
             click.echo(
                 f"❌ Refusing to flash {selected_ip}: it could not be verified as "
@@ -770,7 +766,7 @@ def flash_emmc(
 
         if offer_reboot:
             click.echo("✅ Flash completed.")
-            _offer_reboot_into_emmc(selected_ip, configuration=configuration)
+            _offer_reboot_into_emmc(selected_ip)
         elif manual_reboot:
             click.echo("✅ Flash completed. Please reboot the board to boot from eMMC.")
         else:
@@ -1074,9 +1070,9 @@ def _discover_netboot_devices():
     return devices
 
 
-def _update_restoration_target_from_discovery(configuration, devices):
+def _update_configured_device_from_discovery(configuration, devices):
     """Remember a newly discovered address only when its MAC is an exact match."""
-    if configuration is None or not configuration.changed:
+    if configuration is None or not configuration.hardware_address:
         return
     expected = (configuration.hardware_address or '').strip().lower()
     matches = {
@@ -1088,7 +1084,7 @@ def _update_restoration_target_from_discovery(configuration, devices):
         configuration.devkit = matches.pop()
         click.echo(
             f"✅ Found the configured DevKit at {configuration.devkit}; "
-            "this address will be used for cleanup."
+            "this address will be used for flashing."
         )
 
 
@@ -1132,7 +1128,7 @@ def run_cli(client_manager, configuration=None):
                     continue
                 client_manager.stop_monitoring()
                 devices = _discover_netboot_devices()
-                _update_restoration_target_from_discovery(configuration, devices)
+                _update_configured_device_from_discovery(configuration, devices)
             elif command == "f":
                 if len(args) > 1:
                     click.echo("❌ Usage: f [ip]")
@@ -1192,9 +1188,6 @@ def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
                                  manual_reboot=False)
             if not flashed:
                 raise click.ClickException('Automatic eMMC flash failed.')
-            if configuration is not None and configuration.changed:
-                from sima_cli.update.netboot_device import restore_environment
-                restore_environment(configuration, candidate_ips=[selected_ip])
             _schedule_reboot_into_emmc(selected_ip)
             click.secho(
                 f'Flash completed and reboot was scheduled for {selected_ip}; '
@@ -1293,7 +1286,6 @@ def setup_netboot(
         NetbootConfiguration,
         configure_and_reboot,
         resolve_device,
-        restore_environment,
         server_address,
     )
     if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
@@ -1377,28 +1369,6 @@ def setup_netboot(
 
     finally:
         shutdown_error = None
-        if configuration is not None and configuration.changed:
-            try:
-                candidate_ips = (
-                    [ip for ip, _ in client_manager.get_client_info()]
-                    if client_manager is not None else []
-                )
-                restore_environment(configuration, candidate_ips=candidate_ips)
-            except (Exception, KeyboardInterrupt) as exc:
-                recovery_backup = (
-                    configuration.local_backup_dir or configuration.backup_dir
-                )
-                click.secho(
-                    f'Could not restore the saved U-Boot environment on '
-                    f'{configuration.devkit}: {exc}. Use serial recovery before rebooting again. '
-                    f'Backup: {recovery_backup}',
-                    fg='red',
-                    err=True,
-                )
-                shutdown_error = RuntimeError(
-                    f'Netboot ended, but U-Boot restoration failed on '
-                    f'{configuration.devkit}.'
-                )
         if server is not None:
             server.stop(now=True)
         if client_manager is not None:
@@ -1423,7 +1393,5 @@ def setup_netboot(
                     f"⚠️  Failed to delete netboot cache {cache_dir}: {cleanup_error}",
                     err=True,
                 )
-        if configuration is not None and not configuration.changed:
-            configuration.cleanup()
         if shutdown_error is not None:
             raise shutdown_error

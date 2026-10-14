@@ -76,6 +76,10 @@ def test_confirmation_precedes_writes_and_reboot(capsys):
     assert 'netmask 255.255.255.0' in script
     assert 'dhcp' not in script
     assert 'test "$(fw_printenv' in script
+    assert '/tmp/sima-cli-netboot-rollback.' in script
+    assert 'rm -rf "$backup"' in script
+    assert 'sima-cli-netboot-export' not in script
+    assert 'SIMA_CLI_NETBOOT_BACKUP' not in script
     assert events[3] == 'sudo systemd-run --on-active=3s /sbin/reboot'
     assert 'persist across reboots' in capsys.readouterr().out
 
@@ -316,14 +320,6 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
         server.stop.assert_not_called()
         manager.shutdown.assert_not_called()
 
-    def checked(_ssh, remote_command):
-        if remote_command == 'cat /sys/class/net/*/address':
-            return NETWORK['hardware_address']
-        return (
-            device.BACKUP_MARKER + '/boot/sima-cli-netboot-backup.test'
-            + '\n' + device.BACKUP_EXPORT_MARKER + '/tmp/export'
-        )
-
     with patch.object(netboot, 'get_environment_type', return_value=('host', 'mac')), \
             patch.object(netboot, 'download_image', return_value=[str(boot)]), \
             patch.object(netboot, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
@@ -335,10 +331,7 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
             patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
             patch.object(device, 'server_address', return_value='192.0.2.10'), \
             patch.object(device, 'init_ssh_session', side_effect=TimeoutError('timed out') if confirmed is None else None) as connect, \
-            patch.object(device, 'wait_for_ssh', side_effect=lambda *a, **k: (
-                server.stop.assert_not_called() or True
-            )), \
-            patch.object(device, '_checked', side_effect=checked) as command, \
+            patch.object(device, '_checked', return_value='') as command, \
             patch.object(click, 'confirm', return_value=confirmed):
         thread.return_value.is_alive.return_value = False
         netboot.setup_netboot('3.0', 'modalix', autoflash=autoflash)
@@ -349,7 +342,7 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
         assert cli.call_args.args == (manager,)
         assert cli.call_args.kwargs['configuration'].devkit == '192.0.2.1'
     if confirmed is not None:
-        assert connect.return_value.close.call_count == (2 if confirmed else 1)
+        connect.return_value.close.assert_called_once()
     if confirmed:
         assert any('systemd-run' in call.args[1] for call in command.call_args_list)
     else:
@@ -365,10 +358,9 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
     manager.shutdown.assert_called_once()
 
 
-def test_explicit_flash_ip_cannot_retarget_saved_environment(capsys):
+def test_explicit_flash_ip_cannot_retarget_configured_device(capsys):
     configuration = device.NetbootConfiguration(
-        '192.0.2.1', hardware_address='02:00:00:00:00:01',
-        backup_dir='/boot/backup', changed=True
+        '192.0.2.1', hardware_address='02:00:00:00:00:01'
     )
     with patch.object(netboot, '_validate_override_ip', return_value=True), \
             patch.object(netboot, '_same_netboot_device', return_value=False), \
@@ -386,8 +378,7 @@ def test_explicit_flash_ip_cannot_retarget_saved_environment(capsys):
 
 def test_saved_flash_ip_is_still_verified_before_copying(capsys):
     configuration = device.NetbootConfiguration(
-        '192.0.2.1', hardware_address='02:00:00:00:00:01',
-        backup_dir='/boot/backup', changed=True
+        '192.0.2.1', hardware_address='02:00:00:00:00:01'
     )
     with patch.object(netboot, '_validate_override_ip', return_value=True), \
             patch.object(netboot, '_same_netboot_device', return_value=False) as verify, \
@@ -404,10 +395,9 @@ def test_saved_flash_ip_is_still_verified_before_copying(capsys):
     assert 'could not be verified' in capsys.readouterr().out
 
 
-def test_verified_changed_ip_becomes_restoration_target():
+def test_verified_changed_ip_becomes_configured_device_address():
     configuration = device.NetbootConfiguration(
-        '192.0.2.1', hardware_address='02:00:00:00:00:01',
-        backup_dir='/boot/backup', changed=True
+        '192.0.2.1', hardware_address='02:00:00:00:00:01'
     )
     with patch.object(netboot, '_validate_override_ip', return_value=True), \
             patch.object(netboot, '_same_netboot_device', return_value=True), \
@@ -427,7 +417,7 @@ def test_verified_changed_ip_becomes_restoration_target():
 ])
 def test_changed_ip_is_verified_by_hardware_address(reported, expected):
     configuration = device.NetbootConfiguration(
-        '192.0.2.1', hardware_address='02:00:00:00:00:01', changed=True
+        '192.0.2.1', hardware_address='02:00:00:00:00:01'
     )
     with patch.object(netboot, 'init_ssh_session') as connect, \
             patch('sima_cli.update.remote.run_remote_command_capture',
@@ -439,187 +429,16 @@ def test_changed_ip_is_verified_by_hardware_address(reported, expected):
     connect.return_value.close.assert_called_once()
 
 
-def test_restore_uses_verified_observed_address_when_device_ip_changes():
+def test_discovery_updates_configured_device_address(capsys):
     configuration = device.NetbootConfiguration(
         '192.0.2.1', hardware_address='02:00:00:00:00:01',
-        backup_dir='/boot/backup', changed=True,
     )
-    changed = MagicMock()
-    with patch.object(device, 'wait_for_ssh', return_value=True) as wait, \
-            patch.object(device, 'init_ssh_session', return_value=changed) as connect, \
-            patch.object(device, '_checked', side_effect=[
-                '02:00:00:00:00:01', ''
-            ]):
-        device.restore_environment(
-            configuration, candidate_ips=['192.0.2.1', '192.0.2.99']
-        )
-
-    assert configuration.devkit == '192.0.2.99'
-    assert configuration.changed is False
-    assert wait.call_args_list[0].args == ('192.0.2.99',)
-    assert wait.call_args_list[0].kwargs == {'timeout': 10}
-    connect.assert_called_once_with('192.0.2.99')
-    changed.close.assert_called_once()
-
-
-def test_restore_continues_after_observed_candidate_probe_failure():
-    configuration = device.NetbootConfiguration(
-        '192.0.2.1', hardware_address='02:00:00:00:00:01',
-        backup_dir='/boot/backup', changed=True,
-    )
-    failed = MagicMock()
-    saved = MagicMock()
-    with patch.object(device, 'wait_for_ssh', return_value=True), \
-            patch.object(device, 'init_ssh_session', side_effect=[failed, saved]) as connect, \
-            patch.object(device, '_checked', side_effect=[
-                OSError('SSH handshake failed'),
-                '02:00:00:00:00:01',
-                '',
-            ]):
-        device.restore_environment(
-            configuration, candidate_ips=['192.0.2.99', '192.0.2.1']
-        )
-
-    assert [call.args[0] for call in connect.call_args_list] == [
-        '192.0.2.99', '192.0.2.1'
-    ]
-    failed.close.assert_called_once()
-    saved.close.assert_called_once()
-
-
-def test_saved_restoration_address_gets_full_reboot_wait():
-    configuration = device.NetbootConfiguration(
-        '192.0.2.1', hardware_address='02:00:00:00:00:01', changed=True,
-    )
-    with patch.object(device, 'wait_for_ssh', return_value=False) as wait:
-        with pytest.raises(click.ClickException, match='verified address'):
-            device._connect_restoration_target(
-                configuration,
-                candidate_ips=['192.0.2.1', '192.0.2.99'],
-            )
-
-    assert [(call.args[0], call.kwargs['timeout']) for call in wait.call_args_list] == [
-        ('192.0.2.99', 10), ('192.0.2.1', 180),
-    ]
-
-
-def test_discovery_updates_cleanup_target_without_flashing(capsys):
-    configuration = device.NetbootConfiguration(
-        '192.0.2.1', hardware_address='02:00:00:00:00:01', changed=True,
-    )
-    netboot._update_restoration_target_from_discovery(configuration, [
+    netboot._update_configured_device_from_discovery(configuration, [
         {'ip': '192.0.2.55', 'mac': '02:00:00:00:00:99'},
         {'ip': '192.0.2.99', 'mac': '02:00:00:00:00:01'},
     ])
     assert configuration.devkit == '192.0.2.99'
-    assert 'used for cleanup' in capsys.readouterr().out
-
-
-def test_restore_interrupt_still_shuts_down_session(tmp_path, capsys):
-    boot = tmp_path / 'netboot.scr.uimg'
-    boot.write_bytes(b'boot')
-    server = MagicMock()
-    server.is_running.wait.return_value = True
-    manager = MagicMock()
-
-    def configure(*args, configuration=None, **kwargs):
-        configuration.backup_dir = '/boot/sima-cli-netboot-backup.test'
-        configuration.local_backup_dir = '/tmp/host-backup'
-        configuration.changed = True
-        return True
-
-    with patch.object(netboot, 'get_environment_type', return_value=('host', 'mac')), \
-            patch.object(netboot, 'download_image', return_value=[str(boot)]), \
-            patch.object(netboot, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
-            patch.object(netboot, 'InteractiveTftpServer', return_value=server), \
-            patch.object(netboot, 'ClientManager', return_value=manager), \
-            patch.object(netboot.threading, 'Thread') as thread, \
-            patch.object(netboot, 'run_cli'), \
-            patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
-            patch.object(device, 'server_address', return_value='192.0.2.10'), \
-            patch.object(device, 'configure_and_reboot', side_effect=configure), \
-            patch.object(device, 'restore_environment', side_effect=KeyboardInterrupt):
-        thread.return_value.is_alive.return_value = False
-        with pytest.raises(RuntimeError, match='U-Boot restoration failed'):
-            netboot.setup_netboot('3.0', 'modalix')
-
-    server.stop.assert_called_once_with(now=True)
-    manager.shutdown.assert_called_once()
-    output = capsys.readouterr()
-    assert '/tmp/host-backup' in output.err
-
-
-def test_configured_session_records_and_restores_exact_backup(capsys):
-    configuration = device.NetbootConfiguration('192.0.2.1')
-    backup = '/boot/sima-cli-netboot-backup.ABC123'
-    def download(_remote, local):
-        with open(local, 'wb') as output:
-            output.write(b'preserved environment')
-
-    with patch.object(device, 'init_ssh_session') as connect, \
-            patch.object(device, 'wait_for_ssh', return_value=True), \
-            patch.object(device, '_checked', side_effect=[
-                '',
-                device.BACKUP_MARKER + backup + '\n'
-                + device.BACKUP_EXPORT_MARKER + '/tmp/export',
-                '',
-                '',
-                NETWORK['hardware_address'],
-                '',
-                '',
-            ]) as command, \
-            patch.object(click, 'confirm', return_value=True):
-        connect.return_value.open_sftp.return_value.get.side_effect = download
-        assert device.configure_and_reboot(
-            '192.0.2.1', '192.0.2.10', configuration=configuration
-        ) is True
-        assert configuration.changed is True
-        assert configuration.backup_dir == backup
-        device.restore_environment(configuration)
-
-    restore_script = shlex.split(command.call_args_list[-1].args[1])[3]
-    subprocess.run(['sh', '-n'], input=restore_script, text=True, check=True)
-    assert '/tmp/sima-cli-netboot-uboot-restore/uboot.env' in restore_script
-    assert '/tmp/sima-cli-netboot-uboot-restore/uboot-redund.env' in restore_script
-    assert 'boot_target:$boot_source' in restore_script
-    assert '/boot:/dev/mmcblk0p*' in restore_script
-    assert 'for part in /dev/mmcblk0p*' in restore_script
-    assert 'Cannot locate the eMMC boot partition' in restore_script
-    assert 'cp -p ' not in restore_script
-    assert 'target_redundant = configure_environment' in restore_script
-    assert 'allow_data_inference=True' in restore_script
-    assert 'fw_printenv -c "$restore_config"' in restore_script
-    assert configuration.changed is False
-    assert configuration.local_backup_dir is None
-    assert connect.return_value.close.call_count == 2
-    assert connect.return_value.open_sftp.return_value.put.call_count == 2
-    assert 'Restored the saved U-Boot environment' in capsys.readouterr().out
-
-
-def test_restore_refuses_device_with_different_hardware_address(tmp_path):
-    configuration = device.NetbootConfiguration(
-        '192.0.2.1',
-        hardware_address='02:00:00:00:00:01',
-        backup_dir='/boot/sima-cli-netboot-backup.ABC123',
-        local_backup_dir=str(tmp_path),
-        changed=True,
-    )
-    for name in ('uboot.env', 'uboot-redund.env'):
-        (tmp_path / name).write_bytes(b'preserved environment')
-
-    with patch.object(device, 'wait_for_ssh', return_value=True), \
-            patch.object(device, 'init_ssh_session') as connect, \
-            patch.object(device, '_checked', return_value='02:00:00:00:00:99') as command:
-        with pytest.raises(click.ClickException, match='does not match'):
-            device.restore_environment(configuration)
-
-    command.assert_called_once_with(
-        connect.return_value, 'cat /sys/class/net/*/address'
-    )
-    connect.return_value.open_sftp.assert_not_called()
-    connect.return_value.close.assert_called_once()
-    assert configuration.changed is True
-    assert configuration.local_backup_dir == str(tmp_path)
+    assert 'used for flashing' in capsys.readouterr().out
 
 
 def test_tftp_stop_wakes_listener_and_rejects_late_requests(tmp_path):

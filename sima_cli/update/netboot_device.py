@@ -2,11 +2,8 @@
 import ipaddress
 import inspect
 import json
-import os
 import shlex
-import shutil
 import socket
-import tempfile
 from dataclasses import dataclass
 
 import click
@@ -15,47 +12,16 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from sima_cli.update.remote import init_ssh_session, run_remote_command_capture, wait_for_ssh
+from sima_cli.update.remote import init_ssh_session, run_remote_command_capture
 
 LEGACY_LAYOUT_ERROR = 'Unsupported legacy 2.1 fw_env.config'
 MANUAL_FALLBACK_READY = 'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY'
-BACKUP_MARKER = 'SIMA_CLI_NETBOOT_BACKUP='
-BACKUP_EXPORT_MARKER = 'SIMA_CLI_NETBOOT_EXPORT='
 
 
 @dataclass
 class NetbootConfiguration:
     devkit: str
     hardware_address: str = None
-    backup_dir: str = None
-    export_dir: str = None
-    local_backup_dir: str = None
-    changed: bool = False
-
-    def cleanup(self):
-        if self.local_backup_dir:
-            shutil.rmtree(self.local_backup_dir, ignore_errors=True)
-            self.local_backup_dir = None
-
-
-def _capture_environment_backup(ssh, configuration):
-    """Copy the backup off the eMMC before a whole-device flash can erase it."""
-    local_dir = tempfile.mkdtemp(prefix='sima-cli-netboot-uboot-')
-    sftp = ssh.open_sftp()
-    try:
-        for name in ('uboot.env', 'uboot-redund.env'):
-            sftp.get(
-                configuration.export_dir + '/' + name,
-                os.path.join(local_dir, name),
-            )
-    except Exception:
-        shutil.rmtree(local_dir, ignore_errors=True)
-        raise
-    finally:
-        sftp.close()
-    configuration.local_backup_dir = local_dir
-    _checked(ssh, 'sudo rm -rf ' + shlex.quote(configuration.export_dir))
-    configuration.export_dir = None
 
 
 def resolve_device(devkit=None):
@@ -144,7 +110,8 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
                              else 'Set up network boot and reboot this DevKit?', default=False):
             return False
         # Match Kerrigan's redundant environment layout. Use a temporary config,
-        # preserving any system fw_env.config, and back up before the first write.
+        # preserving any system fw_env.config. The device-side script keeps only
+        # a transient rollback copy for failures during this preparation step.
         script = _uboot_script(devkit, server_ip, network)
         try:
             output = _checked(ssh, 'sudo sh -c ' + shlex.quote(script))
@@ -156,25 +123,6 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
             _show_manual_legacy_setup(devkit, server_ip, network, autoflash)
             return False
         click.echo(output)
-        if configuration is not None:
-            match = next((line for line in output.splitlines()
-                          if line.startswith(BACKUP_MARKER)), None)
-            if not match:
-                raise click.ClickException(
-                    'Remote netboot preparation did not report its U-Boot backup; '
-                    'the DevKit will not be rebooted.'
-                )
-            configuration.backup_dir = match[len(BACKUP_MARKER):]
-            configuration.changed = True
-            export = next((line for line in output.splitlines()
-                           if line.startswith(BACKUP_EXPORT_MARKER)), None)
-            if not export:
-                raise click.ClickException(
-                    'Remote netboot preparation did not report its readable U-Boot export; '
-                    'the DevKit will not be rebooted.'
-                )
-            configuration.export_dir = export[len(BACKUP_EXPORT_MARKER):]
-            _capture_environment_backup(ssh, configuration)
         # A delayed systemd job acknowledges scheduling before SSH disconnects.
         _checked(ssh, 'sudo systemd-run --on-active=3s /sbin/reboot')
         click.secho(
@@ -187,158 +135,6 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
         return True
     finally:
         ssh.close()
-
-
-def _connect_restoration_target(configuration, candidate_ips=()):
-    """Connect to the saved device, allowing its address to change after netboot."""
-    expected_address = (configuration.hardware_address or '').strip().lower()
-    # Probe newly observed addresses briefly, then reserve the full reboot wait
-    # for the saved (or discovery-verified) address.
-    candidates = []
-    for candidate in candidate_ips:
-        if candidate and candidate != configuration.devkit and candidate not in candidates:
-            candidates.append(candidate)
-    if configuration.devkit:
-        candidates.append(configuration.devkit)
-
-    reachable_mismatch = None
-    for index, candidate in enumerate(candidates):
-        # Quickly reject observed addresses that are not this device, but retain
-        # the full reboot allowance for the last (normally original) address.
-        timeout = 180 if index == len(candidates) - 1 else 10
-        if not wait_for_ssh(candidate, timeout=timeout):
-            continue
-        ssh = None
-        try:
-            ssh = init_ssh_session(candidate)
-            addresses = {
-                line.strip().lower()
-                for line in _checked(ssh, 'cat /sys/class/net/*/address').splitlines()
-            }
-        except Exception:
-            if ssh is not None:
-                ssh.close()
-            # An observed TFTP client can be unrelated or only partially
-            # initialized. Continue until every candidate has been attempted.
-            continue
-        if expected_address and expected_address in addresses:
-            configuration.devkit = candidate
-            return ssh
-        ssh.close()
-        reachable_mismatch = candidate
-
-    if reachable_mismatch is not None:
-        raise click.ClickException(
-            f'Refusing to restore U-Boot on {reachable_mismatch}: '
-            'the connected device does not match the saved network interface.'
-        )
-    raise click.ClickException(
-        'The DevKit did not return at a verified address for U-Boot restoration.'
-    )
-
-
-def restore_environment(configuration, candidate_ips=()):
-    """Restore the exact U-Boot files saved before this netboot session."""
-    from sima_cli.update.uboot_environment import configure_environment
-
-    if not configuration or not configuration.changed or not configuration.backup_dir:
-        return True
-    ssh = _connect_restoration_target(configuration, candidate_ips)
-    remote_stage = None
-    source_dir = configuration.backup_dir
-    local_files = [
-        os.path.join(configuration.local_backup_dir or '', name)
-        for name in ('uboot.env', 'uboot-redund.env')
-    ]
-    if all(os.path.isfile(path) for path in local_files):
-        remote_stage = '/tmp/sima-cli-netboot-uboot-restore'
-        _checked(ssh, 'sudo rm -rf ' + shlex.quote(remote_stage)
-                 + ' && mkdir -m 700 ' + shlex.quote(remote_stage))
-        sftp = ssh.open_sftp()
-        try:
-            for local_path in local_files:
-                sftp.put(local_path, remote_stage + '/' + os.path.basename(local_path))
-        finally:
-            sftp.close()
-        source_dir = remote_stage
-    backup = shlex.quote(source_dir)
-    restore_helper = inspect.getsource(configure_environment) + '''
-import sys
-import os
-from pathlib import Path
-config, boot_dir, backup_dir = sys.argv[1:]
-target_redundant = configure_environment(
-    config, boot_dir, allow_data_inference=True,
-)
-boot = Path(boot_dir)
-backup = Path(backup_dir)
-for name in ('uboot.env', 'uboot-redund.env'):
-    with (boot / name).open('wb') as output:
-        output.write((backup / name).read_bytes())
-        output.flush()
-        os.fsync(output.fileno())
-configure_environment(
-    config, boot_dir, target_redundant=target_redundant,
-)
-'''
-    script = '\n'.join([
-        'set -eu',
-        'restore_ro=0',
-        'restore_mount=',
-        'restore_config=',
-        'boot_root=',
-        'cleanup() {',
-        '  status=$?',
-        '  trap - EXIT',
-        '  if [ -n "$restore_mount" ]; then umount "$restore_mount" || status=1; rmdir "$restore_mount" || status=1; fi',
-        '  if [ -n "$restore_config" ]; then rm -f "$restore_config" || status=1; fi',
-        '  if [ "$restore_ro" = 1 ]; then sync; mount -o remount,ro /boot || status=1; fi',
-        *(([f'  rm -rf {shlex.quote(remote_stage)} || status=1'] if remote_stage else [])),
-        '  exit "$status"',
-        '}',
-        'trap cleanup EXIT',
-        f'test -f {backup}/uboot.env && test -f {backup}/uboot-redund.env',
-        'boot_target=$(findmnt -n -o TARGET -T /boot 2>/dev/null || true)',
-        'boot_source=$(findmnt -n -o SOURCE -T /boot 2>/dev/null || true)',
-        'case "$boot_target:$boot_source" in',
-        '  /boot:/dev/mmcblk0p*)',
-        '    boot_root=/boot',
-        '    options=$(findmnt -n -o OPTIONS -T /boot)',
-        '    case ",$options," in *,ro,*) mount -o remount,rw /boot; restore_ro=1 ;; esac ;;',
-        '  *)',
-        '    probe=$(mktemp -d /tmp/sima-cli-netboot-boot.XXXXXX)',
-        '    selected=',
-        '    for part in /dev/mmcblk0p*; do',
-        '      mount -o ro "$part" "$probe" 2>/dev/null || continue',
-        '      if [ -f "$probe/uboot.env" ] && [ -f "$probe/uboot-redund.env" ]; then',
-        '        test -z "$selected" || { umount "$probe"; rmdir "$probe"; echo "Multiple eMMC boot partitions contain U-Boot environments." >&2; exit 1; }',
-        '        selected=$part',
-        '      fi',
-        '      umount "$probe"',
-        '    done',
-        '    test -n "$selected" || { rmdir "$probe"; echo "Cannot locate the eMMC boot partition containing U-Boot environments." >&2; exit 1; }',
-        '    restore_mount=$probe',
-        '    mount -o rw "$selected" "$probe"',
-        '    boot_root=$probe ;;',
-        'esac',
-        'test -n "$boot_root"',
-        'restore_config=$(mktemp /tmp/sima-cli-netboot-fw-env.XXXXXX)',
-        'python3 -c ' + shlex.quote(restore_helper)
-        + f' "$restore_config" "$boot_root" {backup}',
-        'fw_printenv -c "$restore_config" >/dev/null',
-        'sync',
-    ])
-    try:
-        _checked(ssh, 'sudo sh -c ' + shlex.quote(script))
-    finally:
-        ssh.close()
-    configuration.changed = False
-    configuration.cleanup()
-    click.secho(
-        f'Restored the saved U-Boot environment on {configuration.devkit}.',
-        fg='green',
-    )
-    return True
 
 
 def _manual_netboot_commands(devkit, server_ip, network):
@@ -423,6 +219,11 @@ def _uboot_script(devkit, server_ip, network):
         '    status=1',
         '    cleanup_complete=0',
         '  fi',
+        '  if [ -n "$backup" ] && ! rm -rf "$backup"; then',
+        '    echo "ERROR: Could not remove the temporary U-Boot rollback copy." >&2',
+        '    status=1',
+        '    cleanup_complete=0',
+        '  fi',
         '  if [ "$restore_ro" = 1 ]; then',
         '    if ! sync; then',
         '      echo "ERROR: Could not sync /boot before restoring it read-only." >&2',
@@ -447,7 +248,7 @@ def _uboot_script(devkit, server_ip, network):
         '    mount -o remount,rw /boot || { echo "Cannot remount /boot writable; U-Boot was not changed and the DevKit will not be rebooted." >&2; exit 1; }',
         '    restore_ro=1 ;;',
         'esac',
-        'backup=$(mktemp -d /boot/sima-cli-netboot-backup.XXXXXX)',
+        'backup=$(mktemp -d /tmp/sima-cli-netboot-rollback.XXXXXX)',
         'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
         'backup_complete=1',
         'python3 -c ' + shlex.quote(helper) + ' "$config"',
@@ -456,14 +257,6 @@ def _uboot_script(devkit, server_ip, network):
         # that normalized state the rollback point before applying netboot.
         'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
         'fw_printenv -c "$config" > "$backup/environment.txt"',
-        f'echo "{BACKUP_MARKER}$backup"',
-        'export_dir=$(mktemp -d /tmp/sima-cli-netboot-export.XXXXXX)',
-        'cp -p "$backup/uboot.env" "$backup/uboot-redund.env" "$export_dir/"',
-        'owner=${SUDO_USER:-sima}',
-        'chown -R "$owner" "$export_dir"',
-        'chmod 700 "$export_dir"',
-        'chmod 600 "$export_dir/uboot.env" "$export_dir/uboot-redund.env"',
-        f'echo "{BACKUP_EXPORT_MARKER}$export_dir"',
         'fw_setenv -c "$config" bootfile netboot.scr.uimg',
         'fw_setenv -c "$config" netcfg static',
         'fw_setenv -c "$config" forcenetcfg static',

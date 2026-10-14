@@ -109,7 +109,8 @@ class TypeAdapter:
 
     def connection(self, device: Dict[str, Any]) -> str:
         connection = device.get("connection")
-        return {"usb": "USB", "platform": "On-board"}.get(str(connection), str(device.get("backend") or "Unknown"))
+        known = {"usb": "USB", "platform": "On-board"}
+        return known.get(str(connection)) or str(connection or device.get("backend") or "Unknown")
 
     def facts(self, device: Dict[str, Any]) -> Dict[str, Any]:
         """The CLI-owned facts for `describe`, in JSON form. Unknown types have none beyond the summary."""

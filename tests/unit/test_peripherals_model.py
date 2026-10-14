@@ -70,6 +70,10 @@ def test_a_type_the_cli_does_not_know_goes_through_the_generic_adapter():
     assert model.support(judged) == ("unsupported", "No Neat input reads point clouds.")
     assert model.support(dict(lidar, modes=[])) == (None, "")
     assert [a.type for a in model.ADAPTERS.values()] == ["camera", "microphone"]
+    # A connection the CLI has no label for is shown as Sentinel wrote it, ahead of the backend.
+    assert model.connection_label(dict(lidar, connection="ethernet", backend="udp")) == "ethernet"
+    assert model.connection_label(dict(lidar, connection="", backend="udp")) == "udp"
+    assert model.connection_label({k: v for k, v in lidar.items() if k != "connection"}) == "Unknown"
 
 
 def test_microphones_are_listed_without_an_application_verdict():

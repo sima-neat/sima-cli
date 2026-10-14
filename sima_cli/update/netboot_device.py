@@ -22,6 +22,8 @@ MANUAL_FALLBACK_READY = 'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY'
 class NetbootConfiguration:
     devkit: str
     hardware_address: str = None
+    netboot_configured: bool = False
+    flash_completed: bool = False
 
 
 def resolve_device(devkit=None):
@@ -123,6 +125,8 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
             _show_manual_legacy_setup(devkit, server_ip, network, autoflash)
             return False
         click.echo(output)
+        if configuration is not None:
+            configuration.netboot_configured = True
         # A delayed systemd job acknowledges scheduling before SSH disconnects.
         _checked(ssh, 'sudo systemd-run --on-active=3s /sbin/reboot')
         click.secho(

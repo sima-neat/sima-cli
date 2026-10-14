@@ -763,6 +763,8 @@ def flash_emmc(
             check=True,
             command_label='Finalizing eMMC partitions',
         )
+        if configuration is not None:
+            configuration.flash_completed = True
 
         if offer_reboot:
             click.echo("✅ Flash completed.")
@@ -1088,6 +1090,20 @@ def _update_configured_device_from_discovery(configuration, devices):
         )
 
 
+def _warn_unflashed_netboot(configuration):
+    """Explain recovery when persistent netboot settings outlive the session."""
+    if (configuration is None or not configuration.netboot_configured
+            or configuration.flash_completed):
+        return
+    click.secho(
+        'Netboot ended without a completed eMMC flash. U-Boot remains configured '
+        'for network boot; use the serial console to recover local boot before '
+        'rebooting without this TFTP server.',
+        fg='yellow',
+        err=True,
+    )
+
+
 def run_cli(client_manager, configuration=None):
     """Run the interactive CLI for netboot commands."""
     click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'd' to discover devices, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
@@ -1369,6 +1385,7 @@ def setup_netboot(
 
     finally:
         shutdown_error = None
+        _warn_unflashed_netboot(configuration)
         if server is not None:
             server.stop(now=True)
         if client_manager is not None:

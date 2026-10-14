@@ -60,10 +60,13 @@ def test_decline_never_writes_or_reboots():
 
 def test_confirmation_precedes_writes_and_reboot(capsys):
     events = []
+    configuration = device.NetbootConfiguration('192.0.2.1')
     with patch.object(device, 'init_ssh_session'), \
             patch.object(device, '_checked', side_effect=lambda ssh, cmd: events.append(cmd) or '') , \
             patch.object(click, 'confirm', side_effect=lambda *a, **k: events.append('confirmed') or True):
-        device.configure_and_reboot('192.0.2.1', '192.0.2.10')
+        device.configure_and_reboot(
+            '192.0.2.1', '192.0.2.10', configuration=configuration
+        )
     assert events[1] == 'confirmed'
     script = shlex.split(events[2])[3]
     subprocess.run(['sh', '-n'], input=script, text=True, check=True)
@@ -81,7 +84,23 @@ def test_confirmation_precedes_writes_and_reboot(capsys):
     assert 'sima-cli-netboot-export' not in script
     assert 'SIMA_CLI_NETBOOT_BACKUP' not in script
     assert events[3] == 'sudo systemd-run --on-active=3s /sbin/reboot'
+    assert configuration.netboot_configured is True
     assert 'persist across reboots' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('configured,flashed,warns', [
+    (False, False, False),
+    (True, False, True),
+    (True, True, False),
+])
+def test_unflashed_netboot_warning(configured, flashed, warns, capsys):
+    configuration = device.NetbootConfiguration(
+        '192.0.2.1',
+        netboot_configured=configured,
+        flash_completed=flashed,
+    )
+    netboot._warn_unflashed_netboot(configuration)
+    assert ('serial console' in capsys.readouterr().err) is warns
 
 
 @pytest.mark.parametrize('failed_call', [0, 1])

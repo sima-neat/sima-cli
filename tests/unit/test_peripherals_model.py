@@ -143,6 +143,21 @@ def test_catalog_warnings_put_the_firmware_verdict_first_verbatim():
     assert model.catalog_warnings({"errors": []}) == []
 
 
+def test_catalog_errors_carry_only_the_cli_owned_fields():
+    """Codex on #290: a field Sentinel adds to a provider error must not change the schema-1.0 document."""
+    cat = dict(catalog("devkit-3.0"), errors=[
+        {"provider": "camera.v4l2", "code": "io.permission_denied", "reason": "/dev/video1 cannot be opened",
+         "detail": {"errno": 13}},
+        {"provider": "board.firmware", "code": "platform.unsupported"},
+        "not a record",
+    ])
+    document = model.envelope("peripherals.list", {}, cat, {})
+    assert document["sentinel"]["errors"] == [
+        {"provider": "camera.v4l2", "code": "io.permission_denied", "reason": "/dev/video1 cannot be opened"},
+        {"provider": "board.firmware", "code": "platform.unsupported", "reason": ""},
+    ]
+
+
 def test_envelope_is_versioned_and_carries_the_catalog_identity():
     cat = catalog("devkit-3.0")
     now = datetime(2026, 10, 12, 14, 0, 0, tzinfo=timezone.utc)

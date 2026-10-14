@@ -365,6 +365,12 @@ def verdict_label(available: Optional[bool]) -> str:
 PLATFORM_UNSUPPORTED = "platform.unsupported"
 
 
+def catalog_errors(catalog: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Sentinel's provider errors projected to the fields the CLI schema owns: provider, code, reason."""
+    return [{key: str(error.get(key) or "") for key in ("provider", "code", "reason")}
+            for error in catalog.get("errors") or [] if isinstance(error, dict)]
+
+
 def catalog_warnings(catalog: Dict[str, Any]) -> List[str]:
     """Sentinel's provider errors as sentences: a firmware older than it supports comes first, verbatim."""
     warnings: List[str] = []
@@ -414,6 +420,6 @@ def envelope(command: str, devkit: Dict[str, Any], catalog: Optional[Dict[str, A
     }
     if isinstance(catalog, dict):
         document["sentinel"] = {"revision": catalog.get("revision"), "observed_at": catalog.get("observed_at"),
-                                "errors": catalog.get("errors") or []}
+                                "errors": catalog_errors(catalog)}
     document.update(payload)
     return document

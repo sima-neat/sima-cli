@@ -103,6 +103,7 @@ pip install sima-cli
 | [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md) | DevKit에서 네트워크 IP 주소를 설정합니다. |
 | [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md) | NVMe 작업을 Modalix DevKit에서 수행합니다. |
 | [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md) | sima-cli 패키지 레지스트리를 관리합니다(목록 표시, 검사, 정리 등). |
+| [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md) | 이 DevKit에 연결된 카메라와 마이크를 표시합니다. |
 | [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md) | 플레이북을 설치하고 관리합니다(Codex/Claude). |
 | [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md) | MLSoc DevKit 또는 Modalix 얼리 액세스 장치의 데이터 저장 장치로 SD 카드를 준비합니다. |
 | [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | SiMa SDK 2.0 컨테이너 환경을 관리하고 배포합니다(베타 버전). |
@@ -126,6 +127,7 @@ pip install sima-cli
 - [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md)
 - [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md)
 - [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md)
+- [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md)
 - [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md)
 - [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md)
 - [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md)
@@ -148,6 +150,8 @@ pip install sima-cli
 - [`sima-cli packages build`](../../../sima-cli/commands/sima-cli-packages-build.md)
 - [`sima-cli packages list`](../../../sima-cli/commands/sima-cli-packages-list.md)
 - [`sima-cli packages show`](../../../sima-cli/commands/sima-cli-packages-show.md)
+- [`sima-cli peripherals describe`](../../../sima-cli/commands/sima-cli-peripherals-describe.md)
+- [`sima-cli peripherals list`](../../../sima-cli/commands/sima-cli-peripherals-list.md)
 - [`sima-cli playbooks apply`](../../../sima-cli/commands/sima-cli-playbooks-apply.md)
 - [`sima-cli playbooks delete`](../../../sima-cli/commands/sima-cli-playbooks-delete.md)
 - [`sima-cli playbooks describe`](../../../sima-cli/commands/sima-cli-playbooks-describe.md)

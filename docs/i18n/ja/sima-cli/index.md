@@ -103,6 +103,7 @@ pip install sima-cli
 | [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md) | DevKit のネットワーク IP アドレスを設定します。 |
 | [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md) | NVMe 操作を、Modalix DevKit 上で実行します。 |
 | [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md) | sima-cli パッケージレジストリを管理します（リスト表示、詳細確認、クリーンアップなど）。 |
+| [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md) | この DevKit に接続されているカメラとマイクを表示します。 |
 | [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md) | プレイブックをインストールおよび管理します（Codex/Claude）。 |
 | [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md) | MLSoc DevKitまたはModalixの早期アクセスユニット用のデータストレージデバイスとして、SDカードを準備してください。 |
 | [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | SiMa SDK 2.0 のコンテナ環境を管理し、ベータ版として公開します。 |
@@ -126,6 +127,7 @@ pip install sima-cli
 - [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md)
 - [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md)
 - [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md)
+- [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md)
 - [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md)
 - [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md)
 - [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md)
@@ -148,6 +150,8 @@ pip install sima-cli
 - [`sima-cli packages build`](../../../sima-cli/commands/sima-cli-packages-build.md)
 - [`sima-cli packages list`](../../../sima-cli/commands/sima-cli-packages-list.md)
 - [`sima-cli packages show`](../../../sima-cli/commands/sima-cli-packages-show.md)
+- [`sima-cli peripherals describe`](../../../sima-cli/commands/sima-cli-peripherals-describe.md)
+- [`sima-cli peripherals list`](../../../sima-cli/commands/sima-cli-peripherals-list.md)
 - [`sima-cli playbooks apply`](../../../sima-cli/commands/sima-cli-playbooks-apply.md)
 - [`sima-cli playbooks delete`](../../../sima-cli/commands/sima-cli-playbooks-delete.md)
 - [`sima-cli playbooks describe`](../../../sima-cli/commands/sima-cli-playbooks-describe.md)

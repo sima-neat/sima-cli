@@ -92,11 +92,15 @@ def test_remote_failure_prevents_reboot(failed_call):
     connect.return_value.close.assert_called_once()
 
 
-def test_unsupported_legacy_layout_continues_with_manual_instructions(capsys):
+@pytest.mark.parametrize('failure_reason', [
+    'RuntimeError: Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout.',
+    'RuntimeError: Single-file U-Boot environment has no reclaimable padding byte after its terminator.',
+])
+def test_restored_uboot_failure_continues_with_manual_instructions(capsys, failure_reason):
     failure = click.ClickException(
         'Remote netboot preparation failed: Restored saved U-Boot environment. '
         'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY '
-        'RuntimeError: Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout.',
+        + failure_reason,
     )
     with patch.object(device, 'init_ssh_session') as connect, \
             patch.object(device, '_checked', side_effect=['', failure]) as command, \
@@ -110,6 +114,7 @@ def test_unsupported_legacy_layout_continues_with_manual_instructions(capsys):
     connect.return_value.close.assert_called_once()
     output = capsys.readouterr().out
     assert 'Manual netboot setup required' in output
+    assert 'could not safely prepare the U-Boot environment automatically' in output
     assert 'saved environment was restored' in output
     assert 'setenv ipaddr 192.0.2.1' in output
     assert 'setenv serverip 192.0.2.10' in output
@@ -121,7 +126,7 @@ def test_unsupported_legacy_layout_continues_with_manual_instructions(capsys):
     assert 'Automatic flashing is disabled' in output
 
 
-def test_legacy_layout_with_cleanup_failure_remains_fatal():
+def test_uboot_failure_with_cleanup_failure_remains_fatal():
     failure = click.ClickException(
         'Remote netboot preparation failed: Restored saved U-Boot environment. '
         'RuntimeError: Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout. '

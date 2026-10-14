@@ -17,7 +17,6 @@ from rich.text import Text
 
 from sima_cli.update.remote import init_ssh_session, run_remote_command_capture, wait_for_ssh
 
-LEGACY_LAYOUT_ERROR = 'Unsupported legacy 2.1 fw_env.config'
 MANUAL_FALLBACK_READY = 'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY'
 BACKUP_MARKER = 'SIMA_CLI_NETBOOT_BACKUP='
 BACKUP_EXPORT_MARKER = 'SIMA_CLI_NETBOOT_EXPORT='
@@ -150,10 +149,9 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
             output = _checked(ssh, 'sudo sh -c ' + shlex.quote(script))
         except click.ClickException as exc:
             error = str(exc)
-            if (LEGACY_LAYOUT_ERROR not in error or MANUAL_FALLBACK_READY not in error
-                    or 'ERROR:' in error):
+            if MANUAL_FALLBACK_READY not in error or 'ERROR:' in error:
                 raise
-            _show_manual_legacy_setup(devkit, server_ip, network, autoflash)
+            _show_manual_setup(devkit, server_ip, network, autoflash)
             return False
         click.echo(output)
         if configuration is not None:
@@ -363,12 +361,12 @@ def _manual_netboot_commands(devkit, server_ip, network):
     return '\n'.join(commands)
 
 
-def _show_manual_legacy_setup(devkit, server_ip, network, autoflash):
+def _show_manual_setup(devkit, server_ip, network, autoflash):
     message = Text()
     message.append(
-        'This Platform 2.1 DevKit uses an older U-Boot environment layout that '
-        'sima-cli cannot safely modify. The saved environment was restored and '
-        'the DevKit was not rebooted.\n\n', style='bold yellow',
+        'sima-cli could not safely prepare the U-Boot environment automatically. '
+        'The saved environment was restored and the DevKit was not rebooted.\n\n',
+        style='bold yellow',
     )
     message.append(
         'Keep this command running. Connect to the DevKit serial console, interrupt '

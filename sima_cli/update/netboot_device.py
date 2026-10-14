@@ -94,8 +94,6 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
                  "|| { echo 'Missing /boot/u-boot.bin; cannot identify the bootloader environment format for this platform.' >&2; exit 1; }; "
                  "test -f /etc/fw_env.config || { echo 'Missing /etc/fw_env.config for legacy 2.1 environment validation.' >&2; exit 1; }; fi")
         network = network_settings(ssh, devkit, server_ip)
-        if configuration is not None:
-            configuration.hardware_address = network.get('hardware_address')
         message = Text()
         message.append(f"DevKit: {devkit} ({network['interface']})\nTFTP server: {server_ip}\n"
                        f"Netmask: {network['netmask']}  Gateway: {network['gateway']}\n\n", style='bold cyan')
@@ -111,6 +109,8 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
         if not click.confirm('Set up network boot, automatically flash this DevKit, and reboot it from eMMC?' if autoflash
                              else 'Set up network boot and reboot this DevKit?', default=False):
             return False
+        if configuration is not None:
+            configuration.hardware_address = network.get('hardware_address')
         # Match Kerrigan's redundant environment layout. Use a temporary config,
         # preserving any system fw_env.config. The device-side script keeps only
         # a transient rollback copy for failures during this preparation step.

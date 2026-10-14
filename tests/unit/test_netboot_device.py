@@ -49,12 +49,16 @@ def test_no_discovered_device_allows_manual_setup():
 
 
 def test_decline_never_writes_or_reboots():
+    configuration = device.NetbootConfiguration('192.0.2.1')
     with patch.object(device, 'init_ssh_session') as connect, \
             patch.object(device, '_checked') as command, \
             patch.object(click, 'confirm', return_value=False):
-        assert device.configure_and_reboot('192.0.2.1', '192.0.2.10') is False
+        assert device.configure_and_reboot(
+            '192.0.2.1', '192.0.2.10', configuration=configuration
+        ) is False
     assert command.call_count == 1
     assert not command.call_args.args[1].startswith('sudo')
+    assert configuration.hardware_address is None
     connect.return_value.close.assert_called_once()
 
 

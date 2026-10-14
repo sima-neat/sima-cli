@@ -633,6 +633,7 @@ def flash_emmc(
     override_ip=None,
     troot_image_path=None,
     configuration=None,
+    manual_reboot=True,
 ):
     """Flash eMMC on a selected client device."""
     if not emmc_image_paths:
@@ -734,7 +735,10 @@ def flash_emmc(
             command_label='Finalizing eMMC partitions',
         )
 
-        click.echo("✅ Flash completed. Please reboot the board to boot from eMMC.")
+        if manual_reboot:
+            click.echo("✅ Flash completed. Please reboot the board to boot from eMMC.")
+        else:
+            click.echo("✅ Flash completed.")
         return True
     except Exception as e:
         click.echo(f"❌ Flashing failed: {e}")
@@ -1114,6 +1118,20 @@ def run_cli(client_manager, configuration=None):
             click.echo("\n🛑 Exiting netboot session.")
             return True
 
+def _schedule_reboot_into_emmc(selected_ip):
+    """Schedule a delayed reboot while allowing SSH output to complete."""
+    ssh = init_ssh_session(selected_ip, password=DEFAULT_PASSWORD)
+    try:
+        run_remote_command(
+            ssh,
+            'sudo systemd-run --on-active=3s /sbin/reboot',
+            check=True,
+            command_label='Scheduling reboot into eMMC',
+        )
+    finally:
+        ssh.close()
+
+
 def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
     """Flash only the confirmed device, once, after its network boot is ready."""
     click.echo(f'Waiting for SSH on {selected_ip}; flashing will start automatically.')
@@ -1133,10 +1151,20 @@ def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
                                            'to be running the network boot image.')
             click.echo(f'Starting automatic flash on {selected_ip}.')
             flashed = flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
-                                 troot_image_path=troot_image_path, configuration=configuration)
+                                 troot_image_path=troot_image_path, configuration=configuration,
+                                 manual_reboot=False)
             if not flashed:
                 raise click.ClickException('Automatic eMMC flash failed.')
-            return
+            if configuration is not None and configuration.changed:
+                from sima_cli.update.netboot_device import restore_environment
+                restore_environment(configuration, candidate_ips=[selected_ip])
+            _schedule_reboot_into_emmc(selected_ip)
+            click.secho(
+                f'Flash completed and reboot was scheduled for {selected_ip}; '
+                'the DevKit will start from eMMC.',
+                fg='green',
+            )
+            return True
         if time.monotonic() >= deadline:
             raise click.ClickException(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')
         client_manager.shutdown_event.wait(0.5)
@@ -1292,6 +1320,7 @@ def setup_netboot(
                     click.echo('Automatic flashing is disabled because device setup was not confirmed.')
             elif autoflash:
                 auto_flash(client_manager, selected_devkit, configuration=configuration)
+                return
         else:
             message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'
                            'Configure the DevKit manually through its serial console to boot from the network, '

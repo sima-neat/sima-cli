@@ -135,12 +135,12 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
         message.append('• Boot parameters will be automatically updated on the DevKit to let it boot from the network.\n'
                        '• The DevKit will reboot, interrupting running applications.\n\n')
         if autoflash:
-            message.append('• Open SSH is available after network boot, this tool will automatically flash the selected devkit.\n\n', style='bold red')
+            message.append('• After network boot, this tool will automatically flash the selected DevKit and reboot it from eMMC.\n\n', style='bold red')
         message.append('These boot settings persist across reboots. No DHCP is required.\nKeep this host and TFTP server running.\n'
                        'If netboot fails, the DevKit retries and reboots; restoring local boot may require serial access.\n'
                        + ('Automatic flashing is enabled.' if autoflash else 'Netboot preparation itself does not write the eMMC image.'), style='bold yellow')
         Console().print(Panel(message, title='Reboot DevKit into network boot', border_style='yellow'))
-        if not click.confirm('Set up network boot, reboot, and automatically flash this DevKit?' if autoflash
+        if not click.confirm('Set up network boot, automatically flash this DevKit, and reboot it from eMMC?' if autoflash
                              else 'Set up network boot and reboot this DevKit?', default=False):
             return False
         # Match Kerrigan's redundant environment layout. Use a temporary config,

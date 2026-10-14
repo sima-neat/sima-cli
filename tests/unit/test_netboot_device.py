@@ -342,9 +342,12 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
             patch.object(click, 'confirm', return_value=confirmed):
         thread.return_value.is_alive.return_value = False
         netboot.setup_netboot('3.0', 'modalix', autoflash=autoflash)
-    cli.assert_called_once()
-    assert cli.call_args.args == (manager,)
-    assert cli.call_args.kwargs['configuration'].devkit == '192.0.2.1'
+    if confirmed and autoflash:
+        cli.assert_not_called()
+    else:
+        cli.assert_called_once()
+        assert cli.call_args.args == (manager,)
+        assert cli.call_args.kwargs['configuration'].devkit == '192.0.2.1'
     if confirmed is not None:
         assert connect.return_value.close.call_count == (2 if confirmed else 1)
     if confirmed:

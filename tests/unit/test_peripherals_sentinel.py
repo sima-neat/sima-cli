@@ -109,11 +109,19 @@ def test_http_failures_map_to_stable_codes_with_sentinels_text(sentinel, status,
         SentinelClient(path).catalog()
     assert raised.value.code == code
     assert "discovery stopped" in raised.value.message
+    if code == "protocol":
+        # Codex on #290: the error document's detail is the CLI's own description, never the body.
+        assert raised.value.as_dict()["detail"] == {"status": 500, "received": "a JSON object with keys error"}
 
 
 def test_a_body_that_is_not_a_catalog_is_a_protocol_error(sentinel):
     path, _ = sentinel
-    _Handler.routes[("GET", "/v1/peripherals")] = (200, {"devices": "nope"})
+    _Handler.routes[("GET", "/v1/peripherals")] = (200, {"devices": "nope", "secret": {"nested": 1}})
     with pytest.raises(SentinelError) as raised:
         SentinelClient(path).catalog()
     assert raised.value.code == "protocol"
+    assert raised.value.as_dict()["detail"] == {"received": "a JSON object with keys devices, secret"}
+    _Handler.routes[("GET", "/v1/peripherals")] = (200, [1, 2])
+    with pytest.raises(SentinelError) as raised:
+        SentinelClient(path).catalog()
+    assert raised.value.as_dict()["detail"] == {"received": "a JSON array of 2"}

@@ -43,6 +43,18 @@ class SentinelError(Exception):
         return body
 
 
+def _body_kind(body: Any) -> str:
+    """What Sentinel sent, in the CLI's own words: the error document's `detail` never carries the body
+    itself, so a field Sentinel adds cannot change the document's shape."""
+    if body is None:
+        return "no JSON body"
+    if isinstance(body, dict):
+        return "a JSON object with keys " + ", ".join(sorted(str(k) for k in body)[:8]) if body else "an empty JSON object"
+    if isinstance(body, list):
+        return f"a JSON array of {len(body)}"
+    return f"JSON {type(body).__name__}"
+
+
 class _UnixHTTPConnection(http.client.HTTPConnection):
     """`http.client` over an `AF_UNIX` socket; the host name is never used."""
 
@@ -69,7 +81,7 @@ class SentinelClient:
             status, body = self._call("GET", "/v1/peripherals")
         if not isinstance(body, dict) or not isinstance(body.get("devices"), list):
             raise SentinelError("protocol", "SiMa Sentinel returned a catalog that does not match its v1 API.",
-                                START_HINT, detail=body)
+                                START_HINT, detail={"received": _body_kind(body)})
         return body
 
     def health(self) -> Dict[str, Any]:
@@ -129,4 +141,5 @@ class SentinelClient:
         if status == 429:
             raise SentinelError("busy", f"Too many refreshes are already waiting on SiMa Sentinel: {text}",
                                 "Retry in a moment.")
-        raise SentinelError("protocol", f"SiMa Sentinel answered {method} {path} with {text}.", START_HINT, detail=body)
+        raise SentinelError("protocol", f"SiMa Sentinel answered {method} {path} with {text}.", START_HINT,
+                            detail={"status": status, "received": _body_kind(body)})

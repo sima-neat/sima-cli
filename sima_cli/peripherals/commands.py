@@ -107,6 +107,8 @@ def _read_catalog(output: _Output, client: SentinelClient, refresh: bool) -> Dic
     try:
         return client.catalog(refresh=refresh)
     except SentinelError as exc:
+        if exc.code == "timeout":
+            output.client = None  # Sentinel is not answering; asking it for a version would wait out another timeout.
         output.fail(exit_code_for(exc.code), exc.as_dict())
         raise AssertionError("unreachable")
 

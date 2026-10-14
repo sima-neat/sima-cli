@@ -211,6 +211,18 @@ def test_sentinel_failures_map_to_exit_codes(on_devkit, monkeypatch, code, exit_
     assert document["result"] == "error" and document["error"]["code"] == code
 
 
+def test_a_timed_out_catalog_does_not_probe_sentinel_again(on_devkit, monkeypatch):
+    """Codex on #290: after a timeout the JSON error must not wait out a second timeout on /v1/health."""
+    client = use_client(monkeypatch, FakeClient({}, error=SentinelError("timeout", "no answer")))
+    document = json.loads(runner().invoke(commands.peripherals, ["list", "--json"]).stdout)
+    assert document["error"]["code"] == "timeout" and document["devkit"]["sentinel_version"] is None
+    assert client.calls == ["catalog"]
+    # A daemon that answers with an error is still asked for its version.
+    client = use_client(monkeypatch, FakeClient({}, error=SentinelError("protocol", "bad body")))
+    document = json.loads(runner().invoke(commands.peripherals, ["list", "--json"]).stdout)
+    assert document["devkit"]["sentinel_version"] == "0.6.0" and client.calls == ["catalog", "health"]
+
+
 def test_through_the_root_cli_json_stdout_carries_only_the_document(on_devkit, catalog, monkeypatch):
     """The root group prints an environment banner and may run a PyPI update check; neither may reach
     the JSON on stdout, and the update check must not run at all (a DevKit may be offline, and its

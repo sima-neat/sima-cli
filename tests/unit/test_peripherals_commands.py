@@ -1,15 +1,17 @@
-"""`sima-cli peripherals list|describe`: output contract, DevKit gate, exit codes."""
+"""`sima-cli peripherals list|describe`: output contract, DevKit gate, exit codes.
+
+Catalogs are built from peripherals_fixtures.py with only the fields each test needs; the recorded
+catalogs in tests/unit/snapshots are exercised by test_peripherals_contract.py.
+"""
 
 import json
-from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from sima_cli.peripherals import commands
 from sima_cli.peripherals.sentinel import SentinelError
-
-FIXTURES = Path(__file__).parent / "fixtures" / "sentinel"
+from tests.unit.peripherals_fixtures import NV12_ONLY, board, catalog, devkit, microphone, mipi_camera, usb_camera, without_verdicts
 
 
 def runner():
@@ -45,30 +47,34 @@ def on_devkit(monkeypatch):
     monkeypatch.setattr(commands, "get_sima_build_version", lambda: ("3.0.0", "3.0.0_B1859"))
 
 
-@pytest.fixture
-def catalog():
-    return json.loads((FIXTURES / "devkit-3.0.json").read_text())
-
-
 def use_client(monkeypatch, client):
     monkeypatch.setattr(commands, "SentinelClient", lambda socket_path: client)
     return client
 
 
-def test_list_prints_only_the_table(on_devkit, catalog, monkeypatch):
-    use_client(monkeypatch, FakeClient(catalog))
+def test_list_prints_only_the_table(on_devkit, monkeypatch):
+    use_client(monkeypatch, FakeClient(devkit()))
     result = runner().invoke(commands.peripherals, ["list"])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     assert lines[0].split() == ["ID", "TYPE", "CONNECTION", "DEVICE", "STATUS", "SUPPORT"]
     assert "camera:imx477 5-001a" in lines[1] and lines[1].endswith("Supported")
     assert "HD Pro Webcam C920" in lines[2] and lines[2].endswith("Unsupported")
+    assert lines[3].startswith("microphone:") and lines[3].endswith("-")
     # Reasons belong to `describe`; the list stays one line per device.
     assert len(lines) == 4 and "overlay" not in result.output
 
 
-def test_list_json_is_the_versioned_envelope_on_stdout_only(on_devkit, catalog, monkeypatch):
-    client = use_client(monkeypatch, FakeClient(catalog))
+def test_list_with_nothing_attached(on_devkit, monkeypatch):
+    use_client(monkeypatch, FakeClient(catalog()))
+    result = runner().invoke(commands.peripherals, ["list"])
+    assert result.exit_code == 0 and result.output.strip() == "No cameras or microphones detected."
+    document = json.loads(runner().invoke(commands.peripherals, ["list", "--json"]).stdout)
+    assert document["peripherals"] == [] and document["result"] == "ok"
+
+
+def test_list_json_is_the_versioned_envelope_on_stdout_only(on_devkit, monkeypatch):
+    client = use_client(monkeypatch, FakeClient(devkit()))
     result = runner().invoke(commands.peripherals, ["list", "--json", "--refresh"])
     assert result.exit_code == 0, result.output
     document = json.loads(result.stdout)
@@ -82,36 +88,41 @@ def test_list_json_is_the_versioned_envelope_on_stdout_only(on_devkit, catalog, 
     assert result.stderr == ""
 
 
-def test_a_camera_without_verdicts_warns_to_update_sentinel(on_devkit, catalog, monkeypatch):
-    older = json.loads(json.dumps(catalog))
-    for device in older["devices"]:
-        for mode in device.get("modes") or []:
-            mode.pop("available", None)
-            mode.pop("reason", None)
-    use_client(monkeypatch, FakeClient(older))
+def test_a_camera_without_verdicts_warns_to_update_sentinel(on_devkit, monkeypatch):
+    use_client(monkeypatch, FakeClient(without_verdicts(devkit())))
     result = runner().invoke(commands.peripherals, ["list"])
     assert result.exit_code == 0
     assert "no availability verdict" in result.stderr and "camera:imx477 5-001a" in result.stderr
     assert result.stdout.splitlines()[1].endswith("-")
 
 
-def test_describe_by_id_shows_facts_and_every_mode(on_devkit, catalog, monkeypatch):
-    use_client(monkeypatch, FakeClient(catalog))
+def test_describe_by_id_shows_facts_and_every_mode(on_devkit, monkeypatch):
+    use_client(monkeypatch, FakeClient(catalog(mipi_camera(sizing="runtime", max_fps=125.54), board_block=board(firmware="3.0.0"))))
     result = runner().invoke(commands.peripherals, ["describe", "camera:imx477 5-001a"])
     assert result.exit_code == 0, result.output
-    assert "MIPI CSI-2" in result.output
-    assert "Platform" in result.output and "3.0.0" in result.output
-    assert "sizes set at run time" in result.output
-    assert "1920x1080" in result.output and "Supported" in result.output
-    assert "Neat's CameraInput outputs NV12 only." in result.output
+    facts, table = result.output.split("\n\n", 1)
+    assert "MIPI CSI-2" in facts
+    assert "Platform" in facts and "3.0.0" in facts and "modalix-som-waveshare-ARDU-IMX477-1CAM.dtbo" in facts
+    assert "ISP" in facts and "sizes set at run time" in facts
     # Codex on #290: the DevKit's ISP reports no per-mode rate, so the sensor's limit is the frame-rate fact.
-    assert "Sensor max rate" in result.output and "125.54 fps at 1920x1080" in result.output
+    assert "Sensor max rate" in facts and "125.54 fps at 1920x1080" in facts
+    rows = [line.split(maxsplit=4) for line in table.splitlines()]
+    assert rows[0][:4] == ["FORMAT", "SIZE", "FPS", "SUPPORT"]
+    assert rows[1] == ["NV12", "1920x1080", "-", "Supported"]
+    assert rows[3] == ["AR24", "1920x1080", "-", "Unsupported", NV12_ONLY]
 
 
-def test_describe_a_microphone_shows_its_nodes_and_sample_rates(on_devkit, catalog, monkeypatch):
+def test_describe_a_fixed_isp_camera_does_not_claim_run_time_sizing(on_devkit, monkeypatch):
+    use_client(monkeypatch, FakeClient(catalog(mipi_camera())))
+    result = runner().invoke(commands.peripherals, ["describe", "imx477"])
+    assert result.exit_code == 0 and "run time" not in result.output
+    assert "66.18 fps at 1920x1080" in result.output and "Platform" in result.output and "2.1.3" in result.output
+
+
+def test_describe_a_microphone_shows_its_nodes_and_sample_rates(on_devkit, monkeypatch):
     """Codex on #290: microphone modes carry `rates_hz`, not frame intervals, and the usable node and
     ALSA selector sit under `identity` and `capture_target`."""
-    use_client(monkeypatch, FakeClient(catalog))
+    use_client(monkeypatch, FakeClient(devkit()))
     result = runner().invoke(commands.peripherals, ["describe", "microphone:alsa:329f324bddfdde7b"])
     assert result.exit_code == 0, result.output
     facts = {" ".join(line.split()[:2]): line.split()[-1] for line in result.output.split("\n\n", 1)[0].splitlines()}
@@ -123,11 +134,10 @@ def test_describe_a_microphone_shows_its_nodes_and_sample_rates(on_devkit, catal
     assert rows == [["S16_LE", "2", "16000"], ["S16_LE", "2", "24000"], ["S16_LE", "2", "32000"]]
 
 
-def test_describe_an_unknown_type_prints_its_properties_not_a_camera_table(on_devkit, catalog, monkeypatch):
-    with_lidar = json.loads(json.dumps(catalog))
-    with_lidar["devices"].append({"id": "lidar:usb:1", "type": "lidar", "connection": "usb", "name": "Velo",
-                                  "modes": [{"format": "XYZI", "points_per_second": 300000}]})
-    use_client(monkeypatch, FakeClient(with_lidar))
+def test_describe_an_unknown_type_prints_its_properties_not_a_camera_table(on_devkit, monkeypatch):
+    lidar = {"id": "lidar:usb:1", "type": "lidar", "connection": "usb", "name": "Velo",
+             "modes": [{"format": "XYZI", "points_per_second": 300000}]}
+    use_client(monkeypatch, FakeClient(catalog(mipi_camera(), lidar)))
     listed = runner().invoke(commands.peripherals, ["list"])
     assert listed.exit_code == 0 and "lidar:usb:1" in listed.output and "Lidar" in listed.output
     result = runner().invoke(commands.peripherals, ["describe", "lidar:usb:1"])
@@ -138,10 +148,11 @@ def test_describe_an_unknown_type_prints_its_properties_not_a_camera_table(on_de
     assert "points_per_second=300000" in table and "SIZE" not in table and "FPS" not in table
 
 
-def test_describe_json_holds_only_projected_fields(on_devkit, catalog, monkeypatch):
+def test_describe_json_holds_only_projected_fields(on_devkit, monkeypatch):
     """shanguangzai on #290: the versioned document must not pass Sentinel's `device` or `board`
     records through, so a Sentinel change cannot alter the schema and `modes` has one source."""
-    use_client(monkeypatch, FakeClient(catalog))
+    use_client(monkeypatch, FakeClient(catalog(mipi_camera(sizing="runtime", max_fps=125.54), microphone(),
+                                               board_block=board(firmware="3.0.0"))))
     result = runner().invoke(commands.peripherals, ["describe", "imx477", "--json"])
     document = json.loads(result.stdout)
     assert document["command"] == "peripherals.describe"
@@ -151,15 +162,15 @@ def test_describe_json_holds_only_projected_fields(on_devkit, catalog, monkeypat
     assert set(document["facts"]) == {"camera_name", "media_device", "bus_info", "csi_receiver", "isp", "sensor_max_fps"}
     assert document["facts"]["isp"] == {"state": "available", "sizing": "runtime"}
     assert document["facts"]["sensor_max_fps"] == {"fps": 125.54, "width": 1920, "height": 1080}
-    assert any(mode["available"] is True for mode in document["modes"])
+    assert [mode["available"] for mode in document["modes"]] == [True, True, False]
     assert set(document["modes"][0]) == {"format", "width", "height", "rates", "source", "available", "reason"}
-    microphone = json.loads(runner().invoke(commands.peripherals, ["describe", "microphone:alsa:329f324bddfdde7b", "--json"]).stdout)
-    assert set(microphone["facts"]) == {"device_node", "by_id", "driver", "alsa_device"}
-    assert set(microphone["modes"][0]) == {"format", "channels", "sample_bits", "sample_rates_hz", "sample_rate_range_hz", "available", "reason"}
+    microphone_doc = json.loads(runner().invoke(commands.peripherals, ["describe", "microphone:alsa:329f324bddfdde7b", "--json"]).stdout)
+    assert set(microphone_doc["facts"]) == {"device_node", "by_id", "driver", "alsa_device"}
+    assert set(microphone_doc["modes"][0]) == {"format", "channels", "sample_bits", "sample_rates_hz", "sample_rate_range_hz", "available", "reason"}
 
 
-def test_an_unknown_device_is_invalid_input_with_the_known_ids(on_devkit, catalog, monkeypatch):
-    use_client(monkeypatch, FakeClient(catalog))
+def test_an_unknown_device_is_invalid_input_with_the_known_ids(on_devkit, monkeypatch):
+    use_client(monkeypatch, FakeClient(devkit()))
     result = runner().invoke(commands.peripherals, ["describe", "camera:none"])
     assert result.exit_code == 2
     assert "camera:imx477 5-001a" in result.stderr
@@ -168,10 +179,10 @@ def test_an_unknown_device_is_invalid_input_with_the_known_ids(on_devkit, catalo
     assert json.loads(as_json.stdout)["error"]["code"] == "unknown_device"
 
 
-def test_usage_errors_are_json_documents_too(on_devkit, catalog, monkeypatch):
+def test_usage_errors_are_json_documents_too(on_devkit, monkeypatch):
     """Codex on #290: Click rejects a missing <ID>, an unknown option or an extra argument before the
     callback runs; with --json those must still be the versioned error document on stdout, exit 2."""
-    use_client(monkeypatch, FakeClient(catalog))
+    use_client(monkeypatch, FakeClient(devkit()))
     for argv in (["describe", "--json"], ["list", "--bogus", "--json"], ["list", "extra", "--json"]):
         result = runner().invoke(commands.peripherals, argv)
         assert result.exit_code == 2, argv
@@ -223,13 +234,13 @@ def test_a_timed_out_catalog_does_not_probe_sentinel_again(on_devkit, monkeypatc
     assert document["devkit"]["sentinel_version"] == "0.6.0" and client.calls == ["catalog", "health"]
 
 
-def test_through_the_root_cli_json_stdout_carries_only_the_document(on_devkit, catalog, monkeypatch):
+def test_through_the_root_cli_json_stdout_carries_only_the_document(on_devkit, monkeypatch):
     """The root group prints an environment banner and may run a PyPI update check; neither may reach
     the JSON on stdout, and the update check must not run at all (a DevKit may be offline, and its
     prompt would abort a script)."""
     from sima_cli import cli as root_cli
 
-    use_client(monkeypatch, FakeClient(catalog))
+    use_client(monkeypatch, FakeClient(devkit()))
     monkeypatch.setattr(root_cli, "get_environment_type", lambda: ("board", "modalix"))
 
     def no_update_check(package_name):
@@ -246,13 +257,13 @@ def test_through_the_root_cli_json_stdout_carries_only_the_document(on_devkit, c
     assert "Environment: board (modalix)" in result.stderr
 
 
-def test_through_the_root_cli_internal_mode_skips_the_artifactory_gates(on_devkit, catalog, monkeypatch):
+def test_through_the_root_cli_internal_mode_skips_the_artifactory_gates(on_devkit, monkeypatch):
     """Codex on #290: with --internal (or SIMA_CLI_INTERNAL=1) the root group checks the internal
     resource map and Artifactory reachability and exits 0 without running the command when either
     fails. `peripherals` reads only the DevKit, so neither gate may run or stop it."""
     from sima_cli import cli as root_cli
 
-    use_client(monkeypatch, FakeClient(catalog))
+    use_client(monkeypatch, FakeClient(devkit()))
     monkeypatch.setattr(root_cli, "get_environment_type", lambda: ("board", "modalix"))
     monkeypatch.setattr(root_cli, "check_for_update", lambda package_name: False)
     monkeypatch.setattr(root_cli, "internal_resource_exists", lambda: False)
@@ -269,10 +280,10 @@ def test_through_the_root_cli_internal_mode_skips_the_artifactory_gates(on_devki
         assert "internal resource map" not in result.output
 
 
-def test_old_firmware_is_a_warning_and_the_usb_devices_still_list(on_devkit, catalog, monkeypatch):
-    old = dict(catalog, devices=[d for d in catalog["devices"] if d.get("backend") != "mipi"],
-               errors=[{"provider": "board.firmware", "code": "platform.unsupported",
-                        "reason": "Firmware 2.0.0 is older than 2.1.2, the oldest release Sentinel supports for MIPI cameras."}])
+def test_old_firmware_is_a_warning_and_the_usb_devices_still_list(on_devkit, monkeypatch):
+    old = catalog(usb_camera(), microphone(), board_block=board(firmware="2.0.0"),
+                  errors=[{"provider": "board.firmware", "code": "platform.unsupported",
+                           "reason": "Firmware 2.0.0 is older than 2.1.2, the oldest release Sentinel supports for MIPI cameras."}])
     use_client(monkeypatch, FakeClient(old))
     result = runner().invoke(commands.peripherals, ["list"])
     assert result.exit_code == 0

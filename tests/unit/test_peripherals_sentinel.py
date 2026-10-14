@@ -6,14 +6,12 @@ import socket
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler
-from pathlib import Path
 from socketserver import ThreadingMixIn, UnixStreamServer
 
 import pytest
 
 from sima_cli.peripherals.sentinel import SentinelClient, SentinelError
-
-FIXTURE = Path(__file__).parent / "fixtures" / "sentinel" / "devkit-2.1.3.json"
+from tests.unit.peripherals_fixtures import devkit
 
 pytestmark = pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Sentinel's socket is AF_UNIX; not on this OS")
 
@@ -54,7 +52,7 @@ def sentinel(tmp_path):
     """A Sentinel look-alike on a socket path short enough for AF_UNIX."""
     sock_dir = tempfile.mkdtemp(prefix="sentinel-", dir="/tmp")
     path = os.path.join(sock_dir, "api.sock")
-    catalog = json.loads(FIXTURE.read_text())
+    catalog = devkit()
     _Handler.routes = {
         ("GET", "/v1/peripherals"): (200, catalog),
         ("POST", "/v1/peripherals/refresh"): (200, dict(catalog, revision=catalog["revision"] + 1)),

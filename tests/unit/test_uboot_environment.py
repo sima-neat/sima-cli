@@ -8,9 +8,9 @@ from sima_cli.update.uboot_environment import configure_environment
 SIZE = 0x80000
 
 
-def env(value, flag=None):
+def env(value, flag=None, padding=b'\0'):
     payload = b'boot_targets=' + value + b'\0\0'
-    payload = payload.ljust(SIZE - (4 if flag is None else 5), b'\0')
+    payload = payload.ljust(SIZE - (4 if flag is None else 5), padding)
     return struct.pack('<I', zlib.crc32(payload)) + (b'' if flag is None else bytes([flag])) + payload
 
 
@@ -40,9 +40,10 @@ def test_matching_format_is_not_rewritten(tmp_path, redundant):
     assert len(config.read_text().splitlines()) == (2 if redundant else 1)
 
 
-def test_converts_single_file_environment_for_redundant_target(tmp_path):
+@pytest.mark.parametrize('padding', [b'\0', b'\xff'])
+def test_converts_single_file_environment_for_redundant_target(tmp_path, padding):
     (tmp_path / 'u-boot.bin').write_bytes(b'uboot.env\0uboot-redund.env\0')
-    original = env(b'mmc0')
+    original = env(b'mmc0', padding=padding)
     (tmp_path / 'uboot.env').write_bytes(original)
     (tmp_path / 'uboot-redund.env').write_bytes(b'old')
     config = tmp_path / 'config'
@@ -55,6 +56,22 @@ def test_converts_single_file_environment_for_redundant_target(tmp_path):
         assert struct.unpack('<I', converted[:4])[0] == zlib.crc32(converted[5:])
         assert converted[5:].startswith(b'boot_targets=mmc0\0')
     assert len(config.read_text().splitlines()) == 2
+
+
+def test_refuses_redundant_conversion_without_padding_after_terminator(tmp_path):
+    (tmp_path / 'u-boot.bin').write_bytes(b'uboot.env\0uboot-redund.env\0')
+    prefix = b'boot_targets='
+    payload = prefix + b'x' * (SIZE - 4 - len(prefix) - 2) + b'\0\0'
+    original = struct.pack('<I', zlib.crc32(payload)) + payload
+    secondary = b'old'
+    (tmp_path / 'uboot.env').write_bytes(original)
+    (tmp_path / 'uboot-redund.env').write_bytes(secondary)
+
+    with pytest.raises(RuntimeError, match='no reclaimable padding byte'):
+        configure_environment(str(tmp_path / 'config'), str(tmp_path))
+
+    assert (tmp_path / 'uboot.env').read_bytes() == original
+    assert (tmp_path / 'uboot-redund.env').read_bytes() == secondary
 
 
 @pytest.mark.parametrize('redundant', [False, True])
@@ -96,3 +113,25 @@ def test_legacy_without_bootloader_requires_known_layout(tmp_path, version, vali
         with pytest.raises(RuntimeError):
             configure_environment(str(config), str(boot), str(etc))
     assert (boot / 'uboot.env').read_bytes() == original
+
+
+def test_legacy_redundant_layout_converts_ff_padded_single_file_environment(tmp_path):
+    boot, etc = tmp_path / 'boot', tmp_path / 'etc'
+    boot.mkdir(); etc.mkdir()
+    (etc / 'buildinfo').write_text('SIMA_BUILD_VERSION = 2.1.3_master_B4837')
+    (etc / 'fw_env.config').write_text(
+        '/boot/uboot.env 0x0000 0x80000\n'
+        '/boot/uboot-redund.env 0x0000 0x80000\n'
+    )
+    (boot / 'uboot.env').write_bytes(env(b'mmc0', padding=b'\xff'))
+    (boot / 'uboot-redund.env').write_bytes(b'old')
+
+    assert configure_environment(
+        str(tmp_path / 'config'), str(boot), str(etc)
+    ) is True
+
+    for name in ('uboot.env', 'uboot-redund.env'):
+        converted = (boot / name).read_bytes()
+        assert len(converted) == SIZE
+        assert struct.unpack('<I', converted[:4])[0] == zlib.crc32(converted[5:])
+        assert converted[5:].startswith(b'boot_targets=mmc0\0\0')

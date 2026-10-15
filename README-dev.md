@@ -36,6 +36,7 @@ sima-cli/
 │   ├── serial/        # Serial console access
 │   ├── discover/      # Device discovery
 │   ├── mla/           # MLA memory telemetry
+│   ├── peripherals/   # DevKit peripheral discovery, read from SiMa Sentinel
 │   ├── upgrade/       # Self-update mechanism
 │   ├── data/          # Embedded configuration files
 │   └── utils/         # Environment detection, config, APIs

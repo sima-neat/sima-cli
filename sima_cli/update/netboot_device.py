@@ -14,7 +14,6 @@ from rich.text import Text
 
 from sima_cli.update.remote import init_ssh_session, run_remote_command_capture
 
-LEGACY_LAYOUT_ERROR = 'Unsupported legacy 2.1 fw_env.config'
 MANUAL_FALLBACK_READY = 'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY'
 
 
@@ -119,10 +118,9 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
             output = _checked(ssh, 'sudo sh -c ' + shlex.quote(script))
         except click.ClickException as exc:
             error = str(exc)
-            if (LEGACY_LAYOUT_ERROR not in error or MANUAL_FALLBACK_READY not in error
-                    or 'ERROR:' in error):
+            if MANUAL_FALLBACK_READY not in error or 'ERROR:' in error:
                 raise
-            _show_manual_legacy_setup(devkit, server_ip, network, autoflash)
+            _show_manual_setup(devkit, server_ip, network, autoflash)
             return False
         click.echo(output)
         if configuration is not None:
@@ -163,12 +161,12 @@ def _manual_netboot_commands(devkit, server_ip, network):
     return '\n'.join(commands)
 
 
-def _show_manual_legacy_setup(devkit, server_ip, network, autoflash):
+def _show_manual_setup(devkit, server_ip, network, autoflash):
     message = Text()
     message.append(
-        'This Platform 2.1 DevKit uses an older U-Boot environment layout that '
-        'sima-cli cannot safely modify. The saved environment was restored and '
-        'the DevKit was not rebooted.\n\n', style='bold yellow',
+        'sima-cli could not safely prepare the U-Boot environment automatically. '
+        'The saved environment was restored and the DevKit was not rebooted.\n\n',
+        style='bold yellow',
     )
     message.append(
         'Keep this command running. Connect to the DevKit serial console, interrupt '
@@ -197,6 +195,7 @@ def _uboot_script(devkit, server_ip, network):
         'set -eu',
         'config=$(mktemp)',
         'backup=',
+        'restore_backup=',
         'restore_ro=0',
         'backup_complete=0',
         'cleanup_complete=1',
@@ -204,27 +203,8 @@ def _uboot_script(devkit, server_ip, network):
         '  status=$?',
         '  trap - EXIT',
         '  set +e',
-        '  if [ "$status" -ne 0 ] && [ "$backup_complete" = 1 ]; then',
-        '    if cp -p "$backup/uboot.env" /boot/uboot.env && cp -p "$backup/uboot-redund.env" /boot/uboot-redund.env; then',
-        '      echo "Restored saved U-Boot environment after preparation failed."',
-        '    else',
-        '      echo "ERROR: Could not restore U-Boot environment. Backup: $backup. DevKit will not be rebooted." >&2',
-        '      status=1',
-        '      cleanup_complete=0',
-        '    fi',
-        '    if ! sync; then',
-        '      echo "ERROR: Could not sync the restored U-Boot environment. DevKit will not be rebooted." >&2',
-        '      status=1',
-        '      cleanup_complete=0',
-        '    fi',
-        '  fi',
         '  if ! rm -f "$config"; then',
         '    echo "ERROR: Could not remove the temporary U-Boot configuration." >&2',
-        '    status=1',
-        '    cleanup_complete=0',
-        '  fi',
-        '  if [ -n "$backup" ] && ! rm -rf "$backup"; then',
-        '    echo "ERROR: Could not remove the temporary U-Boot rollback copy." >&2',
         '    status=1',
         '    cleanup_complete=0',
         '  fi',
@@ -240,6 +220,30 @@ def _uboot_script(devkit, server_ip, network):
         '      cleanup_complete=0',
         '    fi',
         '  fi',
+        '  if [ "$status" -ne 0 ] && [ "$backup_complete" = 1 ]; then',
+        '    if [ "$restore_ro" = 1 ] && ! mount -o remount,rw /boot; then',
+        '      echo "ERROR: Could not make /boot writable to restore U-Boot. Backup: $backup." >&2',
+        '      cleanup_complete=0',
+        '    elif cp -p "$restore_backup/uboot.env" /boot/uboot.env && cp -p "$restore_backup/uboot-redund.env" /boot/uboot-redund.env; then',
+        '      echo "Restored saved U-Boot environment after preparation failed."',
+        '    else',
+        '      echo "ERROR: Could not restore U-Boot environment. Backup: $backup. DevKit will not be rebooted." >&2',
+        '      status=1',
+        '      cleanup_complete=0',
+        '    fi',
+        '    if ! sync; then',
+        '      echo "ERROR: Could not sync the restored U-Boot environment. DevKit will not be rebooted." >&2',
+        '      status=1',
+        '      cleanup_complete=0',
+        '    fi',
+        '    if [ "$restore_ro" = 1 ] && ! mount -o remount,ro /boot; then',
+        '      echo "ERROR: Could not restore /boot to read-only after U-Boot rollback." >&2',
+        '      cleanup_complete=0',
+        '    fi',
+        '  fi',
+        '  if [ -n "$backup" ] && [ "$cleanup_complete" = 1 ] && ! rm -rf "$backup"; then',
+        '    echo "Warning: Could not remove the temporary U-Boot rollback copy: $backup" >&2',
+        '  fi',
         f'  if [ "$status" -ne 0 ] && [ "$backup_complete" = 1 ] && [ "$cleanup_complete" = 1 ]; then echo {MANUAL_FALLBACK_READY}; fi',
         '  exit "$status"',
         '}',
@@ -253,14 +257,18 @@ def _uboot_script(devkit, server_ip, network):
         '    restore_ro=1 ;;',
         'esac',
         'backup=$(mktemp -d /tmp/sima-cli-netboot-rollback.XXXXXX)',
-        'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
+        'mkdir "$backup/original"',
+        'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/original/"',
+        'restore_backup="$backup/original"',
         'backup_complete=1',
         'python3 -c ' + shlex.quote(helper) + ' "$config"',
+        'fw_printenv -c "$config" > "$backup/environment.txt"',
         # configure_environment may convert a legacy redundant environment to
         # the single-file format required by the installed bootloader. Make
-        # that normalized state the rollback point before applying netboot.
+        # that validated normalized state the rollback point before applying
+        # netboot, while retaining the original backup if validation fails.
         'cp -p /boot/uboot.env /boot/uboot-redund.env "$backup/"',
-        'fw_printenv -c "$config" > "$backup/environment.txt"',
+        'restore_backup="$backup"',
         'fw_setenv -c "$config" bootfile netboot.scr.uimg',
         'fw_setenv -c "$config" netcfg static',
         'fw_setenv -c "$config" forcenetcfg static',

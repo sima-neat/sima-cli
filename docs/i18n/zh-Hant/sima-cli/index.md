@@ -103,6 +103,7 @@ pip install sima-cli
 | [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md) | 在 DevKit 上設定網路 IP 位址。 |
 | [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md) | 在 Modalix DevKit 上執行 NVMe 作業。 |
 | [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md) | 管理 sima-cli 套件登錄檔（列出、檢查、清理等）。 |
+| [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md) | 顯示連接到此 DevKit 的攝影機與麥克風。 |
 | [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md) | 安裝並管理劇本（Codex/Claude）。 |
 | [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md) | 為 MLSoc DevKit 或 Modalix 的早期測試版本，準備好 SD 卡作為資料儲存裝置。 |
 | [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | 管理並啟動 SiMa SDK 2.0 容器環境（測試版）。 |
@@ -126,6 +127,7 @@ pip install sima-cli
 - [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md)
 - [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md)
 - [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md)
+- [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md)
 - [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md)
 - [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md)
 - [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md)
@@ -148,6 +150,8 @@ pip install sima-cli
 - [`sima-cli packages build`](../../../sima-cli/commands/sima-cli-packages-build.md)
 - [`sima-cli packages list`](../../../sima-cli/commands/sima-cli-packages-list.md)
 - [`sima-cli packages show`](../../../sima-cli/commands/sima-cli-packages-show.md)
+- [`sima-cli peripherals describe`](../../../sima-cli/commands/sima-cli-peripherals-describe.md)
+- [`sima-cli peripherals list`](../../../sima-cli/commands/sima-cli-peripherals-list.md)
 - [`sima-cli playbooks apply`](../../../sima-cli/commands/sima-cli-playbooks-apply.md)
 - [`sima-cli playbooks delete`](../../../sima-cli/commands/sima-cli-playbooks-delete.md)
 - [`sima-cli playbooks describe`](../../../sima-cli/commands/sima-cli-playbooks-describe.md)

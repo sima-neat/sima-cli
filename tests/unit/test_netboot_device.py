@@ -119,11 +119,15 @@ def test_remote_failure_prevents_reboot(failed_call):
     connect.return_value.close.assert_called_once()
 
 
-def test_unsupported_legacy_layout_continues_with_manual_instructions(capsys):
+@pytest.mark.parametrize('failure_reason', [
+    'RuntimeError: Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout.',
+    'RuntimeError: Single-file U-Boot environment has no reclaimable padding byte after its terminator.',
+])
+def test_restored_uboot_failure_continues_with_manual_instructions(capsys, failure_reason):
     failure = click.ClickException(
         'Remote netboot preparation failed: Restored saved U-Boot environment. '
         'SIMA_CLI_MANUAL_NETBOOT_FALLBACK_READY '
-        'RuntimeError: Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout.',
+        + failure_reason,
     )
     with patch.object(device, 'init_ssh_session') as connect, \
             patch.object(device, '_checked', side_effect=['', failure]) as command, \
@@ -137,6 +141,7 @@ def test_unsupported_legacy_layout_continues_with_manual_instructions(capsys):
     connect.return_value.close.assert_called_once()
     output = capsys.readouterr().out
     assert 'Manual netboot setup required' in output
+    assert 'could not safely prepare the U-Boot environment automatically' in output
     assert 'saved environment was restored' in output
     assert 'setenv ipaddr 192.0.2.1' in output
     assert 'setenv serverip 192.0.2.10' in output
@@ -148,7 +153,7 @@ def test_unsupported_legacy_layout_continues_with_manual_instructions(capsys):
     assert 'Automatic flashing is disabled' in output
 
 
-def test_legacy_layout_with_cleanup_failure_remains_fatal():
+def test_uboot_failure_with_cleanup_failure_remains_fatal():
     failure = click.ClickException(
         'Remote netboot preparation failed: Restored saved U-Boot environment. '
         'RuntimeError: Unsupported legacy 2.1 fw_env.config; refusing to guess the environment layout. '
@@ -233,7 +238,8 @@ def test_host_address_uses_route_to_selected_devkit():
 
 @pytest.mark.parametrize('initial_mode,failure', [
     ('ro', None), ('rw', None), ('ro', 'rw'), ('ro', 'write'),
-    ('rw', 'normalized_write'), ('ro', 'ro'),
+    ('rw', 'normalized_write'), ('rw', 'normalized_validation'),
+    ('ro', 'ro'), ('ro', 'ro_once'),
 ])
 def test_boot_mount_and_rollback_script(tmp_path, initial_mode, failure):
     """Execute the actual shell script against fake mount/fw tools and temp files."""
@@ -262,10 +268,12 @@ if name == 'findmnt':
     print(str(boot) if 'TARGET' in args else mode.read_text() + ',relatime')
 elif name == 'mount':
     wanted = 'rw' if 'remount,rw' in args else 'ro'
-    if failure == wanted:
+    if failure == wanted or (failure == 'ro_once' and wanted == 'ro' and not (boot / 'ro_failed').exists()):
+        if failure == 'ro_once':
+            (boot / 'ro_failed').touch()
         sys.exit(1)
     mode.write_text(wanted)
-elif name == 'python3' and failure == 'normalized_write':
+elif name == 'python3' and failure in ('normalized_write', 'normalized_validation'):
     (boot / 'uboot.env').write_text('normalized')
     (boot / 'uboot-redund.env').write_text('normalized')
 elif name == 'fw_setenv':
@@ -275,6 +283,8 @@ elif name == 'fw_setenv':
     if failure in ('write', 'normalized_write'):
         sys.exit(1)
 elif name == 'fw_printenv':
+    if failure == 'normalized_validation' and '-n' not in args:
+        sys.exit(1)
     if '-n' in args:
         print('net' if args[-1] == 'boot_targets' else '192.0.2.10')
     else:
@@ -284,7 +294,9 @@ elif name == 'fw_printenv':
         path = binary / name
         path.write_text('#!' + sys.executable + '\n' + stub)
         path.chmod(0o755)
-    script = device._uboot_script('192.0.2.1', '192.0.2.10', NETWORK).replace('/boot', str(boot))
+    script = (device._uboot_script('192.0.2.1', '192.0.2.10', NETWORK)
+              .replace('/boot', str(boot))
+              .replace('/tmp/sima-cli-netboot-rollback.', str(tmp_path / 'rollback.')))
     env = dict(os.environ, PATH=str(binary) + ':' + os.environ['PATH'],
                SUDO_USER=os.environ['USER'], TEST_BOOT=str(boot), TEST_MODE=str(state),
                TEST_LOG=str(log), TEST_FAILURE=failure or '')
@@ -295,15 +307,20 @@ elif name == 'fw_printenv':
         assert 'fw_setenv' not in commands
         assert 'Cannot remount' in result.stderr
         assert device.MANUAL_FALLBACK_READY not in result.stdout
-    elif failure in ('write', 'normalized_write'):
+    elif failure in ('write', 'normalized_write', 'normalized_validation'):
         assert 'Restored saved U-Boot' in result.stdout
         assert device.MANUAL_FALLBACK_READY in result.stdout
-    elif failure == 'ro':
-        assert 'Could not restore' in result.stderr
+    elif failure in ('ro', 'ro_once'):
+        assert 'to read-only' in result.stderr
+        assert 'Restored saved U-Boot environment' in result.stdout
         assert device.MANUAL_FALLBACK_READY not in result.stdout
-    if failure in ('rw', 'write'):
+    if failure in ('rw', 'write', 'normalized_validation', 'ro', 'ro_once'):
         for name in ('uboot.env', 'uboot-redund.env'):
             assert (boot / name).read_text() == 'original ' + name
+    if failure == 'ro_once':
+        assert state.read_text() == initial_mode
+    if failure in ('ro', 'ro_once'):
+        assert list(tmp_path.glob('rollback.*'))
     if failure == 'normalized_write':
         for name in ('uboot.env', 'uboot-redund.env'):
             assert (boot / name).read_text() == 'normalized'

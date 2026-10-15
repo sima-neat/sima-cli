@@ -42,6 +42,7 @@ from sima_cli.upgrade.selfupdate import register_selfupdate_command
 from sima_cli.playbooks import register_playbook_commands
 from sima_cli.vulcan import register_vulcan_commands
 from sima_cli.models import register_models_commands
+from sima_cli.peripherals import register_peripherals_commands
 from sima_cli.cloudex import register_cloudex_commands
 from sima_cli.vulcan.commands import (
     ENV_METAVAR,
@@ -105,6 +106,13 @@ def _rerun_current_command() -> None:
     os.execvpe(sys.executable, cmd, env)
 
 
+# Command groups whose stdout is a machine-readable document: root diagnostics go to stderr for them.
+QUIET_STDOUT_SUBCOMMANDS = ("models", "peripherals")
+# Command groups that only read the DevKit they run on: no PyPI update check and no Artifactory
+# gate before them, so they work offline and never prompt or exit early.
+LOCAL_ONLY_SUBCOMMANDS = ("peripherals",)
+
+
 def _initialize_main_context(ctx, internal, yes):
     _configure_stdio_errors()
     auto_accept_update = yes or _update_auto_confirm_requested(sys.argv)
@@ -112,7 +120,8 @@ def _initialize_main_context(ctx, internal, yes):
     if auto_accept_update:
         os.environ["SIMA_CLI_AUTO_ACCEPT_UPDATE"] = "1"
     try:
-        if check_for_update('sima-cli') and _should_rerun_after_update(sys.argv):
+        if (ctx.invoked_subcommand not in LOCAL_ONLY_SUBCOMMANDS
+                and check_for_update('sima-cli') and _should_rerun_after_update(sys.argv)):
             _rerun_current_command()
     finally:
         if auto_accept_update:
@@ -128,14 +137,15 @@ def _initialize_main_context(ctx, internal, yes):
     if not internal:
         internal = os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
 
-    defer_artifactory_access = ctx.invoked_subcommand == "update" or ctx.meta.get("daily_netboot", False)
+    local_only = ctx.invoked_subcommand in LOCAL_ONLY_SUBCOMMANDS
+    defer_artifactory_access = local_only or ctx.invoked_subcommand == "update" or ctx.meta.get("daily_netboot", False)
     if internal and not internal_resource_exists() and not defer_artifactory_access:
         click.echo("❌ You have specified -i or --internal argument to access internal resources, but you do not have an internal resource map configured.")
         click.echo("Refer to the confluence page to find out how to configure internal resource map.")
         exit(0)
 
     internal_reachable = True
-    if internal:
+    if internal and not local_only:
         internal_reachable = check_artifactory_reachability()
 
     if internal and not internal_reachable and not defer_artifactory_access and not _allows_external_prerelease_fallback(sys.argv):
@@ -198,11 +208,11 @@ def main(ctx, internal, yes):
         ctx.ensure_object(dict)
         ctx.obj.update(internal=internal, yes=yes)
         return
-    # Model Registry JSON must remain parseable on stdout. Route root-level
-    # update and environment diagnostics to stderr for this command group.
+    # Model Registry and peripherals JSON must remain parseable on stdout. Route root-level
+    # update and environment diagnostics to stderr for these command groups.
     output_context = (
         redirect_stdout(sys.stderr)
-        if ctx.invoked_subcommand == "models"
+        if ctx.invoked_subcommand in QUIET_STDOUT_SUBCOMMANDS
         else nullcontext()
     )
     with output_context:
@@ -216,6 +226,7 @@ register_sdk_commands(main)
 register_playbook_commands(main)
 register_vulcan_commands(main)
 register_models_commands(main)
+register_peripherals_commands(main)
 register_cloudex_commands(main)
 
 

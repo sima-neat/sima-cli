@@ -309,8 +309,12 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
 
 
 @pytest.mark.parametrize("failure", [None, "missing_root", "unavailable_root", "wrong_profile", "wrong_root_type"])
-def test_client_uses_exact_approved_root_from_another_branch(failure):
-    run = _run("approved-run", model_id="qwen3_5_0_8b", variant_id="w4a16")
+@pytest.mark.parametrize(("selection_field", "branch"), [
+    ("approved_deployments", "develop"),
+    ("branch_deployments", "feature/model"),
+])
+def test_client_uses_exact_selected_root(selection_field, branch, failure):
+    run = _run("selected-run", model_id="qwen3_5_0_8b", variant_id="w4a16")
     run.update(run_type="model_package", git_ref="refs/heads/feature/model")
     run["metadata"].update(package_id="default")
     artifact = {
@@ -318,9 +322,9 @@ def test_client_uses_exact_approved_root_from_another_branch(failure):
         "size_bytes": 100, "sha256": "c" * 64, "media_type": "application/json",
         "metadata": {"layout": "directory", "deployment_size_bytes": 10000},
     }
-    other = {**artifact, "name": "unapproved-root"}
+    other = {**artifact, "name": "other-root"}
     if failure == "missing_root":
-        artifact["name"] = "not-the-approved-root"
+        artifact["name"] = "not-the-selected-root"
     elif failure == "unavailable_root":
         artifact["object_status"] = "missing"
     elif failure == "wrong_profile":
@@ -330,14 +334,18 @@ def test_client_uses_exact_approved_root_from_another_branch(failure):
     catalog = {"catalog": {"document": {"models": [{
         "id": "qwen3_5_0_8b", "display_name": "Qwen3.5-0.8B", "build_on_demand": True,
         "packages": [{"run_id": "newer-unapproved", "build_profile_id": "w4a16"}],
-        "approved_deployments": {"w4a16": {
+        selection_field: {"w4a16": {
             "deployment_id": "11111111-1111-4111-8111-111111111111", "manifest_digest": "b" * 64,
             "artifacts": [{
-                "role": "package-default", "package_id": "default", "run_id": "approved-run",
+                "role": "package-default", "package_id": "default", "run_id": "selected-run",
                 "artifact_name": "package", "layout": "directory", "format": "llima",
             }],
         }},
     }]}}}
+    if selection_field == "branch_deployments":
+        catalog["catalog"]["document"]["models"][0]["approved_deployments"] = {"w4a16": {"artifacts": [{
+            "package_id": "default", "run_id": "inherited-approval", "artifact_name": "package",
+        }]}}
     session = FakeSession([
         FakeResponse(payload=catalog),
         FakeResponse(payload={"run": run, "artifacts": [other, artifact]}),
@@ -345,16 +353,17 @@ def test_client_uses_exact_approved_root_from_another_branch(failure):
     client = RegistryClient("https://registry.example", session=session)
     if failure:
         with pytest.raises(ModelRegistryError, match="no available.*artifact|does not match"):
-            client.catalog_models("develop")
+            client.catalog_models(branch)
     else:
-        selected = find_latest_run(client.catalog_models("develop"), "qwen3_5_0_8b", "w4a16")
-        assert selected["id"] == "approved-run"
+        selected = find_latest_run(client.catalog_models(branch), "qwen3_5_0_8b", "w4a16")
+        assert selected["id"] == "selected-run"
         assert selected["artifact_name"] == "package"
         assert selected["git_ref"] == "refs/heads/feature/model"
         assert selected["size_bytes"] == 10000
         assert selected["sha256"] == "c" * 64
     assert len(session.calls) == 2
-    assert session.calls[1][0].endswith("/v1/runs/approved-run")
+    assert session.calls[0][1]["params"] == {"git_ref": f"refs/heads/{branch}"}
+    assert session.calls[1][0].endswith("/v1/runs/selected-run")
 
 
 def test_client_keeps_inherited_catalog_packages_on_feature_branch():

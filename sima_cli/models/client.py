@@ -453,24 +453,27 @@ class RegistryClient:
             for model in models
             if isinstance(model, dict) and model.get("id")
         }
-        approved = {
+        deployments = {
             (model_id, profile): selection
             for model_id, model in definitions.items()
-            for profile, selection in (model.get("approved_deployments") or {}).items()
+            for profile, selection in {
+                **(model.get("approved_deployments") or {}),
+                **(model.get("branch_deployments") or {}),
+            }.items()
         }
         references = [
             (model_id, package["build_profile_id"], {**package, "artifact_name": "package"})
             for model_id, model in definitions.items()
             for package in (model.get("packages") or [])
             if isinstance(package, dict) and package.get("run_id")
-            and (model_id, package.get("build_profile_id")) not in approved
+            and (model_id, package.get("build_profile_id")) not in deployments
         ]
-        for (model_id, profile), selection in approved.items():
+        for (model_id, profile), selection in deployments.items():
             roots = selection["artifacts"]
             packages = [root for root in roots if root.get("package_id")]
             roots = packages or [root for root in roots if root.get("component_id")]
             if not roots or (not packages and len(roots) != 1):
-                raise ModelRegistryError(f"Approved model {model_id!r}, variant {profile!r} has no full deployment root.")
+                raise ModelRegistryError(f"Selected model {model_id!r}, variant {profile!r} has no full deployment root.")
             references.extend((model_id, profile, root) for root in roots)
 
         query_terms = (query or "").strip().lower().split()

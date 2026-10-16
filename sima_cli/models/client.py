@@ -173,20 +173,21 @@ def find_latest_run(
 
 def select_model_artifact(
     artifacts: Sequence[Dict[str, Any]], name: Optional[str] = None,
+    artifact_type: str = "model-package",
 ) -> Dict[str, Any]:
     available = [
         artifact
         for artifact in artifacts
         if artifact.get("object_status") in {None, "available"}
-        and artifact.get("artifact_type") in ({"model-pack", "model-package"} if name else {"model-package"})
+        and artifact.get("artifact_type") == artifact_type
         and (name is None or artifact.get("name") == name)
     ]
     if not available:
-        description = f"artifact {name!r}" if name else "model-package artifact"
+        description = f"{artifact_type} artifact" + (f" {name!r}" if name is not None else "")
         raise ModelRegistryError(f"The selected build has no available {description}.")
     if len(available) != 1:
         names = ", ".join(sorted(str(item.get("name", "")) for item in available))
-        raise ModelRegistryError(f"The selected build has multiple model-package artifacts: {names}.")
+        raise ModelRegistryError(f"The selected build has multiple {artifact_type} artifacts: {names}.")
     return available[0]
 
 
@@ -486,7 +487,10 @@ class RegistryClient:
                         or (root.get("component_id") and metadata.get("component_id", "model") != root["component_id"])
                         or ("component_run_ids" in root and metadata.get("component_run_ids") != root["component_run_ids"])):
                     raise ModelRegistryError(f"Catalog artifact does not match model {model_id!r}, variant {profile!r}.")
-                artifact = select_model_artifact(summary.get("artifacts") or [], root["artifact_name"])
+                artifact = select_model_artifact(
+                    summary.get("artifacts") or [], root["artifact_name"],
+                    artifact_type="model-package" if root.get("package_id") else "model-pack",
+                )
                 artifact_metadata = artifact.get("metadata") or {}
                 model = definitions[model_id]
                 searchable = " ".join(str(value) for value in (

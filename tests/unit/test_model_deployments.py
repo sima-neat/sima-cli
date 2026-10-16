@@ -170,8 +170,9 @@ def test_download_command_recreates_deployment_folder(deployment, tmp_path, monk
     ("approved", "package", "archive"), ("approved", "component", "archive"),
     ("feature", "package", "archive"),
 ])
+@pytest.mark.parametrize("wrong_root_type", [False, True])
 def test_catalog_deployment_downloads(
-    deployment, tmp_path, monkeypatch, catalog_kind, root_kind, layout,
+    deployment, tmp_path, monkeypatch, catalog_kind, root_kind, layout, wrong_root_type,
 ):
     state = deployment
     state.layout = layout
@@ -226,6 +227,13 @@ def test_catalog_deployment_downloads(
         }]
     state.catalog = {"models": [model]}
     branch = "develop" if catalog_kind == "approved" else "feature/quant"
+    if wrong_root_type:
+        expected_type = state.root_type
+        state.root_type = "model-pack" if expected_type == "model-package" else "model-package"
+        with pytest.raises(ModelRegistryError, match=f"no available {expected_type} artifact"):
+            state.client.catalog_models(branch)
+        assert not any(path.startswith("/objects/") for path in state.requests)
+        return
     selected = state.client.catalog_models(branch)[0]
     assert selected["git_ref"] == "refs/heads/feature/quant"
     assert selected["commit_sha"] == "a" * 40

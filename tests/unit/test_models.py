@@ -125,7 +125,7 @@ def test_top_level_models_json_keeps_root_diagnostics_on_stderr(arguments):
     run = _run()
     artifact = {
         "name": "mpk",
-        "artifact_type": "model-package",
+        "artifact_type": "model-pack",
         "size_bytes": 5,
         "sha256": hashlib.sha256(b"model").hexdigest(),
     }
@@ -308,7 +308,7 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
     assert session.calls[1][0].endswith("/v1/runs/package-run")
 
 
-@pytest.mark.parametrize("failure", [None, "missing_root", "unavailable_root", "wrong_profile"])
+@pytest.mark.parametrize("failure", [None, "missing_root", "unavailable_root", "wrong_profile", "wrong_root_type"])
 def test_client_uses_exact_approved_root_from_another_branch(failure):
     run = _run("approved-run", model_id="qwen3_5_0_8b", variant_id="w4a16")
     run.update(run_type="model_package", git_ref="refs/heads/feature/model")
@@ -325,6 +325,8 @@ def test_client_uses_exact_approved_root_from_another_branch(failure):
         artifact["object_status"] = "missing"
     elif failure == "wrong_profile":
         run["metadata"]["variant_id"] = "w8a16"
+    elif failure == "wrong_root_type":
+        artifact["artifact_type"] = "model-pack"
     catalog = {"catalog": {"document": {"models": [{
         "id": "qwen3_5_0_8b", "display_name": "Qwen3.5-0.8B", "build_on_demand": True,
         "packages": [{"run_id": "newer-unapproved", "build_profile_id": "w4a16"}],
@@ -342,7 +344,7 @@ def test_client_uses_exact_approved_root_from_another_branch(failure):
     ])
     client = RegistryClient("https://registry.example", session=session)
     if failure:
-        with pytest.raises(ModelRegistryError, match="no available artifact|does not match"):
+        with pytest.raises(ModelRegistryError, match="no available.*artifact|does not match"):
             client.catalog_models("develop")
     else:
         selected = find_latest_run(client.catalog_models("develop"), "qwen3_5_0_8b", "w4a16")
@@ -1159,7 +1161,7 @@ def test_download_accepts_short_branch_option(tmp_path):
     run = _run()
     artifact = {
         "name": "mpk",
-        "artifact_type": "model-package",
+        "artifact_type": "model-pack",
         "size_bytes": 5,
         "sha256": hashlib.sha256(b"model").hexdigest(),
     }

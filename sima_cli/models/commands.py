@@ -64,7 +64,10 @@ def _download_run(
         raise ModelRegistryError("The selected registry run has no ID.")
     summary = client.run(run_id)
     artifacts = summary.get("artifacts") or []
-    artifact = select_model_artifact(artifacts, run.get("artifact_name"))
+    artifact = select_model_artifact(
+        artifacts, run.get("artifact_name"),
+        artifact_type="model-pack" if run.get("run_type") == "model_compile" else "model-package",
+    )
     metadata = (summary.get("run") or run).get("metadata") or {}
     model_id = str(metadata.get("model_id") or "")
     variant_id = str(metadata.get("build_profile_id") or metadata.get("variant_id") or "")

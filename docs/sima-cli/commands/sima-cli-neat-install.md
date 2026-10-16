@@ -21,7 +21,7 @@ sima-cli neat install [OPTIONS] TARGET
 | `--base-url` | Override the artifact base URL. Overrides the parent --base-url. |
 | `-d, --install-dir` | Directory where package resources are downloaded and installed. (default: .) |
 | `-t, --type` | Install metadata variant metadata-<type>.json instead of metadata.json. |
-| `-f, --force` | Force installation even if compatibility checks fail. |
+| `-f, --force` | Force installation even if compatibility checks fail. Sets FORCE_INSTALL=1 for the installation script. |
 | `--json` | Print resolved metadata URL and exit. |
 | `--download-only` | Download metadata resources without running installation. |
 
@@ -57,7 +57,8 @@ Options:
                                   metadata-<type>.json instead of
                                   metadata.json.
   -f, --force                     Force installation even if compatibility
-                                  checks fail.
+                                  checks fail. Sets FORCE_INSTALL=1 for the
+                                  installation script.
   --json                          Print resolved metadata URL and exit.
   --download-only                 Download metadata resources without running
                                   installation.

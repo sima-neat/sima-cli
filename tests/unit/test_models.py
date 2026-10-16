@@ -496,9 +496,13 @@ def test_select_model_artifact_requires_one_available_model_package():
         select_model_artifact([{"name": "log", "artifact_type": "log"}])
 
 
-def test_safe_output_path_rejects_path_traversal(tmp_path):
+@pytest.mark.parametrize("name,variant", [
+    ("../model", "int8"), ("../model", None), ("model/child", None),
+    ("model\\child", None), ("C:drive", None), ("model\x00", None), ("model.", None),
+])
+def test_safe_output_path_rejects_path_traversal(tmp_path, name, variant):
     with pytest.raises(ModelRegistryError, match="unsafe model ID"):
-        safe_output_path(tmp_path, "../model", "int8", "model.tar.gz")
+        safe_output_path(tmp_path, name, variant)
 
 
 def test_artifact_filename_uses_real_s3_object_name():

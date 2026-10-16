@@ -825,12 +825,14 @@ class RegistryClient:
 
 
 def safe_output_path(
-    root: Path, model_id: str, variant_id: str, artifact_name: Optional[str] = None,
+    root: Path, model_id: str, variant_id: Optional[str] = None, artifact_name: Optional[str] = None,
 ) -> Path:
-    for label, value in (("model ID", model_id), ("variant", variant_id)):
-        if not value or value in {".", ".."} or Path(value).name != value:
+    parts = [model_id] if variant_id is None else [model_id, variant_id]
+    for label, value in zip(("model ID", "variant"), parts):
+        if (not value or value in {".", ".."} or Path(value).name != value
+                or any(char in value for char in "\\:\x00") or value.endswith((" ", "."))):
             raise ModelRegistryError(f"The registry returned an unsafe {label}.")
-    destination = root / model_id / variant_id
+    destination = root.joinpath(*parts)
     if artifact_name is None:
         return destination
     if not artifact_name or Path(artifact_name).name != artifact_name:

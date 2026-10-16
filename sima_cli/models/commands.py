@@ -69,7 +69,8 @@ def _download_run(
     model_id = str(metadata.get("model_id") or "")
     variant_id = str(metadata.get("build_profile_id") or metadata.get("variant_id") or "")
     if artifact.get("media_type") == "application/json":
-        destination = safe_output_path(output, model_id, variant_id)
+        model_name = str((run.get("metadata") or {}).get("display_name") or metadata.get("display_name") or model_id)
+        destination = safe_output_path(output, model_name)
         result = client.download_directory(run_id, artifact, artifacts, destination, metadata, force=force)
         return {
             "run_id": run_id, "model_id": model_id, "variant_id": variant_id,

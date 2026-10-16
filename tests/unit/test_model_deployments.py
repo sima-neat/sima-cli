@@ -41,7 +41,7 @@ def _file_artifact(path, content):
 
 def _manifest(paths=None):
     metadata = {
-        "model_id": "qwen3_5_2b", "build_profile_id": "w4a16", "package_id": "default",
+        "model_id": "qwen3_5_0_8b", "build_profile_id": "w4a16", "package_id": "default",
     }
     paths = paths or ["devkit/vlm_config.json", "elf_files/language.elf", "npy_files/embeddings.npy"]
     contents = [b'{"lm_cfg": {}}', b"example ELF", b"example embeddings"]
@@ -138,10 +138,12 @@ def _contents(root):
     return {path for path in root.iterdir() if not path.name.endswith(".lock")}
 
 
-def test_download_command_recreates_deployment_folder(deployment, tmp_path, monkeypatch):
+@pytest.mark.parametrize("display_name", ["Qwen3.5-0.8B", None])
+def test_download_command_recreates_deployment_folder(deployment, tmp_path, monkeypatch, display_name):
     state = deployment
     monkeypatch.setattr("sima_cli.models.commands.RegistryClient", lambda *_args: state.client)
-    monkeypatch.setattr(state.client, "catalog_models", lambda *_args: [state.summary()["run"]])
+    selected = {**state.run, "metadata": {**state.metadata, "display_name": display_name}}
+    monkeypatch.setattr(state.client, "catalog_models", lambda *_args: [selected])
     result = CliRunner().invoke(models_group, [
         "--stg", "download", "--id", state.metadata["model_id"],
         "--variant", state.metadata["build_profile_id"], "--output", str(tmp_path), "--json",
@@ -149,7 +151,7 @@ def test_download_command_recreates_deployment_folder(deployment, tmp_path, monk
 
     assert result.exit_code == 0, result.output
     report = json.loads(result.stdout)
-    destination = tmp_path / state.metadata["model_id"] / state.metadata["build_profile_id"]
+    destination = tmp_path / (display_name or state.metadata["model_id"])
     assert report["path"] == str(destination)
     assert report["file_count"] == 3
     assert report["size_bytes"] == sum(map(len, state.payloads.values()))
@@ -207,6 +209,7 @@ def test_catalog_deployment_downloads(
         })
     model = {
         "id": state.metadata["model_id"], "builds": [], "packages": [],
+        "display_name": "Qwen3.5-0.8B" if layout == "directory" else "ResNet-50",
         "build_on_demand": catalog_kind == "approved" or layout == "directory",
     }
     if catalog_kind == "approved":
@@ -239,6 +242,7 @@ def test_catalog_deployment_downloads(
     assert report["run_id"] == state.run["id"]
     assert report["artifact"] == state.root_name
     if layout == "directory":
+        assert Path(report["path"]) == tmp_path / model["display_name"]
         assert report["downloaded_files"] == 3
         for item in state.manifest["files"]:
             assert (Path(report["path"]) / item["path"]).read_bytes() == state.payloads[item["artifact"]]
@@ -253,6 +257,28 @@ def test_directory_refreshes_expired_signed_urls(deployment, tmp_path, name):
     deployment.expired.add(name)
     _download(deployment, tmp_path / "model")
     assert deployment.requests.count(f"/v1/runs/package-run/artifacts/{name}") == 2
+
+
+def test_speculative_deployment_preserves_target_and_draft_folders(deployment, tmp_path):
+    deployment.artifacts.clear()
+    deployment.payloads.clear()
+    deployment.manifest["files"].clear()
+    for component in ("target", "draft"):
+        for relative_path, content in (("devkit/vlm_config.json", b"{}"), ("elf_files/model.elf", b"ELF")):
+            path = f"{component}/{relative_path}"
+            artifact = _file_artifact(path, content)
+            deployment.artifacts.append(artifact)
+            deployment.payloads[artifact["name"]] = content
+            deployment.manifest["files"].append({
+                "path": path, "artifact": artifact["name"],
+                "size_bytes": artifact["size_bytes"], "sha256": artifact["sha256"],
+            })
+    destination = tmp_path / "Qwen3.5-0.8B-DFlash"
+    result = _download(deployment, destination)
+    assert result["file_count"] == 4
+    for component in ("target", "draft"):
+        assert (destination / component / "devkit/vlm_config.json").read_bytes() == b"{}"
+        assert (destination / component / "elf_files/model.elf").read_bytes() == b"ELF"
 
 
 def test_repeat_download_reuses_all_files_without_network_transfers(deployment, tmp_path):

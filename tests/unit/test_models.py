@@ -16,7 +16,6 @@ from sima_cli.models.client import (
     STAGING_BASE_URL,
     ModelRegistryError,
     RegistryClient,
-    _coherent_branch_packages,
     artifact_filename,
     find_latest_run,
     latest_runs_by_model_variant,
@@ -51,6 +50,13 @@ def _run(
     }
 
 
+def _package_summary(run):
+    return {"run": run, "artifacts": [{
+        "name": "package", "artifact_type": "model-package", "object_status": "available",
+        "size_bytes": 123, "sha256": "c" * 64, "media_type": "application/gzip",
+    }]}
+
+
 class FakeResponse:
     def __init__(self, status_code=200, payload=None, content=b"", reason=""):
         self.status_code = status_code
@@ -66,6 +72,12 @@ class FakeResponse:
     def iter_content(self, chunk_size=0):
         del chunk_size
         yield self._content
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        pass
 
 
 class FakeSession:
@@ -257,18 +269,6 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
             }
         }
     }
-    backbone = _run(
-        "backbone", model_id="rf_detr_small", variant_id="modalix_int8_bf16"
-    )
-    backbone["metadata"].update(
-        {"component_id": "backbone", "github_run_id": "workflow-1"}
-    )
-    transformer = _run(
-        "transformer", model_id="rf_detr_small", variant_id="modalix_int8_bf16"
-    )
-    transformer["metadata"].update(
-        {"component_id": "transformer", "github_run_id": "workflow-1"}
-    )
     package_run = _run(
         "package-run", model_id="rf_detr_small", variant_id="modalix_int8_bf16"
     )
@@ -285,8 +285,7 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
     session = FakeSession(
         [
             FakeResponse(payload=catalog),
-            FakeResponse(payload={"runs": [backbone, transformer], "has_more": False}),
-            FakeResponse(payload={"runs": [package_run], "has_more": False}),
+            FakeResponse(payload=_package_summary(package_run)),
         ]
     )
 
@@ -305,12 +304,58 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
     }
     assert find_latest_run(models, "rf_detr_small", "modalix_int8_bf16") == package
     assert session.calls[0][1]["params"] == {"git_ref": "refs/heads/develop"}
-    assert session.calls[1][1]["params"]["run_type"] == "model_compile"
-    assert "latest_per_model_compiler" not in session.calls[1][1]["params"]
-    assert session.calls[2][1]["params"]["run_type"] == "model_package"
+    assert len(session.calls) == 2
+    assert session.calls[1][0].endswith("/v1/runs/package-run")
 
 
-def test_client_excludes_inherited_catalog_packages_from_feature_branch():
+@pytest.mark.parametrize("failure", [None, "missing_root", "unavailable_root", "wrong_profile"])
+def test_client_uses_exact_approved_root_from_another_branch(failure):
+    run = _run("approved-run", model_id="qwen3_5_0_8b", variant_id="w4a16")
+    run.update(run_type="model_package", git_ref="refs/heads/feature/model")
+    run["metadata"].update(package_id="default")
+    artifact = {
+        "name": "package", "artifact_type": "model-package", "object_status": "available",
+        "size_bytes": 100, "sha256": "c" * 64, "media_type": "application/json",
+        "metadata": {"layout": "directory", "deployment_size_bytes": 10000},
+    }
+    other = {**artifact, "name": "unapproved-root"}
+    if failure == "missing_root":
+        artifact["name"] = "not-the-approved-root"
+    elif failure == "unavailable_root":
+        artifact["object_status"] = "missing"
+    elif failure == "wrong_profile":
+        run["metadata"]["variant_id"] = "w8a16"
+    catalog = {"catalog": {"document": {"models": [{
+        "id": "qwen3_5_0_8b", "display_name": "Qwen3.5-0.8B", "build_on_demand": True,
+        "packages": [{"run_id": "newer-unapproved", "build_profile_id": "w4a16"}],
+        "approved_deployments": {"w4a16": {
+            "deployment_id": "11111111-1111-4111-8111-111111111111", "manifest_digest": "b" * 64,
+            "artifacts": [{
+                "role": "package-default", "package_id": "default", "run_id": "approved-run",
+                "artifact_name": "package", "layout": "directory", "format": "llima",
+            }],
+        }},
+    }]}}}
+    session = FakeSession([
+        FakeResponse(payload=catalog),
+        FakeResponse(payload={"run": run, "artifacts": [other, artifact]}),
+    ])
+    client = RegistryClient("https://registry.example", session=session)
+    if failure:
+        with pytest.raises(ModelRegistryError, match="no available artifact|does not match"):
+            client.catalog_models("develop")
+    else:
+        selected = find_latest_run(client.catalog_models("develop"), "qwen3_5_0_8b", "w4a16")
+        assert selected["id"] == "approved-run"
+        assert selected["artifact_name"] == "package"
+        assert selected["git_ref"] == "refs/heads/feature/model"
+        assert selected["size_bytes"] == 10000
+        assert selected["sha256"] == "c" * 64
+    assert len(session.calls) == 2
+    assert session.calls[1][0].endswith("/v1/runs/approved-run")
+
+
+def test_client_keeps_inherited_catalog_packages_on_feature_branch():
     catalog = {
         "catalog": {
             "document": {
@@ -332,7 +377,6 @@ def test_client_excludes_inherited_catalog_packages_from_feature_branch():
             }
         }
     }
-    inherited_compile = _run("develop-compile", variant_id="modalix_int8")
     inherited_package = _run("develop-package", variant_id="modalix_int8")
     inherited_package["run_type"] = "model_package"
     inherited_package["metadata"].update(
@@ -343,13 +387,14 @@ def test_client_excludes_inherited_catalog_packages_from_feature_branch():
         session=FakeSession(
             [
                 FakeResponse(payload=catalog),
-                FakeResponse(payload={"runs": [inherited_compile], "has_more": False}),
-                FakeResponse(payload={"runs": [inherited_package], "has_more": False}),
+                FakeResponse(payload=_package_summary(inherited_package)),
             ]
         ),
     )
 
-    assert client.catalog_models("feature/readme-only") == []
+    selected = client.catalog_models("feature/readme-only")[0]
+    assert selected["id"] == "develop-package"
+    assert selected["git_ref"] == "refs/heads/develop"
 
 
 def test_client_excludes_native_package_not_promoted_in_catalog():
@@ -361,21 +406,11 @@ def test_client_excludes_native_package_not_promoted_in_catalog():
             }
         }
     }
-    compile_run = _run("feature-compile", variant_id="modalix_int8")
-    compile_run["git_ref"] = "refs/heads/feature/model"
-    package_run = _run("feature-package", variant_id="modalix_int8")
-    package_run["git_ref"] = "refs/heads/feature/model"
-    package_run["run_type"] = "model_package"
-    package_run["metadata"].update(
-        {"package_id": "default", "component_run_ids": {"model": "feature-compile"}}
-    )
     client = RegistryClient(
         "https://registry.example",
         session=FakeSession(
             [
                 FakeResponse(payload=catalog),
-                FakeResponse(payload={"runs": [compile_run], "has_more": False}),
-                FakeResponse(payload={"runs": [package_run], "has_more": False}),
             ]
         ),
     )
@@ -404,32 +439,15 @@ def test_client_keeps_promoted_package_when_newer_unpromoted_rerun_exists():
             }
         }
     }
-    compile_run = _run("feature-compile", variant_id="modalix_int8")
-    compile_run["git_ref"] = "refs/heads/feature/model"
-
-    def package(run_id, finished_at):
-        run = _run(run_id, variant_id="modalix_int8", finished_at=finished_at)
-        run["git_ref"] = "refs/heads/feature/model"
-        run["run_type"] = "model_package"
-        run["metadata"].update(
-            {
-                "package_id": "default",
-                "component_run_ids": {"model": "feature-compile"},
-            }
-        )
-        return run
-
-    promoted = package("promoted-package", "2026-08-30T12:01:00Z")
-    unpromoted = package("unpromoted-package", "2026-08-30T12:02:00Z")
+    promoted = _run("promoted-package", variant_id="modalix_int8", finished_at="2026-08-30T12:01:00Z")
+    promoted.update(run_type="model_package", git_ref="refs/heads/feature/model")
+    promoted["metadata"].update(package_id="default", component_run_ids={"model": "feature-compile"})
     client = RegistryClient(
         "https://registry.example",
         session=FakeSession(
             [
                 FakeResponse(payload=catalog),
-                FakeResponse(payload={"runs": [compile_run], "has_more": False}),
-                FakeResponse(
-                    payload={"runs": [promoted, unpromoted], "has_more": False}
-                ),
+                FakeResponse(payload=_package_summary(promoted)),
             ]
         ),
     )
@@ -437,22 +455,8 @@ def test_client_keeps_promoted_package_when_newer_unpromoted_rerun_exists():
     assert [run["id"] for run in client.catalog_models("feature/model")] == [
         "promoted-package"
     ]
-
-
-def test_coherent_branch_packages_excludes_package_for_superseded_compile():
-    old_compile = _run("old-compile", finished_at="2026-08-29T12:00:00Z")
-    old_compile["metadata"]["github_run_id"] = "old-workflow"
-    new_compile = _run("new-compile", finished_at="2026-08-30T12:00:00Z")
-    new_compile["metadata"]["github_run_id"] = "new-workflow"
-    old_package = _run("old-package", finished_at="2026-08-29T12:05:00Z")
-    old_package["run_type"] = "model_package"
-    old_package["metadata"].update(
-        {"package_id": "default", "component_run_ids": {"model": "old-compile"}}
-    )
-
-    assert _coherent_branch_packages(
-        [old_compile, new_compile], [old_package]
-    ) == []
+    assert len(client.session.calls) == 2
+    assert client.session.calls[1][0].endswith("/v1/runs/promoted-package")
 
 
 def test_client_rejects_catalog_without_models():

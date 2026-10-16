@@ -279,7 +279,7 @@ def artifacts(ctx, repo, ref, environment, environment_flag, base_url, output, a
     "--force",
     is_flag=True,
     default=False,
-    help="Force installation even if compatibility checks fail.",
+    help="Force installation even if compatibility checks fail. Sets FORCE_INSTALL=1 for the installation script.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
 @click.option("--download-only", is_flag=True, help="Download metadata resources without running installation.")

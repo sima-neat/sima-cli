@@ -5,6 +5,7 @@ from urllib.parse import quote, urljoin
 import requests
 from sima_cli.utils.config_loader import load_resource_config, artifactory_url
 from sima_cli.utils.config import get_auth_token
+from sima_cli.utils.network import configure_session_for_url
 
 ARTIFACTORY_BASE_URL = artifactory_url() + '/artifactory'
 
@@ -21,8 +22,7 @@ def resolve_elxr_palette_image(palette_url: str, board: str) -> str:
     if not palette_url.startswith(prefix):
         raise ValueError("Palette directory is outside the configured Artifactory")
     path = palette_url[len(prefix):].rstrip('/')
-    session = requests.Session()
-    session.trust_env = False
+    session = configure_session_for_url(requests.Session(), palette_url)
     response = session.get(
         f"{prefix}api/storage/{path}",
         headers={"Authorization": f"Bearer {get_auth_token(internal=True)}"},
@@ -88,8 +88,7 @@ def _list_available_firmware_versions_internal(board: str, match_keyword: str = 
         "Authorization": f"Bearer {get_auth_token(internal=True)}"
     }
 
-    session = requests.Session()
-    session.trust_env = False
+    session = configure_session_for_url(requests.Session(), aql_url)
     response = session.post(aql_url, data=aql_query, headers=headers, timeout=30)
     if strict:
         response.raise_for_status()

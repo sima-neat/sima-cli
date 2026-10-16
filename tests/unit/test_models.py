@@ -506,7 +506,7 @@ def test_artifact_filename_uses_real_s3_object_name():
     ) == "resnet_50_modalix_int8_mpk.tar.gz"
 
 
-def test_download_is_atomic_and_verifies_size_and_sha(tmp_path):
+def test_download_is_atomic_and_verifies_size_and_sha(tmp_path, monkeypatch):
     content = b"verified model artifact"
     artifact = {
         "name": "resnet_int8_mpk.tar.gz",
@@ -516,11 +516,12 @@ def test_download_is_atomic_and_verifies_size_and_sha(tmp_path):
     }
     session = FakeSession(
         [
-            FakeResponse(payload={"artifact": {"download_url": "https://download.example/model"}}),
+            FakeResponse(payload={"artifact": {"download_url": "https://artifacts.neat.sima.ai/models/model"}}),
             FakeResponse(content=content),
         ]
     )
     destination = tmp_path / artifact["name"]
+    monkeypatch.setenv("SIMA_CLI_CACHE_URL", "https://cache.example")
 
     result = RegistryClient("https://registry.example", session=session).download(
         "run-1", artifact, destination
@@ -529,6 +530,7 @@ def test_download_is_atomic_and_verifies_size_and_sha(tmp_path):
     assert result == destination
     assert destination.read_bytes() == content
     assert not (tmp_path / f".{artifact['name']}.part").exists()
+    assert session.calls[1][0] == "https://cache.example/models/model"
 
 
 def test_download_refreshes_an_expired_presigned_url_once(tmp_path):

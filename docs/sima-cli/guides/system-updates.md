@@ -12,6 +12,12 @@ HTTP 401/403 or 5xx responses, connection failures, and timeouts fall back to th
 [daily platform index](https://artifacts.neat.sima.ai/daily-platform-images/index.json).
 A successful query with no matching build does not fall back.
 
+An approved reverse cache for the public artifact CDN can be selected with
+`SIMA_CLI_CACHE_URL`, for example `https://artifact-cache.example.com`. Install
+its CA as `~/.config/sima-cli/cache-ca.pem`. Only URLs on
+`https://artifacts.neat.sima.ai` are rewritten; internal Artifactory and
+unrelated public hosts retain their original routing.
+
 ```bash
 sima-cli -i update -f -v 3.0
 sima-cli -i update -f -v 3.0.0_daily_develop_B1247

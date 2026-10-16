@@ -43,7 +43,7 @@ def test_index_filters_and_sorts_by_build_number(query, expected):
         client = mock_index(session, index(build('3.0.0_daily_develop_B9', 9), build(), build('13.0.0_other_B1', 1)))
         rows = artifacts.mirror_bundles('modalix', query)
     assert [row['version'] for row in rows] == expected
-    assert client.trust_env is False
+    assert client.trust_env is True
     client.get.assert_called_once_with(artifacts.DAILY_MIRROR + 'index.json', timeout=30)
     if rows:
         assert rows[0]['url'].sha256 == hashlib.sha256(CONTENT).hexdigest()
@@ -209,7 +209,7 @@ def test_public_mirror_download_does_not_send_credentials(tmp_path):
         response.headers = {'content-length': str(len(CONTENT))}
         response.iter_content.return_value = [CONTENT]
         path = download_file_from_url(url, str(tmp_path), internal=False)
-    assert client.trust_env is False
+    assert client.trust_env is True
     assert client.head.call_args.kwargs['headers'] == {}
     assert client.get.call_args.kwargs['headers'] == {}
     token.assert_not_called()

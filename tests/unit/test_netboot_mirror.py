@@ -38,7 +38,7 @@ def test_index_returns_complete_same_build_set(query):
         builds = artifacts.mirror_bundles('modalix', query, netboot=True)
     assert list(builds[0]['artifacts']) == list(sources())
     assert all(source.version == VERSION for source in builds[0]['artifacts'])
-    assert client.trust_env is False
+    assert client.trust_env is True
 
 
 @pytest.mark.parametrize('missing', FILES)

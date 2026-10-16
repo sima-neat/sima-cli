@@ -34,6 +34,18 @@ come from the same selected build. Missing, mismatched, or invalid mirror
 artifacts stop preparation before extraction or TFTP startup. Local-file,
 direct-URL, Yocto, and older eLxr paths remain available.
 
+To route public CDN downloads through an approved reverse cache, install the
+cache CA as `~/.config/sima-cli/cache-ca.pem` and set its HTTPS origin before
+running `sima-cli`:
+
+```bash
+export SIMA_CLI_CACHE_URL=https://artifact-cache.example.com
+```
+
+The setting applies only to URLs on `https://artifacts.neat.sima.ai`; it does
+not redirect internal Artifactory or other public hosts. The cache must preserve
+the original path. Indexed artifact size and SHA-256 verification still apply.
+
 ## Remote netboot preparation
 
 Use `--netboot --devkit 192.168.2.2` to select a DevKit, or omit `--devkit` to

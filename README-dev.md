@@ -140,35 +140,6 @@ twine upload dist/*
 
 ---
 
-### Model deployment folders
-
-`models download` uses the exact deployment selected by the branch catalog,
-including inherited and approved builds. Existing archive packages still download
-as single files. Folder deployments preserve their layout under
-`<output>/<model_id>/<build_profile_id>/`, ready to use without extraction.
-
-For publishers:
-
-- Register the root as `model-package` (or `model-pack` for a standalone component)
-  with media type `application/json`.
-- The manifest contains `model_id`, `build_profile_id`, `package_id` and `files`.
-  Each file specifies `path`, `artifact`, `size_bytes` and `sha256`.
-- Register each file on the same run as `model-file`, named
-  `file-<SHA256(relative POSIX path)>`, with `metadata.path` set to that path.
-  Manifest identity, sizes and checksums must match the registered artifacts.
-- Use safe, unique relative paths; reserve root `manifest.json` for the manifest.
-  Register all files before finalizing the run. Signed URLs are fetched at download
-  time and do not belong in the manifest.
-
-Downloads use up to four parallel transfers and reuse files verified by size and SHA256.
-Retries retain completed files; partial files restart. The previous deployment
-remains available until the replacement verifies and installs successfully.
-Repeating a download repairs missing or corrupt files; replacing a different
-build requires `--force`. JSON output includes the destination, total size and
-file counts for reused and downloaded files.
-
----
-
 ### 🔗 Related Links
 
 - [SiMa Developer Portal](https://community.sima.ai/)

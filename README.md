@@ -24,7 +24,6 @@ Use the generated docs for detailed options, arguments, subcommands, and full he
 
 - [Complete command reference](docs/sima-cli/index.md)
 - [Top-level command help](docs/sima-cli/commands/sima-cli.md)
-- [Model deployment manifest](README-dev.md#model-deployment-folders)
 
 ## Installation
 

@@ -254,10 +254,16 @@ def _manifest_files(
             or name in {".", ".."}
             or "\\" in name
             or artifact is None
-            or artifact.get("artifact_type") == "model-package"
+            or artifact.get("artifact_type") != "model-file"
             or artifact.get("object_status") not in {None, "available"}
         ):
             raise ModelRegistryError(f"Deployment file {path!r} references an unavailable artifact: {name!r}.")
+        if (
+            name != "file-" + hashlib.sha256(path.encode()).hexdigest()
+            or not isinstance(artifact.get("metadata"), dict)
+            or artifact["metadata"].get("path") != path
+        ):
+            raise ModelRegistryError(f"Deployment file {path!r} has an inconsistent artifact name or path binding.")
         size, digest = entry.get("size_bytes"), entry.get("sha256")
         if (
             type(size) is not int

@@ -21,6 +21,9 @@ from sima_cli.models.client import (
 )
 from sima_cli.models.commands import models_group
 
+_ELF = "file-" + hashlib.sha256(b"elf_files/language.elf").hexdigest()
+_EMBEDDINGS = "file-" + hashlib.sha256(b"npy_files/embeddings.npy").hexdigest()
+
 
 def _artifact(name, content, **fields):
     return {
@@ -29,15 +32,21 @@ def _artifact(name, content, **fields):
     }
 
 
-def _manifest():
+def _file_artifact(path, content):
+    return _artifact(
+        "file-" + hashlib.sha256(path.encode()).hexdigest(), content,
+        artifact_type="model-file", metadata={"path": path},
+    )
+
+
+def _manifest(paths=None):
     metadata = {
         "model_id": "qwen3_5_2b", "build_profile_id": "w4a16", "package_id": "default",
     }
-    payloads = {
-        "config": b'{"lm_cfg": {}}', "elf": b"example ELF", "embeddings": b"example embeddings",
-    }
-    artifacts = [_artifact(name, content) for name, content in payloads.items()]
-    paths = ["devkit/vlm_config.json", "elf_files/language.elf", "npy_files/embeddings.npy"]
+    paths = paths or ["devkit/vlm_config.json", "elf_files/language.elf", "npy_files/embeddings.npy"]
+    contents = [b'{"lm_cfg": {}}', b"example ELF", b"example embeddings"]
+    artifacts = [_file_artifact(path, content) for path, content in zip(paths, contents)]
+    payloads = {item["name"]: content for item, content in zip(artifacts, contents)}
     manifest = {
         **metadata,
         "files": [
@@ -239,7 +248,7 @@ def test_catalog_deployment_downloads(
     assert not any("/runs/unused-component" in path for path in state.requests)
 
 
-@pytest.mark.parametrize("name", ["package", "elf"])
+@pytest.mark.parametrize("name", ["package", _ELF])
 def test_directory_refreshes_expired_signed_urls(deployment, tmp_path, name):
     deployment.expired.add(name)
     _download(deployment, tmp_path / "model")
@@ -274,18 +283,18 @@ def test_repeat_download_repairs_only_invalid_files(deployment, tmp_path, damage
 
     assert result["reused_files"] == 2
     assert result["downloaded_files"] == 1
-    assert damaged.read_bytes() == deployment.payloads["elf"]
-    assert deployment.requests == ["/v1/runs/package-run/artifacts/elf", "/objects/elf"]
+    assert damaged.read_bytes() == deployment.payloads[_ELF]
+    assert deployment.requests == [f"/v1/runs/package-run/artifacts/{_ELF}", f"/objects/{_ELF}"]
 
 
 def test_new_build_requires_force_and_reuses_unchanged_files(deployment, tmp_path):
     destination = tmp_path / "model"
     _download(deployment, destination)
     content = b"updated ELF"
-    updated = _artifact("elf", content)
-    deployment.payloads["elf"] = content
-    next(item for item in deployment.artifacts if item["name"] == "elf").update(updated)
-    next(item for item in deployment.manifest["files"] if item["artifact"] == "elf").update({
+    updated = _file_artifact("elf_files/language.elf", content)
+    deployment.payloads[_ELF] = content
+    next(item for item in deployment.artifacts if item["name"] == _ELF).update(updated)
+    next(item for item in deployment.manifest["files"] if item["artifact"] == _ELF).update({
         "sha256": updated["sha256"], "size_bytes": updated["size_bytes"],
     })
     deployment.requests.clear()
@@ -297,7 +306,7 @@ def test_new_build_requires_force_and_reuses_unchanged_files(deployment, tmp_pat
     assert result["reused_files"] == 2
     assert result["downloaded_files"] == 1
     assert {path for path in deployment.requests if path.startswith("/objects/")} == {
-        "/objects/package", "/objects/elf",
+        "/objects/package", f"/objects/{_ELF}",
     }
     assert (destination / "elf_files/language.elf").read_bytes() == content
 
@@ -305,12 +314,12 @@ def test_new_build_requires_force_and_reuses_unchanged_files(deployment, tmp_pat
 @pytest.mark.parametrize("corrupt_cache", [False, True])
 def test_retry_reuses_completed_files_and_rechecks_cached_checksums(deployment, tmp_path, monkeypatch, corrupt_cache):
     destination = tmp_path / "model"
-    deployment.unavailable.add("elf")
+    deployment.unavailable.add(_ELF)
     completed = threading.Barrier(3, timeout=3)
     download = deployment.client.download
 
     def finish_good_files_first(run_id, artifact, *args, **kwargs):
-        if artifact["name"] == "elf":
+        if artifact["name"] == _ELF:
             completed.wait()
             return download(run_id, artifact, *args, **kwargs)
         result = download(run_id, artifact, *args, **kwargs)
@@ -328,16 +337,16 @@ def test_retry_reuses_completed_files_and_rechecks_cached_checksums(deployment, 
     assert not (cached / "elf_files/language.elf").exists()
     assert not list(cached.parent.glob("*.part"))
     if corrupt_cache:
-        (cached / "npy_files/embeddings.npy").write_bytes(b"x" * len(deployment.payloads["embeddings"]))
+        (cached / "npy_files/embeddings.npy").write_bytes(b"x" * len(deployment.payloads[_EMBEDDINGS]))
 
     monkeypatch.setattr(deployment.client, "download", download)
     deployment.unavailable.clear()
     deployment.requests.clear()
     result = _download(deployment, destination)
     assert result["reused_files"] == (1 if corrupt_cache else 2)
-    expected_downloads = {"/objects/elf"}
+    expected_downloads = {f"/objects/{_ELF}"}
     if corrupt_cache:
-        expected_downloads.add("/objects/embeddings")
+        expected_downloads.add(f"/objects/{_EMBEDDINGS}")
     assert {path for path in deployment.requests if path.startswith("/objects/")} == expected_downloads
     assert _contents(tmp_path) == {destination}
 
@@ -354,7 +363,7 @@ def test_reuse_falls_back_to_copy_when_hard_links_are_unavailable(deployment, tm
     result = _download(deployment, destination)
     assert result["reused_files"] == 3
     assert deployment.requests == []
-    assert (destination / "elf_files/language.elf").read_bytes() == deployment.payloads["elf"]
+    assert (destination / "elf_files/language.elf").read_bytes() == deployment.payloads[_ELF]
 
 
 def test_size_mismatch_does_not_read_the_existing_file(tmp_path, monkeypatch):
@@ -433,12 +442,12 @@ def test_backup_cleanup_failure_is_a_warning_after_success(deployment, tmp_path,
 
 def test_directory_downloads_four_files_concurrently(deployment, tmp_path, monkeypatch):
     for index in range(5):
-        name, content = f"extra-{index}", b"extra ELF"
-        item = _artifact(name, content)
+        path, content = f"elf_files/extra-{index}.elf", b"extra ELF"
+        item = _file_artifact(path, content)
         deployment.artifacts.append(item)
-        deployment.payloads[name] = content
+        deployment.payloads[item["name"]] = content
         deployment.manifest["files"].append({
-            "path": f"elf_files/{name}.elf", "artifact": name,
+            "path": path, "artifact": item["name"],
             "size_bytes": item["size_bytes"], "sha256": item["sha256"],
         })
     barrier, lock = threading.Barrier(4), threading.Lock()
@@ -473,11 +482,11 @@ def test_failed_directory_download_preserves_existing_model(deployment, tmp_path
     destination.mkdir()
     (destination / "old.elf").write_bytes(b"old model")
     if failure == "file_checksum":
-        deployment.payloads["elf"] = b"example BAD"
+        deployment.payloads[_ELF] = b"example BAD"
     elif failure == "manifest_checksum":
         deployment.manifest_corrupt = True
     elif failure == "transfer":
-        deployment.unavailable.add("elf")
+        deployment.unavailable.add(_ELF)
     else:
         deployment.manifest_content = b"{"
 
@@ -497,7 +506,7 @@ def test_force_replaces_directory_without_leaving_stale_files(deployment, tmp_pa
     (destination / "obsolete.elf").write_bytes(b"old model")
     _download(deployment, destination, force=True)
     assert not (destination / "obsolete.elf").exists()
-    assert (destination / "elf_files/language.elf").read_bytes() == deployment.payloads["elf"]
+    assert (destination / "elf_files/language.elf").read_bytes() == deployment.payloads[_ELF]
     assert _contents(tmp_path) == {destination}
 
 
@@ -554,7 +563,7 @@ def test_interrupted_download_cleans_up_and_preserves_existing_model(deployment,
     download = deployment.client.download
 
     def interrupted_download(run_id, artifact, *args, **kwargs):
-        if artifact["name"] == "elf":
+        if artifact["name"] == _ELF:
             raise KeyboardInterrupt()
         return download(run_id, artifact, *args, **kwargs)
 
@@ -594,13 +603,13 @@ def test_reuse_rejects_symlinked_parent_directories(deployment, tmp_path):
     deployment.requests.clear()
     with pytest.raises(ModelRegistryError, match="symlinked parent"):
         _download(deployment, destination)
-    assert (external / "language.elf").read_bytes() == deployment.payloads["elf"]
+    assert (external / "language.elf").read_bytes() == deployment.payloads[_ELF]
     assert (destination / "elf_files").is_symlink()
     assert deployment.requests == []
 
 
 def test_failed_new_download_leaves_no_directory(deployment, tmp_path):
-    deployment.payloads["elf"] = b"bad model"
+    deployment.payloads[_ELF] = b"bad model"
     with pytest.raises(ModelRegistryError, match="size mismatch"):
         _download(deployment, tmp_path / "model")
     assert not (tmp_path / "model").exists()
@@ -611,6 +620,22 @@ def test_failed_new_download_leaves_no_directory(deployment, tmp_path):
 def test_invalid_manifest_is_rejected_before_downloading_files(deployment, tmp_path):
     deployment.manifest["files"][0]["path"] = "../escape"
     with pytest.raises(ModelRegistryError, match="unsafe file path"):
+        _download(deployment, tmp_path / "model")
+    assert deployment.requests == ["/v1/runs/package-run/artifacts/package", "/objects/package"]
+    assert _contents(tmp_path) == set()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("artifact_type", "log"), ("artifact_type", "model-pack"),
+    ("artifact_type", "model-package"), ("artifact_type", None),
+    ("name", "unrelated"), ("metadata", {"path": "other/file"}),
+    ("metadata", {}), ("metadata", None), ("metadata", []),
+])
+def test_invalid_file_binding_is_rejected_before_downloading_files(deployment, tmp_path, field, value):
+    artifact = deployment.artifacts[0]
+    artifact[field] = value
+    deployment.manifest["files"][0]["artifact"] = artifact["name"]
+    with pytest.raises(ModelRegistryError, match="unavailable artifact|binding"):
         _download(deployment, tmp_path / "model")
     assert deployment.requests == ["/v1/runs/package-run/artifacts/package", "/objects/package"]
     assert _contents(tmp_path) == set()
@@ -633,20 +658,23 @@ def test_manifest_rejects_unsafe_paths(path):
     ["devkit", "devkit/config"], ["devkit/config", "devkit"],
 ])
 def test_manifest_rejects_duplicate_or_conflicting_paths(paths):
-    metadata, manifest, artifacts, _ = _manifest()
-    for entry, path in zip(manifest["files"], paths):
-        entry["path"] = path
+    metadata, manifest, artifacts, _ = _manifest(paths)
     with pytest.raises(ModelRegistryError, match="duplicate|conflict"):
         _manifest_files(manifest, artifacts, metadata)
 
 
 def test_temporary_download_names_do_not_restrict_deployment_paths(deployment, tmp_path):
-    deployment.manifest["files"][0]["path"] = "elf_files/x"
-    deployment.manifest["files"][1]["path"] = "elf_files/.x.part/child"
+    _, manifest, artifacts, payloads = _manifest([
+        "elf_files/x", "elf_files/.x.part/child", "npy_files/embeddings.npy",
+    ])
+    deployment.manifest.update(manifest)
+    deployment.artifacts[:] = artifacts
+    deployment.payloads.clear()
+    deployment.payloads.update(payloads)
     result = _download(deployment, tmp_path / "model")
     assert result["downloaded_files"] == 3
-    assert (tmp_path / "model/elf_files/x").read_bytes() == deployment.payloads["config"]
-    assert (tmp_path / "model/elf_files/.x.part/child").read_bytes() == deployment.payloads["elf"]
+    assert (tmp_path / "model/elf_files/x").read_bytes() == payloads[artifacts[0]["name"]]
+    assert (tmp_path / "model/elf_files/.x.part/child").read_bytes() == payloads[artifacts[1]["name"]]
 
 
 @pytest.mark.parametrize("field,value", [

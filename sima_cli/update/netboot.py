@@ -627,12 +627,42 @@ def _same_netboot_device(configuration, candidate_ip):
             ssh.close()
 
 
+def _offer_reboot_into_emmc(selected_ip):
+    """Offer to reboot into the environment written by the flashed image."""
+    if not click.confirm(
+        "Reboot the DevKit now and boot from the flashed eMMC image?",
+        default=True,
+    ):
+        click.echo(
+            "Reboot skipped. The flashed eMMC image will be used on the next reboot."
+        )
+        return False
+
+    try:
+        _schedule_reboot_into_emmc(selected_ip)
+    except Exception as exc:
+        click.secho(
+            f"Flash completed, but reboot was not scheduled: {exc}",
+            fg="yellow",
+            err=True,
+        )
+        return False
+
+    click.secho(
+        f"Reboot was scheduled for {selected_ip}; the DevKit will start from eMMC.",
+        fg="green",
+    )
+    return True
+
+
 def flash_emmc(
     client_manager,
     emmc_image_paths,
     override_ip=None,
     troot_image_path=None,
     configuration=None,
+    manual_reboot=True,
+    offer_reboot=False,
 ):
     """Flash eMMC on a selected client device."""
     if not emmc_image_paths:
@@ -644,7 +674,7 @@ def flash_emmc(
     selected_ip = _select_flash_target(client_manager, override_ip=override_ip)
     if not selected_ip:
         return False
-    if configuration is not None and configuration.changed:
+    if configuration is not None and configuration.hardware_address:
         if not _same_netboot_device(configuration, selected_ip):
             click.echo(
                 f"❌ Refusing to flash {selected_ip}: it could not be verified as "
@@ -733,8 +763,16 @@ def flash_emmc(
             check=True,
             command_label='Finalizing eMMC partitions',
         )
+        if configuration is not None:
+            configuration.flash_completed = True
 
-        click.echo("✅ Flash completed. Please reboot the board to boot from eMMC.")
+        if offer_reboot:
+            click.echo("✅ Flash completed.")
+            _offer_reboot_into_emmc(selected_ip)
+        elif manual_reboot:
+            click.echo("✅ Flash completed. Please reboot the board to boot from eMMC.")
+        else:
+            click.echo("✅ Flash completed.")
         return True
     except Exception as e:
         click.echo(f"❌ Flashing failed: {e}")
@@ -1034,9 +1072,9 @@ def _discover_netboot_devices():
     return devices
 
 
-def _update_restoration_target_from_discovery(configuration, devices):
+def _update_configured_device_from_discovery(configuration, devices):
     """Remember a newly discovered address only when its MAC is an exact match."""
-    if configuration is None or not configuration.changed:
+    if configuration is None or not configuration.hardware_address:
         return
     expected = (configuration.hardware_address or '').strip().lower()
     matches = {
@@ -1048,8 +1086,22 @@ def _update_restoration_target_from_discovery(configuration, devices):
         configuration.devkit = matches.pop()
         click.echo(
             f"✅ Found the configured DevKit at {configuration.devkit}; "
-            "this address will be used for cleanup."
+            "this address will be used for flashing."
         )
+
+
+def _warn_unflashed_netboot(configuration):
+    """Explain recovery when persistent netboot settings outlive the session."""
+    if (configuration is None or not configuration.netboot_configured
+            or configuration.flash_completed):
+        return
+    click.secho(
+        'Netboot ended without a completed eMMC flash. U-Boot remains configured '
+        'for network boot; use the serial console to recover local boot before '
+        'rebooting without this TFTP server.',
+        fg='yellow',
+        err=True,
+    )
 
 
 def run_cli(client_manager, configuration=None):
@@ -1092,7 +1144,7 @@ def run_cli(client_manager, configuration=None):
                     continue
                 client_manager.stop_monitoring()
                 devices = _discover_netboot_devices()
-                _update_restoration_target_from_discovery(configuration, devices)
+                _update_configured_device_from_discovery(configuration, devices)
             elif command == "f":
                 if len(args) > 1:
                     click.echo("❌ Usage: f [ip]")
@@ -1105,6 +1157,7 @@ def run_cli(client_manager, configuration=None):
                     override_ip=override_ip,
                     troot_image_path=troot_image_path,
                     configuration=configuration,
+                    offer_reboot=True,
                 )
             elif command == "":
                 continue
@@ -1113,6 +1166,20 @@ def run_cli(client_manager, configuration=None):
         except (KeyboardInterrupt, EOFError):
             click.echo("\n🛑 Exiting netboot session.")
             return True
+
+def _schedule_reboot_into_emmc(selected_ip):
+    """Schedule a delayed reboot while allowing SSH output to complete."""
+    ssh = init_ssh_session(selected_ip, password=DEFAULT_PASSWORD)
+    try:
+        run_remote_command(
+            ssh,
+            'sudo systemd-run --on-active=3s /sbin/reboot',
+            check=True,
+            command_label='Scheduling reboot into eMMC',
+        )
+    finally:
+        ssh.close()
+
 
 def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
     """Flash only the confirmed device, once, after its network boot is ready."""
@@ -1133,10 +1200,17 @@ def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
                                            'to be running the network boot image.')
             click.echo(f'Starting automatic flash on {selected_ip}.')
             flashed = flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
-                                 troot_image_path=troot_image_path, configuration=configuration)
+                                 troot_image_path=troot_image_path, configuration=configuration,
+                                 manual_reboot=False)
             if not flashed:
                 raise click.ClickException('Automatic eMMC flash failed.')
-            return
+            _schedule_reboot_into_emmc(selected_ip)
+            click.secho(
+                f'Flash completed and reboot was scheduled for {selected_ip}; '
+                'the DevKit will start from eMMC.',
+                fg='green',
+            )
+            return True
         if time.monotonic() >= deadline:
             raise click.ClickException(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')
         client_manager.shutdown_event.wait(0.5)
@@ -1228,7 +1302,6 @@ def setup_netboot(
         NetbootConfiguration,
         configure_and_reboot,
         resolve_device,
-        restore_environment,
         server_address,
     )
     if not os.path.isfile(os.path.join(extract_dir, 'netboot.scr.uimg')):
@@ -1292,6 +1365,7 @@ def setup_netboot(
                     click.echo('Automatic flashing is disabled because device setup was not confirmed.')
             elif autoflash:
                 auto_flash(client_manager, selected_devkit, configuration=configuration)
+                return
         else:
             message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'
                            'Configure the DevKit manually through its serial console to boot from the network, '
@@ -1311,28 +1385,7 @@ def setup_netboot(
 
     finally:
         shutdown_error = None
-        if configuration is not None and configuration.changed:
-            try:
-                candidate_ips = (
-                    [ip for ip, _ in client_manager.get_client_info()]
-                    if client_manager is not None else []
-                )
-                restore_environment(configuration, candidate_ips=candidate_ips)
-            except (Exception, KeyboardInterrupt) as exc:
-                recovery_backup = (
-                    configuration.local_backup_dir or configuration.backup_dir
-                )
-                click.secho(
-                    f'Could not restore the saved U-Boot environment on '
-                    f'{configuration.devkit}: {exc}. Use serial recovery before rebooting again. '
-                    f'Backup: {recovery_backup}',
-                    fg='red',
-                    err=True,
-                )
-                shutdown_error = RuntimeError(
-                    f'Netboot ended, but U-Boot restoration failed on '
-                    f'{configuration.devkit}.'
-                )
+        _warn_unflashed_netboot(configuration)
         if server is not None:
             server.stop(now=True)
         if client_manager is not None:
@@ -1357,7 +1410,5 @@ def setup_netboot(
                     f"⚠️  Failed to delete netboot cache {cache_dir}: {cleanup_error}",
                     err=True,
                 )
-        if configuration is not None and not configuration.changed:
-            configuration.cleanup()
         if shutdown_error is not None:
             raise shutdown_error

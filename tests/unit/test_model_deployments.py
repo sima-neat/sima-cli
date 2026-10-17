@@ -739,3 +739,34 @@ def test_manifest_rejects_unavailable_file_artifact():
     artifacts[0]["object_status"] = "missing"
     with pytest.raises(ModelRegistryError, match="unavailable artifact"):
         _manifest_files(manifest, artifacts, metadata)
+
+
+@pytest.mark.parametrize("component", [
+    "bad?name", "bad*name", "bad<name", "bad>name", 'bad"name', "bad|name",
+    "bad\x01name", "bad\x1fname", "NUL", "con.txt", "PrN", "aux.json",
+    "COM1", "com9.bin", "LPT1", "lpt9.txt", "COM¹", "COM².bin", "LPT³",
+    "CONIN$", "CONOUT$.txt", "NUL .txt", "con.tar.gz",
+])
+@pytest.mark.parametrize("as_directory", [False, True])
+def test_windows_invalid_paths_fail_before_any_file_transfer(deployment, tmp_path, component, as_directory):
+    path = f"devkit/{component}/config.json" if as_directory else f"devkit/{component}"
+    # Put the invalid path after a valid entry; all paths must pass before transfers start.
+    _, manifest, artifacts, payloads = _manifest(["devkit/config.json", path])
+    deployment.manifest.update(manifest)
+    deployment.artifacts[:] = artifacts
+    deployment.payloads.clear()
+    deployment.payloads.update(payloads)
+    with pytest.raises(ModelRegistryError, match="unsafe file path"):
+        _download(deployment, tmp_path / "model")
+    assert deployment.requests == ["/v1/runs/package-run/artifacts/package", "/objects/package"]
+    assert _contents(tmp_path) == set()
+
+
+@pytest.mark.parametrize("path", [
+    "devkit/config.json", "elf_files/language.elf", "devkit/console.txt",
+    "devkit/NUL_model.bin", "devkit/COM10.bin", "devkit/LPT10/config.json",
+    "devkit/模型.json", "devkit/.config.json",
+])
+def test_manifest_accepts_portable_names_near_reserved_device_names(path):
+    metadata, manifest, artifacts, _ = _manifest([path])
+    assert _manifest_files(manifest, artifacts, metadata) == [(path, artifacts[0])]

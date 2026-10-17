@@ -201,6 +201,21 @@ def artifact_filename(artifact: Dict[str, Any]) -> str:
     return filename
 
 
+_WINDOWS_DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
+    prefix + digit for prefix in ("COM", "LPT") for digit in "123456789¹²³"
+}
+
+
+def _invalid_windows_component(component: str) -> bool:
+    # Apply on every host so a published deployment has portable paths.
+    # Device names remain reserved with extensions (including multiple dots).
+    return (
+        any(ord(char) < 32 or char in '<>:"/\\|?*' for char in component)
+        or component.endswith((" ", "."))
+        or component.split(".", 1)[0].rstrip(" ").upper() in _WINDOWS_DEVICE_NAMES
+    )
+
+
 def _manifest_files(
     manifest: Any,
     artifacts: Sequence[Dict[str, Any]],
@@ -237,7 +252,7 @@ def _manifest_files(
             or "\x00" in path
             or PurePosixPath(path).is_absolute()
             or any(part in {"", ".", ".."} for part in path.split("/"))
-            or any(part.endswith((" ", ".")) for part in path.split("/"))
+            or any(_invalid_windows_component(part) for part in path.split("/"))
             or path.split("/")[0].casefold() == "manifest.json"
         ):
             raise ModelRegistryError(f"The deployment manifest contains an unsafe file path: {path!r}.")

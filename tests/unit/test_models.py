@@ -15,6 +15,7 @@ from sima_cli.models import rendering
 from sima_cli.models.client import (
     STAGING_BASE_URL,
     ModelRegistryError,
+    _download_lock,
     RegistryClient,
     artifact_filename,
     find_latest_run,
@@ -607,7 +608,7 @@ def test_checksum_failure_removes_partial_file(tmp_path):
 
     with pytest.raises(ModelRegistryError, match="SHA-256 mismatch"):
         client.download("run", artifact, tmp_path / artifact["name"])
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.iterdir()) == [tmp_path / f".{artifact['name']}.lock"]
 
 
 def test_model_card_handles_supported_and_unsupported_benchmarks():
@@ -1204,3 +1205,44 @@ def test_download_accepts_short_branch_option(tmp_path):
 
     assert result.exit_code == 0, result.output
     fake_client.catalog_models.assert_called_once_with("develop")
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_archive_retry_reclaims_own_orphan_partial(tmp_path, failure):
+    destination = tmp_path / "model.zip"
+    destination.write_bytes(b"previous working archive")
+    partial = tmp_path / ".model.zip.part"
+    partial.write_bytes(b"orphan from a terminated process" * 100)
+    unrelated = tmp_path / ".other.zip.part"
+    unrelated.write_bytes(b"another download")
+    content = b"verified archive"
+    artifact = {"name": "package", "size_bytes": len(content),
+                "sha256": "a" * 64 if failure else hashlib.sha256(content).hexdigest()}
+    session = FakeSession([
+        FakeResponse(payload={"artifact": {"download_url": "https://download.example/model"}}),
+        FakeResponse(content=content),
+    ])
+    client = RegistryClient("https://registry.example", session=session)
+    if failure:
+        with pytest.raises(ModelRegistryError, match="SHA-256 mismatch"):
+            client.download("run", artifact, destination, force=True)
+        assert destination.read_bytes() == b"previous working archive"
+    else:
+        client.download("run", artifact, destination, force=True)
+        assert destination.read_bytes() == content
+    assert not partial.exists()
+    assert unrelated.read_bytes() == b"another download"
+    assert list(tmp_path.glob("*.part")) == [unrelated]
+
+
+def test_archive_download_lock_preserves_active_partial(tmp_path):
+    destination = tmp_path / "model.zip"
+    partial = tmp_path / ".model.zip.part"
+    partial.write_bytes(b"active transfer")
+    session = FakeSession([])
+    artifact = {"name": "package", "size_bytes": 1, "sha256": "a" * 64}
+    with _download_lock(destination):
+        with pytest.raises(ModelRegistryError, match="Another download"):
+            RegistryClient("https://registry.example", session=session).download("run", artifact, destination)
+    assert partial.read_bytes() == b"active transfer"
+    assert session.calls == []

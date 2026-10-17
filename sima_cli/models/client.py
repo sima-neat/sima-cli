@@ -713,33 +713,44 @@ class RegistryClient:
         if len(expected_sha) != 64 or any(char not in "0123456789abcdefABCDEF" for char in expected_sha):
             raise ModelRegistryError("The registry did not provide a valid artifact SHA-256.")
 
-        if destination.exists() and not force:
-            raise ModelRegistryError(
-                f"Destination already exists: {destination}. Use --force to replace it."
-            )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        partial = (temporary_dir or destination.parent) / f".{uuid4().hex}.part"
-        try:
-            for attempt in range(2):
-                if cancellation is not None:
-                    cancellation.check()
-                signed = initial_download if attempt == 0 and initial_download else self.artifact_download(run_id, name)
+        # Directory downloads already hold their deployment lock and isolate
+        # random partials in a cache removed after a successful installation.
+        with (_download_lock(destination) if temporary_dir is None else nullcontext()):
+            if destination.exists() and not force:
+                raise ModelRegistryError(
+                    f"Destination already exists: {destination}. Use --force to replace it."
+                )
+            partial = (temporary_dir / f".{uuid4().hex}.part" if temporary_dir is not None
+                       else destination.with_name(f".{destination.name}.part"))
+            # A hard stop may leave the archive partial behind. Reclaim only this
+            # destination's staging file while holding its lock (never glob UUIDs).
+            if temporary_dir is None:
                 try:
-                    self._download_once(
-                        str(signed["download_url"]), partial, expected_size, expected_sha, progress, cancellation,
-                    )
-                    break
-                except PermissionError as exc:
-                    if attempt == 1:
-                        raise ModelRegistryError(str(exc)) from exc
-            os.replace(str(partial), str(destination))
-        except BaseException:
+                    partial.unlink()
+                except FileNotFoundError:
+                    pass
             try:
-                partial.unlink()
-            except FileNotFoundError:
-                pass
-            raise
-        return destination
+                for attempt in range(2):
+                    if cancellation is not None:
+                        cancellation.check()
+                    signed = initial_download if attempt == 0 and initial_download else self.artifact_download(run_id, name)
+                    try:
+                        self._download_once(
+                            str(signed["download_url"]), partial, expected_size, expected_sha, progress, cancellation,
+                        )
+                        break
+                    except PermissionError as exc:
+                        if attempt == 1:
+                            raise ModelRegistryError(str(exc)) from exc
+                os.replace(str(partial), str(destination))
+            except BaseException:
+                try:
+                    partial.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
+            return destination
 
     def download_directory(
         self,

@@ -852,7 +852,7 @@ def safe_output_path(
     parts = [model_id] if variant_id is None else [model_id, variant_id]
     for label, value in zip(("model ID", "variant"), parts):
         if (not value or value in {".", ".."} or Path(value).name != value
-                or any(char in value for char in "\\:\x00") or value.endswith((" ", "."))):
+                or _invalid_windows_component(value)):
             raise ModelRegistryError(f"The registry returned an unsafe {label}.")
     destination = root.joinpath(*parts)
     if artifact_name is None:

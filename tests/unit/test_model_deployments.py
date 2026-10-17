@@ -770,3 +770,25 @@ def test_windows_invalid_paths_fail_before_any_file_transfer(deployment, tmp_pat
 def test_manifest_accepts_portable_names_near_reserved_device_names(path):
     metadata, manifest, artifacts, _ = _manifest([path])
     assert _manifest_files(manifest, artifacts, metadata) == [(path, artifacts[0])]
+
+
+@pytest.mark.parametrize("display_name", [
+    "Qwen?", "Qwen*", "Qwen<", "Qwen>", 'Qwen"', "Qwen|", "Qwen\x01",
+    "CON", "nul.txt", "COM1", "LPT³", "CONOUT$", "CON .txt",
+])
+def test_download_rejects_windows_invalid_display_name_before_filesystem_changes(
+    deployment, tmp_path, monkeypatch, display_name,
+):
+    state = deployment
+    monkeypatch.setattr("sima_cli.models.commands.RegistryClient", lambda *_args: state.client)
+    selected = {**state.run, "metadata": {**state.metadata, "display_name": display_name}}
+    monkeypatch.setattr(state.client, "catalog_models", lambda *_args: [selected])
+    result = CliRunner().invoke(models_group, [
+        "--stg", "download", "--id", state.metadata["model_id"],
+        "--variant", state.metadata["build_profile_id"], "--output", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "unsafe model ID" in result.output
+    assert state.requests == ["/v1/runs/package-run"]
+    # No lock, cache, destination directory, or artifact transfer was created.
+    assert list(tmp_path.iterdir()) == []

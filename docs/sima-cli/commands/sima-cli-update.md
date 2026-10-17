@@ -21,11 +21,12 @@ sima-cli update [OPTIONS] [VERSION_OR_URL]
 | `--flavor` | Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above (default: auto) |
 | `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror (eLxr only). eLxr 3.0+ still verifies signed full-system bundles. On eLxr 2.1, this disables repository signature verification and, without --internal, selects the mirror directly. |
 | `-t, --troot_only` | Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion. |
-| `--dryrun` | For eLxr updates, validate the update path and show the command without installing. |
+| `--dryrun` | For eLxr, preview an update or slot swap without installing, switching slots, or rebooting. |
 | `--inspect` | Show eLxr 3.0+ A/B slots and overlay customizations without updating (local or --ip). |
+| `--swap` | Select the available inactive eLxr 3.0+ slot for next boot; use --reboot to restart now. |
 | `--verbose` | Show detailed overlay file categories during eLxr 3.0+ inspection or update. |
 | `--signing-cert` | SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the certificate for the selected channel when configured (eLxr 3.0+). |
-| `--reboot` | Reboot after successful eLxr 3.0+ installation; verify remote boot health. |
+| `--reboot` | Reboot after successful eLxr 3.0+ installation or slot selection; verify remote boot health. |
 
 ## Arguments
 
@@ -46,8 +47,18 @@ Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
   the device or pushed from a development host.
 
   eLxr 3.0+ uses signed full-system SWU bundles. Use --inspect for A/B state,
-  --ip for remote updates, and --reboot to reboot after installation. The
-  verification certificate is downloaded for the selected channel when
+  --ip for remote updates, and --reboot to reboot after installation.
+
+  Use --swap to select the valid inactive slot without downloading an update.
+  The current and target versions are shown before confirmation; --yes skips
+  confirmation. Reboot separately to apply, or add --reboot to restart now.
+  Shared data and overlay customizations persist and can override files in the
+  selected version. Blank, invalid, pending, and unknown states are refused.
+
+  Examples: sima-cli update --swap; sima-cli update --ip 192.168.6.5 --swap
+  --reboot
+
+  The verification certificate is downloaded for the selected channel when
   configured; use --signing-cert URL_OR_FILE for an image signed with your own
   certificate. Developer-portal version lookup for 3.0 is not available yet.
 
@@ -176,11 +187,14 @@ Options:
   -t, --troot_only               Only update tRoot and not the root file
                                  system, compatible with Yocto system only,
                                  used for Yocto to eLxr conversion.
-  --dryrun                       For eLxr updates, validate the update path
-                                 and show the command without installing.
+  --dryrun                       For eLxr, preview an update or slot swap
+                                 without installing, switching slots, or
+                                 rebooting.
   --inspect                      Show eLxr 3.0+ A/B slots and overlay
                                  customizations without updating (local or
                                  --ip).
+  --swap                         Select the available inactive eLxr 3.0+ slot
+                                 for next boot; use --reboot to restart now.
   --verbose                      Show detailed overlay file categories during
                                  eLxr 3.0+ inspection or update.
   --signing-cert URL_OR_FILE     SWUpdate PEM verification certificate:
@@ -188,6 +202,7 @@ Options:
                                  certificate for the selected channel when
                                  configured (eLxr 3.0+).
   --reboot                       Reboot after successful eLxr 3.0+
-                                 installation; verify remote boot health.
+                                 installation or slot selection; verify remote
+                                 boot health.
   --help                         Show this message and exit.
 ```

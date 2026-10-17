@@ -639,9 +639,9 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
 def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_confirm=False,
                   dryrun=False, reboot=False, inspect=False,
                   force=False, troot_only=False, flavor='auto', local_elxr=False,
-                  signing_cert=None, verbose=False):
+                  signing_cert=None, verbose=False, swap=False):
     """Return False for legacy platforms; handle all eLxr 3.0+ operations here."""
-    if not (ip or local_elxr or inspect):
+    if not (ip or local_elxr or inspect or swap):
         if signing_cert is not None:
             raise click.ClickException('--signing-cert requires a local eLxr 3.0+ DevKit or --ip.')
         return False
@@ -655,6 +655,13 @@ def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_conf
     board, fwtype = board.strip().strip('\"\''), fwtype.strip().strip('\"\'').lower()
     running = release_tuple(version)
     requested_release = release_tuple(requested)
+    if swap:
+        if fwtype != 'elxr' or not running or running < (3, 0, 0) or board != 'modalix':
+            raise click.ClickException('Slot swapping requires a reachable Modalix eLxr 3.0+ board.')
+        from sima_cli.update.swap import swap_slots
+        swap_slots(ip=ip, passwd=passwd, auto_confirm=auto_confirm,
+                   dryrun=dryrun, reboot=reboot, verbose=verbose)
+        return True
     if inspect:
         if fwtype != 'elxr' or not running or running < (3, 0, 0):
             raise click.ClickException('A/B inspection requires a reachable eLxr 3.0+ board.')

@@ -2603,6 +2603,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("Password:", panel_text)
         self.assertIn("code-password", panel_text)
         self.assertNotIn("tkn=", panel_text)
+        self.assertIn("Enter this password when code-server prompts you.", panel_text)
+        self.assertIn("Run neat inside the SDK", panel_text)
 
     def test_detect_browser_host_prefers_physical_ip_over_vpn(self):
         with patch("sima_cli.sdk.neat._collect_physical_ipv4s_for_certs", return_value=["192.168.76.4"]), \

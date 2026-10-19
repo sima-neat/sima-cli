@@ -964,6 +964,8 @@ def _print_code_ui_panel(config: NeatRunConfig, code_url: str, opened: bool) -> 
     if config.code_ui_backend == "code-server":
         security_lines = [
             f"[yellow]Password:[/yellow] {config.code_ui_token}",
+            "Enter this password when code-server prompts you.",
+            "Run neat inside the SDK to show the access details again.",
             "[yellow]Security:[/yellow] Keep this password private; the URL contains no credential.",
         ]
     else:

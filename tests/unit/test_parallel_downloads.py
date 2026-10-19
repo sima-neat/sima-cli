@@ -1,4 +1,6 @@
 import threading
+import os
+import stat
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -9,8 +11,18 @@ from sima_cli.download.parallel import download_parallel
 from sima_cli.download.downloader import download_file_from_url
 
 
-@pytest.mark.parametrize('mode', ['ok', 'ignored', 'changed', 'wrong-range', 'truncated', 'overlong', 'encoded'])
+@pytest.mark.parametrize('mode', ['ok', 'ignored', 'changed', 'wrong-range', 'truncated', 'overlong', 'encoded', 'sync-failed'])
 def test_parallel_real_http(tmp_path, mode):
+    if mode == 'sync-failed' and os.name != 'posix':
+        pytest.skip('Directory fsync is POSIX-only')
+    progress = []
+    real_fsync = os.fsync
+
+    def fsync(fd):
+        if mode == 'sync-failed' and stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError('directory sync failed')
+        return real_fsync(fd)
+
     payload = bytes(range(256)) * 8193
     ranges = []
     lock = threading.Lock()
@@ -49,11 +61,18 @@ def test_parallel_real_http(tmp_path, mode):
     dest.write_bytes(b'previous')
     try:
         url = f'http://127.0.0.1:{server.server_port}/bundle.swu'
-        if mode in ('ok', 'ignored'):
-            assert download_parallel(url, dest, len(payload), '"v1"') == (mode == 'ok')
-        else:
-            with pytest.raises(ValueError):
-                download_parallel(url, dest, len(payload), '"v1"')
+        with patch('sima_cli.utils.streaming.os.fsync', side_effect=fsync):
+            if mode in ('ok', 'ignored'):
+                assert download_parallel(url, dest, len(payload), '"v1"', progress=progress.append) == (mode == 'ok')
+            else:
+                with pytest.raises(OSError if mode == 'sync-failed' else ValueError):
+                    download_parallel(url, dest, len(payload), '"v1"', progress=progress.append)
+        assert sum(progress) == (len(payload) if mode == 'ok' else 0)
+        if mode == 'ok':
+            assert all(delta > 0 for delta in progress)
+        if mode == 'sync-failed':
+            assert sum(delta for delta in progress if delta > 0) == len(payload)
+            assert progress[-1] == -len(payload)
         assert dest.read_bytes() == (payload if mode == 'ok' else b'previous')
         assert len(ranges) == 4
         assert sorted(ranges) == [(len(payload)*i//4, len(payload)*(i+1)//4-1) for i in range(4)]

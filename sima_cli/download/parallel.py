@@ -65,6 +65,7 @@ def download_parallel(url, destination, size, etag="", *, expected_sha="",
         return False
     destination = Path(destination)
     reported = 0
+    published = False
     progress_lock = Lock()
 
     def report(amount):
@@ -153,10 +154,11 @@ def download_parallel(url, destination, size, etag="", *, expected_sha="",
         if cancellation is not None:
             cancellation.check()
         publish_partial(scratch, destination)
+        published = True
         return True
     except RangeUnsupported:
         return False
     finally:
-        if Path(scratch).exists() and reported:
+        if not published and reported:
             report(-reported)
         Path(scratch).unlink(missing_ok=True)

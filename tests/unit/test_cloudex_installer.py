@@ -147,14 +147,15 @@ def test_ensure_preserves_explicit_override_without_network(monkeypatch, tmp_pat
     install.assert_not_called()
 
 
-def test_ensure_invalid_override_does_not_install(monkeypatch):
-    monkeypatch.setenv("SIMA_CLOUDEX_FORWARDER", "/missing")
-    monkeypatch.setattr(installer, "find_forwarder", Mock(side_effect=CloudExError("missing")))
-    install = Mock()
+def test_ensure_missing_override_bootstraps_controlled_install(monkeypatch, tmp_path):
+    binary = tmp_path / "controlled" / "forwarder"
+    monkeypatch.setenv("SIMA_CLOUDEX_FORWARDER", str(binary))
+    install = Mock(return_value={"path": binary})
     monkeypatch.setattr(installer, "install_forwarder", install)
-    with pytest.raises(CloudExError, match="missing"):
-        installer.ensure_forwarder()
-    install.assert_not_called()
+    progress = Mock()
+
+    assert installer.ensure_forwarder(progress=progress) == binary
+    install.assert_called_once_with("develop", progress=progress, current_path=None)
 
 
 def test_update_check_failure_does_not_use_stale_binary(monkeypatch, tmp_path):

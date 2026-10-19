@@ -102,13 +102,15 @@ def _download_resource(client, base_url, resource, expected_sha256, destination)
 
 def ensure_forwarder(progress=None):
     """Resolve the current published binary before starting a new tunnel."""
-    if os.environ.get("SIMA_CLOUDEX_FORWARDER"):
-        # An explicit operator-supplied binary is authoritative.
-        return find_forwarder()
     try:
         installed = find_forwarder()
     except CloudExError:
         installed = None
+    else:
+        if os.environ.get("SIMA_CLOUDEX_FORWARDER"):
+            # Preserve an existing controlled binary, but allow the normal
+            # installer to bootstrap a missing controlled installation.
+            return installed
     return install_forwarder(
         DEFAULT_BRANCH, progress=progress, current_path=installed
     )["path"]

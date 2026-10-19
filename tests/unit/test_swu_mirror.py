@@ -206,12 +206,13 @@ def test_public_mirror_download_does_not_send_credentials(tmp_path):
         client = session.return_value
         client.head.return_value.headers = {'content-length': str(len(CONTENT))}
         response = client.get.return_value.__enter__.return_value
+        response.status_code = 200
         response.headers = {'content-length': str(len(CONTENT))}
         response.iter_content.return_value = [CONTENT]
         path = download_file_from_url(url, str(tmp_path), internal=False)
     assert client.trust_env is False
-    assert client.head.call_args.kwargs['headers'] == {}
-    assert client.get.call_args.kwargs['headers'] == {}
+    assert client.head.call_args.kwargs['headers'] == {'Accept-Encoding': 'identity'}
+    assert client.get.call_args.kwargs['headers'] == {'Accept-Encoding': 'identity'}
     token.assert_not_called()
     from pathlib import Path
     assert Path(path).read_bytes() == CONTENT

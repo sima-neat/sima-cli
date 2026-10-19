@@ -19,6 +19,8 @@ from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 from urllib3.util.retry import Retry
 
+from sima_cli.download.parallel import PARALLEL_MIN_SIZE, download_parallel, connection_slot
+
 ORGANIZATION = "sima-neat"
 REPOSITORY = "models"
 STAGING_BASE_URL = "https://models-registry.stg.neat.sima.ai"
@@ -649,6 +651,22 @@ class RegistryClient:
     ) -> None:
         if cancellation is not None:
             cancellation.check()
+        if expected_size >= PARALLEL_MIN_SIZE:
+            try:
+                if download_parallel(url, partial, expected_size, expected_sha=expected_sha,
+                                     session=self.session, timeout=self.timeout,
+                                     progress=progress, cancellation=cancellation):
+                    return
+            except PermissionError:
+                raise
+            except (OSError, ValueError, requests.RequestException) as exc:
+                if cancellation is not None:
+                    cancellation.check()
+                raise ModelRegistryError(f"Artifact download failed: {exc}") from exc
+        with connection_slot(cancellation):
+            self._download_sequential(url, partial, expected_size, expected_sha, progress, cancellation)
+
+    def _download_sequential(self, url, partial, expected_size, expected_sha, progress, cancellation):
         try:
             response = self.session.get(url, stream=True, timeout=self.timeout)
         except requests.RequestException as exc:

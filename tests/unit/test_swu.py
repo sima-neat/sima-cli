@@ -648,41 +648,36 @@ def test_supported_legacy_updates_keep_their_dispatch(fwtype, requested):
     install.assert_not_called()
 
 
-@pytest.mark.parametrize('available,expected', [
-    ({'/tmp': 2000, '/media/nvme/swupdate': 1000, '/data': 1000}, '/data'),
-    ({'/tmp': 2000, '/media/nvme/swupdate': 1000, '/data': 0}, '/media/nvme/swupdate'),
-    ({'/tmp': 2000, '/media/nvme/swupdate': 0, '/data': 0}, '/tmp'),
-    ({'/tmp': 0, '/media/nvme/swupdate': 0, '/data': 0}, None),
+@pytest.mark.parametrize('ram_ok,tmp_space,data_space,expected', [
+    (True, 2000, 1000, '/tmp'),
+    (False, 2000, 1000, '/data'),
+    (True, 0, 1000, '/data'),
+    (False, 2000, 0, '/media/nvme/swupdate'),
 ])
-def test_staging_storage_order_and_exhaustion(available, expected):
+def test_staging_storage_order_and_exhaustion(ram_ok, tmp_space, data_space, expected):
     target = MagicMock()
-    with patch.object(swu, '_available_space', side_effect=lambda target, root: available[root] + swu.SPACE_MARGIN) as space:
-        if expected:
-            assert swu._select_staging_root(target, 1000) == expected
-        else:
-            with pytest.raises(click.ClickException, match='No staging storage') as error:
-                swu._select_staging_root(target, 1000)
-            assert 'Free up space in /data' in str(error.value)
-            assert 'then retry' in str(error.value)
-            assert 'Storage checks:' in str(error.value)
-    checked = [call.args[1] for call in space.call_args_list]
-    assert checked == list(swu.STAGING_ROOTS[:len(checked)])
-    commands = [call.args[0] for call in target.run.call_args_list]
-    assert any('remount,rw' in cmd for cmd in commands) == (expected != '/data')
+    target.run.return_value = 'tmpfs'
+    available = {'/tmp': tmp_space, '/data': data_space, '/media/nvme/swupdate': 1000}
+    with patch.object(swu, '_available_space', side_effect=lambda target, root: available[root] + swu.SPACE_MARGIN), \
+            patch.object(swu, 'expand_tmpfs', return_value=False), \
+            patch.object(swu, 'check_tmpfs_memory', side_effect=None if ram_ok else click.ClickException('low RAM')) as memory:
+        assert swu._select_staging_root(target, 1000) == expected
+    memory.assert_called_once_with(target.run, 2000 + swu.SPACE_MARGIN)
 
 
-def test_nvme_mount_failure_falls_back_to_tmp():
+@pytest.mark.parametrize('filesystem,size', [('ext4', 1000), ('tmpfs', 0)])
+def test_non_ram_or_unknown_size_falls_back_to_data(filesystem, size):
     target = MagicMock()
-    def run(script):
-        if 'remount,rw' in script:
-            raise click.ClickException('NVMe unavailable')
-    target.run.side_effect = run
-    with patch.object(swu, '_available_space', side_effect=[0, 1024**3]):
-        assert swu._select_staging_root(target, 1000) == '/tmp'
+    target.run.return_value = filesystem
+    with patch.object(swu, '_available_space', return_value=1024**3), \
+            patch.object(swu, 'check_tmpfs_memory') as memory:
+        assert swu._select_staging_root(target, size) == '/data'
+    memory.assert_not_called()
 
 
 def test_staging_dryrun_does_not_mount_nvme():
     target = MagicMock()
+    target.run.return_value = 'ext4'
     with patch.object(swu, '_available_space', side_effect=[0, 1024**3]):
         assert swu._select_staging_root(target, 1000, dryrun=True) == '/media/nvme/swupdate'
     assert not any('mount -o' in call.args[0] or 'mkdir' in call.args[0] for call in target.run.call_args_list)
@@ -846,6 +841,7 @@ def test_extraction_space_checked_after_transfer_before_install(tmp_path):
 
 def test_tmp_staging_requires_bundle_and_extraction_capacity():
     target = MagicMock()
+    target.run.side_effect = lambda cmd: 'tmpfs' if cmd == 'findmnt -n -M /tmp -o FSTYPE' else 'tmpfs\n6291456 8388608' if 'MemAvailable' in cmd else ''
     with patch.object(swu, '_available_space', return_value=1000 + swu.SPACE_MARGIN), \
             patch.object(swu, 'expand_tmpfs', return_value=False), \
             patch.object(swu, 'STAGING_ROOTS', ('/tmp',)):

@@ -57,7 +57,13 @@ def test_expansion_failure_is_reported(result):
 def test_swu_selects_expanded_tmp_on_local_and_remote_target(ip):
     # Both invocation modes use Target.run for the same target-side commands.
     target = Mock(ip=ip)
-    target.run.side_effect = lambda cmd: report() if cmd == staging.TMPFS_INFO else str(5 * GIB // 1024) if cmd == staging.TMP_FREE else ''
+    def run(cmd):
+        if cmd == 'findmnt -n -M /tmp -o FSTYPE':
+            return 'tmpfs'
+        if 'MemAvailable' in cmd and cmd != staging.TMPFS_INFO:
+            return f'tmpfs\n{6 * GIB // 1024} {8 * GIB // 1024}'
+        return report() if cmd == staging.TMPFS_INFO else str(5 * GIB // 1024) if cmd == staging.TMP_FREE else ''
+    target.run.side_effect = run
     with patch.object(swu, '_available_space', return_value=0):
         assert swu._select_staging_root(target, 2 * GIB) == '/tmp'
     assert any('remount,size=' in call.args[0] for call in target.run.call_args_list)
@@ -65,16 +71,16 @@ def test_swu_selects_expanded_tmp_on_local_and_remote_target(ip):
 
 def test_swu_preserves_nvme_fallback_when_ram_is_insufficient():
     target = Mock()
-    target.run.side_effect = lambda command: report(available=GIB) if command == staging.TMPFS_INFO else ''
+    target.run.side_effect = lambda cmd: 'tmpfs' if cmd == 'findmnt -n -M /tmp -o FSTYPE' else f'tmpfs\n{GIB // 1024} {8 * GIB // 1024}' if 'MemAvailable' in cmd else ''
     with patch.object(swu, '_available_space', side_effect=[0, 5 * GIB]):
         assert swu._select_staging_root(target, 2 * GIB) == '/media/nvme/swupdate'
     assert not any('remount,size=' in call.args[0] for call in target.run.call_args_list)
 
 
 @pytest.mark.parametrize('available_ram', [GIB, 7 * GIB])
-def test_data_full_uses_nvme_before_attempting_ram(available_ram):
+def test_data_full_uses_nvme_when_bundle_and_extraction_exceed_ram(available_ram):
     target = Mock()
-    target.run.side_effect = lambda cmd: report(available=available_ram) if cmd == staging.TMPFS_INFO else ''
+    target.run.side_effect = lambda cmd: 'tmpfs' if cmd == 'findmnt -n -M /tmp -o FSTYPE' else f'tmpfs\n{available_ram // 1024} {8 * GIB // 1024}' if 'MemAvailable' in cmd else ''
     with patch.object(swu, '_available_space', side_effect=[GIB, 100 * GIB]):
         assert swu._select_staging_root(target, 5 * GIB) == '/media/nvme/swupdate'
     assert not any(call.args[0] == staging.TMPFS_INFO for call in target.run.call_args_list)
@@ -82,6 +88,7 @@ def test_data_full_uses_nvme_before_attempting_ram(available_ram):
 
 def test_data_preferred_on_small_ram_board():
     target = Mock()
+    target.run.side_effect = lambda cmd: 'tmpfs' if cmd == 'findmnt -n -M /tmp -o FSTYPE' else f'tmpfs\n{GIB // 1024} {2 * GIB // 1024}' if 'MemAvailable' in cmd else ''
     with patch.object(swu, '_available_space', return_value=10 * GIB):
         assert swu._select_staging_root(target, 5 * GIB) == '/data'
     assert not any('mount -o' in call.args[0] for call in target.run.call_args_list)

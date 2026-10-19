@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -223,3 +224,73 @@ def test_real_http_download_stream(tmp_path):
         server.shutdown()
         server.server_close()
         worker.join()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Directory fsync is POSIX-only')
+@pytest.mark.parametrize('existing', [False, True])
+@pytest.mark.parametrize('copy_backup', [False, True])
+def test_directory_sync_failure_rolls_back_publication(tmp_path, existing, copy_backup):
+    import os
+    import stat
+    dest = tmp_path / 'file.bin'
+    if existing:
+        dest.write_bytes(b'old')
+    real_sync = os.fsync
+    real_link = os.link
+
+    def sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            assert dest.read_bytes() == b'new'  # Failure occurs after rename.
+            raise OSError('directory sync failed')
+        return real_sync(fd)
+
+    with patch('sima_cli.utils.streaming.os.fsync', side_effect=sync), patch(
+        'sima_cli.utils.streaming.os.link',
+        side_effect=OSError('hard links unsupported') if copy_backup else real_link,
+    ):
+        with pytest.raises(OSError, match='directory sync failed'):
+            write_stream([b'new'], dest, 3)
+    if existing:
+        assert dest.read_bytes() == b'old'
+    else:
+        assert not dest.exists()
+    assert not list(tmp_path.glob('.sima-download-*'))
+    assert not dest.with_name('file.bin.part').exists()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Directory fsync is POSIX-only')
+def test_failed_rollback_keeps_recovery_copy(tmp_path):
+    import os
+    import stat
+    dest = tmp_path / 'file.bin'
+    dest.write_bytes(b'old')
+    real_sync, real_replace = os.fsync, os.replace
+
+    def sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError('directory sync failed')
+        return real_sync(fd)
+
+    def replace(source, target):
+        if Path(source).name == 'previous':
+            raise OSError('restore failed')
+        return real_replace(source, target)
+
+    with patch('sima_cli.utils.streaming.os.fsync', side_effect=sync), patch(
+        'sima_cli.utils.streaming.os.replace', side_effect=replace,
+    ):
+        with pytest.raises(OSError, match='Previous file retained at') as error:
+            write_stream([b'new'], dest, 3)
+    backups = list(tmp_path.glob('.sima-download-*/previous'))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b'old'
+    assert str(backups[0]) in str(error.value)
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Directory fsync is POSIX-only')
+def test_successful_replacement_removes_rollback_copy(tmp_path):
+    dest = tmp_path / 'file.bin'
+    dest.write_bytes(b'old')
+    write_stream([b'new'], dest, 3)
+    assert dest.read_bytes() == b'new'
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['file.bin']

@@ -119,10 +119,13 @@ or 10% of total RAM (whichever is larger). Otherwise they stage in `/data`,
 with NVMe as a further fallback if `/data` lacks space. RAM staging is temporary;
 interrupted updates retained there do not survive a reboot.
 
-Large public-mirror downloads use four parallel connections when the server
-supports validated byte ranges. Each range must match the same object version
-and expected size before the file is published. Existing partial downloads
-continue sequentially; servers without range support use a single connection.
+Public-mirror downloads, `models download`, and `neat artifacts` split files
+of at least 64 MiB into four byte ranges when supported by the server. Models
+and Neat artifacts share a limit of four active download connections across
+files and ranges, including single-connection fallbacks. Ranges must match the
+expected size and an object validator or the expected SHA-256 before the file is published. Models retain signed-URL refresh and
+cancellation handling. Existing public-mirror partial downloads continue
+sequentially; servers without range support use a single connection.
 
 ## Common Workflows
 

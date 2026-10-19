@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
+from sima_cli.download.parallel import PARALLEL_MIN_SIZE, download_parallel, connection_slot
 from sima_cli.utils.streaming import DOWNLOAD_CHUNK_SIZE, write_stream
 from InquirerPy import inquirer
 
@@ -80,7 +81,7 @@ class ArtifactClient:
     def iter_bytes(self, url: str):
         """Stream large artifacts without materializing response.content."""
         try:
-            with self.session.get(url, timeout=60, stream=True,
+            with connection_slot(), self.session.get(url, timeout=60, stream=True,
                                   headers={"Accept-Encoding": "identity"}) as response:
                 response.raise_for_status()
                 yield from response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE)
@@ -412,6 +413,15 @@ def download_artifacts(
         expected_size = artifact.get("size")
         if not isinstance(expected_size, int) or expected_size < 0:
             expected_size = None
+        expected_sha = str(artifact.get("sha256", "")).strip()
+        if expected_size is not None and expected_size >= PARALLEL_MIN_SIZE and expected_sha:
+            try:
+                if download_parallel(url, destination, expected_size, expected_sha=expected_sha,
+                                     session=client.session, timeout=60):
+                    written.append(destination)
+                    continue
+            except (OSError, ValueError, requests.RequestException) as exc:
+                raise VulcanArtifactError(f"Download {destination} failed: {exc}") from exc
         chunks = client.iter_bytes(url)
         try:
             write_stream(chunks, destination, expected_size,

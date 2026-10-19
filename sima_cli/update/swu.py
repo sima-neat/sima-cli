@@ -320,7 +320,7 @@ test "$(date +%Y)" -ge 2024 || { echo 'Set the system clock before signed update
     return state
 
 
-STAGING_ROOTS = ('/data', '/media/nvme/swupdate', '/tmp')
+STAGING_ROOTS = ('/tmp', '/data', '/media/nvme/swupdate')
 STAGING_PATTERN = r'/(?:tmp|media/nvme/swupdate|data)/sima-cli-update\.[A-Za-z0-9]+'
 
 
@@ -361,6 +361,12 @@ def _select_staging_root(target, size, dryrun=False):
     failures = []
     for root in STAGING_ROOTS:
         try:
+            if root == '/tmp':
+                if size <= 0 or target.run('findmnt -n -M /tmp -o FSTYPE').strip() != 'tmpfs':
+                    raise click.ClickException('RAM staging requires a dedicated tmpfs and a known bundle size.')
+                # Keep both the staged SWU and its extracted members in RAM,
+                # plus the normal system reserve. Check even if tmpfs is large.
+                check_tmpfs_memory(target.run, size * 2 + SPACE_MARGIN)
             if root == '/media/nvme/swupdate':
                 if dryrun:
                     target.run('findmnt -n -M /media/nvme >/dev/null')
@@ -543,7 +549,10 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
                     if fallback is None:
                         raise
                     source = fallback
-                    _check_space(target, source.size, staging_root, allow_expand=True)
+                    if staging_root == '/tmp':
+                        check_tmpfs_memory(target.run, source.size * 2 + SPACE_MARGIN)
+                    _check_space(target, source.size * 2 if staging_root == '/tmp' else source.size,
+                                 staging_root, allow_expand=True)
                     local = download_file_from_url(source, cache, internal=False)
                 if is_mirror_source(source) and getattr(source, 'sha256', None):
                     click.echo('Verifying the daily mirror bundle size and SHA-256...')

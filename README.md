@@ -113,6 +113,17 @@ sima-cli --internal login
 SIMA_CLI_INTERNAL=1 sima-cli install -v 2.1.2 tools/model-compiler/amd64
 ```
 
+Full-system SWU updates prefer RAM-backed `/tmp` when available memory can
+hold both the bundle and its extraction, plus a reserve of at least 512 MiB
+or 10% of total RAM (whichever is larger). Otherwise they stage in `/data`,
+with NVMe as a further fallback if `/data` lacks space. RAM staging is temporary;
+interrupted updates retained there do not survive a reboot.
+
+Large public-mirror downloads use four parallel connections when the server
+supports validated byte ranges. Each range must match the same object version
+and expected size before the file is published. Existing partial downloads
+continue sequentially; servers without range support use a single connection.
+
 ## Common Workflows
 
 Set up SDK containers:

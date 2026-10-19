@@ -4,6 +4,7 @@ import hashlib
 import re
 from pathlib import Path
 from sima_cli.utils.streaming import DOWNLOAD_CHUNK_SIZE, publish_partial
+from sima_cli.download.parallel import PARALLEL_MIN_SIZE, download_parallel
 import requests
 from urllib.parse import urlparse
 from tqdm import tqdm
@@ -115,6 +116,7 @@ def download_file_from_url(url: str, dest_folder: str = ".", internal: bool = Fa
             raw_size = head.headers.get('content-length')
             total_size = int(raw_size) if raw_size is not None else None
             etag = head.headers.get('ETag', '')
+            accepts_ranges = head.headers.get('Accept-Ranges', '').lower() == 'bytes'
         finally:
             head.close()
         if etag.startswith('W/'):
@@ -132,6 +134,16 @@ def download_file_from_url(url: str, dest_folder: str = ".", internal: bool = Fa
                 pass
         if total_size is not None and existing_size >= total_size:
             existing_size = 0
+        # Keep existing contiguous partials resumable. Parallelism is limited
+        # to the public mirror; authenticated/custom sessions retain their path.
+        if (not existing_size and parsed_url.scheme == 'https'
+                and parsed_url.hostname == 'artifacts.neat.sima.ai'
+                and not internal and total_size is not None
+                and total_size >= PARALLEL_MIN_SIZE and etag and accepts_ranges):
+            if download_parallel(url, dest_path, total_size, etag):
+                partial.unlink(missing_ok=True)
+                receipt.unlink(missing_ok=True)
+                return dest_path
         if existing_size:
             headers['Range'] = f'bytes={existing_size}-'
             headers['If-Range'] = etag

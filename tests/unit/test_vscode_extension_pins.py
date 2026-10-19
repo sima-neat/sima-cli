@@ -132,6 +132,8 @@ import sys
 
 args = sys.argv[1:]
 root = Path(args[args.index('--extensions-dir') + 1])
+if (root / 'code-server').exists() and '--accept-server-license-terms' in args:
+    sys.exit(2)
 profile = root / 'extensions.json'
 entries = json.loads(profile.read_text())
 if '--list-extensions' in args:
@@ -161,9 +163,10 @@ def extension_entry(extension_id, version, **metadata):
     return {"identifier": {"id": extension_id}, "version": version, "metadata": metadata}
 
 
+@pytest.mark.parametrize("backend", ["openvscode", "code-server"])
 @pytest.mark.parametrize("extension_id", list(DEFAULT_EXTENSION_VERSIONS))
 @pytest.mark.parametrize("installed_version", [None, "99.9.9", "0.0.1", "matching"])
-def test_fresh_upgrade_downgrade_and_existing_unpinned_are_idempotent(tmp_path, fake_server, extension_id, installed_version):
+def test_fresh_upgrade_downgrade_and_existing_unpinned_are_idempotent(tmp_path, fake_server, extension_id, installed_version, backend):
     version = DEFAULT_EXTENSION_VERSIONS[extension_id]
     target = f"{extension_id}@{version}"
     unrelated = extension_entry("other.extension", "1.0.0", custom="preserved")
@@ -172,7 +175,12 @@ def test_fresh_upgrade_downgrade_and_existing_unpinned_are_idempotent(tmp_path, 
         entries.append(extension_entry(extension_id, version if installed_version == "matching" else installed_version))
     profile = tmp_path / "extensions.json"
     profile.write_text(json.dumps(entries))
-    command = "set -e; " + extension_install_command(fake_server, str(tmp_path), "Agent", target)
+    if backend == "code-server":
+        (tmp_path / "code-server").touch()
+    command = "set -e; " + extension_install_command(
+        fake_server, str(tmp_path), "Agent", target,
+        accept_server_license=backend == "openvscode",
+    )
     command += "; " + pin_extensions_command(str(tmp_path), {extension_id: version})
     subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=True)
     updated = json.loads(profile.read_text())

@@ -4496,6 +4496,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("/home/docker/.local/share/code-server/User/settings.json", install_cmd)
         self.assertIn("supervisorctl restart code-server", install_cmd)
         self.assertNotIn("/opt/openvscode-server", install_cmd)
+        self.assertNotIn("--accept-server-license-terms", install_cmd)
 
     def test_vscode_extension_skips_when_checklist_is_empty(self):
         server_available = Mock(returncode=0, stdout="openvscode")

@@ -1463,6 +1463,7 @@ def ensure_codex_vscode_extension_installed(
         data_dir = f"{home_directory}/.openvscode-server/data"
         supervisor_program = "openvscode-server"
         server_label = "OpenVSCode Server"
+    license_arg = " --accept-server-license-terms" if backend == "openvscode" else ""
     neat_extension_install_dir = f"{home_directory}/vscode-extension-installation"
     user_settings = f"{data_dir}/User/settings.json"
     machine_settings = f"{data_dir}/Machine/settings.json"
@@ -1486,7 +1487,7 @@ def ensure_codex_vscode_extension_installed(
         f"echo 'Installing downloaded SiMa Neat VSIX with {server_label}.'; "
         f"{shlex.quote(server_bin)} --extensions-dir {shlex.quote(extensions_dir)} "
         "--install-extension \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\" "
-        "--force --accept-server-license-terms; "
+        f"--force{license_arg}; "
         "else "
         "exit 1; "
         "fi"
@@ -1496,6 +1497,7 @@ def ensure_codex_vscode_extension_installed(
         extension_id = extension_target.split("@", 1)[0]
         install_steps.append(extension_install_command(
             server_bin, extensions_dir, label, extension_target,
+            accept_server_license=backend == "openvscode",
         ))
         if backend == "openvscode":
             legacy_cleanup_steps.append(

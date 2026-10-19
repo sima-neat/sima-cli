@@ -21,6 +21,7 @@ class TestDownloader(unittest.TestCase):
         mock_get_response = MagicMock()
         mock_get_response.iter_content = lambda chunk_size: [b"test data"]
         mock_get_response.headers = {'content-length': '9'}
+        mock_get_response.status_code = 200
         mock_get_response.raise_for_status = lambda: None
         mock_get_response.__enter__.return_value = mock_get_response
 

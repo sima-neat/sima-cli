@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
+from sima_cli.utils.streaming import DOWNLOAD_CHUNK_SIZE, write_stream
 from InquirerPy import inquirer
 
 
@@ -73,6 +74,16 @@ class ArtifactClient:
             response = self.session.get(url, timeout=60, headers=headers)
             response.raise_for_status()
             return response.content
+        except requests.RequestException as exc:
+            raise VulcanArtifactError(f"GET {url} failed: {exc}") from exc
+
+    def iter_bytes(self, url: str):
+        """Stream large artifacts without materializing response.content."""
+        try:
+            with self.session.get(url, timeout=60, stream=True,
+                                  headers={"Accept-Encoding": "identity"}) as response:
+                response.raise_for_status()
+                yield from response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE)
         except requests.RequestException as exc:
             raise VulcanArtifactError(f"GET {url} failed: {exc}") from exc
 
@@ -398,25 +409,17 @@ def download_artifacts(
         url = join_url(base_url, str(artifact["s3_key"]))
         destination = output_dir / rel_path
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(client.read_bytes(url))
-
-        expected_sha = str(artifact.get("sha256", "")).strip()
-        if expected_sha:
-            actual_sha = sha256_file(destination)
-            if actual_sha != expected_sha:
-                destination.unlink(missing_ok=True)
-                raise VulcanArtifactError(
-                    f"SHA256 mismatch for {destination}: expected {expected_sha}, got {actual_sha}"
-                )
-
         expected_size = artifact.get("size")
-        if isinstance(expected_size, int) and expected_size >= 0:
-            actual_size = destination.stat().st_size
-            if actual_size != expected_size:
-                destination.unlink(missing_ok=True)
-                raise VulcanArtifactError(
-                    f"Size mismatch for {destination}: expected {expected_size}, got {actual_size}"
-                )
+        if not isinstance(expected_size, int) or expected_size < 0:
+            expected_size = None
+        chunks = client.iter_bytes(url)
+        try:
+            write_stream(chunks, destination, expected_size,
+                         str(artifact.get("sha256", "")).strip())
+        except (OSError, ValueError) as exc:
+            raise VulcanArtifactError(f"Download {destination} failed: {exc}") from exc
+        finally:
+            chunks.close()
 
         written.append(destination)
 

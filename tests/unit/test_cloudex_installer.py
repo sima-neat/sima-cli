@@ -108,3 +108,77 @@ def test_platform_variant_supports_linux_and_rejects_intel_mac(monkeypatch):
     monkeypatch.setattr(installer.platform, "machine", Mock(return_value="x86_64"))
     with pytest.raises(CloudExError, match="unavailable"):
         installer._platform_variant()
+
+
+@pytest.mark.parametrize("current", [b"native-binary", b"old-binary"])
+def test_update_check_skips_current_binary_and_replaces_old(monkeypatch, tmp_path, current):
+    metadata, payloads = _package()
+    package = PackageClient(metadata, payloads)
+    package.read_bytes = Mock(wraps=package.read_bytes)
+    monkeypatch.setattr(installer, "_platform_variant", lambda: "linux-amd64")
+    monkeypatch.setattr(installer, "resolve_install_metadata_url", Mock(return_value=SimpleNamespace(
+        metadata_url="https://artifacts.example/metadata.json", resolved_spec="abc1234")))
+    binary = tmp_path / "forwarder"
+    binary.write_bytes(current)
+    monkeypatch.setattr(installer, "find_forwarder", lambda: binary)
+    authorize = Mock()
+    monkeypatch.setattr(installer, "authorize_admin", authorize)
+
+    def install(*args, **kwargs):
+        binary.write_bytes(b"native-binary")
+        return SimpleNamespace(returncode=0)
+
+    run = Mock(side_effect=install)
+    monkeypatch.setattr(installer.subprocess, "run", run)
+    assert installer.install_forwarder(client=package, current_path=binary)["path"] == binary
+    assert binary.read_bytes() == b"native-binary"
+    assert run.call_count == (current != b"native-binary")
+    assert authorize.call_count == run.call_count
+    assert package.read_bytes.call_count == 2 * run.call_count
+
+
+def test_ensure_preserves_explicit_override_without_network(monkeypatch, tmp_path):
+    binary = tmp_path / "custom"
+    monkeypatch.setenv("SIMA_CLOUDEX_FORWARDER", str(binary))
+    monkeypatch.setattr(installer, "find_forwarder", Mock(return_value=binary))
+    install = Mock()
+    monkeypatch.setattr(installer, "install_forwarder", install)
+    assert installer.ensure_forwarder() == binary
+    install.assert_not_called()
+
+
+def test_ensure_invalid_override_does_not_install(monkeypatch):
+    monkeypatch.setenv("SIMA_CLOUDEX_FORWARDER", "/missing")
+    monkeypatch.setattr(installer, "find_forwarder", Mock(side_effect=CloudExError("missing")))
+    install = Mock()
+    monkeypatch.setattr(installer, "install_forwarder", install)
+    with pytest.raises(CloudExError, match="missing"):
+        installer.ensure_forwarder()
+    install.assert_not_called()
+
+
+def test_update_check_failure_does_not_use_stale_binary(monkeypatch, tmp_path):
+    monkeypatch.delenv("SIMA_CLOUDEX_FORWARDER", raising=False)
+    monkeypatch.setattr(installer, "find_forwarder", lambda: tmp_path / "old")
+    monkeypatch.setattr(installer, "_platform_variant", lambda: "linux-amd64")
+    monkeypatch.setattr(installer, "resolve_install_metadata_url", Mock(
+        side_effect=installer.VulcanArtifactError("unavailable")))
+    run = Mock()
+    monkeypatch.setattr(installer.subprocess, "run", run)
+    with pytest.raises(CloudExError, match="could not be resolved"):
+        installer.ensure_forwarder()
+    run.assert_not_called()
+
+
+def test_update_rejects_old_binary_still_selected_after_install(monkeypatch, tmp_path):
+    metadata, payloads = _package()
+    monkeypatch.setattr(installer, "_platform_variant", lambda: "linux-amd64")
+    monkeypatch.setattr(installer, "resolve_install_metadata_url", Mock(return_value=SimpleNamespace(
+        metadata_url="https://artifacts.example/metadata.json", resolved_spec="abc1234")))
+    binary = tmp_path / "shadowing-forwarder"
+    binary.write_bytes(b"old")
+    monkeypatch.setattr(installer, "find_forwarder", lambda: binary)
+    monkeypatch.setattr(installer, "authorize_admin", Mock())
+    monkeypatch.setattr(installer.subprocess, "run", Mock(return_value=SimpleNamespace(returncode=0)))
+    with pytest.raises(CloudExError, match="check PATH"):
+        installer.install_forwarder(client=PackageClient(metadata, payloads), current_path=binary)

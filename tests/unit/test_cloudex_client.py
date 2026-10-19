@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from sima_cli.cloudex import client
+from sima_cli.cloudex import client, installer
 
 
 def allocation_profile():
@@ -152,7 +152,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     api.secret = allocation_profile()["allocation_secret"]
     api.allocation_id = allocation_profile()["allocation_id"]
     api.call.return_value = allocated
-    monkeypatch.setattr(client, "find_forwarder", Mock(return_value=forwarder))
+    monkeypatch.setattr(installer, "ensure_forwarder", Mock(return_value=forwarder))
     monkeypatch.setattr(client, "authorize_admin", Mock())
     monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
     popen = Mock(return_value=process)
@@ -238,7 +238,7 @@ def test_failed_connect_keeps_the_reported_host_diagnostics(tmp_path, monkeypatc
         return {"status": "closed", "cleanup_confirmed": True}
 
     api.call.side_effect = api_call
-    monkeypatch.setattr(client, "find_forwarder", Mock(return_value=forwarder))
+    monkeypatch.setattr(installer, "ensure_forwarder", Mock(return_value=forwarder))
     monkeypatch.setattr(client, "authorize_admin", Mock())
     monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
     monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
@@ -366,7 +366,7 @@ def test_connect_installs_develop_forwarder_when_missing(tmp_path, monkeypatch):
         allocation_id=allocation_profile()["allocation_id"],
     )
     api.call.side_effect = client.APIError(403, "rejected")
-    monkeypatch.setattr(client, "find_forwarder", Mock(side_effect=client.CloudExError("missing")))
+    monkeypatch.setattr(installer, "find_forwarder", Mock(side_effect=client.CloudExError("missing")))
     install = Mock(return_value={"path": forwarder})
     monkeypatch.setattr(installer, "install_forwarder", install)
     monkeypatch.setattr(client, "authorize_admin", Mock())
@@ -384,7 +384,7 @@ def test_connect_reuses_live_tunnel_for_same_allocation(tmp_path, monkeypatch):
     session = session_record()
     session["ice_path"] = "unknown"
     store.write(session)
-    monkeypatch.setattr(client, "find_forwarder", Mock(return_value=tmp_path / "forwarder"))
+    monkeypatch.setattr(installer, "ensure_forwarder", Mock(return_value=tmp_path / "forwarder"))
     monkeypatch.setattr(client, "authorize_admin", Mock())
     monkeypatch.setattr(
         client,
@@ -426,7 +426,7 @@ def test_rejected_create_does_not_disconnect_existing_owner(tmp_path, monkeypatc
     api.call.side_effect = client.APIError(
         409, '{"error":"an ICE session is already active for this allocation"}'
     )
-    monkeypatch.setattr(client, "find_forwarder", Mock(return_value=tmp_path / "forwarder"))
+    monkeypatch.setattr(installer, "ensure_forwarder", Mock(return_value=tmp_path / "forwarder"))
     monkeypatch.setattr(client, "authorize_admin", Mock())
     monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
     cleanup = Mock()

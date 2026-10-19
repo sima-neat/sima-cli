@@ -1,6 +1,7 @@
 """Install the native CloudEx forwarder from Kerrigan's Vulcan artifacts."""
 
 import hashlib
+import os
 import platform
 import re
 import subprocess
@@ -99,7 +100,28 @@ def _download_resource(client, base_url, resource, expected_sha256, destination)
     return path
 
 
-def install_forwarder(branch=DEFAULT_BRANCH, progress=None, client=None):
+def ensure_forwarder(progress=None):
+    """Resolve the current published binary before starting a new tunnel."""
+    if os.environ.get("SIMA_CLOUDEX_FORWARDER"):
+        # An explicit operator-supplied binary is authoritative.
+        return find_forwarder()
+    try:
+        installed = find_forwarder()
+    except CloudExError:
+        installed = None
+    return install_forwarder(
+        DEFAULT_BRANCH, progress=progress, current_path=installed
+    )["path"]
+
+
+def _matches_binary(path, checksum):
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest() == checksum.lower()
+    except OSError:
+        return False
+
+
+def install_forwarder(branch=DEFAULT_BRANCH, progress=None, client=None, current_path=None):
     """Install or update the forwarder and return artifact/install details."""
     branch = _validate_branch(branch)
     variant = _platform_variant()
@@ -119,6 +141,12 @@ def install_forwarder(branch=DEFAULT_BRANCH, progress=None, client=None):
     metadata, resources, script_resource = _checked_metadata(
         client, result.metadata_url, variant
     )
+    expected_sha256 = metadata["resources-checksum"][resources[0]]
+    if current_path is not None and _matches_binary(current_path, expected_sha256):
+        if progress:
+            progress.update("CloudEx forwarder is up to date")
+        return {"path": current_path, "branch": branch,
+                "version": metadata["version"], "artifact": result.resolved_spec}
     base_url = result.metadata_url.rsplit("/", 1)[0]
     with tempfile.TemporaryDirectory(prefix="sima-cloudex-forwarder-") as temporary:
         root = Path(temporary)
@@ -156,6 +184,8 @@ def install_forwarder(branch=DEFAULT_BRANCH, progress=None, client=None):
             raise CloudExError("CloudEx forwarder installation failed: {}".format(detail[:1024]))
 
     installed = find_forwarder()
+    if current_path is not None and not _matches_binary(installed, expected_sha256):
+        raise CloudExError("CloudEx forwarder update did not replace the active binary; check PATH")
     return {
         "path": installed,
         "branch": branch,

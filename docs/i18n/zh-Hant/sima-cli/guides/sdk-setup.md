@@ -52,9 +52,11 @@ SDK 設定不會在 DevKit 上安裝或設定 Docker。第一個 `dk container` 
 
 ## 選擇瀏覽器版 VS Code 擴充功能
 
-互動式設定提供 Neat、Codex 與 Claude 擴充功能。以 Space 選取，按 Enter 確認。初始皆未勾選；不選任何項目就會略過安裝，既有但未選取的擴充功能仍會保留。
+Neat 會自動安裝到目前 SDK 使用者的目錄，不需詢問。新的 SDK 映像已內含擴充功能，設定時會在本機複製；舊映像則沿用下載安裝方式。`--minimal` 會略過擴充功能設定。
 
-自動化時，可不經檢查清單直接安裝三項擴充功能：
+互動式設定提供選用的 Codex 與 Claude 擴充功能。以 Space 選取，按 Enter 確認。初始皆未勾選；不選任何項目就會略過程式開發代理安裝，既有但未選取的擴充功能仍會保留。
+
+自動化時，可不經檢查清單直接安裝程式開發代理：
 
 ```bash
 sima-cli sdk setup --noninteractive --all-extensions
@@ -64,7 +66,7 @@ sima-cli sdk setup --noninteractive --all-extensions
 
 ## 瀏覽器版 VS Code 擴充功能版本
 
-sima-cli 安裝 Codex 與 Claude 的確切版本，並固定版本以防自動更新。重新執行設定時會替換不同版本；相符版本則保留並固定，不會重新下載。SDK 映像可在 `/etc/sima-neat/vscode-extensions.json` 宣告已驗證版本：
+在 code-server（SDK 3.0 以上）中，Codex 預設安裝最新可用版本，不固定版本。若明確指定版本，仍會固定至該版本。舊版 OpenVSCode 映像保留 Codex 的相容性固定版本。Claude 仍使用確切的固定版本。選取確切版本時，重新執行設定會替換不同版本；相符版本則保留並固定，不會重新下載。SDK 映像可在 `/etc/sima-neat/vscode-extensions.json` 宣告已驗證版本：
 
 ```json
 {
@@ -76,17 +78,18 @@ sima-cli 安裝 Codex 與 Claude 的確切版本，並固定版本以防自動�
 }
 ```
 
-資訊清單本身不代表使用者選擇安裝。結構描述版本 1 要求兩個 ID 都指定確切版本。沒有資訊清單的舊映像會使用 Codex `26.5825.51511` 與 Claude `2.1.266` 作為相容性備援版本。無法讀取或無效的資訊清單會回報錯誤並略過擴充功能安裝，但其餘設定會繼續。Codex 或 Claude 安裝命令失敗時，會使用相同確切版本與正常 TLS 驗證重試最多三次。
+資訊清單本身不代表使用者選擇安裝。結構描述版本 1 要求兩個 ID 都指定確切版本。沒有資訊清單的舊映像會使用 Codex `26.5825.51511` 與 Claude `2.1.266` 作為相容性備援版本。無法讀取或無效的資訊清單會回報錯誤並略過程式開發代理安裝，但其餘設定會繼續。Codex 或 Claude 安裝命令失敗時，會使用選取的目標與正常 TLS 驗證嘗試最多三次。
 
 環境變數覆寫設定優先：
 
 | 變數 | 行為 |
 | --- | --- |
+| `SDK_SKIP_CODING_AGENT_INSTALL` | 設為 `1`、`true`、`yes` 或 `on`，即可略過 Codex 與 Claude 擴充功能的提示和安裝，即使使用 `--all-extensions` 也一樣。Neat 設定仍會執行，既有代理不會被移除。 |
 | `SIMA_CLI_CODEX_EXTENSION_ID` | 以 `publisher.extension@exact-version` 覆寫 Codex；空值會停用，除非使用 `--all-extensions`。 |
 | `SIMA_CLI_CLAUDE_EXTENSION_ID` | 以 `publisher.extension@exact-version` 覆寫 Claude；空值會停用，除非使用 `--all-extensions`。 |
 | `SIMA_CLI_INSTALL_CODEX_EXTENSION` | 不經檢查清單，自動選取擴充功能安裝。 |
 
-未附版本的內建擴充功能 ID 使用 SDK／預設固定版本。其他 ID 必須指定版本。`--minimal` 會略過選用擴充功能安裝。設定會驗證已安裝版本、寫入每個選定擴充功能的 `metadata.pinned` 旗標，並重新啟動瀏覽器版 VS Code；之後請重新載入已開啟的瀏覽器分頁。
+在 code-server 上，未附版本的 Codex ID（或 `openai.chatgpt@latest`）使用最新版本。其他未附版本的內建 ID 使用 SDK／預設固定版本；其他 ID 必須指定版本。`--minimal` 會略過選用擴充功能安裝。設定會驗證已安裝版本、寫入每個選定擴充功能的 `metadata.pinned` 旗標（最新版 Codex 為 false），並重新啟動瀏覽器版 VS Code；之後請重新載入已開啟的瀏覽器分頁。
 
 ## Model Compiler 安裝來源
 

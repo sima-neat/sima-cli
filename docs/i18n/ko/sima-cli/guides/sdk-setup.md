@@ -52,9 +52,11 @@ SDK 설정은 DevKit에 Docker를 설치하거나 구성하지 않습니다. 첫
 
 ## 브라우저 VS Code 확장 선택
 
-대화형 설정은 Neat, Codex 및 Claude 확장을 제공합니다. Space로 확장을 선택하고 Enter로 확인합니다. 초기에는 모두 선택 해제되어 있습니다. 아무것도 선택하지 않으면 설치를 건너뛰며, 선택하지 않은 기존 확장은 설치된 상태로 유지됩니다.
+Neat는 확인 없이 현재 SDK 사용자에게 자동으로 설치됩니다. 새 SDK 이미지에는 확장이 포함되어 있으며 설정 시 로컬로 복사합니다. 이전 이미지는 기존 다운로드 설치 방식을 사용합니다. `--minimal`은 확장 설정을 건너뜁니다.
 
-자동화 시에는 체크리스트 없이 세 확장을 모두 설치합니다:
+대화형 설정에서는 선택적 Codex 및 Claude 확장을 제공합니다. Space로 선택하고 Enter로 확인합니다. 처음에는 둘 다 선택되지 않습니다. 아무것도 선택하지 않으면 코딩 에이전트 설치를 건너뛰며, 선택하지 않은 기존 확장은 유지됩니다.
+
+자동화 시에는 체크리스트 없이 코딩 에이전트를 설치합니다:
 
 ```bash
 sima-cli sdk setup --noninteractive --all-extensions
@@ -64,7 +66,7 @@ sima-cli sdk setup --noninteractive --all-extensions
 
 ## 브라우저 VS Code 확장 버전
 
-sima-cli는 정확한 Codex 및 Claude 버전을 설치하고 자동 업데이트를 막도록 고정합니다. 설정을 다시 실행하면 다른 버전을 교체하며, 일치하는 버전은 다시 다운로드하지 않고 유지하여 고정합니다. SDK 이미지는 `/etc/sima-neat/vscode-extensions.json`에 검증된 버전을 선언할 수 있습니다:
+code-server(SDK 3.0 이상)에서 Codex는 기본적으로 사용 가능한 최신 릴리스를 설치하며 버전을 고정하지 않습니다. 버전을 명시적으로 지정하면 해당 버전으로 고정합니다. 이전 OpenVSCode 이미지는 Codex 호환성 고정 버전을 유지합니다. Claude는 계속 정확한 버전으로 고정됩니다. 정확한 버전을 선택한 경우 설정을 다시 실행하면 다른 버전을 교체하며, 일치하는 버전은 다시 다운로드하지 않고 유지하여 고정합니다. SDK 이미지는 `/etc/sima-neat/vscode-extensions.json`에 검증된 버전을 선언할 수 있습니다:
 
 ```json
 {
@@ -76,17 +78,18 @@ sima-cli는 정확한 Codex 및 Claude 버전을 설치하고 자동 업데이�
 }
 ```
 
-매니페스트 자체는 사용자를 설치에 참여시키지 않습니다. 스키마 버전 1은 두 ID 모두에 대해 정확한 버전을 요구합니다. 매니페스트가 없는 이전 이미지는 호환성 대체 버전으로 Codex `26.5825.51511` 및 Claude `2.1.266`을 사용합니다. 읽을 수 없거나 잘못된 매니페스트는 오류를 보고하고 확장 설치를 건너뛰지만 나머지 설정은 계속합니다. Codex 또는 Claude 설치 명령이 실패하면 동일한 정확한 버전과 정상 TLS 검증을 사용하여 최대 세 번 재시도합니다.
+매니페스트 자체는 설치 동의를 의미하지 않습니다. 스키마 버전 1은 두 ID 모두에 정확한 버전을 요구합니다. 매니페스트가 없는 이전 이미지는 호환성 대체 버전으로 Codex `26.5825.51511` 및 Claude `2.1.266`을 사용합니다. 읽을 수 없거나 잘못된 매니페스트는 오류를 보고하고 코딩 에이전트 설치를 건너뛰지만 나머지 설정은 계속합니다. Codex 또는 Claude 설치 명령이 실패하면 선택한 대상과 정상 TLS 검증을 사용하여 최대 세 번 시도합니다.
 
 환경 변수 재정의가 우선합니다:
 
 | 변수 | 동작 |
 | --- | --- |
+| `SDK_SKIP_CODING_AGENT_INSTALL` | `1`, `true`, `yes` 또는 `on`으로 설정하면 프롬프트와 `--all-extensions`를 포함해 Codex 및 Claude 확장 설치를 건너뜁니다. Neat 설정은 계속하며 기존 에이전트는 제거하지 않습니다. |
 | `SIMA_CLI_CODEX_EXTENSION_ID` | `publisher.extension@exact-version`으로 Codex를 재정의합니다. 값이 비어 있으면 `--all-extensions`를 사용하지 않는 한 비활성화합니다. |
 | `SIMA_CLI_CLAUDE_EXTENSION_ID` | `publisher.extension@exact-version`으로 Claude를 재정의합니다. 값이 비어 있으면 `--all-extensions`를 사용하지 않는 한 비활성화합니다. |
 | `SIMA_CLI_INSTALL_CODEX_EXTENSION` | 체크리스트 없이 확장 설치를 자동 선택합니다. |
 
-버전 없는 기본 제공 확장 ID는 SDK/기본 고정 버전을 사용합니다. 다른 ID에는 명시적인 버전이 필요합니다. `--minimal`은 선택적 확장 설치를 건너뜁니다. 설정은 설치된 버전을 검증하고 선택한 각 확장의 `metadata.pinned` 플래그를 기록한 다음 브라우저 VS Code를 다시 시작합니다. 이후 열려 있는 브라우저 탭을 새로 고칩니다.
+code-server에서는 버전 없는 Codex ID(또는 `openai.chatgpt@latest`)가 최신 릴리스를 사용합니다. 다른 버전 없는 기본 제공 ID는 SDK/기본 고정 버전을 사용하고, 그 외 ID에는 명시적인 버전이 필요합니다. `--minimal`은 선택적 확장 설치를 건너뜁니다. 설정은 설치된 버전을 검증하고 선택한 각 확장의 `metadata.pinned` 플래그(최신 Codex는 false)를 기록한 뒤 브라우저 VS Code를 다시 시작합니다. 이후 열려 있는 브라우저 탭을 새로 고칩니다.
 
 ## Model Compiler 설치 원본
 

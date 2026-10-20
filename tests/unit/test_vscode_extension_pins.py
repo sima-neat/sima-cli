@@ -89,7 +89,8 @@ def test_bad_manifest_skips_install_and_reports_error(capsys):
          patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="openvscode")) as run, \
          patch("sima_cli.sdk.utils.load_extension_versions", side_effect=ValueError("bad schema")):
         ensure_codex_vscode_extension_installed("sdk", "user", auto_install=True)
-    assert run.call_count == 1
+    assert run.call_count == 2
+    assert "sima-install-neat-extension" in run.call_args.args[0][-1]
     assert "bad schema" in capsys.readouterr().out
 
 
@@ -150,7 +151,7 @@ else:
     if (root / 'fail-once').exists():
         (root / 'fail-once').unlink()
         sys.exit(9)
-    extension_id, version = target.split('@')
+    extension_id, version = target.split('@') if '@' in target else (target, '99.0.0')
     entries = [entry for entry in entries if entry['identifier']['id'] != extension_id]
     entries.append({'identifier': {'id': extension_id}, 'version': version})
     profile.write_text(json.dumps(entries))
@@ -236,8 +237,7 @@ def test_pin_verification_rejects_wrong_installed_version_without_writing(tmp_pa
 
 
 @pytest.mark.parametrize("names", [
-    [], ["neat"], ["codex"], ["claude"], ["neat", "codex"],
-    ["neat", "claude"], ["codex", "claude"], ["neat", "codex", "claude"],
+    [], ["codex"], ["claude"], ["codex", "claude"],
 ])
 def test_checklist_installs_only_selected_extensions(names, monkeypatch):
     monkeypatch.delenv("SIMA_CLI_CODEX_EXTENSION_ID", raising=False)
@@ -247,12 +247,8 @@ def test_checklist_installs_only_selected_extensions(names, monkeypatch):
          patch("sima_cli.sdk.utils.load_extension_versions", return_value=DEFAULT_EXTENSION_VERSIONS) as load, \
          patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="openvscode", stderr="")) as run:
         ensure_codex_vscode_extension_installed("sdk", "user")
-    if not names:
-        assert run.call_count == 1
-        load.assert_not_called()
-        return
     script = run.call_args.args[0][-1]
-    assert ("sima-neat.vsix" in script) == ("neat" in names)
+    assert "sima-install-neat-extension" in script
     for name, extension_id in [("codex", "openai.chatgpt"), ("claude", "anthropic.claude-code")]:
         assert (f"--install-extension {extension_id}@" in script) == (name in names)
         assert (f"-name '{extension_id}-*'" in script) == (name in names)
@@ -266,11 +262,10 @@ def test_checklist_labels_and_empty_selection(capsys):
         checkbox.return_value.execute.return_value = []
         assert select_browser_extensions(False, True) == []
     choices = checkbox.call_args.kwargs["choices"]
-    assert [choice["name"] for choice in choices] == ["Neat Extension", "Codex Extension", "Claude Extension"]
+    assert [choice["name"] for choice in choices] == ["Codex Extension", "Claude Extension"]
     assert not any(choice.get("enabled", False) for choice in choices)
     assert capsys.readouterr().out.strip() == (
-        "Neat Extension adds Neat SDK tools to VS Code, while Codex Extension "
-        "and Claude Extension provide AI coding assistance."
+        "Codex Extension and Claude Extension provide optional AI coding assistance."
     )
 
 
@@ -278,7 +273,7 @@ def test_checklist_labels_and_empty_selection(capsys):
 def test_auto_selection_bypasses_checklist(allow_prompt):
     from sima_cli.sdk.vscode_extensions import select_browser_extensions
     with patch("sima_cli.sdk.vscode_extensions.inquirer.checkbox") as checkbox:
-        assert select_browser_extensions(True, allow_prompt) == ["neat", "codex", "claude"]
+        assert select_browser_extensions(True, allow_prompt) == ["codex", "claude"]
     checkbox.assert_not_called()
 
 
@@ -320,7 +315,8 @@ def test_all_extensions_rejects_minimal_before_setup():
         setup_and_start(all_extensions=True, minimal=True)
 
 
-def test_all_extensions_applies_to_existing_sdk():
+@pytest.mark.parametrize("all_extensions", [False, True])
+def test_automatic_neat_and_requested_agents_apply_to_existing_sdk(all_extensions):
     from sima_cli.sdk.install import setup_and_start
     image = "ghcr.io/sima-neat/sdk:2.1.3"
     with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
@@ -338,8 +334,8 @@ def test_all_extensions_applies_to_existing_sdk():
          patch("sima_cli.sdk.install.detect_current_user", return_value=("devuser", 1000, 1000)), \
          patch("sima_cli.sdk.install.configure_container_user"), \
          patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed") as install:
-        setup_and_start(noninteractive=True, all_extensions=True)
-    install.assert_called_once_with("existing", "devuser", all_extensions=True, allow_prompt=False, uid=1000, gid=1000)
+        setup_and_start(noninteractive=True, all_extensions=all_extensions)
+    install.assert_called_once_with("existing", "devuser", all_extensions=all_extensions, allow_prompt=False, uid=1000, gid=1000)
 
 
 def test_extension_install_retries_transient_failure(tmp_path, fake_server):
@@ -369,3 +365,54 @@ def test_failed_install_preserves_stdout_and_stderr(capsys):
     assert "download progress" in output
     assert "later extensions may not have been installed" in output
     assert "✅ Selected" not in output
+
+
+@pytest.mark.parametrize('value', ['1', 'true', 'yes', 'on'])
+def test_skip_coding_agents_overrides_all_and_still_seeds_neat(monkeypatch, value):
+    monkeypatch.setenv('SDK_SKIP_CODING_AGENT_INSTALL', value)
+    with patch('sima_cli.sdk.utils._get_container_image_ref', return_value='ghcr.io/sima-neat/sdk:3.0.0'), \
+         patch('sima_cli.sdk.utils._container_code_ui_backend', return_value='code-server'), \
+         patch('sima_cli.sdk.utils.select_browser_extensions') as select, \
+         patch('sima_cli.sdk.utils.load_extension_versions') as load, \
+         patch('sima_cli.sdk.utils.subprocess.run', return_value=Mock(returncode=0, stdout='', stderr='')) as run:
+        ensure_codex_vscode_extension_installed('sdk', 'alice', all_extensions=True, uid=1001, gid=1002)
+    select.assert_not_called()
+    load.assert_not_called()
+    script = run.call_args.args[0][-1]
+    assert 'sima-install-neat-extension /home/alice/.local/share/code-server/extensions' in script
+    assert 'su -s /bin/bash alice' in script
+    assert '--install-extension openai.chatgpt' not in script
+    assert '--install-extension anthropic.claude-code' not in script
+    subprocess.run(['bash', '-n', '-c', script], check=True)
+
+
+@pytest.mark.parametrize('target', ['openai.chatgpt', 'openai.chatgpt@latest', 'openai.chatgpt@27.1.2'])
+def test_code_server_codex_latest_default_and_exact_override(monkeypatch, target):
+    monkeypatch.setenv('SDK_SKIP_CODING_AGENT_INSTALL', '0')
+    monkeypatch.setenv('SIMA_CLI_CODEX_EXTENSION_ID', target)
+    with patch('sima_cli.sdk.utils._get_container_image_ref', return_value='ghcr.io/sima-neat/sdk:3.0.0'), \
+         patch('sima_cli.sdk.utils._container_code_ui_backend', return_value='code-server'), \
+         patch('sima_cli.sdk.utils.select_browser_extensions', return_value=['codex']), \
+         patch('sima_cli.sdk.utils.load_extension_versions', return_value=DEFAULT_EXTENSION_VERSIONS) as load, \
+         patch('sima_cli.sdk.utils.subprocess.run', return_value=Mock(returncode=0, stdout='', stderr='')) as run:
+        ensure_codex_vscode_extension_installed('sdk', 'alice')
+    script = run.call_args.args[0][-1]
+    expected = target if target.endswith('27.1.2') else 'openai.chatgpt'
+    assert f'--install-extension {expected} --force' in script
+    assert '26.5825.51511' not in script
+    assert '--accept-server-license-terms' not in script
+    if expected == 'openai.chatgpt':
+        load.assert_not_called()
+    subprocess.run(['bash', '-n', '-c', script], check=True)
+
+
+def test_latest_codex_replaces_previous_pin_and_remains_unpinned(tmp_path, fake_server):
+    profile = tmp_path / 'extensions.json'
+    profile.write_text(json.dumps([extension_entry('openai.chatgpt', '26.5825.51511', pinned=True)]))
+    command = 'set -e; ' + extension_install_command(fake_server, str(tmp_path), 'Codex', 'openai.chatgpt', accept_server_license=False)
+    command += '; ' + pin_extensions_command(str(tmp_path), {'openai.chatgpt': None})
+    subprocess.run(['bash', '-c', command], check=True, capture_output=True)
+    entry = json.loads(profile.read_text())[0]
+    assert entry['version'] == '99.0.0'
+    assert entry['metadata']['pinned'] is False
+    assert (tmp_path / 'calls').read_text().splitlines() == ['openai.chatgpt']

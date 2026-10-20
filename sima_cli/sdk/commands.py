@@ -358,7 +358,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
 @click.option(
     "--all-extensions",
     is_flag=True,
-    help="Install Neat, Codex, and Claude VS Code extensions without prompting.",
+    help="Install Codex and Claude VS Code extensions without prompting. Neat is installed automatically. SDK_SKIP_CODING_AGENT_INSTALL overrides this option.",
 )
 @click.option(
     "--edgematic-studio",

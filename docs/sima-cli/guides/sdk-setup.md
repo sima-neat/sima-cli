@@ -86,11 +86,15 @@ Use `--edgematic-studio` to install Studio and publish its port. Use
 
 ## Browser VS Code extension selection
 
-Interactive setup offers Neat, Codex, and Claude extensions. Use Space to select
-extensions and Enter to confirm. All start unchecked; selecting none skips
-installation, and existing unselected extensions remain installed.
+Neat is installed automatically for the current SDK user, without a prompt. New
+SDK images bundle the extension and setup copies it locally; older images use
+the existing download installer. `--minimal` skips extension setup.
 
-For automation, install all three without the checklist:
+Interactive setup offers optional Codex and Claude extensions. Use Space to
+select extensions and Enter to confirm. Both start unchecked; selecting none
+skips coding agent installation. Existing unselected extensions remain installed.
+
+For automation, install the coding agents without the checklist:
 
 ```bash
 sima-cli sdk setup --noninteractive --all-extensions
@@ -105,9 +109,11 @@ Edgematic Studio or alter Model Compiler selection.
 
 ## Browser VS Code extension versions
 
-sima-cli installs exact Codex and Claude versions and pins them against automatic
-updates. Rerunning setup replaces a different version; a matching version is
-retained and pinned without another download. SDK images can declare validated
+On code-server (SDK 3.0+), Codex installs the latest available release by default
+and remains unpinned. An explicit version override still pins that version.
+Older OpenVSCode images retain the Codex compatibility pin. Claude continues
+to use an exact version pin. Rerunning setup replaces a different version; a matching version is
+retained and pinned without another download for exact-version selections. SDK images can declare validated
 versions in `/etc/sima-neat/vscode-extensions.json`:
 
 ```json
@@ -123,22 +129,24 @@ versions in `/etc/sima-neat/vscode-extensions.json`:
 The manifest does not opt users into installation. Schema version 1 requires
 exact versions for both IDs. Older images without a manifest use Codex
 `26.5825.51511` and Claude `2.1.266` as compatibility fallbacks. An unreadable
-or invalid manifest reports an error and skips extension installation while the
+or invalid manifest reports an error and skips coding agent installation while the
 rest of setup continues. Failed Codex or Claude install commands are retried up
-to three times using the same exact version and normal TLS verification.
+to three times using the selected target and normal TLS verification.
 
 Environment overrides take precedence:
 
 | Variable | Behavior |
 | --- | --- |
+| `SDK_SKIP_CODING_AGENT_INSTALL` | Set to `1`, `true`, `yes`, or `on` to skip Codex and Claude extension installation, including prompts and `--all-extensions`. Neat setup still runs; existing agents are not removed. |
 | `SIMA_CLI_CODEX_EXTENSION_ID` | Override Codex with `publisher.extension@exact-version`; empty disables it unless `--all-extensions` is used. |
 | `SIMA_CLI_CLAUDE_EXTENSION_ID` | Override Claude with `publisher.extension@exact-version`; empty disables it unless `--all-extensions` is used. |
 | `SIMA_CLI_INSTALL_CODEX_EXTENSION` | Automatically select extension installation without the checklist. |
 
-A bare built-in extension ID uses the SDK/default pin. Other IDs require an
-explicit version. `--minimal` skips optional extension installation. Setup
+A bare Codex ID (or `openai.chatgpt@latest`) uses the latest release on
+code-server. Other bare built-in IDs use the SDK/default pin; other IDs require
+an explicit version. `--minimal` skips optional extension installation. Setup
 verifies installed versions, writes each selected extension's `metadata.pinned`
-flag, and restarts browser VS Code; reload an open browser tab afterward.
+flag (false for latest Codex), and restarts browser VS Code; reload an open browser tab afterward.
 
 ## Model Compiler installation source
 

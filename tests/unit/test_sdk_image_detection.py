@@ -3142,7 +3142,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_setup_warns_that_edgematic_studio_cannot_reach_an_existing_container(self):
         image = "ghcr.io/sima-neat/sdk:latest"
-        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+        with patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
+             patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
              patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
@@ -3483,7 +3484,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
     def test_setup_repairs_existing_container_user_mapping_before_attach(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         container = "ghcr.io-sima-neat-sdk-latest"
-        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+        with patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
+             patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
              patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
@@ -4500,14 +4502,18 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("/opt/openvscode-server", install_cmd)
         self.assertNotIn("--accept-server-license-terms", install_cmd)
 
-    def test_vscode_extension_skips_when_checklist_is_empty(self):
+    def test_vscode_extension_installs_neat_when_checklist_is_empty(self):
         server_available = Mock(returncode=0, stdout="openvscode")
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
              patch("sima_cli.sdk.utils.subprocess.run", return_value=server_available) as run, \
              patch("sima_cli.sdk.utils.select_browser_extensions", return_value=[]) as select:
             ensure_codex_vscode_extension_installed("container", "docker")
 
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_count, 2)
+        script = run.call_args.args[0][-1]
+        self.assertIn("sima-install-neat-extension", script)
+        self.assertNotIn("--install-extension openai.chatgpt", script)
+        self.assertNotIn("--install-extension anthropic.claude-code", script)
         select.assert_called_once_with(False, True)
 
     def test_codex_vscode_extension_auto_installs_without_prompt(self):

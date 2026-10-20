@@ -1417,11 +1417,11 @@ def setup_and_start(
                 if container_build and is_neat_sdk_image(img):
                     configure_container_docker_builder(existing_container, login_name)
 
-            if all_extensions and is_neat_sdk_image(img):
+            if not minimal and is_neat_sdk_image(img):
                 if check_os() not in ["linux", "macos"]:
                     login_name, user_uid, user_gid = "docker", 900, 900
                 ensure_codex_vscode_extension_installed(
-                    existing_container, login_name, all_extensions=True,
+                    existing_container, login_name, all_extensions=all_extensions,
                     allow_prompt=False, uid=user_uid, gid=user_gid,
                 )
 

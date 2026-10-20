@@ -5,7 +5,7 @@ import re
 import shlex
 import subprocess
 from contextlib import contextmanager
-from typing import Dict, List, Mapping
+from typing import Dict, List, Mapping, Optional
 
 from InquirerPy import inquirer
 from rich.console import Console
@@ -23,7 +23,6 @@ _VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-
 
 
 EXTENSION_CHOICES = (
-    {"name": "Neat Extension", "value": "neat"},
     {"name": "Codex Extension", "value": "codex"},
     {"name": "Claude Extension", "value": "claude"},
 )
@@ -33,8 +32,7 @@ def select_browser_extensions(auto_install: bool, allow_prompt: bool) -> List[st
     """Choose optional extensions without prompting in automation mode."""
     if not auto_install and not allow_prompt:
         return []
-    print("Neat Extension adds Neat SDK tools to VS Code, while Codex Extension "
-          "and Claude Extension provide AI coding assistance.")
+    print("Codex Extension and Claude Extension provide optional AI coding assistance.")
     if auto_install:
         return [choice["value"] for choice in EXTENSION_CHOICES]
     return inquirer.checkbox(
@@ -171,12 +169,12 @@ changed = False
 for extension_id, version in requested.items():
     matches = [entry for entry in entries
                if entry['identifier']['id'].lower() == extension_id.lower()]
-    if len(matches) != 1 or matches[0]['version'] != version:
+    if len(matches) != 1 or (version is not None and matches[0]['version'] != version):
         raise RuntimeError('Installed extension does not match requested pin: '
-                           + extension_id + '@' + version)
+                           + extension_id + '@' + str(version))
     metadata = matches[0].setdefault('metadata', {})
-    if metadata.get('pinned') is not True:
-        metadata['pinned'] = True
+    if metadata.get('pinned') is not (version is not None):
+        metadata['pinned'] = version is not None
         changed = True
 if changed:
     fd, temporary = tempfile.mkstemp(prefix='.sima-cli-pins-', dir=str(profile.parent))
@@ -190,12 +188,12 @@ if changed:
         if os.path.exists(temporary):
             os.unlink(temporary)
 for extension_id, version in requested.items():
-    print('Verified pinned extension: ' + extension_id + '@' + version)
+    print('Verified extension: ' + extension_id + ('@' + version + ' (pinned)' if version else ' (latest, unpinned)'))
 """
 
 
-def pin_extensions_command(extensions_dir: str, targets: Mapping[str, str]) -> str:
-    """Build the verification command for the selected exact version targets."""
+def pin_extensions_command(extensions_dir: str, targets: Mapping[str, Optional[str]]) -> str:
+    """Verify installed versions; None keeps the latest selection unpinned."""
     return " ".join(shlex.quote(arg) for arg in (
         "python3", "-c", PIN_EXTENSIONS_SCRIPT, extensions_dir, json.dumps(dict(targets)),
     ))

@@ -1400,7 +1400,7 @@ def ensure_codex_vscode_extension_installed(
     all_extensions: bool = False,
 ) -> None:
     """
-    Optionally install Neat, Claude, and Codex extensions into browser VS Code.
+    Install Neat automatically and selected coding agents into browser VS Code.
 
     Older SDK images may contain OpenVSCode, while current images contain
     code-server. Images without either browser IDE are left unchanged.
@@ -1416,10 +1416,10 @@ def ensure_codex_vscode_extension_installed(
         return
 
     neat_extension_target = "sdk/vscode-extension"
-    selected_names = select_browser_extensions(auto_install or all_extensions, allow_prompt)
-    if not selected_names:
-        return
-    install_neat = "neat" in selected_names
+    skip_agents = _env_truthy("SDK_SKIP_CODING_AGENT_INSTALL")
+    if skip_agents:
+        print("ℹ️  SDK_SKIP_CODING_AGENT_INSTALL is enabled; skipping Codex and Claude extensions.")
+    selected_names = [] if skip_agents else select_browser_extensions(auto_install or all_extensions, allow_prompt)
 
     extensions = []
     try:
@@ -1433,22 +1433,26 @@ def ensure_codex_vscode_extension_installed(
             for name, label, env, default in requested_extensions
             if name in selected_names
         ]
+        latest_targets = (
+            {CODEX_EXTENSION_DEFAULT_ID, CODEX_EXTENSION_DEFAULT_ID + "@latest"}
+            if backend == "code-server" else set()
+        )
         versions = (
             load_extension_versions(sdk_container_name)
-            if any(target for _, _, target in selected) else {}
+            if any(target and target not in latest_targets for _, _, target in selected) else {}
         )
         for label, env, target in selected:
             if target:
-                extensions.append((label, resolve_extension_target(target, versions)))
+                if target in latest_targets:
+                    extensions.append((label, CODEX_EXTENSION_DEFAULT_ID))
+                else:
+                    extensions.append((label, resolve_extension_target(target, versions)))
             else:
                 print(f"ℹ️  {env} is empty; skipping {label} extension install.")
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"⚠️  Could not resolve browser VS Code extension pins: {exc}")
-        print("Skipping browser VS Code extension install; continuing SDK setup.")
-        return
-
-    if not install_neat and not extensions:
-        return
+        print("Skipping coding agent extensions; continuing Neat extension setup.")
+        extensions = []
 
     home_directory = f"/home/{login_name}"
     if backend == "code-server":
@@ -1491,7 +1495,13 @@ def ensure_codex_vscode_extension_installed(
         "else "
         "exit 1; "
         "fi"
-    ] if install_neat else []
+    ]
+    # New SDK images carry an offline copy; older images retain the installer fallback.
+    install_steps = [
+        f"if command -v sima-install-neat-extension >/dev/null 2>&1; then "
+        f"sima-install-neat-extension {shlex.quote(extensions_dir)}; else "
+        + install_steps[0] + "; fi"
+    ]
     legacy_cleanup_steps = []
     for label, extension_target in extensions:
         extension_id = extension_target.split("@", 1)[0]
@@ -1507,7 +1517,7 @@ def ensure_codex_vscode_extension_installed(
 
     install_steps.append(pin_extensions_command(
         extensions_dir,
-        dict(target.split("@", 1) for _, target in extensions),
+        dict(target.split("@", 1) if "@" in target else (target, None) for _, target in extensions),
     ))
 
     user_extension_script = (
@@ -1552,11 +1562,11 @@ def ensure_codex_vscode_extension_installed(
     )
 
     print("ℹ️  Installing browser VS Code extensions:")
-    if install_neat:
-        print(f"   - SiMa Neat: {neat_extension_target}")
+    print("   - SiMa Neat: bundled SDK copy (download fallback for older images)")
     for label, extension_id in extensions:
-        print(f"   - {label}: {extension_id}")
-    progress_labels = (["Neat"] if install_neat else []) + [label for label, _ in extensions]
+        suffix = " (latest available release)" if "@" not in extension_id else ""
+        print(f"   - {label}: {extension_id}{suffix}")
+    progress_labels = ["Neat"] + [label for label, _ in extensions]
     with extension_install_progress(progress_labels, console):
         result = subprocess.run(
             [
@@ -1584,7 +1594,7 @@ def ensure_codex_vscode_extension_installed(
               "later extensions may not have been installed. Continuing SDK setup.")
         return
 
-    print("✅ Selected browser VS Code extensions installed; AI extension versions are pinned.")
+    print("✅ Browser VS Code extensions are ready.")
 
 
 def _container_code_ui_backend(sdk_container_name: str) -> str:

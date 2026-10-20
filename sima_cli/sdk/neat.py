@@ -1,3 +1,4 @@
+import http.client
 import ipaddress
 import json
 import os
@@ -6,12 +7,14 @@ import random
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import time
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import click
 from rich.console import Console
@@ -944,12 +947,55 @@ def _code_ui_url(config: NeatRunConfig, display_host: str) -> str:
     return code_url
 
 
+def _wait_for_code_ui(code_url: str, timeout: float = 60.0) -> bool:
+    """Wait for HTTP readiness on the published editor endpoint, not just TCP."""
+    endpoint = urlsplit(code_url)
+    if endpoint.scheme not in ("http", "https") or not endpoint.hostname:
+        return False
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        kwargs = {"timeout": min(2.0, remaining)}
+        connection_type = http.client.HTTPConnection
+        if endpoint.scheme == "https":
+            connection_type = http.client.HTTPSConnection
+            # SDK certificates are self-signed. This token-free readiness probe
+            # does not authenticate or change the browser's certificate policy.
+            kwargs["context"] = ssl._create_unverified_context()
+        connection = connection_type(endpoint.hostname, endpoint.port, **kwargs)
+        try:
+            # Do not send the URL's access token or follow redirects. Auth/login
+            # responses also establish that the editor HTTP server is serving.
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            if 200 <= response.status < 400 or response.status in (401, 403):
+                return True
+        except (OSError, http.client.HTTPException):
+            pass
+        finally:
+            connection.close()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.5, remaining))
+
+
 def _open_code_ui_if_browser_available(code_url: str) -> bool:
     if not code_url:
         return False
     try:
         webbrowser.get()
     except webbrowser.Error:
+        return False
+    with console.status("Waiting for the VS Code browser interface..."):
+        ready = _wait_for_code_ui(code_url)
+    if not ready:
+        console.print(
+            "[yellow]VS Code did not respond within 60 seconds. "
+            "Browser launch skipped; try the URL below once startup completes.[/yellow]"
+        )
         return False
     try:
         return bool(webbrowser.open(code_url))

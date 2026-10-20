@@ -554,20 +554,14 @@ def _reconcile_existing_connection(profile, store, progress):
 
 def connect(profile, store, progress, attempts=3, transport="auto"):
     """Create a session and return its durable local record."""
-    try:
-        forwarder = find_forwarder()
-    except CloudExError:
-        # Import lazily: the installer reuses this module's privilege and error
-        # handling, while ordinary CloudEx commands should remain quick to load.
-        from .installer import DEFAULT_BRANCH, install_forwarder
+    from .installer import ensure_forwarder
 
-        progress.update("CloudEx forwarder is missing; installing from {}".format(DEFAULT_BRANCH))
-        forwarder = install_forwarder(DEFAULT_BRANCH, progress=progress)["path"]
     authorize_admin()
     api = CloudExAPI.from_profile(profile)
     existing = _reconcile_existing_connection(profile, store, progress)
     if existing:
         return existing
+    forwarder = ensure_forwarder(progress=progress)
     choices = (["p2p"] * attempts + ["routed"] if transport == "auto"
                else ["routed"] if transport == "turn" else ["p2p"] * attempts)
     last_error = None

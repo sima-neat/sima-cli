@@ -52,6 +52,9 @@ SIMA_CLI_AUTH_CACHE_FILES = (
 )
 OPENVSCODE_SERVER_BIN = "/opt/openvscode-server/bin/openvscode-server"
 OPENVSCODE_LEGACY_EXTENSIONS_DIR = "/opt/openvscode-server/extensions"
+CODE_SERVER_BIN = "/opt/code-server/bin/code-server"
+CODE_SERVER_EXTENSIONS_SUFFIX = ".local/share/code-server/extensions"
+CODE_SERVER_DATA_SUFFIX = ".local/share/code-server"
 CODEX_EXTENSION_DEFAULT_ID = "openai.chatgpt"
 CODEX_EXTENSION_ID_ENV = "SIMA_CLI_CODEX_EXTENSION_ID"
 CODEX_EXTENSION_INSTALL_ENV = "SIMA_CLI_INSTALL_CODEX_EXTENSION"
@@ -1399,20 +1402,15 @@ def ensure_codex_vscode_extension_installed(
     """
     Optionally install Neat, Claude, and Codex extensions into browser VS Code.
 
-    Older SDK images do not include OpenVSCode. In that case this function is a
-    no-op so SDK setup remains backward compatible.
+    Older SDK images may contain OpenVSCode, while current images contain
+    code-server. Images without either browser IDE are left unchanged.
     """
     image_ref = _get_container_image_ref(sdk_container_name)
     if not image_ref or not is_neat_sdk_image(image_ref):
         return
 
-    server_check = subprocess.run(
-        ["docker", "exec", sdk_container_name, "test", "-x", OPENVSCODE_SERVER_BIN],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    if server_check.returncode != 0:
+    backend = _container_code_ui_backend(sdk_container_name)
+    if not backend:
         if auto_install or all_extensions:
             print("ℹ️  Browser VS Code is not available in this SDK image; skipping browser VS Code extension install.")
         return
@@ -1453,10 +1451,22 @@ def ensure_codex_vscode_extension_installed(
         return
 
     home_directory = f"/home/{login_name}"
-    extensions_dir = f"{home_directory}/.openvscode-server/extensions"
+    if backend == "code-server":
+        server_bin = CODE_SERVER_BIN
+        extensions_dir = f"{home_directory}/{CODE_SERVER_EXTENSIONS_SUFFIX}"
+        data_dir = f"{home_directory}/{CODE_SERVER_DATA_SUFFIX}"
+        supervisor_program = "code-server"
+        server_label = "code-server"
+    else:
+        server_bin = OPENVSCODE_SERVER_BIN
+        extensions_dir = f"{home_directory}/.openvscode-server/extensions"
+        data_dir = f"{home_directory}/.openvscode-server/data"
+        supervisor_program = "openvscode-server"
+        server_label = "OpenVSCode Server"
+    license_arg = " --accept-server-license-terms" if backend == "openvscode" else ""
     neat_extension_install_dir = f"{home_directory}/vscode-extension-installation"
-    user_settings = f"{home_directory}/.openvscode-server/data/User/settings.json"
-    machine_settings = f"{home_directory}/.openvscode-server/data/Machine/settings.json"
+    user_settings = f"{data_dir}/User/settings.json"
+    machine_settings = f"{data_dir}/Machine/settings.json"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
     install_steps = [
         f"echo 'Installing SiMa Neat extension: {neat_extension_target}'; "
@@ -1474,10 +1484,10 @@ def ensure_codex_vscode_extension_installed(
         f"--install-dir \"$NEAT_EXTENSION_INSTALL_DIR\" {shlex.quote(neat_extension_target)}; then "
         "true; "
         "elif [ -f \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\" ]; then "
-        "echo 'Installing downloaded SiMa Neat VSIX with OpenVSCode Server.'; "
-        f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+        f"echo 'Installing downloaded SiMa Neat VSIX with {server_label}.'; "
+        f"{shlex.quote(server_bin)} --extensions-dir {shlex.quote(extensions_dir)} "
         "--install-extension \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\" "
-        "--force --accept-server-license-terms; "
+        f"--force{license_arg}; "
         "else "
         "exit 1; "
         "fi"
@@ -1486,12 +1496,14 @@ def ensure_codex_vscode_extension_installed(
     for label, extension_target in extensions:
         extension_id = extension_target.split("@", 1)[0]
         install_steps.append(extension_install_command(
-            OPENVSCODE_SERVER_BIN, extensions_dir, label, extension_target,
+            server_bin, extensions_dir, label, extension_target,
+            accept_server_license=backend == "openvscode",
         ))
-        legacy_cleanup_steps.append(
-            f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
-            f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true"
-        )
+        if backend == "openvscode":
+            legacy_cleanup_steps.append(
+                f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
+                f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true"
+            )
 
     install_steps.append(pin_extensions_command(
         extensions_dir,
@@ -1535,7 +1547,7 @@ def ensure_codex_vscode_extension_installed(
         f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_extension_script)}; "
         + ("; ".join(legacy_cleanup_steps) + "; " if legacy_cleanup_steps else "")
         + "if command -v supervisorctl >/dev/null 2>&1; then "
-        "supervisorctl restart openvscode-server >/dev/null 2>&1 || true; "
+        f"supervisorctl restart {shlex.quote(supervisor_program)} >/dev/null 2>&1 || true; "
         "fi"
     )
 
@@ -1575,14 +1587,28 @@ def ensure_codex_vscode_extension_installed(
     print("✅ Selected browser VS Code extensions installed; AI extension versions are pinned.")
 
 
-def _container_openvscode_available(sdk_container_name: str) -> bool:
+def _container_code_ui_backend(sdk_container_name: str) -> str:
+    detection_script = (
+        f"if test -x {shlex.quote(CODE_SERVER_BIN)}; then printf code-server; "
+        f"elif test -x {shlex.quote(OPENVSCODE_SERVER_BIN)}; then printf openvscode; "
+        "else exit 1; fi"
+    )
     result = subprocess.run(
-        ["docker", "exec", sdk_container_name, "test", "-x", OPENVSCODE_SERVER_BIN],
-        stdout=subprocess.DEVNULL,
+        ["docker", "exec", sdk_container_name, "sh", "-c", detection_script],
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        text=True,
         check=False,
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        return ""
+    backend = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    return backend if backend in {"code-server", "openvscode"} else ""
+
+
+def _container_openvscode_available(sdk_container_name: str) -> bool:
+    """Compatibility predicate retained for callers that only need availability."""
+    return bool(_container_code_ui_backend(sdk_container_name))
 
 
 def _is_skills_enabled_image(image_ref: str) -> bool:
@@ -1847,9 +1873,9 @@ def configure_container_docker_builder(sdk_container_name: str, login_name: str)
         "docker", "exec", "-u", "root", sdk_container_name,
         "bash", "-lc", access_script,
     ])
-    # The image can start OpenVSCode before the host user and docker group are
+    # The image can start its browser IDE before the host user and docker group are
     # remapped.  Those already-running processes retain their original
-    # supplementary groups, so terminals spawned by OpenVSCode cannot access
+    # supplementary groups, so terminals spawned by the IDE cannot access
     # the socket even though a fresh ``docker exec`` can.  Restart the
     # container after updating /etc/group so every long-lived SDK process
     # inherits the socket group.
@@ -2199,6 +2225,9 @@ def start_docker_container(
         ])
 
     if neat_sdk_image:
+        docker_cmd.extend(["-e", f"CODE_SERVER_USER={remote_user}"])
+        docker_cmd.extend(["-e", f"CODE_SERVER_EXTENSIONS_DIR=/home/{remote_user}/{CODE_SERVER_EXTENSIONS_SUFFIX}"])
+        docker_cmd.extend(["-e", "CODE_SERVER_WORKSPACE=/workspace"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_USER={remote_user}"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/{remote_user}/.openvscode-server/extensions"])
         docker_cmd.extend(["-e", "OPENVSCODE_WORKSPACE=/workspace"])
@@ -2290,6 +2319,7 @@ def start_docker_container(
         from sima_cli.sdk.neat import (
             NEAT_DOCKER_RETRY_LIMIT,
             append_neat_docker_args,
+            finalize_code_ui_auth,
             is_docker_port_collision_error,
             prepare_neat_container_run,
             print_neat_setup_summary,
@@ -2386,7 +2416,9 @@ def start_docker_container(
         bootstrap_devkit_container(container_name, devkit_env)
 
     if neat_sdk_image and neat_run_config is not None:
-        neat_run_config.code_ui_supported = _container_openvscode_available(container_name)
+        neat_run_config.code_ui_backend = _container_code_ui_backend(container_name)
+        neat_run_config.code_ui_supported = bool(neat_run_config.code_ui_backend)
+        finalize_code_ui_auth(neat_run_config)
         neat_run_config.edgematic_studio_installed = bool(edgematic_studio_installed)
         print_neat_setup_summary(neat_run_config)
 

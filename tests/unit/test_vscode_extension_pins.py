@@ -86,7 +86,7 @@ def test_invalid_or_floating_override_is_rejected(target):
 
 def test_bad_manifest_skips_install_and_reports_error(capsys):
     with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
-         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0)) as run, \
+         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="openvscode")) as run, \
          patch("sima_cli.sdk.utils.load_extension_versions", side_effect=ValueError("bad schema")):
         ensure_codex_vscode_extension_installed("sdk", "user", auto_install=True)
     assert run.call_count == 1
@@ -96,7 +96,7 @@ def test_bad_manifest_skips_install_and_reports_error(capsys):
 def test_both_opted_out_skip_manifest_and_ai_install():
     with patch.dict(os.environ, {"SIMA_CLI_CODEX_EXTENSION_ID": "", "SIMA_CLI_CLAUDE_EXTENSION_ID": ""}), \
          patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
-         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run, \
+         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="openvscode", stderr="")) as run, \
          patch("sima_cli.sdk.utils.load_extension_versions") as load:
         ensure_codex_vscode_extension_installed("sdk", "user", auto_install=True)
     load.assert_not_called()
@@ -111,7 +111,7 @@ def test_exact_override_keeps_cleanup_at_base_id():
     with patch.dict(os.environ, {"SIMA_CLI_CODEX_EXTENSION_ID": "custom.agent@1.2.3", "SIMA_CLI_CLAUDE_EXTENSION_ID": ""}), \
          patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
          patch("sima_cli.sdk.utils.load_extension_versions", return_value=DEFAULT_EXTENSION_VERSIONS), \
-         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="openvscode", stderr="")) as run:
         ensure_codex_vscode_extension_installed("sdk", "user", auto_install=True)
     script = run.call_args.args[0][-1]
     assert "--install-extension custom.agent@1.2.3" in script
@@ -132,6 +132,8 @@ import sys
 
 args = sys.argv[1:]
 root = Path(args[args.index('--extensions-dir') + 1])
+if (root / 'code-server').exists() and '--accept-server-license-terms' in args:
+    sys.exit(2)
 profile = root / 'extensions.json'
 entries = json.loads(profile.read_text())
 if '--list-extensions' in args:
@@ -161,9 +163,10 @@ def extension_entry(extension_id, version, **metadata):
     return {"identifier": {"id": extension_id}, "version": version, "metadata": metadata}
 
 
+@pytest.mark.parametrize("backend", ["openvscode", "code-server"])
 @pytest.mark.parametrize("extension_id", list(DEFAULT_EXTENSION_VERSIONS))
 @pytest.mark.parametrize("installed_version", [None, "99.9.9", "0.0.1", "matching"])
-def test_fresh_upgrade_downgrade_and_existing_unpinned_are_idempotent(tmp_path, fake_server, extension_id, installed_version):
+def test_fresh_upgrade_downgrade_and_existing_unpinned_are_idempotent(tmp_path, fake_server, extension_id, installed_version, backend):
     version = DEFAULT_EXTENSION_VERSIONS[extension_id]
     target = f"{extension_id}@{version}"
     unrelated = extension_entry("other.extension", "1.0.0", custom="preserved")
@@ -172,7 +175,12 @@ def test_fresh_upgrade_downgrade_and_existing_unpinned_are_idempotent(tmp_path, 
         entries.append(extension_entry(extension_id, version if installed_version == "matching" else installed_version))
     profile = tmp_path / "extensions.json"
     profile.write_text(json.dumps(entries))
-    command = "set -e; " + extension_install_command(fake_server, str(tmp_path), "Agent", target)
+    if backend == "code-server":
+        (tmp_path / "code-server").touch()
+    command = "set -e; " + extension_install_command(
+        fake_server, str(tmp_path), "Agent", target,
+        accept_server_license=backend == "openvscode",
+    )
     command += "; " + pin_extensions_command(str(tmp_path), {extension_id: version})
     subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=True)
     updated = json.loads(profile.read_text())
@@ -237,7 +245,7 @@ def test_checklist_installs_only_selected_extensions(names, monkeypatch):
     with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
          patch("sima_cli.sdk.utils.select_browser_extensions", return_value=names), \
          patch("sima_cli.sdk.utils.load_extension_versions", return_value=DEFAULT_EXTENSION_VERSIONS) as load, \
-         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="openvscode", stderr="")) as run:
         ensure_codex_vscode_extension_installed("sdk", "user")
     if not names:
         assert run.call_count == 1
@@ -286,7 +294,7 @@ def test_explicit_all_installs_three_even_with_legacy_empty_overrides():
          patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
          patch("sima_cli.sdk.vscode_extensions.inquirer.checkbox") as checkbox, \
          patch("sima_cli.sdk.utils.load_extension_versions", return_value=DEFAULT_EXTENSION_VERSIONS), \
-         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+         patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="openvscode", stderr="")) as run:
         ensure_codex_vscode_extension_installed("sdk", "user", all_extensions=True)
     checkbox.assert_not_called()
     script = run.call_args.args[0][-1]
@@ -352,7 +360,7 @@ def test_failed_install_preserves_stdout_and_stderr(capsys):
     with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
          patch("sima_cli.sdk.utils.select_browser_extensions", return_value=["neat"]), \
          patch("sima_cli.sdk.utils.subprocess.run", side_effect=[
-             Mock(returncode=0),
+                Mock(returncode=0, stdout="openvscode"),
              Mock(returncode=1, stdout="actionable installer error", stderr="download progress"),
          ]):
         ensure_codex_vscode_extension_installed("sdk", "user")

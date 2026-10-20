@@ -120,9 +120,13 @@ def resolve_extension_target(target: str, versions: Mapping[str, str]) -> str:
     return f"{extension_id}@{version}"
 
 
-def extension_install_command(server: str, extensions_dir: str, label: str, target: str) -> str:
+def extension_install_command(
+    server: str, extensions_dir: str, label: str, target: str,
+    *, accept_server_license: bool = True,
+) -> str:
     """Skip only an exact installed version; the CLI handles upgrades/downgrades."""
     command = f"{shlex.quote(server)} --extensions-dir {shlex.quote(extensions_dir)}"
+    license_arg = " --accept-server-license-terms" if accept_server_license else ""
     return (
         f"echo {shlex.quote(f'Installing {label} extension: {target}')}; "
         f"if {command} --list-extensions --show-versions | grep -Fxi -- {shlex.quote(target)} >/dev/null; then "
@@ -130,7 +134,7 @@ def extension_install_command(server: str, extensions_dir: str, label: str, targ
         "else "
         "neat_extension_attempt=1; "
         "while :; do "
-        f"if {command} --install-extension {shlex.quote(target)} --force --accept-server-license-terms; then "
+        f"if {command} --install-extension {shlex.quote(target)} --force{license_arg}; then "
         "break; "
         "else neat_extension_status=$?; fi; "
         "if [ \"$neat_extension_attempt\" -ge 3 ]; then "

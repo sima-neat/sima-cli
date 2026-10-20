@@ -34,8 +34,8 @@ EDGEMATIC_STUDIO_CONTAINER_PORT = 8088
 # Named in the setup summary, not published: the sidecar hands the browser a
 # container-side port, so these only work identity-mapped.
 EDGEMATIC_STUDIO_TERMINAL_PORT_RANGE = "8761-8770"
-OPENVSCODE_TOKEN_BYTES = 32
-OPENVSCODE_TOKEN_CACHE_FILE = "sdk-code-ui-tokens.json"
+CODE_UI_SECRET_BYTES = 32
+CODE_UI_CREDENTIAL_CACHE_FILE = "sdk-code-ui-tokens.json"
 console = Console()
 
 
@@ -51,6 +51,9 @@ class NeatRunConfig:
     webrtc_host_ip: str = ""
     code_ui_token: str = ""
     code_ui_supported: bool = True
+    code_ui_backend: str = "openvscode"
+    code_ui_container_name: str = ""
+    code_ui_base_url: str = ""
     edgematic_studio_installed: bool = False
 
 
@@ -734,7 +737,7 @@ def _write_port_map(config_dir: Path, port_map: Dict) -> Path:
 
 
 def _generate_code_ui_token() -> str:
-    return secrets.token_urlsafe(OPENVSCODE_TOKEN_BYTES)
+    return secrets.token_urlsafe(CODE_UI_SECRET_BYTES)
 
 
 def _sima_cli_home() -> Path:
@@ -742,7 +745,7 @@ def _sima_cli_home() -> Path:
 
 
 def _code_ui_token_cache_path() -> Path:
-    return _sima_cli_home() / OPENVSCODE_TOKEN_CACHE_FILE
+    return _sima_cli_home() / CODE_UI_CREDENTIAL_CACHE_FILE
 
 
 def _read_code_ui_token_cache() -> Dict:
@@ -756,7 +759,12 @@ def _read_code_ui_token_cache() -> Dict:
     return data if isinstance(data, dict) else {}
 
 
-def _write_code_ui_token_cache(container_name: str, base_url: str, token: str) -> Path:
+def _write_code_ui_token_cache(
+    container_name: str,
+    base_url: str,
+    secret: str,
+    backend: str = "openvscode",
+) -> Path:
     cache_dir = _sima_cli_home()
     cache_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -770,14 +778,18 @@ def _write_code_ui_token_cache(container_name: str, base_url: str, token: str) -
         entries = {}
         cache["containers"] = entries
     host_port = int(base_url.rsplit(":", 1)[1])
-    entries[container_name] = {
-        "codeUI": {
-            "host": host_port,
-            "token": token,
-            "url": f"{base_url}/?tkn={token}&folder=/workspace",
-        },
-        "updated_at": int(time.time()),
-    }
+    code_ui = {"host": host_port, "backend": backend}
+    if backend == "code-server":
+        code_ui.update({
+            "password": secret,
+            "url": f"{base_url}/?folder=/workspace",
+        })
+    else:
+        code_ui.update({
+            "token": secret,
+            "url": f"{base_url}/?tkn={secret}&folder=/workspace",
+        })
+    entries[container_name] = {"codeUI": code_ui, "updated_at": int(time.time())}
 
     path = _code_ui_token_cache_path()
     path.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -786,6 +798,18 @@ def _write_code_ui_token_cache(container_name: str, base_url: str, token: str) -
     except OSError:
         pass
     return path
+
+
+def finalize_code_ui_auth(config: NeatRunConfig) -> None:
+    """Persist credentials using the detected server's authentication contract."""
+    if not config.code_ui_token or not config.code_ui_container_name or not config.code_ui_base_url:
+        return
+    _write_code_ui_token_cache(
+        config.code_ui_container_name,
+        config.code_ui_base_url,
+        config.code_ui_token,
+        config.code_ui_backend,
+    )
 
 
 def reserved_ports_from_neat_port_map(port_map: Dict) -> set:
@@ -860,7 +884,6 @@ def prepare_neat_container_run(
         code_ui_url = f"http://localhost:{int(code_ui['host'])}"
         if isinstance(code_ui_https, dict):
             code_ui_url = f"https://localhost:{int(code_ui_https['host'])}"
-        _write_code_ui_token_cache(container_name, code_ui_url, code_ui_token)
     port_map_path = _write_port_map(config_dir, port_map)
     return NeatRunConfig(
         port_map=port_map,
@@ -872,6 +895,8 @@ def prepare_neat_container_run(
         key_file_host_path=str(key_file),
         webrtc_host_ip=webrtc_host_ip,
         code_ui_token=code_ui_token,
+        code_ui_container_name=container_name,
+        code_ui_base_url=code_ui_url if isinstance(code_ui, dict) else "",
     )
 
 
@@ -881,13 +906,17 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
     if config.webrtc_host_ip:
         docker_cmd.extend(["-e", f"CONTAINER_HOST_IP={config.webrtc_host_ip}"])
     if config.code_ui_token:
+        docker_cmd.extend(["-e", f"CODE_SERVER_PASSWORD={config.code_ui_token}"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_TOKEN={config.code_ui_token}"])
     cert_config = config.port_map.get("cert")
     if config.cert_host_dir and isinstance(cert_config, dict):
+        docker_cmd.extend(["-e", f"CODE_SERVER_CERT={cert_config['certFile']}"])
+        docker_cmd.extend(["-e", f"CODE_SERVER_CERT_KEY={cert_config['keyFile']}"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT={cert_config['certFile']}"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_CERT_KEY={cert_config['keyFile']}"])
         code_ui_https = config.port_map.get("codeUIHttps")
         if isinstance(code_ui_https, dict):
+            docker_cmd.extend(["-e", f"CODE_SERVER_HTTPS_PORT={code_ui_https['container']}"])
             docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_HTTPS_PORT={code_ui_https['container']}"])
     for mapping in config.port_args:
         docker_cmd.extend(["-p", mapping])
@@ -908,7 +937,9 @@ def _code_ui_url(config: NeatRunConfig, display_host: str) -> str:
     scheme = display_entry.get("scheme", "http")
     code_url = f"{scheme}://{display_host}:{display_entry['host']}"
     token = config.code_ui_token or port_map["codeUI"].get("token")
-    if token:
+    if config.code_ui_backend == "code-server":
+        code_url = f"{code_url}/?folder=/workspace"
+    elif token:
         code_url = f"{code_url}/?tkn={token}&folder=/workspace"
     return code_url
 
@@ -926,10 +957,21 @@ def _open_code_ui_if_browser_available(code_url: str) -> bool:
         return False
 
 
-def _print_code_ui_panel(code_url: str, opened: bool) -> None:
+def _print_code_ui_panel(config: NeatRunConfig, code_url: str, opened: bool) -> None:
     if not code_url:
         return
     status = "Opened in your browser." if opened else "Open this URL in your browser."
+    if config.code_ui_backend == "code-server":
+        security_lines = [
+            f"[yellow]Password:[/yellow] {config.code_ui_token}",
+            "Enter this password when code-server prompts you.",
+            "Run neat inside the SDK to show the access details again.",
+            "[yellow]Security:[/yellow] Keep this password private; the URL contains no credential.",
+        ]
+    else:
+        security_lines = [
+            "[yellow]Security:[/yellow] Do not share this URL. It contains a Code UI access token.",
+        ]
     console.print(
         Panel(
             "\n".join(
@@ -937,7 +979,7 @@ def _print_code_ui_panel(code_url: str, opened: bool) -> None:
                     f"[bold]{status}[/bold]",
                     f"[cyan]{code_url}[/cyan]",
                     "",
-                    "[yellow]Security:[/yellow] Do not share this URL. It contains a Code UI access token.",
+                    *security_lines,
                 ]
             ),
             title="VS Code Browser Access",
@@ -957,11 +999,13 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         rows.append(("mainUI", f"{web_scheme}://{display_host}:{port_map['mainUI']['host']}"))
     if code_url:
         rows.append(("codeUI", code_url))
+        if config.code_ui_backend == "code-server" and config.code_ui_token:
+            rows.append(("codeUIPassword", config.code_ui_token))
         if "codeUIHttps" in port_map:
             rows.append(("codeUIHttp", f"http://{display_host}:{port_map['codeUI']['host']}"))
     show_edgematic_studio = "edgematicStudio" in port_map
     if show_edgematic_studio:
-        # Studio serves plain HTTP; web_scheme tracks the Insight/OpenVSCode certs.
+        # Studio serves plain HTTP; web_scheme tracks the Insight/Code UI certs.
         studio_url = f"http://{display_host}:{port_map['edgematicStudio']['host']}"
         if not config.edgematic_studio_installed:
             # --edgematic-studio-port publishes the mapping with nothing behind it.
@@ -1027,7 +1071,7 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
     else:
         print("   Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.")
     opened = _open_code_ui_if_browser_available(code_url)
-    _print_code_ui_panel(code_url, opened)
+    _print_code_ui_panel(config, code_url, opened)
 
 
 def is_docker_port_collision_error(error_text: str) -> bool:

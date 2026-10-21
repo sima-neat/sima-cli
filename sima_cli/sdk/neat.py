@@ -11,6 +11,7 @@ import ssl
 import subprocess
 import time
 import webbrowser
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -21,6 +22,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from sima_cli.utils.net import get_local_ip_candidates
+from sima_cli.sdk.browser_ca import publish_browser_ca
 
 
 NEAT_PORT_MAP_SCHEMA = "sima.neat.port-map.v1"
@@ -572,6 +574,9 @@ def _generate_self_signed_cert(cert_file: Path, key_file: Path, hosts: List[str]
 
 def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all: bool, noninteractive: bool) -> Tuple[Path, Path]:
     cert_dir.mkdir(parents=True, exist_ok=True)
+    # Optional CA cleanup must not prevent issuing the HTTPS certificate.
+    with suppress(OSError):
+        (cert_dir / "sima-sdk-rootCA.pem").unlink(missing_ok=True)
     cert_file = cert_dir / "neat-sdk.pem"
     key_file = cert_dir / "neat-sdk-key.pem"
     hosts = _collect_cert_hosts(devkit_env)
@@ -590,6 +595,7 @@ def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all:
             [mkcert, "-cert-file", str(cert_file), "-key-file", str(key_file), *hosts],
             check=True,
         )
+        publish_browser_ca(cert_dir, mkcert)
     else:
         _generate_self_signed_cert(cert_file, key_file, hosts)
     return cert_file, key_file
@@ -708,14 +714,15 @@ def refresh_neat_certificates(
     Returns True when a cert was generated.
     """
     host_ip = (devkit_env or {}).get("host_ip", "")
-    if not host_ip:
-        return False
     # Use the directory actually bind-mounted to /sdk-cert in the container, so a
     # re-issue lands where neat-insight reads it even if the current invocation's
     # workspace differs from the one the container was created with. Fall back to
     # the workspace-derived path (e.g. container not running / no mount).
     cert_dir = _container_sdk_cert_dir(container_name) \
         or (Path(workspace) / f".{container_name}" / "sdk-cert")
+    if not host_ip:
+        publish_browser_ca(cert_dir)
+        return False
     cert_file = cert_dir / "neat-sdk.pem"
     # Re-issue unless the existing cert already covers the full set of hosts we
     # would issue for now (primary host IP + all alternate IPv4s incl. VPN/tunnel),
@@ -723,6 +730,7 @@ def refresh_neat_certificates(
     # silently left out on a re-run.
     expected_hosts = _collect_cert_hosts(devkit_env)
     if cert_file.exists() and _cert_covers_hosts(cert_file, expected_hosts):
+        publish_browser_ca(cert_dir)
         return False
     action = "Re-issuing" if cert_file.exists() else "Generating"
     print(f"🔐 {action} Neat SDK certificate for host IP {host_ip} ...")

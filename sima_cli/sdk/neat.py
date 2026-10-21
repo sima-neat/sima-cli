@@ -711,14 +711,15 @@ def refresh_neat_certificates(
     Returns True when a cert was generated.
     """
     host_ip = (devkit_env or {}).get("host_ip", "")
-    if not host_ip:
-        return False
     # Use the directory actually bind-mounted to /sdk-cert in the container, so a
     # re-issue lands where neat-insight reads it even if the current invocation's
     # workspace differs from the one the container was created with. Fall back to
     # the workspace-derived path (e.g. container not running / no mount).
     cert_dir = _container_sdk_cert_dir(container_name) \
         or (Path(workspace) / f".{container_name}" / "sdk-cert")
+    if not host_ip:
+        publish_browser_ca(cert_dir)
+        return False
     cert_file = cert_dir / "neat-sdk.pem"
     # Re-issue unless the existing cert already covers the full set of hosts we
     # would issue for now (primary host IP + all alternate IPv4s incl. VPN/tunnel),

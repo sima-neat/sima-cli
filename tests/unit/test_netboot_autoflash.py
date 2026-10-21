@@ -11,16 +11,19 @@ def test_autoflash_requires_selected_netboot_device(cmdline, expected):
     manager.clients = {'192.0.2.1': {'state': 'Connected'}, '192.0.2.2': {'state': 'Connected'}}
     with patch.object(netboot, 'init_ssh_session') as connect, \
             patch('sima_cli.update.remote.run_remote_command_capture', return_value=(0,cmdline,'')), \
-            patch.object(netboot, 'flash_emmc') as flash:
+            patch.object(netboot, 'flash_emmc') as flash, \
+            patch.object(netboot, '_schedule_reboot_into_emmc') as reboot:
         if expected:
-            netboot.auto_flash(manager, '192.0.2.2')
+            assert netboot.auto_flash(manager, '192.0.2.2') is True
             flash.assert_called_once_with(manager, netboot.emmc_image_paths, override_ip='192.0.2.2',
                                           troot_image_path=netboot.troot_image_path,
-                                          configuration=None)
+                                          configuration=None, manual_reboot=False)
+            reboot.assert_called_once_with('192.0.2.2')
         else:
             with pytest.raises(click.ClickException, match='not confirmed'):
                 netboot.auto_flash(manager, '192.0.2.2')
             flash.assert_not_called()
+            reboot.assert_not_called()
     connect.return_value.close.assert_called_once()
 
 
@@ -30,6 +33,33 @@ def test_other_device_does_not_trigger_flash():
         with pytest.raises(click.ClickException, match='Timed out'):
             netboot.auto_flash(manager, '192.0.2.2', timeout=0)
     flash.assert_not_called()
+
+
+def test_autoflash_propagates_flash_failure():
+    manager = netboot.ClientManager()
+    manager.clients = {'192.0.2.2': {'state': 'Connected'}}
+    with patch.object(netboot, 'init_ssh_session'), \
+            patch('sima_cli.update.remote.run_remote_command_capture',
+                  return_value=(0, 'root=/dev/ram0 rw', '')), \
+            patch.object(netboot, 'flash_emmc', return_value=False):
+        with pytest.raises(click.ClickException, match='Automatic eMMC flash failed'):
+            netboot.auto_flash(manager, '192.0.2.2')
+
+
+@pytest.mark.parametrize('confirmed', [False, True])
+def test_manual_flash_offer_controls_reboot(confirmed):
+    events = []
+
+    with patch.object(click, 'confirm', return_value=confirmed) as prompt, \
+            patch.object(netboot, '_schedule_reboot_into_emmc',
+                         side_effect=lambda _ip: events.append('reboot')):
+        assert netboot._offer_reboot_into_emmc('192.0.2.2') is confirmed
+
+    assert prompt.call_args.args[0] == (
+        'Reboot the DevKit now and boot from the flashed eMMC image?'
+    )
+    assert prompt.call_args.kwargs == {'default': True}
+    assert events == (['reboot'] if confirmed else [])
 
 
 def test_failed_ssh_wait_does_not_mark_connected():
@@ -49,6 +79,7 @@ def test_autoflash_confirmation_explains_automatic_flash(capsys):
             patch.object(click,'confirm',return_value=False) as confirm:
         assert netboot_device.configure_and_reboot('192.0.2.2','192.0.2.1',autoflash=True) is False
     output = capsys.readouterr().out
-    assert 'Open SSH is available after network boot' in output
+    assert 'reboot it from eMMC' in output
     assert 'overwrites its internal storage' not in output
     assert 'automatically flash' in confirm.call_args.args[0]
+    assert 'reboot it from eMMC' in confirm.call_args.args[0]

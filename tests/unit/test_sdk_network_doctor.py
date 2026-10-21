@@ -125,12 +125,41 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
                  "sima_cli.sdk.preinstall._colima_network_config",
                  return_value={"address": True, "mode": "shared", "interface": "bridge100"},
              ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="en0"), \
              patch("sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit", return_value=True):
             report = net.build_network_doctor_report(devkit_ip="10.0.0.244")
 
         self.assertTrue(any(f.code == "colima-network-address-enabled" for f in report.findings))
         self.assertTrue(any(f.code == "unsupported-host" for f in report.findings))
         self.assertFalse(report.has_errors)
+
+    def test_report_accepts_any_bridged_interface_without_a_devkit_target(self):
+        with patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "_is_darwin_host", return_value=True), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="grpc"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={
+                     "address": True,
+                     "mode": "bridged",
+                     "interface": "en7",
+                     "ip_address": "10.0.0.211",
+                 },
+             ), \
+             patch(
+                 "sima_cli.sdk.preinstall._route_interface_for_target",
+                 side_effect=AssertionError("should not resolve a route without a DevKit target"),
+             ), \
+             patch(
+                 "sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit",
+                 return_value=True,
+             ) as suitable:
+            report = net.build_network_doctor_report()
+
+        self.assertTrue(any(f.code == "colima-network-address-enabled" for f in report.findings))
+        suitable.assert_called_once_with("default", "")
 
     def test_report_warns_when_colima_network_address_disabled_on_macos(self):
         with patch.object(net, "_is_linux_host", return_value=False), \
@@ -148,7 +177,83 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
 
         finding = next(f for f in report.findings if f.code == "colima-network-address-disabled")
         self.assertEqual(finding.severity, "warning")
-        self.assertIn("--network-interface en7", finding.detail)
+        self.assertIn("sima-cli sdk setup --devkit 10.0.0.244", finding.detail)
+        self.assertNotIn("colima start", finding.detail)
+
+    def test_report_uses_internet_sharing_bridge_member_on_macos(self):
+        with patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "_is_darwin_host", return_value=True), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="grpc"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={"address": True, "mode": "bridged", "interface": "en7", "ip_address": "192.168.2.2"},
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="bridge100"), \
+             patch("sima_cli.sdk.preinstall._interface_ipv4_address", return_value="192.168.2.1"), \
+             patch("sima_cli.sdk.preinstall._resolve_safe_colima_bridge_interface", return_value="en7"), \
+             patch("sima_cli.sdk.preinstall._is_colima_network_suitable_for_devkit", return_value=True) as suitable:
+            report = net.build_network_doctor_report(devkit_ip="192.168.2.3")
+
+        self.assertFalse(any(f.code == "colima-bridge-route-unsafe" for f in report.findings))
+        suitable.assert_called_once_with(
+            "default",
+            "en7",
+            internet_sharing=True,
+            expected_host_ip="192.168.2.1",
+        )
+
+    def test_report_accepts_cloudex_tunnel_with_host_address_forwarding(self):
+        with patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "_is_darwin_host", return_value=True), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="grpc"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": True,
+                     "forwarded_host_ips": ["100.96.0.2"],
+                 },
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun7"), \
+             patch("sima_cli.sdk.preinstall._route_source_ipv4_for_target", return_value="100.96.0.2"), \
+             patch("sima_cli.sdk.preinstall._colima_vm_has_host_address", return_value=True), \
+             patch("sima_cli.sdk.preinstall._colima_vm_tunnel_route_ready", return_value=True):
+            report = net.build_network_doctor_report(devkit_ip="10.0.0.244")
+
+        finding = next(f for f in report.findings if f.code == "colima-tunnel-route")
+        self.assertEqual(finding.severity, "info")
+        self.assertIn("utun7", finding.message)
+        self.assertFalse(report.has_errors)
+
+    def test_report_rejects_cloudex_tunnel_without_host_address_forwarding(self):
+        with patch.object(net, "_is_linux_host", return_value=False), \
+             patch.object(net, "_is_darwin_host", return_value=True), \
+             patch("sima_cli.sdk.preinstall._is_docker_using_colima", return_value=True), \
+             patch("sima_cli.sdk.preinstall._detect_colima_profile", return_value="default"), \
+             patch("sima_cli.sdk.preinstall._colima_port_forwarder", return_value="grpc"), \
+             patch(
+                 "sima_cli.sdk.preinstall._colima_network_config",
+                 return_value={
+                     "address": False,
+                     "mode": "shared",
+                     "host_addresses": False,
+                 },
+             ), \
+             patch("sima_cli.sdk.preinstall._route_interface_for_target", return_value="utun7"), \
+             patch("sima_cli.sdk.preinstall._route_source_ipv4_for_target", return_value="100.96.0.2"):
+            report = net.build_network_doctor_report(devkit_ip="10.0.0.244")
+
+        finding = next(
+            f for f in report.findings
+            if f.code == "colima-tunnel-forwarding-disabled"
+        )
+        self.assertEqual(finding.severity, "error")
+        self.assertTrue(report.has_errors)
 
     def test_report_blocks_colima_ssh_forwarder_for_insight_udp(self):
         with patch.object(net, "_is_linux_host", return_value=False), \
@@ -195,6 +300,45 @@ class TestLinuxDevkitNetwork(unittest.TestCase):
             self.assertTrue(net._container_default_route_confirmed("sdk", inspect))
 
         docker_exec_success.assert_not_called()
+
+    def test_cloudex_validation_blocks_when_container_cannot_reach_devkit(self):
+        report = net.NetworkDoctorReport(devkit_ip="10.0.0.244")
+        report.add(
+            "info",
+            "colima-tunnel-route",
+            "Colima host-address forwarding is enabled for tunnel route utun9.",
+        )
+        report.add(
+            "warning",
+            "container-devkit-reachability",
+            "Could not confirm SDK container reachability to the DevKit.",
+        )
+
+        with patch.object(net, "build_network_doctor_report", return_value=report), \
+             patch.object(net, "print_network_doctor_report"):
+            with self.assertRaisesRegex(RuntimeError, "Could not confirm"):
+                net.validate_running_neat_container_network("sdk", "10.0.0.244")
+
+    def test_cloudex_validation_reports_confirmed_container_route(self):
+        report = net.NetworkDoctorReport(devkit_ip="10.0.0.244")
+        report.add(
+            "info",
+            "colima-tunnel-route",
+            "Colima host-address forwarding is enabled for tunnel route utun9.",
+        )
+        report.add(
+            "info",
+            "container-devkit-reachability",
+            "SDK container can reach DevKit 10.0.0.244.",
+        )
+
+        with patch.object(net, "build_network_doctor_report", return_value=report), \
+             patch("builtins.print") as print_mock:
+            net.validate_running_neat_container_network("sdk", "10.0.0.244")
+
+        print_mock.assert_called_once_with(
+            "✅ SDK container can reach DevKit 10.0.0.244 through the Cloudex tunnel."
+        )
 
     def test_sanitize_json_redacts_secret_like_values(self):
         sanitized = net._sanitize_json({

@@ -4,6 +4,46 @@
 
 命令參考：[`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
 
+## 建置與分享容器映像檔
+
+使用 DevKit 設定 SDK 3.0 或更新版本時，sima-cli 會提供建立小型本機容器登錄庫的選項。登錄庫會將映像檔儲存在主機上，因此即使 SDK 容器被替換，映像檔仍可繼續使用。
+
+登錄庫從連接埠 5050 啟動。若該連接埠已被使用，sima-cli 會自動選擇下一個可用的連接埠，並顯示所選的位址。
+
+設定也會在 SDK shell 中提供兩個位址：
+
+- `SIMA_CONTAINER_REGISTRY` 是 SDK 用來推送映像檔的位址。
+- `SIMA_DEVKIT_CONTAINER_REGISTRY` 是 DevKit 用來拉取相同映像檔的位址。
+
+在 Dockerfile 中定義應用程式，然後從 SDK 內建置並推送 ARM64 映像檔：
+
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --tag "${SIMA_CONTAINER_REGISTRY}/hello-neat:develop" \
+  --push \
+  .
+```
+
+使用 `dk container deploy` 從同一登錄庫下載映像檔，並在已連接的 DevKit 上執行：
+
+```bash
+dk container deploy hello-neat:develop \
+  --detach \
+  --name hello-neat \
+  --network host
+```
+
+使用簡短的映像檔名稱即可。`dk` 會使用 sima-cli 設定的 DevKit 登錄庫位址。若要先不明確更新映像檔就直接啟動，請使用 `dk container run hello-neat:develop ...`。
+
+登錄庫會在本機開發網路上使用 HTTP。登錄庫只會公開在 SDK 使用的迴路介面和面向 DevKit 的網路路徑上，不會公開在主機的所有介面上。
+
+在 macOS 上，設定會區分實體 LAN 路由與 Cloudex 或其他路由式通道。實體路由會使用 Colima 橋接位址。`utun`、WireGuard 或類似通道無法承載 Ethernet 橋接，因此設定會讓 Colima 保持共用模式，改為啟用 `network.hostAddresses`。如此一來，SDK 容器便能沿用 Mac 的通道路由，同時在 DevKit 所使用的 Mac 通道位址上公開登錄庫。由於 Colima 通常也會複製通道的子網路前綴，設定會從 VM 的本機路由表移除過度寬廣的子網路路由，同時將 Mac 位址保留為 `/32` 本機路由；否則 VM 可能會將 DevKit 對等端誤認為本機位址。此修復會在 Colima 重新啟動後保留。若作用中的設定檔先前是為實體連線設定成橋接模式，設定會使用受保護的設定檔重建流程切換至共用模式，同時保留經驗證的獨立 Docker 資料磁碟。無法安全重建的設定檔（包括已啟用 Kubernetes 的設定檔）不會變更。若通道的主機位址發生變更，請重新連線通道並再次執行設定。
+
+SDK 設定不會在 DevKit 上安裝或設定 Docker。第一個 `dk container` 命令會處理任何必要的 Docker 安裝，並設定 Docker 使用本機登錄庫；只有在登錄庫設定變更時才會重新啟動 Docker。如此一來，對不使用容器部署的使用者而言，Docker 仍完全是選用項目。安裝 Docker 需要明確核准，並能透過網際網路存取 Docker 的 Debian 軟體庫。免密碼 `sudo` 並非必要條件；sima-cli 會在設定期間為 DevKit 使用者完成設定。
+
+使用 `--no-container-registry` 可略過此步驟。這不會停止或移除現有的登錄庫。若要選擇其他連接埠，請使用 `--container-registry-port <port>` 重新執行設定。變更連接埠時，已儲存的映像檔會保留。
+
 ## 選擇啟用 Edgematic Studio
 
 預設設定不會顯示 Edgematic Studio 提示、不會安裝 Studio，也不會公開其連接埠。這也適用於 `-y` 與 `--noninteractive`。
@@ -12,9 +52,11 @@
 
 ## 選擇瀏覽器版 VS Code 擴充功能
 
-互動式設定提供 Neat、Codex 與 Claude 擴充功能。以 Space 選取，按 Enter 確認。初始皆未勾選；不選任何項目就會略過安裝，既有但未選取的擴充功能仍會保留。
+Neat 會自動安裝到目前 SDK 使用者的目錄，不需詢問。新的 SDK 映像已內含擴充功能，設定時會在本機複製；舊映像則沿用下載安裝方式。`--minimal` 會略過擴充功能設定。
 
-自動化時，可不經檢查清單直接安裝三項擴充功能：
+互動式設定提供選用的 Codex 與 Claude 擴充功能。以 Space 選取，按 Enter 確認。初始皆未勾選；不選任何項目就會略過程式開發代理安裝，既有但未選取的擴充功能仍會保留。
+
+自動化時，可不經檢查清單直接安裝程式開發代理：
 
 ```bash
 sima-cli sdk setup --noninteractive --all-extensions
@@ -24,7 +66,7 @@ sima-cli sdk setup --noninteractive --all-extensions
 
 ## 瀏覽器版 VS Code 擴充功能版本
 
-sima-cli 安裝 Codex 與 Claude 的確切版本，並固定版本以防自動更新。重新執行設定時會替換不同版本；相符版本則保留並固定，不會重新下載。SDK 映像可在 `/etc/sima-neat/vscode-extensions.json` 宣告已驗證版本：
+在 code-server（SDK 3.0 以上）中，Codex 預設安裝最新可用版本，不固定版本。若明確指定版本，仍會固定至該版本。舊版 OpenVSCode 映像保留 Codex 的相容性固定版本。Claude 仍使用確切的固定版本。選取確切版本時，重新執行設定會替換不同版本；相符版本則保留並固定，不會重新下載。SDK 映像可在 `/etc/sima-neat/vscode-extensions.json` 宣告已驗證版本：
 
 ```json
 {
@@ -36,17 +78,18 @@ sima-cli 安裝 Codex 與 Claude 的確切版本，並固定版本以防自動�
 }
 ```
 
-資訊清單本身不代表使用者選擇安裝。結構描述版本 1 要求兩個 ID 都指定確切版本。沒有資訊清單的舊映像會使用 Codex `26.5825.51511` 與 Claude `2.1.266` 作為相容性備援版本。無法讀取或無效的資訊清單會回報錯誤並略過擴充功能安裝，但其餘設定會繼續。Codex 或 Claude 安裝命令失敗時，會使用相同確切版本與正常 TLS 驗證重試最多三次。
+資訊清單本身不代表使用者選擇安裝。結構描述版本 1 要求兩個 ID 都指定確切版本。沒有資訊清單的舊映像會使用 Codex `26.5825.51511` 與 Claude `2.1.266` 作為相容性備援版本。無法讀取或無效的資訊清單會回報錯誤並略過程式開發代理安裝，但其餘設定會繼續。Codex 或 Claude 安裝命令失敗時，會使用選取的目標與正常 TLS 驗證嘗試最多三次。
 
 環境變數覆寫設定優先：
 
 | 變數 | 行為 |
 | --- | --- |
+| `SDK_SKIP_CODING_AGENT_INSTALL` | 設為 `1`、`true`、`yes` 或 `on`，即可略過 Codex 與 Claude 擴充功能的提示和安裝，即使使用 `--all-extensions` 也一樣。Neat 設定仍會執行，既有代理不會被移除。 |
 | `SIMA_CLI_CODEX_EXTENSION_ID` | 以 `publisher.extension@exact-version` 覆寫 Codex；空值會停用，除非使用 `--all-extensions`。 |
 | `SIMA_CLI_CLAUDE_EXTENSION_ID` | 以 `publisher.extension@exact-version` 覆寫 Claude；空值會停用，除非使用 `--all-extensions`。 |
 | `SIMA_CLI_INSTALL_CODEX_EXTENSION` | 不經檢查清單，自動選取擴充功能安裝。 |
 
-未附版本的內建擴充功能 ID 使用 SDK／預設固定版本。其他 ID 必須指定版本。`--minimal` 會略過選用擴充功能安裝。設定會驗證已安裝版本、寫入每個選定擴充功能的 `metadata.pinned` 旗標，並重新啟動瀏覽器版 VS Code；之後請重新載入已開啟的瀏覽器分頁。
+在 code-server 上，未附版本的 Codex ID（或 `openai.chatgpt@latest`）使用最新版本。其他未附版本的內建 ID 使用 SDK／預設固定版本；其他 ID 必須指定版本。`--minimal` 會略過選用擴充功能安裝。設定會驗證已安裝版本、寫入每個選定擴充功能的 `metadata.pinned` 旗標（最新版 Codex 為 false），並重新啟動瀏覽器版 VS Code；之後請重新載入已開啟的瀏覽器分頁。
 
 ## Model Compiler 安裝來源
 

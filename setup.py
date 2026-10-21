@@ -23,7 +23,8 @@ setup(
         "InquirerPy>=0.3.4,<0.4",
         "tftpy>=0.8.6,<0.9",
         "psutil>=7.0.0,<8.0",
-        "huggingface-hub>=0.34.0,<1.0",
+        "huggingface-hub>=2.2.0,<3.0; python_version >= '3.10'",
+        "huggingface-hub>=0.34.0,<2.0; python_version < '3.10'",
         "rich>=13.7,<14.0"
     ],
     entry_points={

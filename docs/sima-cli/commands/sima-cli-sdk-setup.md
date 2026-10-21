@@ -20,12 +20,14 @@ sima-cli sdk setup [OPTIONS]
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
-| `--all-extensions` | Install Neat, Codex, and Claude VS Code extensions without prompting. |
+| `--all-extensions` | Install Codex and Claude VS Code extensions without prompting. Neat is installed automatically. SDK_SKIP_CODING_AGENT_INSTALL overrides this option. |
 | `--edgematic-studio, --studio` | Install the Edgematic Studio extension and publish its port. Off by default. |
 | `--edgematic-studio-port, --studio-port` | Publish the Edgematic Studio port without installing it, for a manual install later. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
 | `--persistent-network-profile` | Allow setup to install a persistent NetworkManager shared-network repair profile without prompting. |
+| `--no-container-registry` | Skip the local registry that lets a configured DevKit download images built in the SDK. |
+| `--container-registry-port` | Use this host port for the local DevKit container registry. Existing stored images are kept. |
 | `--image` | Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt. |
 
 ## Arguments
@@ -57,8 +59,10 @@ Options:
   --no-model-compiler, --no-model-sdk
                                   Skip Model Compiler extension setup. --no-
                                   model-sdk is kept for compatibility.
-  --all-extensions                Install Neat, Codex, and Claude VS Code
-                                  extensions without prompting.
+  --all-extensions                Install Codex and Claude VS Code extensions
+                                  without prompting. Neat is installed
+                                  automatically. SDK_SKIP_CODING_AGENT_INSTALL
+                                  overrides this option.
   --edgematic-studio, --studio    Install the Edgematic Studio extension and
                                   publish its port. Off by default.
   --edgematic-studio-port, --studio-port
@@ -71,6 +75,13 @@ Options:
   --persistent-network-profile    Allow setup to install a persistent
                                   NetworkManager shared-network repair profile
                                   without prompting.
+  --no-container-registry         Skip the local registry that lets a
+                                  configured DevKit download images built in
+                                  the SDK.
+  --container-registry-port INTEGER RANGE
+                                  Use this host port for the local DevKit
+                                  container registry. Existing stored images
+                                  are kept.  [1<=x<=65535]
   --image TEXT                    Start only the SDK image matching this
                                   repository:tag or tag (e.g. 'ghcr.io/sima-
                                   neat/sdk:latest' or 'latest'). Repeatable;

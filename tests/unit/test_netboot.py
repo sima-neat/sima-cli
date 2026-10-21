@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import call, patch
 
-from sima_cli.update import netboot
+from sima_cli.update import netboot, netboot_device
 
 
 class FakeClientManager:
@@ -32,11 +32,13 @@ class NetbootFlashTests(unittest.TestCase):
         mock_run_remote,
         mock_warning,
     ):
+        configuration = netboot_device.NetbootConfiguration('192.168.4.20')
         netboot.flash_emmc(
             FakeClientManager(),
             ["/images/modalix.wic.gz", "/images/modalix.wic.bmap"],
             override_ip="192.168.4.20",
             troot_image_path="/images/troot_blob.be",
+            configuration=configuration,
         )
 
         self.assertEqual(
@@ -54,6 +56,7 @@ class NetbootFlashTests(unittest.TestCase):
         self.assertIn("prepare_emmc()", remote_commands[1])
         self.assertTrue(all(call.kwargs.get("check") for call in mock_run_remote.call_args_list))
         self.assertIn("sudo bmaptool copy /tmp/modalix.wic.gz /dev/mmcblk0", remote_commands)
+        self.assertTrue(configuration.flash_completed)
 
     @patch("sima_cli.update.netboot.init_ssh_session")
     @patch("sima_cli.update.netboot.copy_file_to_remote_board")
@@ -91,6 +94,7 @@ class NetbootFlashTests(unittest.TestCase):
                 override_ip="192.168.4.20",
                 troot_image_path="/images/troot_blob.be",
                 configuration=None,
+                offer_reboot=True,
             )
         finally:
             netboot.emmc_image_paths = old_emmc

@@ -52,12 +52,17 @@ SIMA_CLI_AUTH_CACHE_FILES = (
 )
 OPENVSCODE_SERVER_BIN = "/opt/openvscode-server/bin/openvscode-server"
 OPENVSCODE_LEGACY_EXTENSIONS_DIR = "/opt/openvscode-server/extensions"
+CODE_SERVER_BIN = "/opt/code-server/bin/code-server"
+CODE_SERVER_EXTENSIONS_SUFFIX = ".local/share/code-server/extensions"
+CODE_SERVER_DATA_SUFFIX = ".local/share/code-server"
 CODEX_EXTENSION_DEFAULT_ID = "openai.chatgpt"
 CODEX_EXTENSION_ID_ENV = "SIMA_CLI_CODEX_EXTENSION_ID"
 CODEX_EXTENSION_INSTALL_ENV = "SIMA_CLI_INSTALL_CODEX_EXTENSION"
 CLAUDE_EXTENSION_DEFAULT_ID = "anthropic.claude-code"
 CLAUDE_EXTENSION_ID_ENV = "SIMA_CLI_CLAUDE_EXTENSION_ID"
 EDGEMATIC_STUDIO_INSTALL_REF = "main"
+SDK_PLATFORM_VERSION_LABEL = "com.sima.sdk.platform.version"
+CONTAINER_BUILD_MIN_PLATFORM = (3, 0, 0)
 
 def _devcontainer_metadata_label(remote_user: str, workspace_folder: str = "/workspace") -> str:
     """
@@ -85,6 +90,175 @@ def check_os() -> str:
     if sys.platform in ("win32", "cygwin"):
         return "windows"
     return "not_supported"
+
+
+def get_sdk_platform_version(image: str) -> str:
+    """Read the SDK platform version used to gate automatic builder access."""
+    result = subprocess.run(
+        [
+            "docker",
+            "image",
+            "inspect",
+            "--format",
+            f'{{{{ index .Config.Labels "{SDK_PLATFORM_VERSION_LABEL}" }}}}',
+            image,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    label_value = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    if result.returncode == 0 and label_value not in ("", "<no value>"):
+        return label_value
+
+    # Local development images may predate the label while still using a
+    # release-like tag such as 3.0.0 or v3.0.0-daily.
+    tag = image.rsplit(":", 1)[1] if ":" in image.rsplit("/", 1)[-1] else ""
+    return tag if re.match(r"^v?\d+\.\d+(?:\.\d+)?", tag) else ""
+
+
+def sdk_image_uses_automatic_container_build(image: str) -> bool:
+    if not is_neat_sdk_image(image):
+        return False
+
+    version = get_sdk_platform_version(image)
+    match = re.match(r"^v?(\d+)\.(\d+)(?:\.(\d+))?", version)
+    if not match:
+        return False
+    parsed = tuple(int(part or 0) for part in match.groups())
+    return parsed >= CONTAINER_BUILD_MIN_PLATFORM
+
+
+def validate_host_container_build_toolchain() -> str:
+    """Fail clearly unless the host can provide a local Docker daemon socket."""
+    if check_os() not in ("linux", "macos"):
+        raise RuntimeError(
+            "Neat SDK 3.0+ container builds require a Linux or macOS Docker host."
+        )
+    if shutil.which("docker") is None:
+        raise RuntimeError(
+            "Neat SDK 3.0+ requires Docker on the host. Install Docker Engine "
+            "or Docker Desktop and rerun setup."
+        )
+
+    result = subprocess.run(
+        ["docker", "version", "--format", "{{.Client.Version}}/{{.Server.Version}}"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        suffix = f" {detail}" if detail else ""
+        raise RuntimeError(f"Docker is installed, but its daemon is not reachable.{suffix}")
+
+    socket_source = resolve_container_build_socket_source()
+    if check_os() == "linux" and not os.path.exists(socket_source):
+        raise RuntimeError(
+            f"The active Docker Unix socket does not exist: {socket_source}"
+        )
+    return socket_source
+
+
+def resolve_container_build_socket_source(platform_os: str = None) -> str:
+    """Return the daemon-side Unix socket to mount into the Neat SDK."""
+    platform_os = platform_os or check_os()
+    if platform_os not in ("linux", "macos"):
+        raise RuntimeError(
+            "Automatic SDK container builds support Linux and macOS Docker hosts only."
+        )
+
+    context_name = os.environ.get("DOCKER_CONTEXT", "").strip()
+    endpoint = ""
+    if context_name:
+        result = subprocess.run(
+            [
+                "docker", "context", "inspect", "--format",
+                "{{.Endpoints.docker.Host}}", context_name,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            suffix = f" {detail}" if detail else ""
+            raise RuntimeError(
+                f"Unable to inspect Docker context {context_name!r}.{suffix}"
+            )
+        endpoint = result.stdout.strip()
+    else:
+        endpoint = os.environ.get("DOCKER_HOST", "").strip()
+        if not endpoint:
+            result = subprocess.run(
+                ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                endpoint = result.stdout.strip()
+
+    if not endpoint:
+        endpoint = "unix:///var/run/docker.sock"
+    if not endpoint.startswith("unix://"):
+        raise RuntimeError(
+            "Automatic SDK container builds require a local Unix Docker endpoint; "
+            f"the active endpoint is {endpoint!r}."
+        )
+
+    if platform_os == "macos":
+        # Docker Desktop and Colima expose the engine socket at this path inside
+        # their Linux VM, even when the host client uses a forwarded socket in
+        # ~/.docker or ~/.colima.
+        return "/var/run/docker.sock"
+
+    socket_path = endpoint[len("unix://"):]
+    if not os.path.isabs(socket_path):
+        raise RuntimeError(f"Docker socket path must be absolute: {socket_path}")
+    return socket_path
+
+
+def resolve_container_build_socket_gid(image: str, socket_source: str) -> int:
+    """Read the mounted socket GID before starting long-lived SDK services."""
+    result = subprocess.run(
+        [
+            "docker", "run", "--rm", "--network=none",
+            "--entrypoint", "stat",
+            "-v", f"{socket_source}:/var/run/docker.sock",
+            image, "-c", "%g", "/var/run/docker.sock",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    gid = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    if result.returncode != 0 or not gid.isdigit():
+        detail = (result.stderr or result.stdout).strip()
+        suffix = f" {detail}" if detail else ""
+        raise RuntimeError(
+            "Unable to determine the Docker socket group for the SDK container."
+            f"{suffix}"
+        )
+    return int(gid)
+
+
+def container_has_docker_socket_mount(container_name: str) -> bool:
+    result = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            "{{range .Mounts}}{{println .Destination}}{{end}}",
+            container_name,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    return "/var/run/docker.sock" in result.stdout.splitlines()
 
 
 def _decode_subprocess_output(output) -> str:
@@ -1226,31 +1400,26 @@ def ensure_codex_vscode_extension_installed(
     all_extensions: bool = False,
 ) -> None:
     """
-    Optionally install Neat, Claude, and Codex extensions into browser VS Code.
+    Install Neat automatically and selected coding agents into browser VS Code.
 
-    Older SDK images do not include OpenVSCode. In that case this function is a
-    no-op so SDK setup remains backward compatible.
+    Older SDK images may contain OpenVSCode, while current images contain
+    code-server. Images without either browser IDE are left unchanged.
     """
     image_ref = _get_container_image_ref(sdk_container_name)
     if not image_ref or not is_neat_sdk_image(image_ref):
         return
 
-    server_check = subprocess.run(
-        ["docker", "exec", sdk_container_name, "test", "-x", OPENVSCODE_SERVER_BIN],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    if server_check.returncode != 0:
+    backend = _container_code_ui_backend(sdk_container_name)
+    if not backend:
         if auto_install or all_extensions:
             print("ℹ️  Browser VS Code is not available in this SDK image; skipping browser VS Code extension install.")
         return
 
     neat_extension_target = "sdk/vscode-extension"
-    selected_names = select_browser_extensions(auto_install or all_extensions, allow_prompt)
-    if not selected_names:
-        return
-    install_neat = "neat" in selected_names
+    skip_agents = _env_truthy("SDK_SKIP_CODING_AGENT_INSTALL")
+    if skip_agents:
+        print("ℹ️  SDK_SKIP_CODING_AGENT_INSTALL is enabled; skipping Codex and Claude extensions.")
+    selected_names = [] if skip_agents else select_browser_extensions(auto_install or all_extensions, allow_prompt)
 
     extensions = []
     try:
@@ -1264,28 +1433,44 @@ def ensure_codex_vscode_extension_installed(
             for name, label, env, default in requested_extensions
             if name in selected_names
         ]
+        latest_targets = (
+            {CODEX_EXTENSION_DEFAULT_ID, CODEX_EXTENSION_DEFAULT_ID + "@latest"}
+            if backend == "code-server" else set()
+        )
         versions = (
             load_extension_versions(sdk_container_name)
-            if any(target for _, _, target in selected) else {}
+            if any(target and target not in latest_targets for _, _, target in selected) else {}
         )
         for label, env, target in selected:
             if target:
-                extensions.append((label, resolve_extension_target(target, versions)))
+                if target in latest_targets:
+                    extensions.append((label, CODEX_EXTENSION_DEFAULT_ID))
+                else:
+                    extensions.append((label, resolve_extension_target(target, versions)))
             else:
                 print(f"ℹ️  {env} is empty; skipping {label} extension install.")
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"⚠️  Could not resolve browser VS Code extension pins: {exc}")
-        print("Skipping browser VS Code extension install; continuing SDK setup.")
-        return
-
-    if not install_neat and not extensions:
-        return
+        print("Skipping coding agent extensions; continuing Neat extension setup.")
+        extensions = []
 
     home_directory = f"/home/{login_name}"
-    extensions_dir = f"{home_directory}/.openvscode-server/extensions"
+    if backend == "code-server":
+        server_bin = CODE_SERVER_BIN
+        extensions_dir = f"{home_directory}/{CODE_SERVER_EXTENSIONS_SUFFIX}"
+        data_dir = f"{home_directory}/{CODE_SERVER_DATA_SUFFIX}"
+        supervisor_program = "code-server"
+        server_label = "code-server"
+    else:
+        server_bin = OPENVSCODE_SERVER_BIN
+        extensions_dir = f"{home_directory}/.openvscode-server/extensions"
+        data_dir = f"{home_directory}/.openvscode-server/data"
+        supervisor_program = "openvscode-server"
+        server_label = "OpenVSCode Server"
+    license_arg = " --accept-server-license-terms" if backend == "openvscode" else ""
     neat_extension_install_dir = f"{home_directory}/vscode-extension-installation"
-    user_settings = f"{home_directory}/.openvscode-server/data/User/settings.json"
-    machine_settings = f"{home_directory}/.openvscode-server/data/Machine/settings.json"
+    user_settings = f"{data_dir}/User/settings.json"
+    machine_settings = f"{data_dir}/Machine/settings.json"
     owner = f"{uid}:{gid}" if uid is not None and gid is not None else f"{login_name}:{login_name}"
     install_steps = [
         f"echo 'Installing SiMa Neat extension: {neat_extension_target}'; "
@@ -1303,28 +1488,36 @@ def ensure_codex_vscode_extension_installed(
         f"--install-dir \"$NEAT_EXTENSION_INSTALL_DIR\" {shlex.quote(neat_extension_target)}; then "
         "true; "
         "elif [ -f \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\" ]; then "
-        "echo 'Installing downloaded SiMa Neat VSIX with OpenVSCode Server.'; "
-        f"{shlex.quote(OPENVSCODE_SERVER_BIN)} --extensions-dir {shlex.quote(extensions_dir)} "
+        f"echo 'Installing downloaded SiMa Neat VSIX with {server_label}.'; "
+        f"{shlex.quote(server_bin)} --extensions-dir {shlex.quote(extensions_dir)} "
         "--install-extension \"$NEAT_EXTENSION_INSTALL_DIR/sima-neat.vsix\" "
-        "--force --accept-server-license-terms; "
+        f"--force{license_arg}; "
         "else "
         "exit 1; "
         "fi"
-    ] if install_neat else []
+    ]
+    # New SDK images carry an offline copy; older images retain the installer fallback.
+    install_steps = [
+        f"if command -v sima-install-neat-extension >/dev/null 2>&1; then "
+        f"sima-install-neat-extension {shlex.quote(extensions_dir)}; else "
+        + install_steps[0] + "; fi"
+    ]
     legacy_cleanup_steps = []
     for label, extension_target in extensions:
         extension_id = extension_target.split("@", 1)[0]
         install_steps.append(extension_install_command(
-            OPENVSCODE_SERVER_BIN, extensions_dir, label, extension_target,
+            server_bin, extensions_dir, label, extension_target,
+            accept_server_license=backend == "openvscode",
         ))
-        legacy_cleanup_steps.append(
-            f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
-            f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true"
-        )
+        if backend == "openvscode":
+            legacy_cleanup_steps.append(
+                f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
+                f"-name {shlex.quote(extension_id + '-*')} -exec rm -rf {{}} + 2>/dev/null || true"
+            )
 
     install_steps.append(pin_extensions_command(
         extensions_dir,
-        dict(target.split("@", 1) for _, target in extensions),
+        dict(target.split("@", 1) if "@" in target else (target, None) for _, target in extensions),
     ))
 
     user_extension_script = (
@@ -1364,16 +1557,16 @@ def ensure_codex_vscode_extension_installed(
         f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_extension_script)}; "
         + ("; ".join(legacy_cleanup_steps) + "; " if legacy_cleanup_steps else "")
         + "if command -v supervisorctl >/dev/null 2>&1; then "
-        "supervisorctl restart openvscode-server >/dev/null 2>&1 || true; "
+        f"supervisorctl restart {shlex.quote(supervisor_program)} >/dev/null 2>&1 || true; "
         "fi"
     )
 
     print("ℹ️  Installing browser VS Code extensions:")
-    if install_neat:
-        print(f"   - SiMa Neat: {neat_extension_target}")
+    print("   - SiMa Neat: bundled SDK copy (download fallback for older images)")
     for label, extension_id in extensions:
-        print(f"   - {label}: {extension_id}")
-    progress_labels = (["Neat"] if install_neat else []) + [label for label, _ in extensions]
+        suffix = " (latest available release)" if "@" not in extension_id else ""
+        print(f"   - {label}: {extension_id}{suffix}")
+    progress_labels = ["Neat"] + [label for label, _ in extensions]
     with extension_install_progress(progress_labels, console):
         result = subprocess.run(
             [
@@ -1401,17 +1594,31 @@ def ensure_codex_vscode_extension_installed(
               "later extensions may not have been installed. Continuing SDK setup.")
         return
 
-    print("✅ Selected browser VS Code extensions installed; AI extension versions are pinned.")
+    print("✅ Browser VS Code extensions are ready.")
+
+
+def _container_code_ui_backend(sdk_container_name: str) -> str:
+    detection_script = (
+        f"if test -x {shlex.quote(CODE_SERVER_BIN)}; then printf code-server; "
+        f"elif test -x {shlex.quote(OPENVSCODE_SERVER_BIN)}; then printf openvscode; "
+        "else exit 1; fi"
+    )
+    result = subprocess.run(
+        ["docker", "exec", sdk_container_name, "sh", "-c", detection_script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    backend = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    return backend if backend in {"code-server", "openvscode"} else ""
 
 
 def _container_openvscode_available(sdk_container_name: str) -> bool:
-    result = subprocess.run(
-        ["docker", "exec", sdk_container_name, "test", "-x", OPENVSCODE_SERVER_BIN],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode == 0
+    """Compatibility predicate retained for callers that only need availability."""
+    return bool(_container_code_ui_backend(sdk_container_name))
 
 
 def _is_skills_enabled_image(image_ref: str) -> bool:
@@ -1659,6 +1866,44 @@ def configure_container_user(
     else:
         command = f"echo '{login_name} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers"
         run_command(["docker", "exec", "-u", "root", sdk_container_name, "sh", "-c", command])
+
+
+def configure_container_docker_builder(sdk_container_name: str, login_name: str) -> None:
+    """Match the SDK docker group to the mounted socket and verify Buildx."""
+    access_script = (
+        "set -eu; "
+        "test -S /var/run/docker.sock; "
+        "socket_gid=$(stat -c %g /var/run/docker.sock); "
+        "if getent group docker >/dev/null; then "
+        "groupmod -o -g \"${socket_gid}\" docker; "
+        "else groupadd -o -g \"${socket_gid}\" docker; fi; "
+        f"usermod -aG docker {shlex.quote(login_name)}"
+    )
+    run_command([
+        "docker", "exec", "-u", "root", sdk_container_name,
+        "bash", "-lc", access_script,
+    ])
+    # The image can start its browser IDE before the host user and docker group are
+    # remapped.  Those already-running processes retain their original
+    # supplementary groups, so terminals spawned by the IDE cannot access
+    # the socket even though a fresh ``docker exec`` can.  Restart the
+    # container after updating /etc/group so every long-lived SDK process
+    # inherits the socket group.
+    run_command(["docker", "restart", sdk_container_name])
+    user_exec = [
+        "docker", "exec", "-u", login_name,
+        "-e", f"HOME=/home/{login_name}", sdk_container_name,
+    ]
+    run_command(user_exec + [
+        "docker", "version", "--format", "{{.Client.Version}}/{{.Server.Version}}",
+    ])
+    run_command(user_exec + [
+        "docker", "buildx", "version",
+    ])
+    run_command(user_exec + [
+        "docker", "buildx", "inspect", "--bootstrap",
+    ])
+    print(f"✅ Docker Buildx enabled in '{sdk_container_name}' for user '{login_name}'.")
 
 
 def install_neat_playbooks(sdk_container_name: str, login_name: str) -> None:
@@ -1938,6 +2183,7 @@ def start_docker_container(
     publish_edgematic_studio_port=False,
     minimal=False,
     all_extensions=False,
+    container_build=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -1989,10 +2235,24 @@ def start_docker_container(
         ])
 
     if neat_sdk_image:
+        docker_cmd.extend(["-e", f"CODE_SERVER_USER={remote_user}"])
+        docker_cmd.extend(["-e", f"CODE_SERVER_EXTENSIONS_DIR=/home/{remote_user}/{CODE_SERVER_EXTENSIONS_SUFFIX}"])
+        docker_cmd.extend(["-e", "CODE_SERVER_WORKSPACE=/workspace"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_USER={remote_user}"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/{remote_user}/.openvscode-server/extensions"])
         docker_cmd.extend(["-e", "OPENVSCODE_WORKSPACE=/workspace"])
         docker_cmd.extend(["-v", f"{workspace}:/workspace"])
+        if container_build:
+            docker_socket_source = resolve_container_build_socket_source()
+            docker_socket_gid = resolve_container_build_socket_gid(
+                image, docker_socket_source
+            )
+            docker_cmd.extend([
+                "-v", f"{docker_socket_source}:/var/run/docker.sock",
+                "--group-add", str(docker_socket_gid),
+                "-e", "DOCKER_HOST=unix:///var/run/docker.sock",
+                "-e", "SIMA_SDK_CONTAINER_BUILD=1",
+            ])
 
     # ─────────────────────────────────────────────
     # Add --platform=linux/amd64 for macOS ARM
@@ -2054,6 +2314,13 @@ def start_docker_container(
             "-e", f"DEVKIT_HOST_PLATFORM={host_platform}",
             "-e", f"DEVKIT_HOST_NFS_AVAILABLE={'1' if host_nfs_available else '0'}",
         ])
+        registry_sdk_address = devkit_env.get("container_registry_sdk_address", "")
+        registry_devkit_address = devkit_env.get("container_registry_devkit_address", "")
+        if registry_sdk_address and registry_devkit_address:
+            docker_cmd.extend([
+                "-e", f"SIMA_CONTAINER_REGISTRY={registry_sdk_address}",
+                "-e", f"SIMA_DEVKIT_CONTAINER_REGISTRY={registry_devkit_address}",
+            ])
 
     # ─────────────────────────────────────────────
     # Launch container
@@ -2062,6 +2329,7 @@ def start_docker_container(
         from sima_cli.sdk.neat import (
             NEAT_DOCKER_RETRY_LIMIT,
             append_neat_docker_args,
+            finalize_code_ui_auth,
             is_docker_port_collision_error,
             prepare_neat_container_run,
             print_neat_setup_summary,
@@ -2147,11 +2415,20 @@ def start_docker_container(
         all_extensions=all_extensions,
     )
 
+    if neat_sdk_image and container_build:
+        if check_os() in ["linux", "macos"]:
+            builder_user = detect_current_user()[0]
+        else:
+            builder_user = "docker"
+        configure_container_docker_builder(container_name, builder_user)
+
     if devkit_env and neat_sdk_image:
         bootstrap_devkit_container(container_name, devkit_env)
 
     if neat_sdk_image and neat_run_config is not None:
-        neat_run_config.code_ui_supported = _container_openvscode_available(container_name)
+        neat_run_config.code_ui_backend = _container_code_ui_backend(container_name)
+        neat_run_config.code_ui_supported = bool(neat_run_config.code_ui_backend)
+        finalize_code_ui_auth(neat_run_config)
         neat_run_config.edgematic_studio_installed = bool(edgematic_studio_installed)
         print_neat_setup_summary(neat_run_config)
 
@@ -2180,6 +2457,38 @@ def _remove_failed_neat_container(container_name: str) -> None:
         return
 
 
+def _configure_container_registry_environment(container_name: str, devkit_env: dict) -> None:
+    sdk_address = str(devkit_env.get("container_registry_sdk_address", ""))
+    devkit_address = str(devkit_env.get("container_registry_devkit_address", ""))
+    if not sdk_address or not devkit_address:
+        return
+
+    profile_lines = "\n".join(
+        [
+            f"export SIMA_CONTAINER_REGISTRY={shlex.quote(sdk_address)}",
+            f"export SIMA_DEVKIT_CONTAINER_REGISTRY={shlex.quote(devkit_address)}",
+            "",
+        ]
+    )
+    command = (
+        "install -d -m 0755 /etc/profile.d && "
+        f"printf '%s' {shlex.quote(profile_lines)} > /etc/profile.d/sima-container-registry.sh && "
+        "chmod 0644 /etc/profile.d/sima-container-registry.sh"
+    )
+    result = subprocess.run(
+        ["docker", "exec", "-u", "root", container_name, "bash", "-lc", command],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip()
+        raise RuntimeError(
+            f"Could not save the local container registry addresses in SDK container "
+            f"'{container_name}': {detail}"
+        )
+
+
 def bootstrap_devkit_container(container_name: str, devkit_env: dict):
     """
     One-time best-effort bootstrap:
@@ -2190,8 +2499,12 @@ def bootstrap_devkit_container(container_name: str, devkit_env: dict):
     devkit_ip = devkit_env.get("devkit_ip", "")
     if not devkit_ip:
         return
+    _configure_container_registry_environment(container_name, devkit_env)
     bootstrap_interactive = bool(devkit_env.get("bootstrap_interactive", False))
     noninteractive = bool(devkit_env.get("noninteractive", False))
+    devkit_user = str(devkit_env.get("devkit_user") or "sima")
+    devkit_password = str(devkit_env.get("devkit_password") or "")
+    devkit_port = int(devkit_env.get("devkit_port") or 22)
     host_ip = devkit_env.get("host_ip", "")
     host_export = devkit_env.get("workspace", "")
     host_platform = devkit_env.get("host_platform", "")
@@ -2199,7 +2512,24 @@ def bootstrap_devkit_container(container_name: str, devkit_env: dict):
         devkit_env.get("host_nfs_available"),
         default=True,
     )
-
+    registry_devkit_address = str(devkit_env.get("container_registry_devkit_address", ""))
+    trust_command = shlex.join([
+        "docker", "exec", "-it", container_name, "ssh",
+        "-o", "StrictHostKeyChecking=ask",
+        "-o", "PreferredAuthentications=none",
+        "-p", str(devkit_port), f"{devkit_user}@{devkit_ip}",
+    ])
+    host_key_guidance = (
+        "DevKit host-key verification is required. Obtain the SSH host-key fingerprint "
+        "from the DevKit console or your administrator through a trusted channel. "
+        f"Then run: {trust_command} . Accept only a matching fingerprint and rerun SDK setup "
+        "(authentication failure from this verification command is expected). "
+        "For a changed key, verify the replacement fingerprint before explicitly updating "
+        "the SDK user's known_hosts entry. Existing trusted keys are never removed by pairing."
+    )
+    # Docker reads a value-less --env option from its client environment.
+    # Keep credentials out of the shell program and process argument list.
+    bootstrap_env = dict(os.environ, DEVKIT_SYNC_PASSWORD=devkit_password)
     script = f"""set +e
 BOOTSTRAP_STATUS=unknown
 BOOTSTRAP_RC=0
@@ -2215,21 +2545,57 @@ if [ ! -e /workspace ] && [ ! -L /workspace ]; then
 fi
 if [ ! -f /usr/local/bin/devkit.sh ]; then
   BOOTSTRAP_STATUS=missing_script
+  BOOTSTRAP_RC=1
 else
-  source /usr/local/bin/devkit.sh {shlex.quote(devkit_ip)}
-  SRC_RC=$?
-  if [ "$SRC_RC" -ne 0 ]; then
-    BOOTSTRAP_STATUS=source_failed
-    if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ]; then
-      BOOTSTRAP_RC=$SRC_RC
+  if [ -z "$DEVKIT_SYNC_PASSWORD" ]; then
+    echo "DevKit password is required to install the SDK container SSH key." >&2
+    BOOTSTRAP_STATUS=credential_setup_failed
+    BOOTSTRAP_RC=41
+  elif ! command -v sshpass >/dev/null 2>&1; then
+    echo "sshpass is required in the SDK container to install the DevKit SSH key." >&2
+    BOOTSTRAP_STATUS=missing_sshpass
+    BOOTSTRAP_RC=1
+  else
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+    if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
+      ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "devkit-sync@$(hostname)" >/dev/null
     fi
+    # Never replace saved trust with unauthenticated network discovery.
+    # Non-default SSH ports have separate known_hosts identities.
+    if ! ssh-keygen -F {shlex.quote(devkit_ip if devkit_port == 22 else f"[{devkit_ip}]:{devkit_port}")} -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1; then
+      echo "DevKit host key is not trusted. Verify its fingerprint before pairing." >&2
+      echo "__SIMA_DEVKIT_BOOTSTRAP_STATUS=host_key_verification_required"
+      exit 42
+    fi
+    if ! SSHPASS="$DEVKIT_SYNC_PASSWORD" sshpass -e ssh-copy-id -f \
+      -i "$HOME/.ssh/id_ed25519.pub" -p {devkit_port} \
+      -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+      -o ConnectTimeout=8 -o StrictHostKeyChecking=yes \
+      {shlex.quote(devkit_user)}@{shlex.quote(devkit_ip)}; then
+      echo "Could not install the SDK container SSH key. Check the DevKit username and password." >&2
+      BOOTSTRAP_STATUS=credential_setup_failed
+      BOOTSTRAP_RC=41
+    fi
+  fi
+  if [ "$BOOTSTRAP_RC" -eq 0 ]; then
+    source /usr/local/bin/devkit.sh {shlex.quote(devkit_ip)} {shlex.quote(devkit_user)} {devkit_port}
+    SRC_RC=$?
+  else
+    SRC_RC=$BOOTSTRAP_RC
+  fi
+  if [ "$SRC_RC" -ne 0 ]; then
+    if [ "$BOOTSTRAP_STATUS" != credential_setup_failed ] && [ "$BOOTSTRAP_STATUS" != missing_sshpass ]; then
+      BOOTSTRAP_STATUS=source_failed
+    fi
+    BOOTSTRAP_RC=$SRC_RC
   elif command -v dk >/dev/null 2>&1; then
     BOOTSTRAP_STATUS=sourced_with_dk
   else
     BOOTSTRAP_STATUS=sourced_no_dk
   fi
 fi
-if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ] && [ "$BOOTSTRAP_STATUS" != source_failed ] && [ "${{DEVKIT_SYNC_METHOD:-none}}" != rsync ]; then
+if [ "$DEVKIT_HOST_NFS_AVAILABLE" = 0 ] && [ "$BOOTSTRAP_STATUS" != source_failed ] && [ "$BOOTSTRAP_STATUS" != credential_setup_failed ] && [ "$BOOTSTRAP_STATUS" != missing_sshpass ] && [ "${{DEVKIT_SYNC_METHOD:-none}}" != rsync ]; then
   BOOTSTRAP_STATUS=rsync_fallback_failed
   BOOTSTRAP_RC=1
 fi
@@ -2239,24 +2605,48 @@ exit "$BOOTSTRAP_RC"
 
     if bootstrap_interactive and not noninteractive and sys.stdin.isatty() and sys.stdout.isatty():
         proc = subprocess.run(
-            ["docker", "exec", "-it", container_name, "bash", "-lc", script],
+            ["docker", "exec", "-it", "--env", "DEVKIT_SYNC_PASSWORD", container_name, "bash", "-lc", script],
             text=True,
+            env=bootstrap_env,
             check=False,
         )
         if proc.returncode == 0:
             print(f"✅ DevKit bootstrap completed in container '{container_name}' (interactive).")
+            if registry_devkit_address:
+                print(
+                    f"✅ SDK container registry is ready ({registry_devkit_address})."
+                )
+                print(
+                    "ℹ️  DevKit Docker setup is deferred until the first "
+                    "'dk container' command."
+                )
             return
-        if not host_nfs_available:
-            raise RuntimeError(
-                "Host NFS is unavailable and rsync fallback setup failed in SDK container "
-                f"'{container_name}'. Check DevKit SSH access, rsync availability, and remote "
-                "workspace permissions."
+        if proc.returncode == 42:
+            raise RuntimeError(host_key_guidance)
+        if proc.returncode == 41 and not devkit_env.get("credential_prompted"):
+            print("ℹ️  The DevKit login did not work. Enter the device credentials to retry.")
+            retry_user = input(f"DevKit username [{devkit_user}]: ").strip() or devkit_user
+            retry_password = getpass.getpass("DevKit password: ")
+            if not retry_password:
+                raise RuntimeError("DevKit password cannot be empty.")
+            retry_env = dict(devkit_env)
+            retry_env.update(
+                {
+                    "devkit_user": retry_user,
+                    "devkit_password": retry_password,
+                    "credential_prompted": True,
+                }
             )
-        print(f"⚠️ DevKit bootstrap failed in container '{container_name}' (interactive, exit={proc.returncode}).")
-        return
+            return bootstrap_devkit_container(container_name, retry_env)
+        raise RuntimeError(
+            f"DevKit pairing failed in SDK container '{container_name}'. "
+            "Check the DevKit username and password, and any SSH host-key mismatch, then rerun SDK setup. "
+            + host_key_guidance
+        )
 
     proc = subprocess.run(
-        ["docker", "exec", "-i", container_name, "bash", "-lc", script],
+        ["docker", "exec", "-i", "--env", "DEVKIT_SYNC_PASSWORD", container_name, "bash", "-lc", script],
+        env=bootstrap_env,
         input=("\n" * 32),
         text=True,
         capture_output=True,
@@ -2267,7 +2657,6 @@ exit "$BOOTSTRAP_RC"
     for line in (proc.stdout or "").splitlines():
         if line.startswith("__SIMA_DEVKIT_BOOTSTRAP_STATUS="):
             status = line.split("=", 1)[1].strip()
-            break
 
     if proc.returncode == 0:
         if status == "sourced_with_dk":
@@ -2293,6 +2682,13 @@ exit "$BOOTSTRAP_RC"
                 print(proc.stderr.strip())
         else:
             print(f"✅ DevKit bootstrap completed in container '{container_name}'.")
+        if registry_devkit_address:
+            print(
+                f"✅ SDK container registry is ready ({registry_devkit_address})."
+            )
+            print(
+                "ℹ️  DevKit Docker setup is deferred until the first 'dk container' command."
+            )
         return
 
     # First-time setup often needs interactive password entry for ssh-copy-id.
@@ -2309,8 +2705,9 @@ exit "$BOOTSTRAP_RC"
             "Retrying in interactive mode..."
         )
         interactive_proc = subprocess.run(
-            ["docker", "exec", "-it", container_name, "bash", "-lc", script],
+            ["docker", "exec", "-it", "--env", "DEVKIT_SYNC_PASSWORD", container_name, "bash", "-lc", script],
             text=True,
+            env=bootstrap_env,
             check=False,
         )
         if interactive_proc.returncode == 0:
@@ -2321,6 +2718,22 @@ exit "$BOOTSTRAP_RC"
         print(
             f"⚠️ DevKit bootstrap interactive retry failed in container '{container_name}' "
             f"(exit={interactive_proc.returncode})."
+        )
+
+    if proc.returncode == 42 or status == "host_key_verification_required":
+        raise RuntimeError(host_key_guidance)
+
+    if status == "credential_setup_failed":
+        raise RuntimeError(
+            f"DevKit SSH key setup failed in SDK container '{container_name}'. "
+            "Check the DevKit username and password, and any SSH host-key mismatch, then rerun SDK setup. "
+            + host_key_guidance
+        )
+
+    if status == "missing_sshpass":
+        raise RuntimeError(
+            f"DevKit SSH key setup failed in SDK container '{container_name}': "
+            "the SDK image does not provide sshpass."
         )
 
     if not host_nfs_available:

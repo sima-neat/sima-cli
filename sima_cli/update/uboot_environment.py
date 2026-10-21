@@ -73,9 +73,17 @@ def configure_environment(
     if redundant:
         other = secondary.read_bytes() if secondary.exists() else b''
         if valid(data, 4):
-            if data[-1:] != b'\0':
-                raise RuntimeError('Single-file U-Boot environment has no padding byte for redundant conversion.')
-            payload = data[4:-1]
+            payload = data[4:]
+            terminator = payload.find(b'\0\0')
+            if terminator < 0 or terminator + 2 >= len(payload):
+                raise RuntimeError(
+                    'Single-file U-Boot environment has no reclaimable padding byte '
+                    'after its terminator for redundant conversion.'
+                )
+            # The redundant format adds a state byte within the same fixed-size
+            # file. Bytes after the double-NUL terminator are padding, regardless
+            # of whether the image producer filled them with 0x00 or 0xff.
+            payload = payload[:-1]
             for path, flag in ((primary, 0), (secondary, 1)):
                 converted = struct.pack('<I', zlib.crc32(payload)) + bytes([flag]) + payload
                 replace(path, converted)

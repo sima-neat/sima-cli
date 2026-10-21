@@ -103,6 +103,7 @@ pip install sima-cli
 | [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md) | Налаштуйте мережеву IP-адресу на DevKit. |
 | [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md) | Виконуйте операції NVMe на Modalix DevKit. |
 | [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md) | Керуйте реєстром пакетів sima-cli (переглядайте список, здійснюйте перевірку, очищайте тощо). |
+| [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md) | Показуйте камери та мікрофони, підключені до цього DevKit. |
 | [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md) | Встановіть і керуйте сценаріями (Codex/Claude). |
 | [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md) | Підготуйте SD-карту як пристрій для зберігання даних для ранньої версії MLSoc DevKit або Modalix. |
 | [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | Керуйте та розгортайте контейнерні середовища SiMa SDK 2.0 (бета-версія). |
@@ -126,6 +127,7 @@ pip install sima-cli
 - [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md)
 - [`sima-cli nvme`](../../../sima-cli/commands/sima-cli-nvme.md)
 - [`sima-cli packages`](../../../sima-cli/commands/sima-cli-packages.md)
+- [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md)
 - [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md)
 - [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md)
 - [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md)
@@ -148,6 +150,8 @@ pip install sima-cli
 - [`sima-cli packages build`](../../../sima-cli/commands/sima-cli-packages-build.md)
 - [`sima-cli packages list`](../../../sima-cli/commands/sima-cli-packages-list.md)
 - [`sima-cli packages show`](../../../sima-cli/commands/sima-cli-packages-show.md)
+- [`sima-cli peripherals describe`](../../../sima-cli/commands/sima-cli-peripherals-describe.md)
+- [`sima-cli peripherals list`](../../../sima-cli/commands/sima-cli-peripherals-list.md)
 - [`sima-cli playbooks apply`](../../../sima-cli/commands/sima-cli-playbooks-apply.md)
 - [`sima-cli playbooks delete`](../../../sima-cli/commands/sima-cli-playbooks-delete.md)
 - [`sima-cli playbooks describe`](../../../sima-cli/commands/sima-cli-playbooks-describe.md)

@@ -113,6 +113,20 @@ sima-cli --internal login
 SIMA_CLI_INTERNAL=1 sima-cli install -v 2.1.2 tools/model-compiler/amd64
 ```
 
+Full-system SWU updates prefer RAM-backed `/tmp` when available memory can
+hold both the bundle and its extraction, plus a reserve of at least 512 MiB
+or 10% of total RAM (whichever is larger). Otherwise they stage in `/data`,
+with NVMe as a further fallback if `/data` lacks space. RAM staging is temporary;
+interrupted updates retained there do not survive a reboot.
+
+Public-mirror downloads, `models download`, and `neat artifacts` split files
+of at least 64 MiB into four byte ranges when supported by the server. Models
+and Neat artifacts share a limit of four active download connections across
+files and ranges, including single-connection fallbacks. Ranges must match the
+expected size and an object validator or the expected SHA-256 before the file is published. Models retain signed-URL refresh and
+cancellation handling. Existing public-mirror partial downloads continue
+sequentially; servers without range support use a single connection.
+
 ## Common Workflows
 
 Set up SDK containers:
@@ -121,6 +135,17 @@ Set up SDK containers:
 sima-cli sdk setup
 sima-cli sdk neat
 ```
+
+When pairing with `sdk setup --devkit`, the SDK user's `~/.ssh/known_hosts`
+must already contain a verified key for the DevKit and SSH port. Pairing preserves
+saved keys and uses strict host-key checking. If the key is missing, setup prints
+an SSH command to run inside the SDK container: compare the displayed fingerprint
+with one obtained from the DevKit console or a trusted administrator before
+accepting it, then rerun setup. The verification command disables authentication,
+so an authentication failure after accepting the key is expected. For automation,
+provision verified host keys in the SDK user's `known_hosts` before pairing.
+After a device reimage or key rotation, verify the replacement fingerprint before
+explicitly updating that entry; setup never resets trust automatically.
 
 Install Model Compiler from package metadata:
 

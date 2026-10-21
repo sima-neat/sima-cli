@@ -4,6 +4,46 @@
 
 명령 참조: [`sima-cli sdk setup`](../../../../sima-cli/commands/sima-cli-sdk-setup.md)
 
+## 컨테이너 이미지 빌드 및 공유
+
+DevKit과 함께 SDK 3.0 이상을 설정하면 sima-cli는 작은 로컬 컨테이너 레지스트리 생성을 제안합니다. 레지스트리는 호스트에 이미지를 저장하므로 SDK 컨테이너가 교체되어도 이미지를 계속 사용할 수 있습니다.
+
+레지스트리는 포트 5050에서 시작합니다. 해당 포트를 이미 사용 중이면 sima-cli가 자동으로 다음 사용 가능한 포트를 선택하고 선택한 주소를 표시합니다.
+
+설정은 SDK 셸 안에서 사용할 수 있는 두 주소도 제공합니다.
+
+- `SIMA_CONTAINER_REGISTRY`는 SDK가 이미지를 푸시하는 데 사용하는 주소입니다.
+- `SIMA_DEVKIT_CONTAINER_REGISTRY`는 DevKit이 동일한 이미지를 풀하는 데 사용하는 주소입니다.
+
+Dockerfile에 애플리케이션을 정의한 다음 SDK 안에서 ARM64 이미지를 빌드하고 푸시합니다.
+
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --tag "${SIMA_CONTAINER_REGISTRY}/hello-neat:develop" \
+  --push \
+  .
+```
+
+`dk container deploy`를 사용하여 동일한 레지스트리에서 이미지를 다운로드하고 연결된 DevKit에서 실행합니다.
+
+```bash
+dk container deploy hello-neat:develop \
+  --detach \
+  --name hello-neat \
+  --network host
+```
+
+짧은 이미지 이름만으로 충분합니다. `dk`는 sima-cli가 설정한 DevKit 레지스트리 주소를 사용합니다. 먼저 명시적으로 이미지를 갱신하지 않고 시작하려면 `dk container run hello-neat:develop ...`를 사용합니다.
+
+레지스트리는 로컬 개발 네트워크에서 HTTP를 사용합니다. SDK용 루프백과 DevKit 방향 네트워크 경로에만 레지스트리를 공개하며, 호스트의 모든 인터페이스에 공개하지 않습니다.
+
+macOS에서 설정은 물리 LAN 경로와 Cloudex 또는 기타 라우팅된 터널을 구분합니다. 물리 경로에서는 Colima 브리지 주소를 사용합니다. `utun`, WireGuard 또는 이와 유사한 터널은 Ethernet 브리지를 전달할 수 없으므로, 설정은 Colima를 공유 모드로 유지하고 대신 `network.hostAddresses`를 활성화합니다. 그러면 SDK 컨테이너가 Mac의 터널 경로를 따르면서 DevKit이 사용하는 Mac 터널 주소에 레지스트리를 공개할 수 있습니다. Colima는 일반적으로 터널의 서브넷 접두사도 복사하므로, 설정은 VM의 로컬 라우팅 테이블에서 넓은 서브넷 경로를 제거하고 Mac 주소를 `/32` 로컬 경로로 유지합니다. 그렇지 않으면 VM이 DevKit 피어를 로컬 주소로 잘못 판단할 수 있습니다. 이 복구 설정은 Colima를 다시 시작해도 유지됩니다. 활성 프로필이 이전에 물리 연결용 브리지 모드로 구성된 경우, 설정은 보호된 프로필 재생성 절차를 사용하여 검증된 별도 Docker 데이터 디스크를 보존하면서 공유 모드로 전환합니다. Kubernetes가 활성화된 프로필 등 안전하게 재생성할 수 없는 프로필은 변경하지 않습니다. 터널의 호스트 주소가 변경되면 터널에 다시 연결한 후 설정을 다시 실행하십시오.
+
+SDK 설정은 DevKit에 Docker를 설치하거나 구성하지 않습니다. 첫 번째 `dk container` 명령이 필요한 Docker 설치를 처리하고 로컬 레지스트리를 사용하도록 Docker를 구성하며, 레지스트리 설정이 변경된 경우에만 Docker를 다시 시작합니다. 따라서 컨테이너 배포를 사용하지 않는 사용자에게 Docker는 완전히 선택 사항으로 유지됩니다. Docker 설치에는 명시적인 승인과 Docker의 Debian 저장소에 대한 인터넷 연결이 필요합니다. 비밀번호 없는 `sudo`는 사전 요구 사항이 아닙니다. sima-cli가 설정 중에 DevKit 사용자에 대해 이를 구성합니다.
+
+이 단계를 건너뛰려면 `--no-container-registry`를 사용합니다. 기존 레지스트리를 중지하거나 제거하지는 않습니다. 다른 포트를 선택하려면 `--container-registry-port <port>`로 설정을 다시 실행합니다. 포트가 변경되어도 기존에 저장된 이미지는 유지됩니다.
+
 ## Edgematic Studio 선택 설치
 
 기본 설정에서는 Edgematic Studio 질문을 표시하거나 Studio를 설치하거나 포트를 공개하지 않습니다. `-y`와 `--noninteractive`에도 동일하게 적용됩니다.
@@ -12,9 +52,11 @@
 
 ## 브라우저 VS Code 확장 선택
 
-대화형 설정은 Neat, Codex 및 Claude 확장을 제공합니다. Space로 확장을 선택하고 Enter로 확인합니다. 초기에는 모두 선택 해제되어 있습니다. 아무것도 선택하지 않으면 설치를 건너뛰며, 선택하지 않은 기존 확장은 설치된 상태로 유지됩니다.
+Neat는 확인 없이 현재 SDK 사용자에게 자동으로 설치됩니다. 새 SDK 이미지에는 확장이 포함되어 있으며 설정 시 로컬로 복사합니다. 이전 이미지는 기존 다운로드 설치 방식을 사용합니다. `--minimal`은 확장 설정을 건너뜁니다.
 
-자동화 시에는 체크리스트 없이 세 확장을 모두 설치합니다:
+대화형 설정에서는 선택적 Codex 및 Claude 확장을 제공합니다. Space로 선택하고 Enter로 확인합니다. 처음에는 둘 다 선택되지 않습니다. 아무것도 선택하지 않으면 코딩 에이전트 설치를 건너뛰며, 선택하지 않은 기존 확장은 유지됩니다.
+
+자동화 시에는 체크리스트 없이 코딩 에이전트를 설치합니다:
 
 ```bash
 sima-cli sdk setup --noninteractive --all-extensions
@@ -24,7 +66,7 @@ sima-cli sdk setup --noninteractive --all-extensions
 
 ## 브라우저 VS Code 확장 버전
 
-sima-cli는 정확한 Codex 및 Claude 버전을 설치하고 자동 업데이트를 막도록 고정합니다. 설정을 다시 실행하면 다른 버전을 교체하며, 일치하는 버전은 다시 다운로드하지 않고 유지하여 고정합니다. SDK 이미지는 `/etc/sima-neat/vscode-extensions.json`에 검증된 버전을 선언할 수 있습니다:
+code-server(SDK 3.0 이상)에서 Codex는 기본적으로 사용 가능한 최신 릴리스를 설치하며 버전을 고정하지 않습니다. 버전을 명시적으로 지정하면 해당 버전으로 고정합니다. 이전 OpenVSCode 이미지는 Codex 호환성 고정 버전을 유지합니다. Claude는 계속 정확한 버전으로 고정됩니다. 정확한 버전을 선택한 경우 설정을 다시 실행하면 다른 버전을 교체하며, 일치하는 버전은 다시 다운로드하지 않고 유지하여 고정합니다. SDK 이미지는 `/etc/sima-neat/vscode-extensions.json`에 검증된 버전을 선언할 수 있습니다:
 
 ```json
 {
@@ -36,17 +78,18 @@ sima-cli는 정확한 Codex 및 Claude 버전을 설치하고 자동 업데이�
 }
 ```
 
-매니페스트 자체는 사용자를 설치에 참여시키지 않습니다. 스키마 버전 1은 두 ID 모두에 대해 정확한 버전을 요구합니다. 매니페스트가 없는 이전 이미지는 호환성 대체 버전으로 Codex `26.5825.51511` 및 Claude `2.1.266`을 사용합니다. 읽을 수 없거나 잘못된 매니페스트는 오류를 보고하고 확장 설치를 건너뛰지만 나머지 설정은 계속합니다. Codex 또는 Claude 설치 명령이 실패하면 동일한 정확한 버전과 정상 TLS 검증을 사용하여 최대 세 번 재시도합니다.
+매니페스트 자체는 설치 동의를 의미하지 않습니다. 스키마 버전 1은 두 ID 모두에 정확한 버전을 요구합니다. 매니페스트가 없는 이전 이미지는 호환성 대체 버전으로 Codex `26.5825.51511` 및 Claude `2.1.266`을 사용합니다. 읽을 수 없거나 잘못된 매니페스트는 오류를 보고하고 코딩 에이전트 설치를 건너뛰지만 나머지 설정은 계속합니다. Codex 또는 Claude 설치 명령이 실패하면 선택한 대상과 정상 TLS 검증을 사용하여 최대 세 번 시도합니다.
 
 환경 변수 재정의가 우선합니다:
 
 | 변수 | 동작 |
 | --- | --- |
+| `SDK_SKIP_CODING_AGENT_INSTALL` | `1`, `true`, `yes` 또는 `on`으로 설정하면 프롬프트와 `--all-extensions`를 포함해 Codex 및 Claude 확장 설치를 건너뜁니다. Neat 설정은 계속하며 기존 에이전트는 제거하지 않습니다. |
 | `SIMA_CLI_CODEX_EXTENSION_ID` | `publisher.extension@exact-version`으로 Codex를 재정의합니다. 값이 비어 있으면 `--all-extensions`를 사용하지 않는 한 비활성화합니다. |
 | `SIMA_CLI_CLAUDE_EXTENSION_ID` | `publisher.extension@exact-version`으로 Claude를 재정의합니다. 값이 비어 있으면 `--all-extensions`를 사용하지 않는 한 비활성화합니다. |
 | `SIMA_CLI_INSTALL_CODEX_EXTENSION` | 체크리스트 없이 확장 설치를 자동 선택합니다. |
 
-버전 없는 기본 제공 확장 ID는 SDK/기본 고정 버전을 사용합니다. 다른 ID에는 명시적인 버전이 필요합니다. `--minimal`은 선택적 확장 설치를 건너뜁니다. 설정은 설치된 버전을 검증하고 선택한 각 확장의 `metadata.pinned` 플래그를 기록한 다음 브라우저 VS Code를 다시 시작합니다. 이후 열려 있는 브라우저 탭을 새로 고칩니다.
+code-server에서는 버전 없는 Codex ID(또는 `openai.chatgpt@latest`)가 최신 릴리스를 사용합니다. 다른 버전 없는 기본 제공 ID는 SDK/기본 고정 버전을 사용하고, 그 외 ID에는 명시적인 버전이 필요합니다. `--minimal`은 선택적 확장 설치를 건너뜁니다. 설정은 설치된 버전을 검증하고 선택한 각 확장의 `metadata.pinned` 플래그(최신 Codex는 false)를 기록한 뒤 브라우저 VS Code를 다시 시작합니다. 이후 열려 있는 브라우저 탭을 새로 고칩니다.
 
 ## Model Compiler 설치 원본
 

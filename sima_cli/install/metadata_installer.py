@@ -1423,11 +1423,12 @@ def _print_post_install_message(metadata: Dict):
         )
         console.print(panel)
 
-def _run_installation_script(metadata: Dict, extract_path: str = "."):
+def _run_installation_script(metadata: Dict, extract_path: str = ".", force: bool = False):
     """
     Run the installation script specified in the metadata.
 
     Behavior:
+      • Force installs set FORCE_INSTALL=1 in the script environment.
       • macOS / Linux / eLxr:
           - Run via interactive login shell unless nested inside sima-cli
           - Safely source the first available RC file among:
@@ -1447,6 +1448,8 @@ def _run_installation_script(metadata: Dict, extract_path: str = "."):
     nested = os.environ.get("SIMA_INSTALL_CONTEXT") == "1"
     env = os.environ.copy()
     env["SIMA_INSTALL_CONTEXT"] = "1"
+    if force:
+        env["FORCE_INSTALL"] = "1"
 
     try:
         if os.name == "nt":
@@ -1604,7 +1607,7 @@ def install_from_metadata(
                         _combine_multipart_files(install_dir, local_paths=local_paths)
                         _extract_archives_in_folder(install_dir, local_paths)
                         _mark_install_script_executable(metadata, install_dir)
-                        _run_installation_script(metadata=metadata, extract_path=install_dir)
+                        _run_installation_script(metadata=metadata, extract_path=install_dir, force=force)
 
     except MetadataAccessForbidden:
         raise

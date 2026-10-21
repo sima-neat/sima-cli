@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
+import shutil
+import sys
+import threading
 import urllib.parse
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from contextlib import contextmanager, nullcontext
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from uuid import uuid4
 
 import requests
 from requests.adapters import HTTPAdapter
+from tqdm import tqdm
 from urllib3.util.retry import Retry
+
+from sima_cli.download.parallel import PARALLEL_MIN_SIZE, download_parallel, connection_slot
 
 ORGANIZATION = "sima-neat"
 REPOSITORY = "models"
@@ -123,91 +134,6 @@ def latest_runs_by_model_variant(runs: Sequence[Dict[str, Any]]) -> List[Dict[st
     )
 
 
-def _coherent_branch_packages(
-    compile_runs: Sequence[Dict[str, Any]], package_runs: Sequence[Dict[str, Any]]
-) -> List[Dict[str, Any]]:
-    groups: Dict[Tuple[str, ...], List[Dict[str, Any]]] = {}
-    for run in compile_runs:
-        metadata = run.get("metadata")
-        if (
-            run.get("status") != "completed"
-            or run.get("run_type") != "model_compile"
-            or not isinstance(metadata, dict)
-        ):
-            continue
-        model_id = str(metadata.get("model_id") or "").strip()
-        profile_id = _build_profile_id(metadata)
-        if not model_id or not profile_id:
-            continue
-        workflow = str(
-            metadata.get("github_run_id")
-            or run.get("ci_run_url")
-            or metadata.get("compile_invocation_id")
-            or run.get("id")
-            or ""
-        )
-        key = (
-            model_id,
-            profile_id,
-            str(run.get("commit_sha") or ""),
-            str(run.get("toolchain_name") or ""),
-            str(run.get("toolchain_version") or ""),
-            str(run.get("target_platform") or ""),
-            workflow,
-        )
-        groups.setdefault(key, []).append(run)
-
-    latest: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-    for key, runs in groups.items():
-        model_profile = (key[0], key[1])
-        current = latest.get(model_profile)
-        if current is None or max(map(_run_sort_key, runs)) > max(
-            map(_run_sort_key, current)
-        ):
-            latest[model_profile] = runs
-
-    builds: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
-    for model_profile, runs in latest.items():
-        components: Dict[str, Dict[str, Any]] = {}
-        for run in runs:
-            component_id = str(
-                (run.get("metadata") or {}).get("component_id") or "model"
-            )
-            previous = components.get(component_id)
-            if previous is None or _run_sort_key(run) > _run_sort_key(previous):
-                components[component_id] = run
-        builds[model_profile] = components
-
-    matches: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for run in package_runs:
-        metadata = run.get("metadata")
-        if (
-            run.get("status") != "completed"
-            or run.get("run_type") != "model_package"
-            or not isinstance(metadata, dict)
-        ):
-            continue
-        model_id = str(metadata.get("model_id") or "").strip()
-        profile_id = _build_profile_id(metadata)
-        component_run_ids = metadata.get("component_run_ids")
-        components = builds.get((model_id, profile_id))
-        if not isinstance(component_run_ids, dict) or not components:
-            continue
-        if len(component_run_ids) != len(components) or any(
-            component_run_ids.get(component_id) != component.get("id")
-            or run.get("git_ref") != component.get("git_ref")
-            or run.get("commit_sha") != component.get("commit_sha")
-            for component_id, component in components.items()
-        ):
-            continue
-        package_id = str(metadata.get("package_id") or "default")
-        key = (model_id, profile_id, package_id)
-        previous = matches.get(key)
-        if previous is None or _run_sort_key(run) > _run_sort_key(previous):
-            matches[key] = run
-    return list(matches.values())
-
-
 def find_latest_run(
     runs: Sequence[Dict[str, Any]], model_id: str, variant_id: str
 ) -> Dict[str, Any]:
@@ -235,7 +161,7 @@ def find_latest_run(
             )
         )
         raise ModelRegistryError(
-            f"Multiple promoted packages found for model {model_id!r}, variant "
+            f"Multiple packages found for model {model_id!r}, variant "
             f"{variant_id!r}: {package_ids}."
         )
     for run in latest_runs_by_model_variant(runs):
@@ -247,18 +173,23 @@ def find_latest_run(
     )
 
 
-def select_model_artifact(artifacts: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+def select_model_artifact(
+    artifacts: Sequence[Dict[str, Any]], name: Optional[str] = None,
+    artifact_type: str = "model-package",
+) -> Dict[str, Any]:
     available = [
         artifact
         for artifact in artifacts
         if artifact.get("object_status") in {None, "available"}
-        and artifact.get("artifact_type") == "model-package"
+        and artifact.get("artifact_type") == artifact_type
+        and (name is None or artifact.get("name") == name)
     ]
     if not available:
-        raise ModelRegistryError("The selected build has no available model-package artifact.")
+        description = f"{artifact_type} artifact" + (f" {name!r}" if name is not None else "")
+        raise ModelRegistryError(f"The selected build has no available {description}.")
     if len(available) != 1:
         names = ", ".join(sorted(str(item.get("name", "")) for item in available))
-        raise ModelRegistryError(f"The selected build has multiple model-package artifacts: {names}.")
+        raise ModelRegistryError(f"The selected build has multiple {artifact_type} artifacts: {names}.")
     return available[0]
 
 
@@ -270,6 +201,204 @@ def artifact_filename(artifact: Dict[str, Any]) -> str:
     if not filename or Path(filename).name != filename or filename in {".", ".."}:
         raise ModelRegistryError("The registry returned an unsafe artifact filename.")
     return filename
+
+
+_WINDOWS_DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
+    prefix + digit for prefix in ("COM", "LPT") for digit in "123456789¹²³"
+}
+
+
+def _invalid_windows_component(component: str) -> bool:
+    # Apply on every host so a published deployment has portable paths.
+    # Device names remain reserved with extensions (including multiple dots).
+    return (
+        any(ord(char) < 32 or char in '<>:"/\\|?*' for char in component)
+        or component.endswith((" ", "."))
+        or component.split(".", 1)[0].rstrip(" ").upper() in _WINDOWS_DEVICE_NAMES
+    )
+
+
+def _manifest_files(
+    manifest: Any,
+    artifacts: Sequence[Dict[str, Any]],
+    metadata: Dict[str, Any],
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """Validate a deployment manifest against the package run's registered files."""
+    if not isinstance(manifest, dict):
+        raise ModelRegistryError("The deployment manifest must be a JSON object.")
+    identity = {
+        "model_id": metadata.get("model_id"),
+        "build_profile_id": _build_profile_id(metadata),
+    }
+    if metadata.get("package_id"):
+        identity["package_id"] = metadata["package_id"]
+    for field, expected in identity.items():
+        if not expected or manifest.get(field) != expected:
+            raise ModelRegistryError(f"Deployment manifest {field} does not match the selected package.")
+    entries = manifest.get("files")
+    if not isinstance(entries, list) or not entries:
+        raise ModelRegistryError("The deployment manifest must contain a nonempty files list.")
+
+    registered = {item.get("name"): item for item in artifacts}
+    if len(registered) != len(artifacts):
+        raise ModelRegistryError("The package has duplicate artifact names.")
+    paths = set()
+    files = []
+    for entry in entries:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if (
+            not isinstance(path, str)
+            or not path
+            or "\\" in path
+            or ":" in path
+            or "\x00" in path
+            or PurePosixPath(path).is_absolute()
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            or any(_invalid_windows_component(part) for part in path.split("/"))
+            or path.split("/")[0].casefold() == "manifest.json"
+        ):
+            raise ModelRegistryError(f"The deployment manifest contains an unsafe file path: {path!r}.")
+        normalized = path.casefold()
+        if normalized in paths:
+            raise ModelRegistryError(f"The deployment manifest contains a duplicate file path: {path!r}.")
+        paths.add(normalized)
+
+        name = entry.get("artifact")
+        artifact = registered.get(name) if isinstance(name, str) else None
+        if (
+            not name
+            or not isinstance(name, str)
+            or Path(name).name != name
+            or name in {".", ".."}
+            or "\\" in name
+            or artifact is None
+            or artifact.get("artifact_type") != "model-file"
+            or artifact.get("object_status") not in {None, "available"}
+        ):
+            raise ModelRegistryError(f"Deployment file {path!r} references an unavailable artifact: {name!r}.")
+        if (
+            name != "file-" + hashlib.sha256(path.encode()).hexdigest()
+            or not isinstance(artifact.get("metadata"), dict)
+            or artifact["metadata"].get("path") != path
+        ):
+            raise ModelRegistryError(f"Deployment file {path!r} has an inconsistent artifact name or path binding.")
+        size, digest = entry.get("size_bytes"), entry.get("sha256")
+        if (
+            type(size) is not int
+            or size < 0
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in digest)
+            or size != artifact.get("size_bytes")
+            or digest.lower() != str(artifact.get("sha256") or "").lower()
+        ):
+            raise ModelRegistryError(f"Deployment file {path!r} has inconsistent size or SHA-256 metadata.")
+        files.append((path, artifact))
+
+    for path in paths:
+        if any(parent.as_posix() in paths for parent in PurePosixPath(path).parents):
+            raise ModelRegistryError(f"The deployment manifest contains conflicting file paths: {path!r}.")
+    return files
+
+
+def _check_directory_destination(destination: Path) -> None:
+    if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+        raise ModelRegistryError(f"Destination is not a directory: {destination}.")
+
+
+@contextmanager
+def _download_lock(destination: Path) -> Iterator[None]:
+    """Prevent two downloads from changing the same deployment or resume folder."""
+    with destination.with_name(f".{destination.name}.lock").open("a+b") as lock:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                if lock.seek(0, os.SEEK_END) == 0:
+                    lock.write(b"\0")
+                    lock.flush()
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ModelRegistryError(f"Another download is using {destination}. Retry when it finishes.") from exc
+        yield
+
+
+class _DownloadCancellation:
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._responses = set()
+        self._lock = threading.Lock()
+
+    def check(self) -> None:
+        if self._event.is_set():
+            raise CancelledError("Model download cancelled.")
+
+    @contextmanager
+    def track(self, response: requests.Response) -> Iterator[None]:
+        with self._lock:
+            self.check()
+            self._responses.add(response)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._responses.discard(response)
+
+    def cancel(self) -> None:
+        self._event.set()
+        with self._lock:
+            responses = tuple(self._responses)
+        for response in responses:
+            try:
+                response.close()
+            except OSError:
+                pass
+
+
+def _artifact_matches(
+    path: Path, artifact: Dict[str, Any], cancellation: Optional[_DownloadCancellation] = None,
+) -> bool:
+    """Check size before hashing existing bytes; never trust filenames or mtimes."""
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != artifact.get("size_bytes"):
+            return False
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                if cancellation is not None:
+                    cancellation.check()
+                digest.update(chunk)
+        return digest.hexdigest() == str(artifact.get("sha256") or "").lower()
+    except OSError:
+        return False
+
+
+def _deployment_file(root: Path, relative: str) -> Path:
+    if any((root / parent).is_symlink() for parent in PurePosixPath(relative).parents):
+        raise ModelRegistryError(f"Deployment file {relative!r} has a symlinked parent directory.")
+    return root / relative
+
+
+def _reuse_file(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        destination.unlink()
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copyfile(source, destination)
+
+
+def _cleanup_directory(path: Path) -> None:
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        logging.getLogger(__name__).warning("Could not remove download directory %s: %s", path, exc)
 
 
 class RegistryClient:
@@ -341,68 +470,67 @@ class RegistryClient:
             for model in models
             if isinstance(model, dict) and model.get("id")
         }
-        catalog_packages = {
-            str(package.get("run_id")): package
-            for model in models
-            if isinstance(model, dict)
+        deployments = {
+            (model_id, profile): selection
+            for model_id, model in definitions.items()
+            for profile, selection in {
+                **(model.get("approved_deployments") or {}),
+                **(model.get("branch_deployments") or {}),
+            }.items()
+        }
+        references = [
+            (model_id, package["build_profile_id"], {**package, "artifact_name": "package"})
+            for model_id, model in definitions.items()
             for package in (model.get("packages") or [])
             if isinstance(package, dict) and package.get("run_id")
-        }
-        git_ref = f"refs/heads/{branch}"
-        compile_runs = self._repository_runs(branch, "model_compile")
-        package_runs = self._repository_runs(branch, "model_package")
-        promoted_package_runs = [
-            run
-            for run in package_runs
-            if str(run.get("id") or "") in catalog_packages
+            and (model_id, package.get("build_profile_id")) not in deployments
         ]
-        native_packages = _coherent_branch_packages(
-            compile_runs, promoted_package_runs
-        )
+        for (model_id, profile), selection in deployments.items():
+            roots = selection["artifacts"]
+            packages = [root for root in roots if root.get("package_id")]
+            roots = packages or [root for root in roots if root.get("component_id")]
+            if not roots or (not packages and len(roots) != 1):
+                raise ModelRegistryError(f"Selected model {model_id!r}, variant {profile!r} has no full deployment root.")
+            references.extend((model_id, profile, root) for root in roots)
 
-        normalized_query = (query or "").strip().lower()
-        query_terms = normalized_query.split()
+        query_terms = (query or "").strip().lower().split()
         selections: List[Dict[str, Any]] = []
-        for package_run in native_packages:
-            run_id = str(package_run.get("id") or "")
-            catalog_package = catalog_packages.get(run_id)
-            if catalog_package is None:
-                continue
-            package_metadata = package_run.get("metadata") or {}
-            model_id = str(package_metadata.get("model_id") or "").strip()
-            profile_id = _build_profile_id(package_metadata)
-            model = definitions.get(model_id) or {}
-            metadata = {
-                **package_metadata,
-                "variant_id": profile_id,
-                "build_profile_id": profile_id,
-                "display_name": model.get("display_name"),
-                "description": model.get("description"),
-            }
-            selection = {
-                **package_run,
-                "repository": package_run.get("repository")
-                or f"{ORGANIZATION}/{REPOSITORY}",
-                "metadata": metadata,
-                "model_categories": model.get("categories") or {},
-                "size_bytes": catalog_package.get("size_bytes"),
-                "sha256": catalog_package.get("artifact_sha256"),
-            }
-            searchable = " ".join(
-                str(value)
-                for value in (
-                    model_id,
-                    profile_id,
-                    model.get("display_name"),
-                    model.get("description"),
-                    model.get("categories"),
-                    branch,
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            summaries = executor.map(self.run, [root["run_id"] for _, _, root in references])
+            for (model_id, profile, root), summary in zip(references, summaries):
+                run = summary.get("run") or {}
+                metadata = run.get("metadata") or {}
+                if (run.get("id") != root["run_id"] or run.get("status") != "completed"
+                        or run.get("run_type") != ("model_package" if root.get("package_id") else "model_compile")
+                        or metadata.get("model_id") != model_id or _build_profile_id(metadata) != profile
+                        or (root.get("package_id") and metadata.get("package_id") != root["package_id"])
+                        or (root.get("component_id") and metadata.get("component_id", "model") != root["component_id"])
+                        or ("component_run_ids" in root and metadata.get("component_run_ids") != root["component_run_ids"])):
+                    raise ModelRegistryError(f"Catalog artifact does not match model {model_id!r}, variant {profile!r}.")
+                artifact = select_model_artifact(
+                    summary.get("artifacts") or [], root["artifact_name"],
+                    artifact_type="model-package" if root.get("package_id") else "model-pack",
                 )
-                if value
-            ).lower()
-            if query_terms and not all(term in searchable for term in query_terms):
-                continue
-            selections.append(selection)
+                artifact_metadata = artifact.get("metadata") or {}
+                model = definitions[model_id]
+                searchable = " ".join(str(value) for value in (
+                    model_id, profile, model.get("display_name"), model.get("description"),
+                    model.get("categories"), branch,
+                ) if value).lower()
+                if query_terms and not all(term in searchable for term in query_terms):
+                    continue
+                selections.append({
+                    **run, "artifact_name": root["artifact_name"],
+                    "repository": run.get("repository") or f"{ORGANIZATION}/{REPOSITORY}",
+                    "metadata": {
+                        **metadata, "variant_id": profile, "build_profile_id": profile,
+                        "display_name": model.get("display_name"), "description": model.get("description"),
+                    },
+                    "model_categories": model.get("categories") or {},
+                    "size_bytes": artifact_metadata.get("deployment_size_bytes", artifact.get("size_bytes")),
+                    "sha256": artifact.get("sha256"),
+                })
+
         return sorted(
             selections,
             key=lambda run: (
@@ -512,31 +640,65 @@ class RegistryClient:
             raise ModelRegistryError("The registry did not return an artifact download URL.")
         return artifact
 
-    def _download_once(self, url: str, partial: Path, expected_size: int, expected_sha: str) -> None:
+    def _download_once(
+        self,
+        url: str,
+        partial: Path,
+        expected_size: int,
+        expected_sha: str,
+        progress: Optional[Callable[[int], None]] = None,
+        cancellation: Optional[_DownloadCancellation] = None,
+    ) -> None:
+        if cancellation is not None:
+            cancellation.check()
+        if expected_size >= PARALLEL_MIN_SIZE:
+            try:
+                if download_parallel(url, partial, expected_size, expected_sha=expected_sha,
+                                     session=self.session, timeout=self.timeout,
+                                     progress=progress, cancellation=cancellation):
+                    return
+            except PermissionError:
+                raise
+            except (OSError, ValueError, requests.RequestException) as exc:
+                if cancellation is not None:
+                    cancellation.check()
+                raise ModelRegistryError(f"Artifact download failed: {exc}") from exc
+        with connection_slot(cancellation):
+            self._download_sequential(url, partial, expected_size, expected_sha, progress, cancellation)
+
+    def _download_sequential(self, url, partial, expected_size, expected_sha, progress, cancellation):
         try:
             response = self.session.get(url, stream=True, timeout=self.timeout)
         except requests.RequestException as exc:
             raise ModelRegistryError(f"Artifact download failed: {exc}") from exc
-        if response.status_code in {401, 403}:
-            raise PermissionError("The presigned artifact URL expired or was rejected.")
-        if response.status_code >= 400:
-            raise ModelRegistryError(
-                f"Artifact download failed with HTTP {response.status_code}: {_api_error_message(response)}"
-            )
-
         digest = hashlib.sha256()
         size = 0
-        try:
-            with partial.open("wb") as output:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        continue
-                    output.write(chunk)
-                    digest.update(chunk)
-                    size += len(chunk)
-        except (OSError, requests.RequestException) as exc:
-            raise ModelRegistryError(f"Could not write downloaded artifact: {exc}") from exc
+        with response, (cancellation.track(response) if cancellation is not None else nullcontext()):
+            if response.status_code in {401, 403}:
+                raise PermissionError("The presigned artifact URL expired or was rejected.")
+            if response.status_code >= 400:
+                raise ModelRegistryError(
+                    f"Artifact download failed with HTTP {response.status_code}: {_api_error_message(response)}"
+                )
+            try:
+                with partial.open("wb") as output:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if cancellation is not None:
+                            cancellation.check()
+                        if not chunk:
+                            continue
+                        output.write(chunk)
+                        digest.update(chunk)
+                        size += len(chunk)
+                        if progress is not None:
+                            progress(len(chunk))
+            except (OSError, requests.RequestException) as exc:
+                if cancellation is not None:
+                    cancellation.check()
+                raise ModelRegistryError(f"Could not write downloaded artifact: {exc}") from exc
 
+        if cancellation is not None:
+            cancellation.check()
         if size != expected_size:
             raise ModelRegistryError(
                 f"Downloaded artifact size mismatch: expected {expected_size} bytes, received {size}."
@@ -554,6 +716,9 @@ class RegistryClient:
         destination: Path,
         force: bool = False,
         initial_download: Optional[Dict[str, Any]] = None,
+        progress: Optional[Callable[[int], None]] = None,
+        cancellation: Optional[_DownloadCancellation] = None,
+        temporary_dir: Optional[Path] = None,
     ) -> Path:
         name = str(artifact.get("name") or "")
         if not name or Path(name).name != name or name in {".", ".."}:
@@ -566,35 +731,161 @@ class RegistryClient:
         if len(expected_sha) != 64 or any(char not in "0123456789abcdefABCDEF" for char in expected_sha):
             raise ModelRegistryError("The registry did not provide a valid artifact SHA-256.")
 
-        if destination.exists() and not force:
-            raise ModelRegistryError(
-                f"Destination already exists: {destination}. Use --force to replace it."
-            )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        partial = destination.with_name(f".{destination.name}.part")
-        try:
-            for attempt in range(2):
-                signed = initial_download if attempt == 0 and initial_download else self.artifact_download(run_id, name)
+        # Directory downloads already hold their deployment lock and isolate
+        # random partials in a cache removed after a successful installation.
+        with (_download_lock(destination) if temporary_dir is None else nullcontext()):
+            if destination.exists() and not force:
+                raise ModelRegistryError(
+                    f"Destination already exists: {destination}. Use --force to replace it."
+                )
+            partial = (temporary_dir / f".{uuid4().hex}.part" if temporary_dir is not None
+                       else destination.with_name(f".{destination.name}.part"))
+            # A hard stop may leave the archive partial behind. Reclaim only this
+            # destination's staging file while holding its lock (never glob UUIDs).
+            if temporary_dir is None:
                 try:
-                    self._download_once(str(signed["download_url"]), partial, expected_size, expected_sha)
-                    break
-                except PermissionError as exc:
-                    if attempt == 1:
-                        raise ModelRegistryError(str(exc)) from exc
-            os.replace(str(partial), str(destination))
-        except BaseException:
+                    partial.unlink()
+                except FileNotFoundError:
+                    pass
             try:
-                partial.unlink()
-            except FileNotFoundError:
-                pass
-            raise
-        return destination
+                for attempt in range(2):
+                    if cancellation is not None:
+                        cancellation.check()
+                    signed = initial_download if attempt == 0 and initial_download else self.artifact_download(run_id, name)
+                    try:
+                        self._download_once(
+                            str(signed["download_url"]), partial, expected_size, expected_sha, progress, cancellation,
+                        )
+                        break
+                    except PermissionError as exc:
+                        if attempt == 1:
+                            raise ModelRegistryError(str(exc)) from exc
+                os.replace(str(partial), str(destination))
+            except BaseException:
+                try:
+                    partial.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
+            return destination
+
+    def download_directory(
+        self,
+        run_id: str,
+        artifact: Dict[str, Any],
+        artifacts: Sequence[Dict[str, Any]],
+        destination: Path,
+        metadata: Dict[str, Any],
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """Reuse verified files and retain completed downloads until installation succeeds."""
+        _check_directory_destination(destination)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with _download_lock(destination):
+                _check_directory_destination(destination)
+                installed_manifest = destination / "manifest.json"
+                same_deployment = _artifact_matches(installed_manifest, artifact)
+                if destination.exists() and not same_deployment and not force:
+                    raise ModelRegistryError(
+                        f"Destination already exists with a different deployment: {destination}. "
+                        "Use --force to replace it."
+                    )
+                cache = destination.with_name(f".{destination.name}.download")
+                _check_directory_destination(cache)
+                staged = cache / "deployment"
+                _check_directory_destination(staged)
+                manifest_path = staged / "manifest.json"
+                if cache.exists() and not _artifact_matches(manifest_path, artifact):
+                    shutil.rmtree(cache)
+                cache.mkdir(mode=0o700, exist_ok=True)
+                staged.mkdir(exist_ok=True)
+                try:
+                    if not _artifact_matches(manifest_path, artifact):
+                        if same_deployment:
+                            _reuse_file(installed_manifest, manifest_path)
+                        else:
+                            self.download(run_id, artifact, manifest_path, temporary_dir=cache)
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    files = _manifest_files(manifest, artifacts, metadata)
+                except ValueError as exc:
+                    _cleanup_directory(cache)
+                    raise ModelRegistryError("The deployment manifest is not valid JSON.") from exc
+                except BaseException:
+                    _cleanup_directory(cache)
+                    raise
+                total = sum(item["size_bytes"] for _, item in files)
+                cancellation = _DownloadCancellation()
+                reused = 0
+                with tqdm(
+                    total=total, unit="B", unit_scale=True, desc="Downloading model",
+                    file=sys.stderr, disable=not sys.stderr.isatty(),
+                ) as progress, ThreadPoolExecutor(max_workers=4) as executor:
+                    def download_one(path: str, item: Dict[str, Any]) -> bool:
+                        cancellation.check()
+                        target = _deployment_file(staged, path)
+                        existing = _deployment_file(destination, path)
+                        if _artifact_matches(target, item, cancellation):
+                            progress.update(item["size_bytes"])
+                            return True
+                        if _artifact_matches(existing, item, cancellation):
+                            _reuse_file(existing, target)
+                            progress.update(item["size_bytes"])
+                            return True
+                        self.download(
+                            run_id, item, target, force=True, progress=progress.update,
+                            cancellation=cancellation, temporary_dir=cache,
+                        )
+                        return False
+
+                    futures = [
+                        executor.submit(download_one, path, item)
+                        for path, item in sorted(files, key=lambda item: (-item[1]["size_bytes"], item[0]))
+                    ]
+                    try:
+                        for completed, future in enumerate(as_completed(futures), 1):
+                            reused += future.result()
+                            progress.set_postfix_str(f"{completed}/{len(files)} files, {reused} reused")
+                    except BaseException:
+                        cancellation.cancel()
+                        for future in futures:
+                            future.cancel()
+                        raise
+
+                _check_directory_destination(destination)
+                backup = destination.with_name(f".{destination.name}-{uuid4().hex}.previous")
+                try:
+                    if destination.exists():
+                        destination.rename(backup)
+                    staged.rename(destination)
+                except BaseException:
+                    if backup.exists() and not destination.exists():
+                        backup.rename(destination)
+                    raise
+                if backup.exists():
+                    _cleanup_directory(backup)
+                _cleanup_directory(cache)
+        except OSError as exc:
+            raise ModelRegistryError(f"Could not download deployment to {destination}: {exc}") from exc
+        return {
+            "path": str(destination), "format": "directory",
+            "file_count": len(files), "size_bytes": total,
+            "reused_files": reused, "downloaded_files": len(files) - reused,
+        }
 
 
-def safe_output_path(root: Path, model_id: str, variant_id: str, artifact_name: str) -> Path:
-    for label, value in (("model ID", model_id), ("variant", variant_id)):
-        if not value or value in {".", ".."} or Path(value).name != value:
+def safe_output_path(
+    root: Path, model_id: str, variant_id: Optional[str] = None, artifact_name: Optional[str] = None,
+) -> Path:
+    parts = [model_id] if variant_id is None else [model_id, variant_id]
+    for label, value in zip(("model ID", "variant"), parts):
+        if (not value or value in {".", ".."} or Path(value).name != value
+                or _invalid_windows_component(value)):
             raise ModelRegistryError(f"The registry returned an unsafe {label}.")
+    destination = root.joinpath(*parts)
+    if artifact_name is None:
+        return destination
     if not artifact_name or Path(artifact_name).name != artifact_name:
         raise ModelRegistryError("The registry returned an unsafe artifact filename.")
-    return root / model_id / variant_id / artifact_name
+    return destination / artifact_name

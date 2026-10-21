@@ -42,6 +42,7 @@ from sima_cli.sdk.neat import (
     EDGEMATIC_STUDIO_CONTAINER_PORT,
     allocate_neat_ports,
     is_docker_port_collision_error,
+    finalize_code_ui_auth,
     prepare_neat_container_run,
     print_neat_setup_summary,
     reserved_ports_from_neat_port_map,
@@ -52,6 +53,7 @@ from sima_cli.sdk.utils import (
     _configure_group_file,
     container_user_mapping_unavailable,
     _copy_sima_cli_auth_cache_to_container,
+    _container_code_ui_backend,
     _devcontainer_metadata_label,
     _extract_sdk_base_version,
     _ensure_passwd_user,
@@ -60,11 +62,14 @@ from sima_cli.sdk.utils import (
     _sudoers_drop_in_script,
     _prepare_log_host_dir,
     bootstrap_devkit_container,
+    configure_container_docker_builder,
+    container_has_docker_socket_mount,
     container_matches_sdk_keyword,
     ensure_model_sdk_extension_installed,
     ensure_edgematic_studio_installed,
     ensure_codex_vscode_extension_installed,
     extract_short_name,
+    get_sdk_platform_version,
     get_local_sima_images,
     get_workspace,
     install_neat_playbooks,
@@ -75,9 +80,13 @@ from sima_cli.sdk.utils import (
     is_snap_docker_cli,
     prompt_multi_select,
     resolve_edgematic_studio_choice,
+    resolve_container_build_socket_gid,
+    resolve_container_build_socket_source,
+    sdk_image_uses_automatic_container_build,
     sanitize_container_hostname,
     sanitize_container_name,
     start_docker_container,
+    validate_host_container_build_toolchain,
 )
 
 
@@ -101,6 +110,138 @@ def _last_docker_run_command(run_mock):
 
 
 class TestSdkImageDetection(unittest.TestCase):
+    def test_sdk_platform_version_uses_image_label(self):
+        result = Mock(returncode=0, stdout="3.0.0~git20261006\n")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            self.assertEqual(
+                get_sdk_platform_version("ghcr.io/sima-neat/sdk:latest"),
+                "3.0.0~git20261006",
+            )
+
+    def test_sdk_platform_version_falls_back_to_release_tag(self):
+        result = Mock(returncode=0, stdout="<no value>\n")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            self.assertEqual(
+                get_sdk_platform_version("ghcr.io/sima-neat/sdk:v3.1.0-daily"),
+                "v3.1.0-daily",
+            )
+
+    def test_container_build_is_automatic_for_sdk_3_and_newer(self):
+        with patch("sima_cli.sdk.utils.get_sdk_platform_version", return_value="3.0.0"):
+            self.assertTrue(
+                sdk_image_uses_automatic_container_build("ghcr.io/sima-neat/sdk:latest")
+            )
+        with patch("sima_cli.sdk.utils.get_sdk_platform_version", return_value="2.1.3.1"):
+            self.assertFalse(
+                sdk_image_uses_automatic_container_build("ghcr.io/sima-neat/sdk:latest")
+            )
+
+    def test_host_container_build_preflight_checks_daemon_and_socket(self):
+        result = Mock(returncode=0, stdout="ok\n", stderr="")
+        with patch("sima_cli.sdk.utils.check_os", return_value="linux"), \
+             patch("sima_cli.sdk.utils.shutil.which", return_value="/usr/bin/docker"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result) as run, \
+             patch("sima_cli.sdk.utils.resolve_container_build_socket_source", return_value="/run/docker.sock"), \
+             patch("sima_cli.sdk.utils.os.path.exists", return_value=True):
+            self.assertEqual(validate_host_container_build_toolchain(), "/run/docker.sock")
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["docker", "version", "--format", "{{.Client.Version}}/{{.Server.Version}}"],
+        )
+
+    def test_host_container_build_preflight_reports_unreachable_daemon(self):
+        result = Mock(returncode=1, stdout="", stderr="Cannot connect to Docker")
+        with patch("sima_cli.sdk.utils.check_os", return_value="linux"), \
+             patch("sima_cli.sdk.utils.shutil.which", return_value="/usr/bin/docker"), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "daemon is not reachable"):
+                validate_host_container_build_toolchain()
+
+    def test_container_build_socket_uses_active_linux_unix_context(self):
+        result = Mock(returncode=0, stdout="unix:///run/user/1000/docker.sock\n")
+        with patch.dict("os.environ", {}, clear=True), \
+             patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            self.assertEqual(
+                resolve_container_build_socket_source("linux"),
+                "/run/user/1000/docker.sock",
+            )
+
+    def test_container_build_socket_uses_daemon_vm_path_on_macos(self):
+        with patch.dict(
+            "os.environ",
+            {"DOCKER_HOST": "unix:///Users/dev/.colima/default/docker.sock"},
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_container_build_socket_source("macos"),
+                "/var/run/docker.sock",
+            )
+
+    def test_container_build_socket_respects_docker_context_over_docker_host(self):
+        result = Mock(returncode=0, stdout="unix:///run/user/1000/context.sock\n", stderr="")
+        with patch.dict(
+            "os.environ",
+            {
+                "DOCKER_CONTEXT": "rootless",
+                "DOCKER_HOST": "tcp://stale.example:2376",
+            },
+            clear=True,
+        ), patch("sima_cli.sdk.utils.subprocess.run", return_value=result) as run:
+            self.assertEqual(
+                resolve_container_build_socket_source("linux"),
+                "/run/user/1000/context.sock",
+            )
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "docker", "context", "inspect", "--format",
+                "{{.Endpoints.docker.Host}}", "rootless",
+            ],
+        )
+
+    def test_container_build_socket_rejects_tcp_endpoint(self):
+        with patch.dict("os.environ", {"DOCKER_HOST": "tcp://builder.example:2376"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "local Unix Docker endpoint"):
+                resolve_container_build_socket_source("linux")
+
+    def test_container_build_socket_gid_is_probed_in_selected_image(self):
+        result = Mock(returncode=0, stdout="991\n", stderr="")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result) as run:
+            self.assertEqual(
+                resolve_container_build_socket_gid(
+                    "ghcr.io/sima-neat/sdk:3.0.0",
+                    "/var/run/docker.sock",
+                ),
+                991,
+            )
+
+        command = run.call_args.args[0]
+        self.assertIn("--network=none", command)
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock", command)
+        self.assertIn("ghcr.io/sima-neat/sdk:3.0.0", command)
+
+    def test_detects_existing_container_build_socket_mount(self):
+        result = Mock(returncode=0, stdout="/workspace\n/var/run/docker.sock\n")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+            self.assertTrue(container_has_docker_socket_mount("sdk"))
+
+    def test_configure_container_docker_builder_verifies_user_access(self):
+        with patch("sima_cli.sdk.utils.run_command") as run:
+            configure_container_docker_builder("sdk", "devuser")
+
+        self.assertEqual(run.call_count, 5)
+        self.assertIn("groupmod", run.call_args_list[0].args[0][-1])
+        self.assertEqual(run.call_args_list[1].args[0], ["docker", "restart", "sdk"])
+        self.assertIn("HOME=/home/devuser", run.call_args_list[2].args[0])
+        self.assertEqual(run.call_args_list[3].args[0][-2:], ["buildx", "version"])
+        self.assertEqual(
+            run.call_args_list[4].args[0][-3:],
+            ["buildx", "inspect", "--bootstrap"],
+        )
+
     def test_ros2_sdk_is_discovered_and_classified(self):
         with patch("sima_cli.sdk.utils.subprocess.check_output", return_value=SAMPLE_DOCKER_IMAGES):
             images = get_local_sima_images()
@@ -499,6 +640,39 @@ class TestSdkImageDetection(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(setup_start.call_args.kwargs["persistent_network_profile"])
+        self.assertEqual(setup_start.call_args.kwargs["devkit_user"], "sima")
+        self.assertEqual(setup_start.call_args.kwargs["devkit_password"], "edgeai")
+
+    def test_sdk_setup_uses_default_devkit_credentials_without_prompting(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(
+                sdk,
+                ["setup", "--devkit", "10.42.0.78"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("DevKit username", result.output)
+        self.assertEqual(setup_start.call_args.kwargs["devkit_user"], "sima")
+        self.assertEqual(setup_start.call_args.kwargs["devkit_password"], "edgeai")
+
+    def test_sdk_setup_uses_devkit_credentials_from_environment(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(
+                sdk,
+                ["setup", "--devkit", "10.42.0.78"],
+                env={
+                    "SIMA_DEVKIT_USER": "operator",
+                    "SIMA_DEVKIT_PASSWORD": "secret",
+                },
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(setup_start.call_args.kwargs["devkit_user"], "operator")
+        self.assertEqual(setup_start.call_args.kwargs["devkit_password"], "secret")
 
     def test_sdk_network_repair_persist_option_is_forwarded(self):
         runner = CliRunner()
@@ -663,6 +837,8 @@ class TestSdkImageDetection(unittest.TestCase):
                 "sdk-container",
                 {
                     "devkit_ip": "10.0.0.20",
+                    "devkit_user": "operator",
+                    "devkit_password": "secret",
                     "host_ip": "10.0.0.76",
                     "workspace": "/workspace",
                     "host_platform": "linux",
@@ -674,6 +850,10 @@ class TestSdkImageDetection(unittest.TestCase):
         script = run.call_args.args[0][-1]
         self.assertIn("export DEVKIT_HOST_NFS_AVAILABLE=0", script)
         self.assertIn('DEVKIT_SYNC_METHOD:-none', script)
+        self.assertNotIn("secret", script)
+        self.assertEqual(run.call_args.kwargs["env"]["DEVKIT_SYNC_PASSWORD"], "secret")
+        self.assertIn("PreferredAuthentications=password", script)
+        self.assertIn("operator@10.0.0.20", script)
 
     def test_bootstrap_fails_when_required_rsync_fallback_cannot_start(self):
         result = Mock(
@@ -2026,6 +2206,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
             port_map_path = Path(config.port_map_host_path)
             self.assertTrue(port_map_path.exists())
+            self.assertFalse(token_cache_path.exists())
+            with patch.dict(os.environ, {"SIMA_CLI_HOME": str(Path(tmpdir) / ".sima-cli")}):
+                finalize_code_ui_auth(config)
             self.assertTrue(token_cache_path.exists())
             self.assertEqual(token_cache_path.stat().st_mode & 0o777, 0o600)
             self.assertIn("insight-config", config.config_host_dir)
@@ -2073,6 +2256,33 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertEqual(config.port_map_host_path, "")
             certs.assert_not_called()
             webrtc.assert_not_called()
+
+    def test_finalize_code_server_credentials_uses_password_and_clean_url(self):
+        with TemporaryDirectory() as tmpdir, \
+             patch.dict(os.environ, {"SIMA_CLI_HOME": str(Path(tmpdir) / ".sima-cli")}):
+            config = NeatRunConfig(
+                port_map={"codeUI": {"host": 9999}},
+                port_args=[],
+                config_host_dir="",
+                cert_host_dir="",
+                port_map_host_path="",
+                cert_file_host_path="",
+                key_file_host_path="",
+                code_ui_token="secret-password",
+                code_ui_backend="code-server",
+                code_ui_container_name="sdk-latest",
+                code_ui_base_url="https://localhost:10000",
+            )
+
+            finalize_code_ui_auth(config)
+
+            cache = json.loads(_code_ui_token_cache_path().read_text(encoding="utf-8"))
+            code_ui = cache["containers"]["sdk-latest"]["codeUI"]
+            self.assertEqual(code_ui["backend"], "code-server")
+            self.assertEqual(code_ui["password"], "secret-password")
+            self.assertEqual(code_ui["url"], "https://localhost:10000/?folder=/workspace")
+            self.assertNotIn("token", code_ui)
+            self.assertNotIn("secret-password", code_ui["url"])
 
     def test_prepare_neat_container_run_minimal_skips_insight_certificates(self):
         with TemporaryDirectory() as tmpdir:
@@ -2284,7 +2494,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn(("udp", 17999), reserved)
         self.assertNotIn(("udp", 18080), reserved)
 
-    def test_print_neat_setup_summary_uses_table_with_detected_host_ip(self):
+    def test_sdk_2_1_3_openvscode_summary_keeps_token_url_contract(self):
         config = NeatRunConfig(
             port_map={
                 "schema": "sima.neat.port-map.v1",
@@ -2301,11 +2511,14 @@ table ip6 nm-shared-enx6c1ff720d573 {
             key_file_host_path="/tmp/sdk-cert/neat-sdk-key.pem",
             webrtc_host_ip="10.0.0.23",
             code_ui_token="code-token",
+            code_ui_backend="openvscode",
+            code_ui_container_name="ghcr.io-sima-neat-sdk-v2.1.3.1",
         )
 
         with patch("builtins.print") as mock_print, \
              patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="192.168.76.4"), \
              patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()) as browser_get, \
+             patch("sima_cli.sdk.neat._wait_for_code_ui", return_value=True), \
              patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser_open, \
              patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)
@@ -2315,6 +2528,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("Name       | Endpoint / Value", printed)
         self.assertIn("mainUI     | https://192.168.76.4:24031", printed)
         self.assertIn(f"codeUI     | {code_url}", printed)
+        self.assertNotIn("codeUIPassword", printed)
         self.assertIn("codeUIHttp | http://192.168.76.4:21333", printed)
         self.assertIn("videoUI    | https://192.168.76.4:20907", printed)
         self.assertIn("iceHost    | 10.0.0.23", printed)
@@ -2345,6 +2559,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         with patch("builtins.print") as mock_print, \
              patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="localhost"), \
              patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
+             patch("sima_cli.sdk.neat._wait_for_code_ui", return_value=True), \
              patch("sima_cli.sdk.neat.webbrowser.open", return_value=False) as browser_open, \
              patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)
@@ -2356,6 +2571,44 @@ table ip6 nm-shared-enx6c1ff720d573 {
         browser_open.assert_called_once_with(code_url)
         panel_text = str(console_print.call_args.args[0].renderable)
         self.assertIn("Open this URL in your browser.", panel_text)
+
+    def test_print_neat_setup_summary_uses_code_server_password_contract(self):
+        config = NeatRunConfig(
+            port_map={
+                "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+            },
+            port_args=[],
+            config_host_dir="",
+            cert_host_dir="/tmp/sdk-cert",
+            port_map_host_path="",
+            cert_file_host_path="",
+            key_file_host_path="",
+            code_ui_token="code-password",
+            code_ui_backend="code-server",
+        )
+
+        with patch("builtins.print") as mock_print, \
+             patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="localhost"), \
+             patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
+             patch("sima_cli.sdk.neat._wait_for_code_ui", return_value=True), \
+             patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser_open, \
+             patch("sima_cli.sdk.neat.console.print") as console_print:
+            print_neat_setup_summary(config)
+
+        clean_url = "https://localhost:20786/?folder=/workspace"
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn(f"codeUI         | {clean_url}", printed)
+        self.assertIn("codeUIPassword | code-password", printed)
+        self.assertNotIn("code-password", clean_url)
+        browser_open.assert_called_once_with(clean_url)
+        panel_text = str(console_print.call_args.args[0].renderable)
+        self.assertIn(clean_url, panel_text)
+        self.assertIn("Password:", panel_text)
+        self.assertIn("code-password", panel_text)
+        self.assertNotIn("tkn=", panel_text)
+        self.assertIn("Enter this password when code-server prompts you.", panel_text)
+        self.assertIn("Run neat inside the SDK", panel_text)
 
     def test_detect_browser_host_prefers_physical_ip_over_vpn(self):
         with patch("sima_cli.sdk.neat._collect_physical_ipv4s_for_certs", return_value=["192.168.76.4"]), \
@@ -2547,6 +2800,13 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("OPENVSCODE_SERVER_USER=devuser", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_EXTENSIONS_DIR=/home/devuser/.openvscode-server/extensions", docker_cmd)
         self.assertIn("OPENVSCODE_WORKSPACE=/workspace", docker_cmd)
+        self.assertIn("CODE_SERVER_USER=devuser", docker_cmd)
+        self.assertIn("CODE_SERVER_EXTENSIONS_DIR=/home/devuser/.local/share/code-server/extensions", docker_cmd)
+        self.assertIn("CODE_SERVER_WORKSPACE=/workspace", docker_cmd)
+        self.assertIn("CODE_SERVER_PASSWORD=code-token", docker_cmd)
+        self.assertIn("CODE_SERVER_CERT=/sdk-cert/neat-sdk.pem", docker_cmd)
+        self.assertIn("CODE_SERVER_CERT_KEY=/sdk-cert/neat-sdk-key.pem", docker_cmd)
+        self.assertIn("CODE_SERVER_HTTPS_PORT=10000", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_TOKEN=code-token", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_CERT=/sdk-cert/neat-sdk.pem", docker_cmd)
         self.assertIn("OPENVSCODE_SERVER_CERT_KEY=/sdk-cert/neat-sdk-key.pem", docker_cmd)
@@ -2569,6 +2829,58 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("CONTAINER_HOST_IP=10.0.0.76", docker_cmd)
         self.assertIn(f"{neat_config.config_host_dir}:/home/docker/.insight-config", docker_cmd)
         self.assertIn(f"{neat_config.cert_host_dir}:/sdk-cert", docker_cmd)
+
+    def test_start_neat_container_mounts_builder_socket_when_opted_in(self):
+        with TemporaryDirectory() as tmpdir:
+            neat_config = NeatRunConfig(
+                port_map={"schema": "sima.neat.port-map.v1"},
+                port_args=[],
+                config_host_dir=f"{tmpdir}/insight-config",
+                cert_host_dir=f"{tmpdir}/sdk-cert",
+                port_map_host_path=f"{tmpdir}/insight-config/port-map.json",
+                cert_file_host_path=f"{tmpdir}/sdk-cert/neat-sdk.pem",
+                key_file_host_path=f"{tmpdir}/sdk-cert/neat-sdk-key.pem",
+                webrtc_host_ip="127.0.0.1",
+                code_ui_token="token",
+            )
+            docker_result = Mock(returncode=0, stdout="container-id\n", stderr="")
+            with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="aarch64"), \
+                 patch("sima_cli.sdk.utils.os.makedirs"), \
+                 patch("sima_cli.sdk.utils.configure_container"), \
+                 patch("sima_cli.sdk.utils.configure_container_docker_builder") as configure_builder, \
+                 patch("sima_cli.sdk.utils.resolve_container_build_socket_source", return_value="/run/user/1000/docker.sock"), \
+                 patch("sima_cli.sdk.utils.resolve_container_build_socket_gid", return_value=991), \
+                 patch("sima_cli.sdk.utils.detect_current_user", return_value=("devuser", 1000, 1000)), \
+                 patch("sima_cli.sdk.neat.prepare_neat_container_run", return_value=neat_config), \
+                 patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.network_doctor.validate_running_neat_container_network"), \
+                 patch("sima_cli.sdk.utils.bootstrap_devkit_container"), \
+                 patch("sima_cli.sdk.utils.subprocess.run", return_value=docker_result) as run:
+                start_docker_container(
+                    uid=1000,
+                    gid=1000,
+                    port=0,
+                    workspace=tmpdir,
+                    image="ghcr.io/sima-neat/sdk:latest",
+                    container_build=True,
+                    devkit_env={
+                        "devkit_ip": "10.42.0.2",
+                        "host_ip": "10.42.0.1",
+                        "container_registry_sdk_address": "localhost:5000",
+                        "container_registry_devkit_address": "10.42.0.1:5000",
+                    },
+                )
+
+        docker_cmd = _last_docker_run_command(run)
+        self.assertIn("/run/user/1000/docker.sock:/var/run/docker.sock", docker_cmd)
+        self.assertIn("--group-add", docker_cmd)
+        self.assertEqual(docker_cmd[docker_cmd.index("--group-add") + 1], "991")
+        self.assertIn("DOCKER_HOST=unix:///var/run/docker.sock", docker_cmd)
+        self.assertIn("SIMA_SDK_CONTAINER_BUILD=1", docker_cmd)
+        self.assertIn("SIMA_CONTAINER_REGISTRY=localhost:5000", docker_cmd)
+        self.assertIn("SIMA_DEVKIT_CONTAINER_REGISTRY=10.42.0.1:5000", docker_cmd)
+        configure_builder.assert_called_once_with("ghcr.io-sima-neat-sdk-latest", "devuser")
 
     def test_start_ros2_container_only_maps_workspace_and_configures_user(self):
         with TemporaryDirectory() as tmpdir, \
@@ -2834,7 +3146,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_setup_warns_that_edgematic_studio_cannot_reach_an_existing_container(self):
         image = "ghcr.io/sima-neat/sdk:latest"
-        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+        with patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
+             patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
              patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
@@ -2912,6 +3225,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             "10.0.0.244",
             noninteractive=False,
             yes_to_all=True,
+            require_udp=True,
         )
 
     def test_setup_minimal_skips_extension_directory_and_passes_flags(self):
@@ -2997,6 +3311,129 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ("ghcr.io/sima-neat/sdk:latest",),
         )
 
+    def test_sdk_setup_forwards_container_registry_choices(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(
+                sdk,
+                [
+                    "setup",
+                    "--devkit",
+                    "10.42.0.2",
+                    "--container-registry-port",
+                    "5050",
+                    "-y",
+                    "-n",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(setup_start.call_args.kwargs["container_registry_port"], 5050)
+        self.assertFalse(setup_start.call_args.kwargs["no_container_registry"])
+
+    def test_sdk_setup_rejects_registry_port_when_registry_is_skipped(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker"):
+            result = runner.invoke(
+                sdk,
+                [
+                    "setup",
+                    "--no-container-registry",
+                    "--container-registry-port",
+                    "5050",
+                ],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("cannot be used", result.output)
+
+    def test_sdk_setup_does_not_expose_container_build_option(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker") as docker_preflight:
+            result = runner.invoke(sdk, ["setup", "--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("--container-build", result.output)
+        docker_preflight.assert_not_called()
+
+    def test_sdk_setup_runs_docker_preflight_for_action(self):
+        runner = CliRunner()
+        with patch("sima_cli.sdk.commands.check_and_start_docker") as docker_preflight, \
+             patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+            result = runner.invoke(sdk, ["setup", "-y", "-n"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        docker_preflight.assert_called_once_with()
+        setup_start.assert_called_once()
+
+    def test_setup_automatically_enables_container_build_for_sdk_3(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.sdk_image_uses_automatic_container_build", return_value=True), \
+             patch("sima_cli.sdk.install.validate_host_container_build_toolchain") as preflight, \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/ext"), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container:
+            setup_and_start(
+                no_model_sdk=True,
+                yes_to_all=True,
+                noninteractive=True,
+            )
+
+        preflight.assert_called_once_with()
+        self.assertTrue(start_container.call_args.kwargs["container_build"])
+
+    def test_setup_automatically_sets_up_registry_for_sdk_3_with_devkit(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        devkit_env = {
+            "devkit_ip": "10.42.0.2",
+            "host_ip": "10.42.0.1",
+            "workspace": "/tmp/workspace",
+        }
+        registry_env = {
+            **devkit_env,
+            "container_registry_sdk_address": "localhost:5000",
+            "container_registry_devkit_address": "10.42.0.1:5000",
+        }
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.warn_if_colima_devkit_network_may_need_bridged"), \
+             patch("sima_cli.sdk.install.sdk_image_uses_automatic_container_build", return_value=True), \
+             patch("sima_cli.sdk.install.validate_host_container_build_toolchain"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=devkit_env), \
+             patch("sima_cli.sdk.install._setup_devkit_container_registry", return_value=registry_env) as setup_registry, \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/ext"), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container:
+            setup_and_start(
+                devkit_ip="10.42.0.2",
+                no_model_sdk=True,
+                yes_to_all=True,
+                noninteractive=True,
+            )
+
+        setup_registry.assert_called_once_with(
+            devkit_env,
+            no_container_registry=False,
+            container_registry_port=None,
+            noninteractive=True,
+            yes_to_all=True,
+        )
+        self.assertEqual(start_container.call_args.kwargs["devkit_env"], registry_env)
+
     def test_setup_warns_for_snap_docker_with_neat_sdk(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
@@ -3051,7 +3488,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
     def test_setup_repairs_existing_container_user_mapping_before_attach(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         container = "ghcr.io-sima-neat-sdk-latest"
-        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+        with patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
+             patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
              patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
@@ -3139,7 +3577,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.configure_container"), \
                  patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=[first_config, second_config]) as prepare, \
                  patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
-                 patch("sima_cli.sdk.utils._container_openvscode_available", return_value=True), \
+                 patch("sima_cli.sdk.utils._container_code_ui_backend", return_value="openvscode"), \
                  patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
                 start_docker_container(
                     uid=1000,
@@ -3213,7 +3651,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                  patch("sima_cli.sdk.utils.configure_container"), \
                  patch("sima_cli.sdk.neat.prepare_neat_container_run", side_effect=prepare_side_effect), \
                  patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
-                 patch("sima_cli.sdk.utils._container_openvscode_available", return_value=True), \
+                 patch("sima_cli.sdk.utils._container_code_ui_backend", return_value="openvscode"), \
                  patch("sima_cli.sdk.utils.subprocess.run", side_effect=[failed, inspect_created, removed, succeeded]) as run:
                 start_docker_container(
                     uid=1000,
@@ -4039,18 +4477,51 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertEqual(run.call_count, 1)
         prompt.assert_not_called()
 
-    def test_vscode_extension_skips_when_checklist_is_empty(self):
-        server_available = Mock(returncode=0)
+    def test_detects_code_server_before_openvscode(self):
+        detected = Mock(returncode=0, stdout="code-server")
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=detected) as run:
+            self.assertEqual(_container_code_ui_backend("container"), "code-server")
+
+        detection_script = run.call_args.args[0][-1]
+        self.assertLess(
+            detection_script.index("/opt/code-server/bin/code-server"),
+            detection_script.index("/opt/openvscode-server/bin/openvscode-server"),
+        )
+
+    def test_vscode_extension_uses_code_server_paths(self):
+        server_available = Mock(returncode=0, stdout="code-server")
+        manifest_missing = Mock(returncode=44)
+        install_result = Mock(returncode=0, stdout="installed\n", stderr="")
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:3.0.0"), \
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, manifest_missing, install_result]) as run:
+            ensure_codex_vscode_extension_installed(
+                "container", "docker", auto_install=True, uid=1000, gid=1000,
+            )
+
+        install_cmd = run.call_args_list[-1].args[0][-1]
+        self.assertIn("/opt/code-server/bin/code-server", install_cmd)
+        self.assertIn("/home/docker/.local/share/code-server/extensions", install_cmd)
+        self.assertIn("/home/docker/.local/share/code-server/User/settings.json", install_cmd)
+        self.assertIn("supervisorctl restart code-server", install_cmd)
+        self.assertNotIn("/opt/openvscode-server", install_cmd)
+        self.assertNotIn("--accept-server-license-terms", install_cmd)
+
+    def test_vscode_extension_installs_neat_when_checklist_is_empty(self):
+        server_available = Mock(returncode=0, stdout="openvscode")
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \
              patch("sima_cli.sdk.utils.subprocess.run", return_value=server_available) as run, \
              patch("sima_cli.sdk.utils.select_browser_extensions", return_value=[]) as select:
             ensure_codex_vscode_extension_installed("container", "docker")
 
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_count, 2)
+        script = run.call_args.args[0][-1]
+        self.assertIn("sima-install-neat-extension", script)
+        self.assertNotIn("--install-extension openai.chatgpt", script)
+        self.assertNotIn("--install-extension anthropic.claude-code", script)
         select.assert_called_once_with(False, True)
 
     def test_codex_vscode_extension_auto_installs_without_prompt(self):
-        server_available = Mock(returncode=0)
+        server_available = Mock(returncode=0, stdout="openvscode")
         manifest_missing = Mock(returncode=44)
         install_result = Mock(returncode=0, stdout="installed\n", stderr="")
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.2"), \

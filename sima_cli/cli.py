@@ -14,7 +14,7 @@ from sima_cli.update.swu import handle_update
 from sima_cli.model_zoo.model import list_models, download_model, describe_model
 from sima_cli.app_zoo.app import list_apps, download_app, describe_app
 from sima_cli.utils.config_loader import internal_resource_exists
-from sima_cli.mla.meminfo import monitor_simaai_mem_chart
+from sima_cli.mla.meminfo import MemoryTelemetryError, monitor_simaai_mem_chart
 from sima_cli.__version__ import __version__ 
 from sima_cli.utils.config import CONFIG_PATH
 from sima_cli.install.optiview import install_optiview
@@ -42,6 +42,7 @@ from sima_cli.upgrade.selfupdate import register_selfupdate_command
 from sima_cli.playbooks import register_playbook_commands
 from sima_cli.vulcan import register_vulcan_commands
 from sima_cli.models import register_models_commands
+from sima_cli.peripherals import register_peripherals_commands
 from sima_cli.cloudex import register_cloudex_commands
 from sima_cli.vulcan.commands import (
     ENV_METAVAR,
@@ -105,6 +106,13 @@ def _rerun_current_command() -> None:
     os.execvpe(sys.executable, cmd, env)
 
 
+# Command groups whose stdout is a machine-readable document: root diagnostics go to stderr for them.
+QUIET_STDOUT_SUBCOMMANDS = ("models", "peripherals")
+# Command groups that only read the DevKit they run on: no PyPI update check and no Artifactory
+# gate before them, so they work offline and never prompt or exit early.
+LOCAL_ONLY_SUBCOMMANDS = ("peripherals",)
+
+
 def _initialize_main_context(ctx, internal, yes):
     _configure_stdio_errors()
     auto_accept_update = yes or _update_auto_confirm_requested(sys.argv)
@@ -112,7 +120,8 @@ def _initialize_main_context(ctx, internal, yes):
     if auto_accept_update:
         os.environ["SIMA_CLI_AUTO_ACCEPT_UPDATE"] = "1"
     try:
-        if check_for_update('sima-cli') and _should_rerun_after_update(sys.argv):
+        if (ctx.invoked_subcommand not in LOCAL_ONLY_SUBCOMMANDS
+                and check_for_update('sima-cli') and _should_rerun_after_update(sys.argv)):
             _rerun_current_command()
     finally:
         if auto_accept_update:
@@ -128,14 +137,15 @@ def _initialize_main_context(ctx, internal, yes):
     if not internal:
         internal = os.getenv("SIMA_CLI_INTERNAL", "0") in ("1", "true", "yes")
 
-    defer_artifactory_access = ctx.invoked_subcommand == "update" or ctx.meta.get("daily_netboot", False)
+    local_only = ctx.invoked_subcommand in LOCAL_ONLY_SUBCOMMANDS
+    defer_artifactory_access = local_only or ctx.invoked_subcommand == "update" or ctx.meta.get("daily_netboot", False)
     if internal and not internal_resource_exists() and not defer_artifactory_access:
         click.echo("❌ You have specified -i or --internal argument to access internal resources, but you do not have an internal resource map configured.")
         click.echo("Refer to the confluence page to find out how to configure internal resource map.")
         exit(0)
 
     internal_reachable = True
-    if internal:
+    if internal and not local_only:
         internal_reachable = check_artifactory_reachability()
 
     if internal and not internal_reachable and not defer_artifactory_access and not _allows_external_prerelease_fallback(sys.argv):
@@ -170,7 +180,7 @@ class InspectionAwareGroup(click.Group):
             _command_name_from_argv(['sima-cli'] + options) == 'bootimg'
             and any(arg in ('--netboot', '-n', '--autoflash', '-a') for arg in options)
         )
-        if _command_name_from_argv(['sima-cli'] + options) == 'update' and '--inspect' in options:
+        if _command_name_from_argv(['sima-cli'] + options) == 'update' and any(arg in ('--inspect', '--swap') for arg in options):
             ctx.meta['update_inspect'] = True
         return super().parse_args(ctx, args)
 
@@ -198,11 +208,11 @@ def main(ctx, internal, yes):
         ctx.ensure_object(dict)
         ctx.obj.update(internal=internal, yes=yes)
         return
-    # Model Registry JSON must remain parseable on stdout. Route root-level
-    # update and environment diagnostics to stderr for this command group.
+    # Model Registry and peripherals JSON must remain parseable on stdout. Route root-level
+    # update and environment diagnostics to stderr for these command groups.
     output_context = (
         redirect_stdout(sys.stderr)
-        if ctx.invoked_subcommand == "models"
+        if ctx.invoked_subcommand in QUIET_STDOUT_SUBCOMMANDS
         else nullcontext()
     )
     with output_context:
@@ -216,6 +226,7 @@ register_sdk_commands(main)
 register_playbook_commands(main)
 register_vulcan_commands(main)
 register_models_commands(main)
+register_peripherals_commands(main)
 register_cloudex_commands(main)
 
 
@@ -352,14 +363,15 @@ def download(ctx, url, dest):
     "--dryrun",
     is_flag=True,
     default=False,
-    help="For eLxr updates, validate the update path and show the command without installing."
+    help="For eLxr, preview an update or slot swap without installing, switching slots, or rebooting."
 )
 @click.option("--inspect", "inspect_state", is_flag=True, help="Show eLxr 3.0+ A/B slots and overlay customizations without updating (local or --ip).")
+@click.option("--swap", is_flag=True, help="Select the available inactive eLxr 3.0+ slot for next boot; use --reboot to restart now.")
 @click.option("--verbose", is_flag=True, help="Show detailed overlay file categories during eLxr 3.0+ inspection or update.")
 @click.option("--signing-cert", metavar="URL_OR_FILE", help="SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the certificate for the selected channel when configured (eLxr 3.0+).")
-@click.option("--reboot", is_flag=True, help="Reboot after successful eLxr 3.0+ installation; verify remote boot health.")
+@click.option("--reboot", is_flag=True, help="Reboot after successful eLxr 3.0+ installation or slot selection; verify remote boot health.")
 @click.pass_context
-def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, verbose, reboot, signing_cert):
+def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, verbose, reboot, signing_cert, swap):
     """
     Update a SiMa DevKit, remote device, or Linux PCIe host.
 
@@ -370,6 +382,15 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
 
     eLxr 3.0+ uses signed full-system SWU bundles. Use --inspect for A/B
     state, --ip for remote updates, and --reboot to reboot after installation.
+
+    Use --swap to select the valid inactive slot without downloading an update.
+    The current and target versions are shown before confirmation; --yes skips
+    confirmation. Reboot separately to apply, or add --reboot to restart now.
+    Shared data and overlay customizations persist and can override files in
+    the selected version. Blank, invalid, pending, and unknown states are refused.
+
+    Examples: sima-cli update --swap; sima-cli update --ip 192.168.6.5 --swap --reboot
+
     The verification certificate is downloaded for the selected channel when configured; use
     --signing-cert URL_OR_FILE for an image signed with your own certificate.
     Developer-portal version lookup for 3.0 is not available yet.
@@ -479,6 +500,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
         dryrun
         or troot_only
         or inspect_state
+        or swap
         or verbose
         or reboot
         or force
@@ -496,6 +518,8 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
         return
 
     is_elxr = is_devkit_running_elxr()
+    if swap and (inspect_state or version_or_url or force or troot_only or signing_cert is not None or flavor != "auto"):
+        raise click.UsageError("--swap cannot be combined with --inspect or installation options.")
     if inspect_state and (version_or_url or dryrun or force or troot_only or reboot or signing_cert is not None or flavor != 'auto'):
         raise click.UsageError("--inspect cannot be combined with installation options.")
     try:
@@ -503,7 +527,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
                          internal=ctx.obj.get("internal", False),
                          auto_confirm=yes or ctx.obj.get("yes", False), dryrun=dryrun,
                          signing_cert=signing_cert, reboot=reboot, inspect=inspect_state, force=force,
-                         troot_only=troot_only, flavor=flavor, local_elxr=is_elxr, verbose=verbose):
+                         troot_only=troot_only, flavor=flavor, local_elxr=is_elxr, verbose=verbose, swap=swap):
             return
     except (click.ClickException, click.Abort):
         raise
@@ -632,8 +656,10 @@ def mla(ctx):
 @click.pass_context
 def show_mla_memory_usage(ctx):
     """Show MLA Memory usage overtime."""
-    monitor_simaai_mem_chart()
-    pass
+    try:
+        monitor_simaai_mem_chart()
+    except MemoryTelemetryError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 # ----------------------

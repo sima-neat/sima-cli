@@ -17,11 +17,13 @@ Usage:
     sima-cli sdk elxr : go to elxr container
 """
 
+import os
+
 import click
 import ipaddress
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 from rich.console import Console
 from rich.panel import Panel
 from sima_cli.sdk.install import setup_and_start
@@ -56,10 +58,27 @@ from sima_cli.sdk.linux_shared_network import (
 console = Console()
 LEGACY_PALETTE_SDK_TOOLS = {"elxr", "model", "yocto", "mpk"}
 
+
+class DockerCommand(click.Command):
+    """Run the Docker preflight only after Click finishes parsing options."""
+
+    def invoke(self, ctx):
+        check_and_start_docker()
+        return super().invoke(ctx)
+
+
+class SdkGroup(click.Group):
+    command_class = DockerCommand
+    group_class = type
+
+
 # ------------------------------------------------------------
 # Group Definition
 # ------------------------------------------------------------
-@click.group(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.group(
+    cls=SdkGroup,
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
 @click.option(
     "-v", "--version",
     "version_filter",
@@ -91,7 +110,6 @@ def sdk(ctx, version_filter):
     """
     ctx.ensure_object(dict)
     ctx.obj["version_filter"] = version_filter
-    check_and_start_docker()
 
 # ------------------------------------------------------------
 # Helper functions 
@@ -165,6 +183,28 @@ def _resolve_devkit_ipv4(devkit: Optional[str]) -> str:
             "Use --devkit <IPv4> for repair, or use 'sima-cli sdk doctor network' for read-only diagnostics."
         )
     return value
+
+
+def _resolve_devkit_credentials(
+    devkit_ip: str,
+    *,
+    noninteractive: bool,
+) -> Tuple[str, str]:
+    if not devkit_ip:
+        return "", ""
+
+    username = os.environ.get("SIMA_DEVKIT_USER", "sima").strip() or "sima"
+    default_password = os.environ.get("SIMA_DEVKIT_PASSWORD")
+    if default_password is None and username == "sima":
+        default_password = "edgeai"
+    password = default_password or ""
+
+    if noninteractive and not password:
+        raise click.ClickException(
+            "A DevKit password is required to install the SDK container SSH key. "
+            "Set SIMA_DEVKIT_PASSWORD for noninteractive setup."
+        )
+    return username, password
 
 
 def _container_name(container) -> str:
@@ -318,7 +358,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
 @click.option(
     "--all-extensions",
     is_flag=True,
-    help="Install Neat, Codex, and Claude VS Code extensions without prompting.",
+    help="Install Codex and Claude VS Code extensions without prompting. Neat is installed automatically. SDK_SKIP_CODING_AGENT_INSTALL overrides this option.",
 )
 @click.option(
     "--edgematic-studio",
@@ -351,6 +391,17 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Allow setup to install a persistent NetworkManager shared-network repair profile without prompting.",
 )
 @click.option(
+    "--no-container-registry",
+    is_flag=True,
+    help="Skip the local registry that lets a configured DevKit download images built in the SDK.",
+)
+@click.option(
+    "--container-registry-port",
+    type=click.IntRange(1, 65535),
+    default=None,
+    help="Use this host port for the local DevKit container registry. Existing stored images are kept.",
+)
+@click.option(
     "--image",
     "image_selectors",
     multiple=True,
@@ -358,14 +409,41 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Start only the SDK image matching this repository:tag or tag (e.g. 'ghcr.io/sima-neat/sdk:latest' or 'latest'). Repeatable; skips the selection prompt.",
 )
 @click.pass_context
-def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, no_model_sdk, edgematic_studio, edgematic_studio_port, minimal, workspace, persistent_network_profile, image_selectors, all_extensions):
+def setup(
+    ctx,
+    yes,
+    noninteractive,
+    devkit,
+    no_insight,
+    insight_video_channels,
+    no_model_sdk,
+    edgematic_studio,
+    edgematic_studio_port,
+    minimal,
+    workspace,
+    persistent_network_profile,
+    no_container_registry,
+    container_registry_port,
+    image_selectors,
+    all_extensions,
+):
     """Initialize SDK environment and select components to start."""
+    if no_container_registry and container_registry_port is not None:
+        raise click.UsageError(
+            "--no-container-registry cannot be used with --container-registry-port."
+        )
     devkit_ip = _resolve_devkit_ip(devkit)
+    devkit_user, devkit_password = _resolve_devkit_credentials(
+        devkit_ip,
+        noninteractive=noninteractive,
+    )
     try:
         setup_and_start(
             noninteractive=noninteractive,
             yes_to_all=yes,
             devkit_ip=devkit_ip,
+            devkit_user=devkit_user,
+            devkit_password=devkit_password,
             no_insight=no_insight,
             insight_video_channels=insight_video_channels,
             no_model_sdk=no_model_sdk,
@@ -374,6 +452,8 @@ def setup(ctx, yes, noninteractive, devkit, no_insight, insight_video_channels, 
             minimal=minimal,
             workspace=workspace,
             persistent_network_profile=persistent_network_profile,
+            no_container_registry=no_container_registry,
+            container_registry_port=container_registry_port,
             image_selectors=image_selectors,
             all_extensions=all_extensions,
         )

@@ -64,10 +64,22 @@ def _download_run(
         raise ModelRegistryError("The selected registry run has no ID.")
     summary = client.run(run_id)
     artifacts = summary.get("artifacts") or []
-    artifact = select_model_artifact(artifacts)
+    artifact = select_model_artifact(
+        artifacts, run.get("artifact_name"),
+        artifact_type="model-pack" if run.get("run_type") == "model_compile" else "model-package",
+    )
     metadata = (summary.get("run") or run).get("metadata") or {}
     model_id = str(metadata.get("model_id") or "")
     variant_id = str(metadata.get("build_profile_id") or metadata.get("variant_id") or "")
+    if artifact.get("media_type") == "application/json":
+        model_name = str((run.get("metadata") or {}).get("display_name") or metadata.get("display_name") or model_id)
+        destination = safe_output_path(output, model_name)
+        result = client.download_directory(run_id, artifact, artifacts, destination, metadata, force=force)
+        return {
+            "run_id": run_id, "model_id": model_id, "variant_id": variant_id,
+            "build_profile_id": variant_id, "artifact": artifact.get("name"),
+            "manifest_sha256": artifact.get("sha256"), **result,
+        }
     signed = client.artifact_download(run_id, str(artifact.get("name") or ""))
     filename = artifact_filename({**artifact, **signed})
     destination = safe_output_path(output, model_id, variant_id, filename)
@@ -303,7 +315,7 @@ def download_command(
     force: bool,
     json_output: bool,
 ) -> None:
-    """Download the promoted full package for a model variant."""
+    """Download a model variant from the branch catalog."""
     try:
         client = _client(ctx, staging)
         run = find_latest_run(client.catalog_models(branch), model_id, variant_id)

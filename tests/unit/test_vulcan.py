@@ -57,6 +57,9 @@ class FakeClient:
             return payload
         return payload.encode("utf-8")
 
+    def iter_bytes(self, url):
+        yield self.read_bytes(url)
+
     def read_text(self, url, headers=None):
         return self.read_bytes(url, headers=headers).decode("utf-8")
 

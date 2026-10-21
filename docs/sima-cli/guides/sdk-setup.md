@@ -4,6 +4,78 @@ Choose optional SDK services, browser VS Code extensions, and the Model Compiler
 
 Command reference: [`sima-cli sdk setup`](../commands/sima-cli-sdk-setup.md)
 
+## Build and share a container image
+
+When you set up an SDK 3.0 or newer with a DevKit, sima-cli offers to create a
+small local container registry. The registry stores images on the host so they
+remain available when the SDK container is replaced.
+
+The registry starts on port 5050. If that port is already in use, sima-cli
+automatically selects the next free port and prints the address it selected.
+
+Setup also makes two addresses available inside the SDK shell:
+
+- `SIMA_CONTAINER_REGISTRY` is the address the SDK uses to push an image.
+- `SIMA_DEVKIT_CONTAINER_REGISTRY` is the address the DevKit uses to pull the
+  same image.
+
+Define your application in a Dockerfile, then build and push an ARM64 image
+from inside the SDK:
+
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --tag "${SIMA_CONTAINER_REGISTRY}/hello-neat:develop" \
+  --push \
+  .
+```
+
+Use `dk container deploy` to download the image from the same registry and run
+it on the connected DevKit:
+
+```bash
+dk container deploy hello-neat:develop \
+  --detach \
+  --name hello-neat \
+  --network host
+```
+
+The short image name is enough. `dk` uses the DevKit registry address configured
+by sima-cli. Use `dk container run hello-neat:develop ...` to start an image
+without explicitly refreshing it first.
+
+The registry uses HTTP on the local development network. It is exposed only on
+loopback for SDK use and on the DevKit-facing network path; it is not published
+on every host interface.
+
+On macOS, setup distinguishes physical LAN routes from Cloudex or other routed
+tunnels. A physical route uses a Colima bridged address. A `utun`, WireGuard, or
+similar tunnel cannot carry an Ethernet bridge, so setup keeps Colima in shared
+mode and enables `network.hostAddresses` instead. This lets the SDK container
+follow the Mac's tunnel route while publishing the registry on the Mac tunnel
+address used by the DevKit. Because Colima normally copies the tunnel's subnet
+prefix, setup removes the broad subnet route from the VM's local routing table
+while retaining the Mac address as a `/32` local route; otherwise the VM can
+mistake the DevKit peer for a local address. The repair is persisted across
+Colima restarts. If the active profile was previously bridged for a physical
+connection, setup uses the guarded profile-recreation workflow to switch it to
+shared mode while preserving its verified separate Docker data disk. Profiles
+that cannot be recreated safely, including Kubernetes-enabled profiles, are not
+changed. Reconnect the tunnel and rerun setup if its host address changes.
+
+SDK setup does not install or configure Docker on the DevKit. The first
+`dk container` command handles any required Docker installation and configures
+Docker to use the local registry, restarting Docker only if the registry setting
+changes. This keeps Docker completely optional for users who do not use
+container deployment. Installing Docker requires explicit approval and Internet
+access to Docker's Debian repository. Passwordless `sudo` is not a prerequisite;
+sima-cli configures it for the DevKit user during setup.
+
+Use `--no-container-registry` to skip this step. It does not stop or remove an
+existing registry. To select a different port, run setup again with
+`--container-registry-port <port>`. Existing stored images are kept when the
+port changes.
+
 ## Edgematic Studio opt-in
 
 Default setup does not display an Edgematic Studio prompt, install Studio, or
@@ -14,11 +86,15 @@ Use `--edgematic-studio` to install Studio and publish its port. Use
 
 ## Browser VS Code extension selection
 
-Interactive setup offers Neat, Codex, and Claude extensions. Use Space to select
-extensions and Enter to confirm. All start unchecked; selecting none skips
-installation, and existing unselected extensions remain installed.
+Neat is installed automatically for the current SDK user, without a prompt. New
+SDK images bundle the extension and setup copies it locally; older images use
+the existing download installer. `--minimal` skips extension setup.
 
-For automation, install all three without the checklist:
+Interactive setup offers optional Codex and Claude extensions. Use Space to
+select extensions and Enter to confirm. Both start unchecked; selecting none
+skips coding agent installation. Existing unselected extensions remain installed.
+
+For automation, install the coding agents without the checklist:
 
 ```bash
 sima-cli sdk setup --noninteractive --all-extensions
@@ -33,9 +109,11 @@ Edgematic Studio or alter Model Compiler selection.
 
 ## Browser VS Code extension versions
 
-sima-cli installs exact Codex and Claude versions and pins them against automatic
-updates. Rerunning setup replaces a different version; a matching version is
-retained and pinned without another download. SDK images can declare validated
+On code-server (SDK 3.0+), Codex installs the latest available release by default
+and remains unpinned. An explicit version override still pins that version.
+Older OpenVSCode images retain the Codex compatibility pin. Claude continues
+to use an exact version pin. Rerunning setup replaces a different version; a matching version is
+retained and pinned without another download for exact-version selections. SDK images can declare validated
 versions in `/etc/sima-neat/vscode-extensions.json`:
 
 ```json
@@ -51,22 +129,24 @@ versions in `/etc/sima-neat/vscode-extensions.json`:
 The manifest does not opt users into installation. Schema version 1 requires
 exact versions for both IDs. Older images without a manifest use Codex
 `26.5825.51511` and Claude `2.1.266` as compatibility fallbacks. An unreadable
-or invalid manifest reports an error and skips extension installation while the
+or invalid manifest reports an error and skips coding agent installation while the
 rest of setup continues. Failed Codex or Claude install commands are retried up
-to three times using the same exact version and normal TLS verification.
+to three times using the selected target and normal TLS verification.
 
 Environment overrides take precedence:
 
 | Variable | Behavior |
 | --- | --- |
+| `SDK_SKIP_CODING_AGENT_INSTALL` | Set to `1`, `true`, `yes`, or `on` to skip Codex and Claude extension installation, including prompts and `--all-extensions`. Neat setup still runs; existing agents are not removed. |
 | `SIMA_CLI_CODEX_EXTENSION_ID` | Override Codex with `publisher.extension@exact-version`; empty disables it unless `--all-extensions` is used. |
 | `SIMA_CLI_CLAUDE_EXTENSION_ID` | Override Claude with `publisher.extension@exact-version`; empty disables it unless `--all-extensions` is used. |
 | `SIMA_CLI_INSTALL_CODEX_EXTENSION` | Automatically select extension installation without the checklist. |
 
-A bare built-in extension ID uses the SDK/default pin. Other IDs require an
-explicit version. `--minimal` skips optional extension installation. Setup
+A bare Codex ID (or `openai.chatgpt@latest`) uses the latest release on
+code-server. Other bare built-in IDs use the SDK/default pin; other IDs require
+an explicit version. `--minimal` skips optional extension installation. Setup
 verifies installed versions, writes each selected extension's `metadata.pinned`
-flag, and restarts browser VS Code; reload an open browser tab afterward.
+flag (false for latest Codex), and restarts browser VS Code; reload an open browser tab afterward.
 
 ## Model Compiler installation source
 

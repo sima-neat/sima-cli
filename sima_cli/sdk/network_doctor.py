@@ -512,9 +512,67 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
         f"address={network.get('address')} "
         f"mode={network.get('mode') or 'unset'} "
         f"interface={network.get('interface') or 'unset'} "
+        f"hostAddresses={network.get('host_addresses')} "
+        f"hostForwards={','.join(network.get('forwarded_host_ips', [])) or 'unset'} "
         f"ipAddress={network.get('ip_address') or 'unset'}"
     )
-    if preinstall._is_colima_network_suitable_for_devkit(profile):
+    internet_sharing = False
+    expected_host_ip = ""
+    if report.devkit_ip:
+        route_interface = preinstall._route_interface_for_target(report.devkit_ip)
+        if preinstall._is_tunnel_route_interface(route_interface):
+            host_ip = preinstall._route_source_ipv4_for_target(report.devkit_ip)
+            tunnel_ready = (
+                preinstall._is_colima_tunnel_network_suitable(network, host_ip)
+                and preinstall._colima_vm_has_host_address(profile, host_ip)
+                and preinstall._colima_vm_tunnel_route_ready(
+                    profile,
+                    host_ip,
+                    report.devkit_ip,
+                )
+            )
+            if tunnel_ready:
+                report.add(
+                    "info",
+                    "colima-tunnel-route",
+                    f"Colima host-address forwarding is enabled for tunnel route {route_interface}.",
+                    f"hostIp={host_ip}; {detail}",
+                )
+            else:
+                report.add(
+                    "error",
+                    "colima-tunnel-forwarding-disabled",
+                    "Colima is not ready to publish ports on the current DevKit tunnel address.",
+                    f"routeInterface={route_interface}; hostIp={host_ip or 'unresolved'}; "
+                    f"{detail}; rerun SDK setup after connecting the tunnel",
+                )
+            return
+        internet_sharing = (route_interface or "").strip().lower().startswith("bridge")
+        if internet_sharing:
+            expected_host_ip = preinstall._interface_ipv4_address(route_interface)
+        expected_interface = preinstall._resolve_safe_colima_bridge_interface(route_interface)
+        if not expected_interface:
+            report.add(
+                "error",
+                "colima-bridge-route-unsafe",
+                "The DevKit route does not use a physical interface that Colima can bridge safely.",
+                f"routeInterface={route_interface or 'unresolved'}; connect the DevKit through a physical LAN interface",
+            )
+            return
+    else:
+        expected_interface = ""
+    if internet_sharing:
+        network_is_suitable = preinstall._is_colima_network_suitable_for_devkit(
+            profile,
+            expected_interface,
+            internet_sharing=True,
+            expected_host_ip=expected_host_ip,
+        )
+    else:
+        network_is_suitable = preinstall._is_colima_network_suitable_for_devkit(
+            profile, expected_interface
+        )
+    if network_is_suitable:
         report.add(
             "info",
             "colima-network-address-enabled",
@@ -523,15 +581,14 @@ def _add_colima_network_findings(report: NetworkDoctorReport) -> None:
         )
         return
 
-    interface = preinstall._route_interface_for_target(report.devkit_ip) or "en0"
     report.add(
         "warning",
         "colima-network-address-disabled",
         "Colima reachable VM addressing is not enabled; SDK containers may be unable to reach the DevKit.",
         (
             f"{detail}\n"
-            "Run: colima stop && "
-            f"colima start --network-address --network-mode bridged --network-interface {interface} --save-config"
+            "Run the guarded Colima profile recreation in SDK setup: "
+            f"sima-cli sdk setup --devkit {report.devkit_ip or '<devkit-ip>'}"
         ),
     )
 
@@ -547,9 +604,9 @@ def build_network_doctor_report(container: str = "", devkit_ip: str = "") -> Net
             "Linux network repair is only supported on Ubuntu/Linux hosts.",
             "macOS and Windows should use diagnostics only; do not run iptables/nft/NetworkManager repair logic.",
         )
-        return report
-
-    if devkit_ip:
+        if not container:
+            return report
+    elif devkit_ip:
         route = probe_route_to_devkit(devkit_ip)
         report.route = route
         if route.classification == "vpn":
@@ -667,13 +724,25 @@ def build_network_doctor_report(container: str = "", devkit_ip: str = "") -> Net
     if _container_running(inspect):
         if not _container_default_route_confirmed(resolved_container, inspect):
             report.add("warning", "container-default-route", "Could not confirm a default route inside the SDK container.")
-        if devkit_ip and not _docker_exec_success(resolved_container, f"timeout 2 bash -lc '</dev/tcp/{devkit_ip}/22' >/dev/null 2>&1 || ping -c 1 -W 1 {devkit_ip} >/dev/null 2>&1"):
-            report.add(
-                "warning",
-                "container-devkit-reachability",
-                "Could not confirm SDK container reachability to the DevKit.",
-                "This may require DevKit SSH/firewall access; run doctor from the final host setup for confirmation.",
+        if devkit_ip:
+            reachable = _docker_exec_success(
+                resolved_container,
+                f"timeout 2 bash -lc '</dev/tcp/{devkit_ip}/22' >/dev/null 2>&1 || "
+                f"ping -c 1 -W 1 {devkit_ip} >/dev/null 2>&1",
             )
+            if reachable:
+                report.add(
+                    "info",
+                    "container-devkit-reachability",
+                    f"SDK container can reach DevKit {devkit_ip}.",
+                )
+            else:
+                report.add(
+                    "warning",
+                    "container-devkit-reachability",
+                    "Could not confirm SDK container reachability to the DevKit.",
+                    "This may require DevKit SSH/firewall access; run doctor from the final host setup for confirmation.",
+                )
 
     return report
 
@@ -903,15 +972,35 @@ def ensure_existing_neat_container_startable(container: str) -> None:
 
 def validate_running_neat_container_network(container: str, devkit_ip: str = "") -> None:
     report = build_network_doctor_report(container=container, devkit_ip=devkit_ip)
+    tunnel_route = any(
+        finding.code == "colima-tunnel-route" for finding in report.findings
+    )
     blocking = [
         finding
         for finding in report.findings
-        if finding.severity == "error"
-        and finding.code in {"missing-simasdkbridge", "host-network-mode", "port-map-mismatch"}
+        if (
+            finding.severity == "error"
+            and finding.code in {
+                "missing-simasdkbridge",
+                "host-network-mode",
+                "port-map-mismatch",
+                "colima-tunnel-forwarding-disabled",
+            }
+        ) or (
+            tunnel_route
+            and finding.code == "container-devkit-reachability"
+            and finding.severity == "warning"
+        )
     ]
     if blocking:
         print_network_doctor_report(report)
         raise RuntimeError(blocking[0].message)
+    if tunnel_route and any(
+        finding.code == "container-devkit-reachability"
+        and finding.severity == "info"
+        for finding in report.findings
+    ):
+        print(f"✅ SDK container can reach DevKit {devkit_ip} through the Cloudex tunnel.")
 
 
 def repair_linux_devkit_network(container: str = "", devkit_ip: str = "", persist: bool = False) -> NetworkDoctorReport:

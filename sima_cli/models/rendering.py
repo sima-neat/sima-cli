@@ -4,7 +4,7 @@ import json
 import re
 import sys
 import urllib.parse
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import click
 from InquirerPy import inquirer
@@ -19,26 +19,8 @@ from .client import (
     ORGANIZATION,
     REPOSITORY,
     ModelRegistryError,
-    SUPPORTED_BENCHMARK_SCHEMAS,
     find_latest_run,
 )
-
-
-BENCHMARK_LABELS = {
-    "energy_joules": "Total energy",
-    "model_load_ms": "Model load time",
-    "latency_avg_ms": "Average latency",
-    "latency_p50_ms": "P50 latency",
-    "latency_p95_ms": "P95 latency",
-    "throughput_fps": "Throughput",
-    "avg_power_watts": "Average power",
-    "mla_memory_peak_mib": "MLA memory peak",
-    "mla_memory_final_mib": "MLA memory final",
-    "mla_memory_baseline_mib": "MLA memory baseline",
-    "mla_memory_peak_delta_mib": "MLA memory peak delta",
-    "time_to_first_inference_ms": "Time to first inference",
-    "energy_per_inference_joules": "Energy per inference",
-}
 
 
 def echo_json(payload: Any) -> None:
@@ -227,103 +209,52 @@ def _github_model_folder_url(run: Dict[str, Any], model_id: Any) -> Optional[str
     return f"{base}/tree/{commit}/models/{urllib.parse.quote(model)}"
 
 
-def _measured_benchmarks(benchmark: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    if not benchmark:
-        return {"status": "not available", "measurements": {}}
-    result = benchmark.get("result")
-    if not isinstance(result, dict):
-        return {"status": "not available", "measurements": {}}
-    schema = result.get("schema_version")
-    if schema not in SUPPORTED_BENCHMARK_SCHEMAS:
-        return {
-            "status": "unsupported schema",
-            "schema_version": schema,
-            "result_artifact_url": benchmark.get("result_artifact_url"),
-            "measurements": {},
-        }
-    measurements = {}
-    for key, metric in (result.get("metrics") or {}).items():
-        if not isinstance(metric, dict):
-            continue
-        if metric.get("status") == "measured" and isinstance(metric.get("value"), (int, float)):
-            measurements[key] = {
-                "value": metric["value"],
-                "unit": metric.get("unit", ""),
-                "aggregation": metric.get("aggregation", ""),
-            }
-    environment = result.get("environment") or {}
-    temperature_samples = environment.get("temperature_samples") or []
-    if not temperature_samples:
-        observations = environment.get("observations") or {}
-        temperature_samples = [
-            value for value in (observations.get("start"), observations.get("end")) if value
-        ]
-    temperatures = [
-        reading.get("celsius")
-        for sample in temperature_samples
-        if isinstance(sample, dict)
-        for reading in sample.get("temperatures_c") or []
-        if isinstance(reading, dict) and isinstance(reading.get("celsius"), (int, float))
-    ]
+def _model_report(result: Optional[Dict[str, Any]], stage: str, section: str) -> Tuple[str, Dict[str, Any]]:
+    """Return the status of a whole-model test result and its report, or an empty report when unusable."""
+    if not result:
+        return "not measured", {}
+    report = result.get("summary")
+    if (not isinstance(report, dict) or report.get("schema") != "sima.model-report"
+            or report.get("schema_version") != 1 or report.get("stage") != stage
+            or not isinstance(report.get(section), dict)):
+        return "unsupported format", {}
+    return str(result.get("status") or "available"), report
+
+
+def _numeric_values(values: Any) -> Dict[str, Any]:
+    # The registry stores reports as JSON objects without key order, so sort for a stable card.
     return {
-        "status": result.get("status", "available"),
-        "schema_version": schema,
-        "samples": (result.get("configuration") or {}).get("samples"),
-        "platform_version": (result.get("compatibility") or {}).get("actual_platform_version"),
-        "neat_version": (result.get("compatibility") or {}).get("actual_neat_version"),
-        "trials": result.get("trials") or [],
-        "temperature_c": {
-            "minimum": min(temperatures),
-            "maximum": max(temperatures),
-            "sample_count": len(temperatures),
-        }
-        if temperatures
-        else None,
-        "measurements": measurements,
+        name: value for name, value in sorted((values or {}).items())
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
     }
 
 
-def _accuracy_summary(accuracy: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    if not accuracy:
-        return {"status": "not available", "metrics": {}}
-    result = accuracy.get("result")
-    if not isinstance(result, dict):
-        return {"status": "not available", "metrics": {}}
-    metrics = result.get("metrics") or {}
-    candidate = metrics.get("candidate") or {}
-    reference = metrics.get("reference") or {}
-    comparison = metrics.get("comparison") or {}
-    dataset = result.get("dataset") or {}
-    counts = result.get("counts") or {}
-    evaluation = result.get("evaluation") or {}
-    execution = result.get("execution") or {}
+def _benchmark_summary(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    status, report = _model_report(result, "performance", "metrics")
     return {
-        "status": evaluation.get("status") or "available",
-        "schema_version": result.get("schema_version"),
-        "scope": result.get("report_scope"),
-        "profile": evaluation.get("profile"),
-        "dataset": " / ".join(
-            str(value)
-            for value in (dataset.get("id"), dataset.get("variant"), dataset.get("split"))
-            if value
-        ),
-        "evaluated_samples": dataset.get("evaluated_samples"),
-        "available_samples": dataset.get("available_samples"),
-        "samples_per_second": execution.get("samples_per_second"),
-        "metrics": {
-            "top1_accuracy": {
-                "candidate": candidate.get("top1_accuracy"),
-                "reference": reference.get("top1_accuracy"),
-                "delta": comparison.get("top1_delta"),
-            },
-            "top5_accuracy": {
-                "candidate": candidate.get("top5_accuracy"),
-                "reference": reference.get("top5_accuracy"),
-                "delta": comparison.get("top5_delta"),
-            },
-            "top1_agreement": comparison.get("top1_agreement"),
-        },
-        "counts": counts,
+        "status": status,
+        "workload": report.get("workload"),
+        "pyneat_version": (report.get("runtime") or {}).get("pyneat"),
+        "measurements": _numeric_values(report.get("metrics")),
+    }
+
+
+def _accuracy_summary(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    status, report = _model_report(result, "accuracy", "datasets")
+    return {
+        "status": status,
+        "pyneat_version": (report.get("runtime") or {}).get("pyneat"),
+        "datasets": [
+            {
+                "id": dataset_id,
+                "split": dataset.get("split"),
+                "evaluated_samples": dataset.get("evaluated_samples"),
+                "available_samples": dataset.get("available_samples"),
+                "metrics": _numeric_values(dataset.get("metrics")),
+            }
+            for dataset_id, dataset in sorted((report.get("datasets") or {}).items())
+            if isinstance(dataset, dict)
+        ],
     }
 
 
@@ -378,7 +309,7 @@ def model_card(detail: Dict[str, Any], taxonomy_payload: Optional[Dict[str, Any]
             "inputs": provenance.get("inputs") or [],
             "parameters": parameters,
         },
-        "benchmark": _measured_benchmarks(detail.get("benchmark")),
+        "benchmark": _benchmark_summary(detail.get("benchmark")),
         "accuracy": _accuracy_summary(detail.get("accuracy")),
     }
 
@@ -416,7 +347,7 @@ def _status_text(status: Any) -> Text:
         style = "bold green"
     elif normalized in {"failed", "error"}:
         style = "bold red"
-    elif normalized in {"not available", "unsupported schema"}:
+    elif normalized in {"not available", "not measured", "unsupported format"}:
         style = "yellow"
     else:
         style = "bold"
@@ -456,11 +387,25 @@ def _format_measurement(value: Any) -> str:
     return _format_value(value)
 
 
-def _format_percentage(value: Any, signed: bool = False) -> str:
+def _format_percentage(value: Any) -> str:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return "not available"
-    formatted = f"{value * 100:{'+' if signed else ''}.2f}".rstrip("0").rstrip(".")
+    formatted = f"{value * 100:.2f}".rstrip("0").rstrip(".")
     return f"{formatted}%"
+
+
+def _result_table(*columns: str) -> Table:
+    table = Table(
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        show_edge=False,
+        header_style="bold bright_blue",
+        padding=(0, 1),
+    )
+    for column in columns[:-1]:
+        table.add_column(column)
+    table.add_column(columns[-1], justify="right", style="bold cyan", no_wrap=True)
+    return table
 
 
 def render_model_card(card: Dict[str, Any]) -> None:
@@ -547,51 +492,19 @@ def render_model_card(card: Dict[str, Any]) -> None:
         Panel(validation_content, title="Validation", title_align="left", border_style="blue")
     )
 
-    accuracy = card.get("accuracy") or {"status": "not available", "metrics": {}}
-    accuracy_rows = [
+    accuracy = card["accuracy"]
+    accuracy_parts = [_metadata_grid([
         ["Status", _status_text(accuracy.get("status"))],
-        ["Schema", accuracy.get("schema_version")],
-        ["Scope", accuracy.get("scope")],
-        ["Profile", accuracy.get("profile")],
-        ["Dataset", accuracy.get("dataset")],
-    ]
-    evaluated = accuracy.get("evaluated_samples")
-    available = accuracy.get("available_samples")
-    if evaluated is not None or available is not None:
-        accuracy_rows.append(
-            ["Samples", f"{_format_value(evaluated)} / {_format_value(available)}"]
+        ["PyNeat version", accuracy.get("pyneat_version")],
+    ])]
+    accuracy_table = _result_table("Dataset", "Samples", "Metric", "Value")
+    for dataset in accuracy["datasets"]:
+        name = " / ".join(str(value) for value in (dataset["id"], dataset.get("split")) if value)
+        samples = " / ".join(
+            _format_measurement(dataset.get(key)) for key in ("evaluated_samples", "available_samples")
         )
-    if accuracy.get("samples_per_second") is not None:
-        accuracy_rows.append(
-            ["Throughput", f"{_format_measurement(accuracy['samples_per_second'])} images/s"]
-        )
-    accuracy_parts = [_metadata_grid(accuracy_rows)]
-    accuracy_table = Table(
-        box=box.SIMPLE_HEAD,
-        expand=True,
-        show_edge=False,
-        header_style="bold bright_blue",
-        padding=(0, 1),
-    )
-    accuracy_table.add_column("Metric", ratio=1)
-    accuracy_table.add_column("Candidate", justify="right", style="bold cyan")
-    accuracy_table.add_column("Reference", justify="right")
-    accuracy_table.add_column("Delta", justify="right")
-    accuracy_metrics = accuracy.get("metrics") or {}
-    for key, label in (("top1_accuracy", "Top-1 accuracy"), ("top5_accuracy", "Top-5 accuracy")):
-        metric = accuracy_metrics.get(key) or {}
-        if any(metric.get(field) is not None for field in ("candidate", "reference", "delta")):
-            accuracy_table.add_row(
-                label,
-                _format_percentage(metric.get("candidate")),
-                _format_percentage(metric.get("reference")),
-                _format_percentage(metric.get("delta"), signed=True),
-            )
-    agreement = accuracy_metrics.get("top1_agreement")
-    if agreement is not None:
-        accuracy_table.add_row(
-            "Top-1 agreement", _format_percentage(agreement), "not applicable", "not applicable"
-        )
+        for metric, value in dataset["metrics"].items():
+            accuracy_table.add_row(name, samples, metric, _format_percentage(value))
     if accuracy_table.row_count:
         accuracy_parts.extend([Text(""), accuracy_table])
     console.print(
@@ -599,56 +512,16 @@ def render_model_card(card: Dict[str, Any]) -> None:
     )
 
     benchmark = card["benchmark"]
-    summary_rows = [
+    benchmark_parts = [_metadata_grid([
         ["Status", _status_text(benchmark.get("status"))],
-        ["Schema", benchmark.get("schema_version")],
-    ]
-    if benchmark.get("status") != "unsupported schema":
-        summary_rows.extend(
-            [
-            ["Samples", benchmark.get("samples")],
-            ["Trials", len(benchmark.get("trials") or [])],
-            ["Platform version", benchmark.get("platform_version")],
-            ["Neat version", benchmark.get("neat_version")],
-            ]
-        )
-        temperature = benchmark.get("temperature_c")
-        if temperature:
-            summary_rows.append(
-                [
-                    "Temperature",
-                    f"{temperature['minimum']}–{temperature['maximum']} °C "
-                    f"({temperature['sample_count']} readings)",
-                ]
-            )
-    benchmark_parts = [_metadata_grid(summary_rows)]
-    measurement_table = Table(
-        box=box.SIMPLE_HEAD,
-        expand=True,
-        show_edge=False,
-        header_style="bold bright_blue",
-        padding=(0, 1),
-    )
-    measurement_table.add_column("Measurement", ratio=1)
-    measurement_table.add_column("Value", justify="right", style="bold cyan", no_wrap=True)
-    measurement_table.add_column("Unit", style="dim", no_wrap=True)
-    measurement_table.add_column("Aggregation", style="dim", no_wrap=True)
-    for name, measurement in benchmark.get("measurements", {}).items():
-        measurement_table.add_row(
-            BENCHMARK_LABELS.get(name, name.replace("_", " ").title()),
-            _format_measurement(measurement.get("value")),
-            _format_value(measurement.get("unit")),
-            _format_value(measurement.get("aggregation")),
-        )
+        ["Workload", benchmark.get("workload")],
+        ["PyNeat version", benchmark.get("pyneat_version")],
+    ])]
+    measurement_table = _result_table("Measurement", "Value")
+    for name, value in benchmark["measurements"].items():
+        measurement_table.add_row(name, _format_measurement(value))
     if measurement_table.row_count:
         benchmark_parts.extend([Text(""), measurement_table])
-    elif benchmark.get("status") == "unsupported schema":
-        benchmark_parts.extend(
-            [Text(""), Text("This benchmark schema is not supported by this sima-cli version.", style="yellow")]
-        )
-        if benchmark.get("result_artifact_url"):
-            raw_url = str(benchmark["result_artifact_url"])
-            benchmark_parts.append(Text(f"Raw result: {raw_url}", style=f"blue underline link {raw_url}"))
     console.print(
         Panel(Group(*benchmark_parts), title="Benchmark", title_align="left", border_style="blue")
     )

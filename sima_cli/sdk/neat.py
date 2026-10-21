@@ -960,6 +960,8 @@ def _code_ui_url(config: NeatRunConfig, display_host: str) -> str:
     display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
     if not isinstance(display_entry, dict):
         display_entry = port_map["codeUI"]
+    if config.code_server_without_password:
+        display_host = "localhost"
     scheme = display_entry.get("scheme", "http")
     code_url = f"{scheme}://{display_host}:{display_entry['host']}"
     token = config.code_ui_token or port_map["codeUI"].get("token")
@@ -1073,7 +1075,8 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         if config.code_ui_backend == "code-server" and config.code_ui_token:
             rows.append(("codeUIPassword", config.code_ui_token))
         if "codeUIHttps" in port_map:
-            rows.append(("codeUIHttp", f"http://{display_host}:{port_map['codeUI']['host']}"))
+            editor_host = "localhost" if config.code_server_without_password else display_host
+            rows.append(("codeUIHttp", f"http://{editor_host}:{port_map['codeUI']['host']}"))
     show_edgematic_studio = "edgematicStudio" in port_map
     if show_edgematic_studio:
         # Studio serves plain HTTP; web_scheme tracks the Insight/Code UI certs.
@@ -1137,7 +1140,9 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
             "   Note: Edgematic Studio's device terminal is unavailable here — the browser connects "
             f"straight to a sidecar on container ports {EDGEMATIC_STUDIO_TERMINAL_PORT_RANGE}, which are not published."
         )
-    if display_host == "localhost":
+    if config.code_server_without_password:
+        print("   Note: Editor URLs are local to this host; use the authenticated gateway for remote editor access. Other service URLs use the shown host address.")
+    elif display_host == "localhost":
         print("   Note: Use localhost for local access, or replace it with this machine's external IP/DNS name for remote access.")
     else:
         print("   Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.")

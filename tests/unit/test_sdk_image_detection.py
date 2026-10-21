@@ -2685,6 +2685,43 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("Enter this password when code-server prompts you.", panel_text)
         self.assertIn("Run neat inside the SDK", panel_text)
 
+    def test_passwordless_summary_probes_and_opens_localhost_only_for_editor(self):
+        for https in (False, True):
+            with self.subTest(https=https):
+                config = NeatRunConfig(
+                    port_map={
+                        "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                        "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+                        "mainUI": {"host": 24031},
+                        "videoUI": {"host": 20907},
+                        "edgematicStudio": {"host": 8088},
+                    },
+                    port_args=[], config_host_dir="", cert_host_dir="/tmp/sdk-cert" if https else "",
+                    port_map_host_path="", cert_file_host_path="", key_file_host_path="",
+                    code_ui_backend="code-server", code_server_without_password=True,
+                )
+                with patch("builtins.print") as output, \
+                     patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="192.168.76.4"), \
+                     patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
+                     patch("sima_cli.sdk.neat._wait_for_code_ui", return_value=True) as wait, \
+                     patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser, \
+                     patch("sima_cli.sdk.neat.console.print"):
+                    print_neat_setup_summary(config)
+                scheme = "https" if https else "http"
+                port = 20786 if https else 21333
+                url = f"{scheme}://localhost:{port}/?folder=/workspace"
+                wait.assert_called_once_with(url)
+                browser.assert_called_once_with(url)
+                printed = "\n".join(str(call.args[0]) for call in output.call_args_list)
+                self.assertIn(url, printed)
+                self.assertIn("http://localhost:21333", printed)
+                self.assertNotIn("192.168.76.4:21333", printed)
+                self.assertNotIn("192.168.76.4:20786", printed)
+                self.assertIn(f"{scheme}://192.168.76.4:24031", printed)
+                self.assertIn(f"{scheme}://192.168.76.4:20907", printed)
+                self.assertIn("http://192.168.76.4:8088", printed)
+                self.assertIn("use the authenticated gateway for remote editor access", printed)
+
     def test_detect_browser_host_prefers_physical_ip_over_vpn(self):
         with patch("sima_cli.sdk.neat._collect_physical_ipv4s_for_certs", return_value=["192.168.76.4"]), \
              patch("sima_cli.sdk.neat.get_local_ip_candidates", return_value=[("utun4", "172.16.1.254")]):

@@ -936,7 +936,15 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         if isinstance(code_ui_https, dict):
             docker_cmd.extend(["-e", f"CODE_SERVER_HTTPS_PORT={code_ui_https['container']}"])
             docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_HTTPS_PORT={code_ui_https['container']}"])
+    editor_mappings = set()
+    if config.code_server_without_password:
+        for name in ("codeUI", "codeUIHttps"):
+            entry = config.port_map.get(name)
+            if isinstance(entry, dict):
+                editor_mappings.add(f"{entry['host']}:{entry['container']}/{entry['protocol']}")
     for mapping in config.port_args:
+        if mapping in editor_mappings:
+            mapping = f"127.0.0.1:{mapping}"
         docker_cmd.extend(["-p", mapping])
     if config.config_host_dir:
         docker_cmd.extend(["-v", f"{config.config_host_dir}:/home/docker/.insight-config"])
@@ -1023,7 +1031,7 @@ def _print_code_ui_panel(config: NeatRunConfig, code_url: str, opened: bool) -> 
         return
     status = "Opened in your browser." if opened else "Open this URL in your browser."
     if config.code_server_without_password:
-        security_lines = ["Password authentication disabled; access through your authenticated gateway."]
+        security_lines = ["Password authentication disabled; editor ports bind to 127.0.0.1. Access through your authenticated gateway."]
     elif config.code_ui_backend == "code-server":
         security_lines = [
             f"[yellow]Password:[/yellow] {config.code_ui_token}",

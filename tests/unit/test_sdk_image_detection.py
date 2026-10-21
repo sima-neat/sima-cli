@@ -2265,6 +2265,35 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 self.assertIn("CODE_SERVER_WITHOUT_PASSWORD=1", cmd)
                 self.assertFalse(any(arg.startswith(("OPENVSCODE_SERVER_TOKEN=", "CODE_SERVER_PASSWORD=")) for arg in cmd))
 
+    def test_passwordless_binds_only_editor_ports_to_loopback(self):
+        for passwordless in (False, True):
+            with self.subTest(passwordless=passwordless), TemporaryDirectory() as tmpdir:
+                with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
+                     patch("sima_cli.sdk.neat._ensure_certificates", return_value=(Path(tmpdir) / "cert", Path(tmpdir) / "key")), \
+                     patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="127.0.0.1"):
+                    config = prepare_neat_container_run(
+                        tmpdir, "sdk-latest", code_server_without_password=passwordless,
+                    )
+                # Exercise remapped host ports as well as the default container ports.
+                for index, name in enumerate(("codeUI", "codeUIHttps")):
+                    entry = config.port_map[name]
+                    old_mapping = f"{entry['host']}:{entry['container']}/tcp"
+                    entry["host"] = 23000 + index
+                    config.port_args[config.port_args.index(old_mapping)] = f"{entry['host']}:{entry['container']}/tcp"
+                cmd = []
+                append_neat_docker_args(cmd, config)
+                mappings = [cmd[i + 1] for i, value in enumerate(cmd) if value == "-p"]
+                editor = {"23000:9999/tcp", "23001:10000/tcp"}
+                expected = [
+                    f"127.0.0.1:{mapping}" if passwordless and mapping in editor else mapping
+                    for mapping in config.port_args
+                ]
+                self.assertEqual(mappings, expected)
+                if passwordless:
+                    for mapping in editor:
+                        self.assertNotIn(mapping, mappings)
+                        self.assertIn(f"127.0.0.1:{mapping}", mappings)
+
     def test_setup_passwordless_flag_and_environment(self):
         for args, env, expected in (
             (["--code-server-without-password"], {}, True),

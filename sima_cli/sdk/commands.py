@@ -340,7 +340,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     "--code-server-without-password",
     is_flag=True,
     envvar="CODE_SERVER_WITHOUT_PASSWORD",
-    help="Disable Neat SDK editor password authentication behind an authenticated gateway. Requires container recreation.",
+    help="Disable code-server password authentication and bind editor ports to 127.0.0.1 for an authenticated gateway. Requires container recreation.",
 )
 @click.option(
     "--no-insight",
@@ -438,6 +438,8 @@ def setup(
 
     Set CODE_SERVER_WITHOUT_PASSWORD=1 or pass --code-server-without-password
     for code-server behind an authenticated gateway with trusted HTTPS.
+    Passwordless HTTP and HTTPS editor ports bind to 127.0.0.1 only; the gateway
+    must reach them through the Docker host loopback interface.
     The option only applies when code-server is detected in the SDK image;
     OpenVSCode authentication remains unchanged. Existing code-server containers
     must be recreated. Keep password authentication for direct remote HTTPS

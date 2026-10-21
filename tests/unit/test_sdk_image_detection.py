@@ -2233,6 +2233,33 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 f"https://localhost:{config.port_map['codeUIHttps']['host']}/?tkn={config.code_ui_token}&folder=/workspace",
             )
 
+    def test_existing_editor_detection_ignores_mutable_tag(self):
+        from sima_cli.sdk.utils import _existing_container_has_code_server
+        for running in (True, False):
+            for backend in ("code-server", "openvscode"):
+                with self.subTest(running=running, backend=backend), \
+                     patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(
+                         returncode=0, stdout=f"{str(running).lower()} sha256:original-image\n"
+                     )) as inspect, \
+                     patch("sima_cli.sdk.utils._container_code_ui_backend", return_value=backend) as live, \
+                     patch("sima_cli.sdk.utils._image_has_code_server", return_value=backend == "code-server") as image:
+                    self.assertEqual(_existing_container_has_code_server("retained-sdk"), backend == "code-server")
+                    self.assertEqual(inspect.call_args.args[0][-1], "retained-sdk")
+                    if running:
+                        live.assert_called_once_with("retained-sdk")
+                        image.assert_not_called()
+                    else:
+                        live.assert_not_called()
+                        image.assert_called_once_with("sha256:original-image")
+
+    def test_existing_editor_inspection_failure_does_not_fall_back_to_tag(self):
+        from sima_cli.sdk.utils import _existing_container_has_code_server
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=1, stdout="")), \
+             patch("sima_cli.sdk.utils._image_has_code_server") as image:
+            with self.assertRaisesRegex(RuntimeError, "Cannot inspect"):
+                _existing_container_has_code_server("retained-sdk")
+        image.assert_not_called()
+
     def test_image_code_server_probe_requires_success(self):
         from sima_cli.sdk.utils import _image_has_code_server
         for status in (0, 1, 125):
@@ -3673,7 +3700,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_setup_passwordless_refuses_existing_neat_container(self):
         image = "ghcr.io/sima-neat/sdk:latest"
-        with patch("sima_cli.sdk.utils._image_has_code_server", return_value=True), \
+        with patch("sima_cli.sdk.utils._existing_container_has_code_server", return_value=True) as detect, \
              patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
@@ -3686,6 +3713,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="ghcr.io-sima-neat-sdk-latest"):
             with self.assertRaisesRegex(RuntimeError, "Cannot apply --code-server-without-password"):
                 setup_and_start(code_server_without_password=True, yes_to_all=False, noninteractive=False)
+
+        detect.assert_called_once_with("ghcr.io-sima-neat-sdk-latest")
 
     def test_setup_repairs_existing_container_user_mapping_before_attach(self):
         image = "ghcr.io/sima-neat/sdk:latest"

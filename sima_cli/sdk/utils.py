@@ -1609,6 +1609,30 @@ def _image_has_code_server(image: str) -> bool:
     return result.returncode == 0
 
 
+def _existing_container_has_code_server(container_name: str) -> bool:
+    """Inspect the retained container, never the image tag selected for setup."""
+    result = subprocess.run(
+        ["docker", "inspect", "--type", "container", "--format",
+         "{{.State.Running}} {{.Image}}", container_name],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    fields = result.stdout.strip().split()
+    if (result.returncode != 0 or len(fields) != 2
+            or fields[0] not in {"true", "false"} or not fields[1].startswith("sha256:")):
+        raise RuntimeError(f"Cannot inspect the editor backend for existing container '{container_name}'.")
+    if fields[0] == "true":
+        backend = _container_code_ui_backend(container_name)
+        if not backend:
+            raise RuntimeError(f"Cannot detect the editor backend in existing container '{container_name}'.")
+        return backend == "code-server"
+    # docker exec cannot inspect a stopped container. Probe its immutable image
+    # without starting SDK services or resolving its potentially moved tag.
+    return _image_has_code_server(fields[1])
+
+
 def _container_code_ui_backend(sdk_container_name: str) -> str:
     detection_script = (
         f"if test -x {shlex.quote(CODE_SERVER_BIN)}; then printf code-server; "

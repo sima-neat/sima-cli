@@ -1376,9 +1376,9 @@ def setup_and_start(
             )
         else:
             if code_server_without_password and is_neat_sdk_image(img):
-                from sima_cli.sdk.utils import _image_has_code_server
+                from sima_cli.sdk.utils import _existing_container_has_code_server
 
-                if _image_has_code_server(img):
+                if _existing_container_has_code_server(existing_container):
                     raise RuntimeError(
                         "Cannot apply --code-server-without-password to an existing Neat SDK "
                         "container. Remove and recreate the container when prompted to change "

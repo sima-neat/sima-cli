@@ -21,6 +21,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from sima_cli.utils.net import get_local_ip_candidates
+from sima_cli.sdk.browser_ca import publish_browser_ca
 
 
 NEAT_PORT_MAP_SCHEMA = "sima.neat.port-map.v1"
@@ -572,6 +573,7 @@ def _generate_self_signed_cert(cert_file: Path, key_file: Path, hosts: List[str]
 
 def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all: bool, noninteractive: bool) -> Tuple[Path, Path]:
     cert_dir.mkdir(parents=True, exist_ok=True)
+    (cert_dir / "sima-sdk-rootCA.pem").unlink(missing_ok=True)
     cert_file = cert_dir / "neat-sdk.pem"
     key_file = cert_dir / "neat-sdk-key.pem"
     hosts = _collect_cert_hosts(devkit_env)
@@ -590,6 +592,7 @@ def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all:
             [mkcert, "-cert-file", str(cert_file), "-key-file", str(key_file), *hosts],
             check=True,
         )
+        publish_browser_ca(cert_dir, mkcert)
     else:
         _generate_self_signed_cert(cert_file, key_file, hosts)
     return cert_file, key_file
@@ -723,6 +726,7 @@ def refresh_neat_certificates(
     # silently left out on a re-run.
     expected_hosts = _collect_cert_hosts(devkit_env)
     if cert_file.exists() and _cert_covers_hosts(cert_file, expected_hosts):
+        publish_browser_ca(cert_dir)
         return False
     action = "Re-issuing" if cert_file.exists() else "Generating"
     print(f"🔐 {action} Neat SDK certificate for host IP {host_ip} ...")

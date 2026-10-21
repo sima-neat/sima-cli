@@ -693,9 +693,15 @@ def selectable_resource_handler(metadata):
     - 'Skip' option appended at the end
     - Honors `selected: true` and existing `resources` for preselection
     - Removes unselected items from `selectable-resources` field
+    - Skips opt-in resources when stdin is not a terminal
     """
     selectable = metadata.get("selectable-resources")
     if not selectable:
+        return metadata
+
+    if sys.stdin is None or not sys.stdin.isatty():
+        click.echo("Skipping optional resources because stdin is not a terminal.")
+        metadata["selectable-resources"] = []
         return metadata
 
     # ──────────────────────────────────────────────

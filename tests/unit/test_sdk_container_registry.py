@@ -536,7 +536,8 @@ class TestSdkContainerRegistry(unittest.TestCase):
 
         self.assertEqual(run.call_count, 2)
         retry_script = run.call_args_list[1].args[0][-1]
-        self.assertIn("export DEVKIT_SYNC_PASSWORD=secret", retry_script)
+        self.assertNotIn("secret", retry_script)
+        self.assertEqual(run.call_args.kwargs["env"]["DEVKIT_SYNC_PASSWORD"], "secret")
         self.assertIn("operator@10.42.0.2", retry_script)
 
 if __name__ == "__main__":

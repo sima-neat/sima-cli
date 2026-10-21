@@ -850,7 +850,8 @@ class TestSdkImageDetection(unittest.TestCase):
         script = run.call_args.args[0][-1]
         self.assertIn("export DEVKIT_HOST_NFS_AVAILABLE=0", script)
         self.assertIn('DEVKIT_SYNC_METHOD:-none', script)
-        self.assertIn("export DEVKIT_SYNC_PASSWORD=secret", script)
+        self.assertNotIn("secret", script)
+        self.assertEqual(run.call_args.kwargs["env"]["DEVKIT_SYNC_PASSWORD"], "secret")
         self.assertIn("PreferredAuthentications=password", script)
         self.assertIn("operator@10.0.0.20", script)
 

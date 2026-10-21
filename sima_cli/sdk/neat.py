@@ -11,6 +11,7 @@ import ssl
 import subprocess
 import time
 import webbrowser
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -573,7 +574,9 @@ def _generate_self_signed_cert(cert_file: Path, key_file: Path, hosts: List[str]
 
 def _ensure_certificates(cert_dir: Path, devkit_env: Optional[dict], yes_to_all: bool, noninteractive: bool) -> Tuple[Path, Path]:
     cert_dir.mkdir(parents=True, exist_ok=True)
-    (cert_dir / "sima-sdk-rootCA.pem").unlink(missing_ok=True)
+    # Optional CA cleanup must not prevent issuing the HTTPS certificate.
+    with suppress(OSError):
+        (cert_dir / "sima-sdk-rootCA.pem").unlink(missing_ok=True)
     cert_file = cert_dir / "neat-sdk.pem"
     key_file = cert_dir / "neat-sdk-key.pem"
     hosts = _collect_cert_hosts(devkit_env)

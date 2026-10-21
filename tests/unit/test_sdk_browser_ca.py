@@ -92,3 +92,28 @@ def test_temporary_cleanup_error_preserves_staging_failure(tmp_path):
     assert attempted[0] == tmp_path / 'sima-sdk-rootCA.pem'
     assert attempted[1] != attempted[0]
     assert attempted[1].parent == tmp_path
+
+
+def test_certificate_generation_continues_when_stale_ca_is_a_directory(tmp_path):
+    from sima_cli.sdk import neat
+    (tmp_path / 'sima-sdk-rootCA.pem').mkdir()
+    with patch.object(neat, '_collect_cert_hosts', return_value=['localhost']), \
+         patch.object(neat, '_ensure_mkcert', return_value='mkcert'), \
+         patch.object(neat, '_run_mkcert_with_fallback', return_value=True), \
+         patch.object(neat.subprocess, 'run') as run, \
+         patch.object(neat, 'publish_browser_ca', return_value=False) as publish:
+        cert, key = neat._ensure_certificates(tmp_path, None, True, True)
+    run.assert_called_once_with(
+        ['mkcert', '-cert-file', str(cert), '-key-file', str(key), 'localhost'], check=True,
+    )
+    publish.assert_called_once_with(tmp_path, 'mkcert')
+
+
+def test_certificate_fallback_continues_when_stale_ca_cleanup_is_denied(tmp_path):
+    from sima_cli.sdk import neat
+    with patch.object(Path, 'unlink', side_effect=PermissionError('cannot remove CA')), \
+         patch.object(neat, '_collect_cert_hosts', return_value=['localhost']), \
+         patch.object(neat, '_ensure_mkcert', side_effect=RuntimeError('unavailable')), \
+         patch.object(neat, '_generate_self_signed_cert') as generate:
+        cert, key = neat._ensure_certificates(tmp_path, None, True, True)
+    generate.assert_called_once_with(cert, key, ['localhost'])

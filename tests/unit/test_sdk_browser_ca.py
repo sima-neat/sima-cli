@@ -1,4 +1,5 @@
 import datetime
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from cryptography import x509
@@ -60,3 +61,34 @@ def test_missing_mkcert_removes_stale_ca_without_failing_setup(tmp_path):
     with patch('sima_cli.sdk.browser_ca.shutil.which', return_value=None):
         assert not publish_browser_ca(tmp_path)
     assert not destination.exists()
+
+
+def test_directory_at_destination_does_not_abort_setup(tmp_path):
+    destination = tmp_path / 'sima-sdk-rootCA.pem'
+    destination.mkdir()
+    with patch('sima_cli.sdk.browser_ca.shutil.which', return_value=None):
+        assert not publish_browser_ca(tmp_path)
+    assert destination.is_dir()
+
+
+def test_permission_denied_removing_destination_does_not_abort_setup(tmp_path):
+    with patch('sima_cli.sdk.browser_ca.shutil.which', return_value=None), \
+         patch.object(Path, 'unlink', side_effect=PermissionError('read-only directory')) as unlink:
+        assert not publish_browser_ca(tmp_path)
+    unlink.assert_called_once_with(missing_ok=True)
+
+
+def test_temporary_cleanup_error_preserves_staging_failure(tmp_path):
+    root, _, _ = certificates(tmp_path)
+    attempted = []
+    def denied(path, **kwargs):
+        attempted.append(path)
+        raise PermissionError('read-only directory')
+    with patch('sima_cli.sdk.browser_ca.subprocess.run', return_value=Mock(stdout=str(root))), \
+         patch('sima_cli.sdk.browser_ca.os.replace', side_effect=PermissionError('cannot publish')), \
+         patch.object(Path, 'unlink', denied):
+        assert not publish_browser_ca(tmp_path, 'mkcert')
+    assert len(attempted) == 2
+    assert attempted[0] == tmp_path / 'sima-sdk-rootCA.pem'
+    assert attempted[1] != attempted[0]
+    assert attempted[1].parent == tmp_path

@@ -1,4 +1,5 @@
 """Stage only the verified public mkcert CA for the SDK login download."""
+from contextlib import suppress
 import os
 from pathlib import Path
 import shutil
@@ -41,9 +42,12 @@ def publish_browser_ca(cert_dir: Path, mkcert=None) -> bool:
         os.replace(temporary, destination)
         return True
     except Exception:
-        # Optional browser help must not break SDK setup or retain stale trust.
-        destination.unlink(missing_ok=True)
+        # Cleanup is best effort: optional browser help must not break setup.
+        # The download endpoint independently verifies any certificate left behind.
+        with suppress(OSError):
+            destination.unlink(missing_ok=True)
         return False
     finally:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)

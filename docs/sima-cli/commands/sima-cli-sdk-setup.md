@@ -17,6 +17,7 @@ sima-cli sdk setup [OPTIONS]
 | `--noninteractive, --non-interactive, -n` | Run in non-interactive mode (auto-select defaults). |
 | `-y, --yes` | Accept setup defaults; install Model Compiler from a local ZIP if available, otherwise online. |
 | `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>'. |
+| `--code-server-without-password` | Disable Neat SDK editor password authentication behind an authenticated gateway. Requires container recreation. |
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
@@ -41,6 +42,13 @@ Usage: sima-cli sdk setup [OPTIONS]
 
   Initialize SDK environment and select components to start.
 
+  Set CODE_SERVER_WITHOUT_PASSWORD=1 or pass --code-server-without-password
+  for code-server behind an authenticated gateway with trusted HTTPS. The
+  option only applies when code-server is detected in the SDK image;
+  OpenVSCode authentication remains unchanged. Existing code-server containers
+  must be recreated. Keep password authentication for direct remote HTTPS
+  access to retain the login page certificate-help flow.
+
 Options:
   -n, --noninteractive, --non-interactive
                                   Run in non-interactive mode (auto-select
@@ -50,6 +58,9 @@ Options:
                                   otherwise online.
   --devkit TEXT                   Configure DevKit integration for setup. Use
                                   '--devkit <IP>'.
+  --code-server-without-password  Disable Neat SDK editor password
+                                  authentication behind an authenticated
+                                  gateway. Requires container recreation.
   --no-insight                    Start Neat SDK without Insight
                                   UI/video/WebRTC port mappings.
   --insight-video-channels INTEGER RANGE

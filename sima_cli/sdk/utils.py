@@ -1597,6 +1597,18 @@ def ensure_codex_vscode_extension_installed(
     print("✅ Browser VS Code extensions are ready.")
 
 
+def _image_has_code_server(image: str) -> bool:
+    """Probe the image before creation, without starting its SDK services."""
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--entrypoint", "sh",
+         image, "-c", f"test -x {shlex.quote(CODE_SERVER_BIN)}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def _container_code_ui_backend(sdk_container_name: str) -> str:
     detection_script = (
         f"if test -x {shlex.quote(CODE_SERVER_BIN)}; then printf code-server; "
@@ -2184,6 +2196,7 @@ def start_docker_container(
     minimal=False,
     all_extensions=False,
     container_build=False,
+    code_server_without_password=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -2336,6 +2349,10 @@ def start_docker_container(
             reserved_ports_from_neat_port_map,
         )
 
+        if code_server_without_password and not _image_has_code_server(image):
+            print("ℹ️  Ignoring --code-server-without-password: code-server was not detected in the SDK image.")
+            code_server_without_password = False
+
         base_docker_cmd = list(docker_cmd)
         neat_run_config = None
         last_result = None
@@ -2352,6 +2369,7 @@ def start_docker_container(
                 minimal=minimal,
                 reserved_ports=reserved_ports,
                 publish_edgematic_studio_port=publish_edgematic_studio_port,
+                code_server_without_password=code_server_without_password,
             )
             launch_cmd = list(base_docker_cmd)
             append_neat_docker_args(launch_cmd, neat_run_config)

@@ -55,6 +55,7 @@ class NeatRunConfig:
     key_file_host_path: str
     webrtc_host_ip: str = ""
     code_ui_token: str = ""
+    code_server_without_password: bool = False
     code_ui_supported: bool = True
     code_ui_backend: str = "openvscode"
     code_ui_container_name: str = ""
@@ -858,6 +859,7 @@ def prepare_neat_container_run(
     reserved_ports: Optional[set] = None,
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
     publish_edgematic_studio_port: bool = False,
+    code_server_without_password: bool = False,
 ) -> NeatRunConfig:
     no_insight = no_insight or minimal
     container_dir = Path(workspace) / f".{container_name}"
@@ -879,6 +881,7 @@ def prepare_neat_container_run(
             cert_file_host_path="",
             key_file_host_path="",
             webrtc_host_ip="",
+            code_server_without_password=code_server_without_password,
         )
     webrtc_host_ip = _detect_webrtc_host_ip(devkit_env)
     cert_file, key_file = _ensure_certificates(
@@ -888,8 +891,9 @@ def prepare_neat_container_run(
         noninteractive=noninteractive,
     )
     code_ui_token = ""
+    code_ui_url = ""
     code_ui = port_map.get("codeUI")
-    if isinstance(code_ui, dict):
+    if isinstance(code_ui, dict) and not code_server_without_password:
         code_ui_token = _generate_code_ui_token()
         code_ui_https = port_map.get("codeUIHttps")
         code_ui_url = f"http://localhost:{int(code_ui['host'])}"
@@ -908,6 +912,7 @@ def prepare_neat_container_run(
         code_ui_token=code_ui_token,
         code_ui_container_name=container_name,
         code_ui_base_url=code_ui_url if isinstance(code_ui, dict) else "",
+        code_server_without_password=code_server_without_password,
     )
 
 
@@ -916,7 +921,9 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         docker_cmd.extend(["-e", f"MTX_RTSPTRANSPORTS={NEAT_MEDIAMTX_RTSP_TRANSPORTS}"])
     if config.webrtc_host_ip:
         docker_cmd.extend(["-e", f"CONTAINER_HOST_IP={config.webrtc_host_ip}"])
-    if config.code_ui_token:
+    if config.code_server_without_password:
+        docker_cmd.extend(["-e", "CODE_SERVER_WITHOUT_PASSWORD=1"])
+    elif config.code_ui_token:
         docker_cmd.extend(["-e", f"CODE_SERVER_PASSWORD={config.code_ui_token}"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_TOKEN={config.code_ui_token}"])
     cert_config = config.port_map.get("cert")
@@ -1015,7 +1022,9 @@ def _print_code_ui_panel(config: NeatRunConfig, code_url: str, opened: bool) -> 
     if not code_url:
         return
     status = "Opened in your browser." if opened else "Open this URL in your browser."
-    if config.code_ui_backend == "code-server":
+    if config.code_server_without_password:
+        security_lines = ["Password authentication disabled; access through your authenticated gateway."]
+    elif config.code_ui_backend == "code-server":
         security_lines = [
             f"[yellow]Password:[/yellow] {config.code_ui_token}",
             "Enter this password when code-server prompts you.",

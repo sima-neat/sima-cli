@@ -1,4 +1,4 @@
-"""Exercise pairing's trust gate with real OpenSSH known_hosts lookups."""
+"""Regression coverage for SDK pairing trust and credential handling."""
 import os
 import subprocess
 from unittest.mock import Mock, patch
@@ -19,47 +19,15 @@ def bootstrap_script(port=22):
 
 
 @pytest.mark.parametrize("port", [22, 2222])
-@pytest.mark.parametrize("trusted", [False, True])
-def test_trust_gate_preserves_hashed_keys_and_blocks_unknown_hosts(tmp_path, port, trusted):
-    ssh_dir = tmp_path / ".ssh"
-    ssh_dir.mkdir()
-    key = ssh_dir / "fixture"
-    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
-    identity = "192.0.2.10" if port == 22 else "[192.0.2.10]:2222"
-    # A key for another port must not authorize this endpoint.
-    host = identity if trusted else "[192.0.2.10]:2200"
-    known_hosts = ssh_dir / "known_hosts"
-    known_hosts.write_text(f"{host} {key.with_suffix('.pub').read_text()}")
-    subprocess.run(["ssh-keygen", "-H", "-f", str(known_hosts)], capture_output=True, check=True)
-    before = known_hosts.read_bytes()
+def test_pairing_uses_first_use_trust_without_resetting_saved_keys(port):
     script = bootstrap_script(port)
-    gate = script[script.index("    # Never replace saved trust"):script.index("    if ! SSHPASS=")]
-    result = subprocess.run(["bash", "-c", gate], env={**os.environ, "HOME": str(tmp_path)}, capture_output=True, text=True)
-    assert result.returncode == (0 if trusted else 42)
-    assert known_hosts.read_bytes() == before
+    assert "StrictHostKeyChecking=accept-new" in script
     assert "ssh-keyscan" not in script
     assert "ssh-keygen -R" not in script
-    assert "StrictHostKeyChecking=yes" in script
-    assert script.index("exit 42") < script.index("sshpass -e ssh-copy-id")
-
-
-@pytest.mark.parametrize("interactive", [False, True])
-def test_unknown_key_requires_verification_without_password_retry(interactive):
-    result = Mock(returncode=42, stdout="__SIMA_DEVKIT_BOOTSTRAP_STATUS=host_key_verification_required\n", stderr="")
-    with patch("sima_cli.sdk.utils.subprocess.run", return_value=result), \
-         patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
-         patch("sima_cli.sdk.utils.sys.stdout.isatty", return_value=True), \
-         patch("sima_cli.sdk.utils.getpass.getpass") as password:
-        with pytest.raises(RuntimeError, match="trusted channel") as error:
-            bootstrap_devkit_container("sdk", {
-                "devkit_ip": "192.0.2.10", "devkit_port": 2222,
-                "devkit_password": "test", "bootstrap_interactive": interactive,
-                "noninteractive": not interactive,
-            })
-    password.assert_not_called()
-    assert "StrictHostKeyChecking=ask" in str(error.value)
-    assert "PreferredAuthentications=none" in str(error.value)
-    assert "-p 2222" in str(error.value)
+    assert "host_key_verification_required" not in script
+    assert "ssh-keygen -F" not in script
+    assert f'-p {port}' in script
+    subprocess.run(["bash", "-n"], input=script, text=True, check=True)
 
 
 @pytest.mark.parametrize("mode", ["noninteractive", "interactive", "interactive_retry"])
@@ -84,3 +52,77 @@ def test_custom_password_never_appears_in_docker_arguments(mode):
         assert argv[argv.index("--env") + 1] == "DEVKIT_SYNC_PASSWORD"
         assert call.kwargs["env"]["DEVKIT_SYNC_PASSWORD"] == secret
     assert os.environ.get("DEVKIT_SYNC_PASSWORD") != secret
+
+
+def test_openssh_accepts_new_and_saved_keys_but_rejects_changed_key(tmp_path):
+    """Use real SSH handshakes to check first-use and mismatch behavior."""
+    import shutil
+    import socket
+    import threading
+
+    import paramiko
+
+    if not shutil.which("ssh"):
+        pytest.skip("OpenSSH client is required")
+
+    class Server(paramiko.ServerInterface):
+        def __init__(self):
+            self.auth_attempted = False
+
+        def check_auth_none(self, username):
+            self.auth_attempted = True
+            return paramiko.AUTH_FAILED
+
+    key = paramiko.RSAKey.generate(2048)
+    replacement = paramiko.RSAKey.generate(2048)
+    known_hosts = tmp_path / "known_hosts"
+    # Extract the actual pairing policy, so this also catches policy regressions.
+    import re
+    policy = re.search(r"StrictHostKeyChecking=(\S+)", bootstrap_script()).group(1)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(10)
+        port = listener.getsockname()[1]
+        for server_key, expect_auth in [(key, True), (key, True), (replacement, False)]:
+            server = Server()
+            done = threading.Event()
+            errors = []
+
+            def serve():
+                try:
+                    conn, _ = listener.accept()
+                    with paramiko.Transport(conn) as transport:
+                        transport.add_server_key(server_key)
+                        transport.start_server(server=server)
+                        done.wait(10)
+                except (EOFError, ConnectionResetError):
+                    pass  # The client closes immediately on host-key rejection.
+                except Exception as exc:
+                    errors.append(exc)
+
+            thread = threading.Thread(target=serve, daemon=True)
+            thread.start()
+            before = known_hosts.read_bytes() if known_hosts.exists() else None
+            try:
+                result = subprocess.run([
+                    "ssh", "-F", os.devnull, "-p", str(port),
+                    "-o", f"StrictHostKeyChecking={policy}",
+                    "-o", f"UserKnownHostsFile={known_hosts}",
+                    "-o", f"GlobalKnownHostsFile={os.devnull}",
+                    "-o", "HashKnownHosts=yes", "-o", "BatchMode=yes",
+                    "-o", "PreferredAuthentications=none", "-o", "ConnectTimeout=5",
+                    "test@127.0.0.1", "true",
+                ], capture_output=True, text=True, timeout=10)
+            finally:
+                done.set()
+                thread.join(10)
+            assert not thread.is_alive()
+            assert not errors
+            assert server.auth_attempted == expect_auth, result.stderr
+            assert known_hosts.exists()
+            if before is not None:
+                assert known_hosts.read_bytes() == before
+            if not expect_auth:
+                assert result.returncode != 0
+                assert "REMOTE HOST IDENTIFICATION HAS CHANGED" in result.stderr

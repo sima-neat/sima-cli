@@ -225,3 +225,13 @@ For command-specific prerequisites, see the generated [command reference](docs/s
 ## Support
 
 For issues and feature requests, use the sima-cli GitHub repository or contact the SiMa.ai development team.
+
+### Remote browser certificate help
+
+SDK setup stages a verified public mkcert CA certificate alongside the SDK HTTPS
+certificate. SDK images with browser certificate help can offer that file for
+download on the sign-in page, with instructions for the browser computer.
+Only the public certificate is staged; the mkcert private key stays on the host.
+If the issuing CA cannot be verified, including a plain self-signed fallback,
+no CA download is published. Re-running setup refreshes the staged file even
+when the existing HTTPS certificate does not need to be reissued.

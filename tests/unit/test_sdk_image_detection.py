@@ -3146,7 +3146,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
     def test_setup_warns_that_edgematic_studio_cannot_reach_an_existing_container(self):
         image = "ghcr.io/sima-neat/sdk:latest"
-        with patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
+        with patch("sima_cli.sdk.neat.refresh_neat_certificates"), \
+             patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
              patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
@@ -3488,7 +3489,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
     def test_setup_repairs_existing_container_user_mapping_before_attach(self):
         image = "ghcr.io/sima-neat/sdk:latest"
         container = "ghcr.io-sima-neat-sdk-latest"
-        with patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
+        with patch("sima_cli.sdk.neat.refresh_neat_certificates") as refresh_certs, \
+             patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
              patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
              patch("sima_cli.sdk.install.syscheck"), \
              patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
@@ -3507,6 +3509,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)) as run:
             setup_and_start(no_model_sdk=True, yes_to_all=True, noninteractive=True)
 
+        refresh_certs.assert_called_once_with(
+            "/tmp/workspace", container, None, yes_to_all=True, noninteractive=True,
+        )
         configure_user.assert_called_once_with(container, "devuser", 1000, 1000)
         self.assertEqual(
             run.call_args.args[0],
@@ -4847,11 +4852,15 @@ class TestRefreshNeatCertificates(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_noop_when_no_host_ip(self):
-        with patch.object(self.neat, "_ensure_certificates") as ensure:
+    def test_backfills_mounted_ca_without_reissuing_when_no_host_ip(self):
+        mounted = Path(self.workspace) / "original-mounted-certs"
+        with patch.object(self.neat, "_container_sdk_cert_dir", return_value=mounted), \
+             patch.object(self.neat, "publish_browser_ca") as publish, \
+             patch.object(self.neat, "_ensure_certificates") as ensure:
             self.assertFalse(
                 self.neat.refresh_neat_certificates(self.workspace, self.container, {})
             )
+            publish.assert_called_once_with(mounted)
             ensure.assert_not_called()
 
     def test_noop_when_cert_already_covers_host(self):

@@ -136,6 +136,17 @@ sima-cli sdk setup
 sima-cli sdk neat
 ```
 
+When pairing with `sdk setup --devkit`, the SDK user's `~/.ssh/known_hosts`
+must already contain a verified key for the DevKit and SSH port. Pairing preserves
+saved keys and uses strict host-key checking. If the key is missing, setup prints
+an SSH command to run inside the SDK container: compare the displayed fingerprint
+with one obtained from the DevKit console or a trusted administrator before
+accepting it, then rerun setup. The verification command disables authentication,
+so an authentication failure after accepting the key is expected. For automation,
+provision verified host keys in the SDK user's `known_hosts` before pairing.
+After a device reimage or key rotation, verify the replacement fingerprint before
+explicitly updating that entry; setup never resets trust automatically.
+
 Install Model Compiler from package metadata:
 
 ```bash

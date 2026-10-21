@@ -2513,6 +2513,23 @@ def bootstrap_devkit_container(container_name: str, devkit_env: dict):
         default=True,
     )
     registry_devkit_address = str(devkit_env.get("container_registry_devkit_address", ""))
+    trust_command = shlex.join([
+        "docker", "exec", "-it", container_name, "ssh",
+        "-o", "StrictHostKeyChecking=ask",
+        "-o", "PreferredAuthentications=none",
+        "-p", str(devkit_port), f"{devkit_user}@{devkit_ip}",
+    ])
+    host_key_guidance = (
+        "DevKit host-key verification is required. Obtain the SSH host-key fingerprint "
+        "from the DevKit console or your administrator through a trusted channel. "
+        f"Then run: {trust_command} . Accept only a matching fingerprint and rerun SDK setup "
+        "(authentication failure from this verification command is expected). "
+        "For a changed key, verify the replacement fingerprint before explicitly updating "
+        "the SDK user's known_hosts entry. Existing trusted keys are never removed by pairing."
+    )
+    # Docker reads a value-less --env option from its client environment.
+    # Keep credentials out of the shell program and process argument list.
+    bootstrap_env = dict(os.environ, DEVKIT_SYNC_PASSWORD=devkit_password)
     script = f"""set +e
 BOOTSTRAP_STATUS=unknown
 BOOTSTRAP_RC=0
@@ -2523,7 +2540,6 @@ export DEVKIT_HOST_EXPORT_PATH={shlex.quote(host_export)}
 export DEVKIT_HOST_PLATFORM={shlex.quote(host_platform)}
 export DEVKIT_HOST_NFS_AVAILABLE={shlex.quote("1" if host_nfs_available else "0")}
 export DEVKIT_SYNC_NONINTERACTIVE={shlex.quote("1" if noninteractive else "0")}
-export DEVKIT_SYNC_PASSWORD={shlex.quote(devkit_password)}
 if [ ! -e /workspace ] && [ ! -L /workspace ]; then
   ln -s /home/docker/sima-cli /workspace 2>/dev/null || true
 fi
@@ -2545,10 +2561,13 @@ else
     if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
       ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "devkit-sync@$(hostname)" >/dev/null
     fi
-    ssh-keygen -R {shlex.quote(devkit_ip)} -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1 || true
-    ssh-keygen -R {shlex.quote(f"[{devkit_ip}]:{devkit_port}")} -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1 || true
-    ssh-keyscan -H -p {devkit_port} {shlex.quote(devkit_ip)} >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
-    chmod 600 "$HOME/.ssh/known_hosts"
+    # Never replace saved trust with unauthenticated network discovery.
+    # Non-default SSH ports have separate known_hosts identities.
+    if ! ssh-keygen -F {shlex.quote(devkit_ip if devkit_port == 22 else f"[{devkit_ip}]:{devkit_port}")} -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1; then
+      echo "DevKit host key is not trusted. Verify its fingerprint before pairing." >&2
+      echo "__SIMA_DEVKIT_BOOTSTRAP_STATUS=host_key_verification_required"
+      exit 42
+    fi
     if ! SSHPASS="$DEVKIT_SYNC_PASSWORD" sshpass -e ssh-copy-id -f \
       -i "$HOME/.ssh/id_ed25519.pub" -p {devkit_port} \
       -o PreferredAuthentications=password -o PubkeyAuthentication=no \
@@ -2586,8 +2605,9 @@ exit "$BOOTSTRAP_RC"
 
     if bootstrap_interactive and not noninteractive and sys.stdin.isatty() and sys.stdout.isatty():
         proc = subprocess.run(
-            ["docker", "exec", "-it", container_name, "bash", "-lc", script],
+            ["docker", "exec", "-it", "--env", "DEVKIT_SYNC_PASSWORD", container_name, "bash", "-lc", script],
             text=True,
+            env=bootstrap_env,
             check=False,
         )
         if proc.returncode == 0:
@@ -2601,6 +2621,8 @@ exit "$BOOTSTRAP_RC"
                     "'dk container' command."
                 )
             return
+        if proc.returncode == 42:
+            raise RuntimeError(host_key_guidance)
         if proc.returncode == 41 and not devkit_env.get("credential_prompted"):
             print("ℹ️  The DevKit login did not work. Enter the device credentials to retry.")
             retry_user = input(f"DevKit username [{devkit_user}]: ").strip() or devkit_user
@@ -2618,11 +2640,13 @@ exit "$BOOTSTRAP_RC"
             return bootstrap_devkit_container(container_name, retry_env)
         raise RuntimeError(
             f"DevKit pairing failed in SDK container '{container_name}'. "
-            "Check the DevKit username and password, then rerun SDK setup."
+            "Check the DevKit username and password, and any SSH host-key mismatch, then rerun SDK setup. "
+            + host_key_guidance
         )
 
     proc = subprocess.run(
-        ["docker", "exec", "-i", container_name, "bash", "-lc", script],
+        ["docker", "exec", "-i", "--env", "DEVKIT_SYNC_PASSWORD", container_name, "bash", "-lc", script],
+        env=bootstrap_env,
         input=("\n" * 32),
         text=True,
         capture_output=True,
@@ -2681,8 +2705,9 @@ exit "$BOOTSTRAP_RC"
             "Retrying in interactive mode..."
         )
         interactive_proc = subprocess.run(
-            ["docker", "exec", "-it", container_name, "bash", "-lc", script],
+            ["docker", "exec", "-it", "--env", "DEVKIT_SYNC_PASSWORD", container_name, "bash", "-lc", script],
             text=True,
+            env=bootstrap_env,
             check=False,
         )
         if interactive_proc.returncode == 0:
@@ -2695,10 +2720,14 @@ exit "$BOOTSTRAP_RC"
             f"(exit={interactive_proc.returncode})."
         )
 
+    if proc.returncode == 42 or status == "host_key_verification_required":
+        raise RuntimeError(host_key_guidance)
+
     if status == "credential_setup_failed":
         raise RuntimeError(
             f"DevKit SSH key setup failed in SDK container '{container_name}'. "
-            "Check the DevKit username and password, then rerun SDK setup."
+            "Check the DevKit username and password, and any SSH host-key mismatch, then rerun SDK setup. "
+            + host_key_guidance
         )
 
     if status == "missing_sshpass":

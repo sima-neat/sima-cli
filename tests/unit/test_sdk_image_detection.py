@@ -2517,6 +2517,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         with patch("builtins.print") as mock_print, \
              patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="192.168.76.4"), \
              patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()) as browser_get, \
+             patch("sima_cli.sdk.neat._wait_for_code_ui", return_value=True), \
              patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser_open, \
              patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)
@@ -2557,6 +2558,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         with patch("builtins.print") as mock_print, \
              patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="localhost"), \
              patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
+             patch("sima_cli.sdk.neat._wait_for_code_ui", return_value=True), \
              patch("sima_cli.sdk.neat.webbrowser.open", return_value=False) as browser_open, \
              patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)
@@ -2588,6 +2590,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         with patch("builtins.print") as mock_print, \
              patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="localhost"), \
              patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
+             patch("sima_cli.sdk.neat._wait_for_code_ui", return_value=True), \
              patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser_open, \
              patch("sima_cli.sdk.neat.console.print") as console_print:
             print_neat_setup_summary(config)

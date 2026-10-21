@@ -1174,6 +1174,7 @@ def setup_and_start(
     all_extensions: bool = False,
     no_container_registry: bool = False,
     container_registry_port: Optional[int] = None,
+    code_server_without_password: bool = False,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -1371,8 +1372,18 @@ def setup_and_start(
                 minimal=minimal,
                 all_extensions=all_extensions,
                 container_build=container_build,
+                code_server_without_password=code_server_without_password,
             )
         else:
+            if code_server_without_password and is_neat_sdk_image(img):
+                from sima_cli.sdk.utils import _existing_container_has_code_server
+
+                if _existing_container_has_code_server(existing_container):
+                    raise RuntimeError(
+                        "Cannot apply --code-server-without-password to an existing Neat SDK "
+                        "container. Remove and recreate the container when prompted to change "
+                        "its authentication environment."
+                    )
             if (edgematic_studio or edgematic_studio_port) and is_neat_sdk_image(img):
                 option = "--edgematic-studio" if edgematic_studio else "--edgematic-studio-port"
                 click.echo(

@@ -44,6 +44,7 @@ from sima_cli.sdk.neat import (
     is_docker_port_collision_error,
     finalize_code_ui_auth,
     prepare_neat_container_run,
+    append_neat_docker_args,
     print_neat_setup_summary,
     reserved_ports_from_neat_port_map,
 )
@@ -2232,6 +2233,107 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 f"https://localhost:{config.port_map['codeUIHttps']['host']}/?tkn={config.code_ui_token}&folder=/workspace",
             )
 
+    def test_existing_editor_detection_ignores_mutable_tag(self):
+        from sima_cli.sdk.utils import _existing_container_has_code_server
+        for running in (True, False):
+            for backend in ("code-server", "openvscode"):
+                with self.subTest(running=running, backend=backend), \
+                     patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(
+                         returncode=0, stdout=f"{str(running).lower()} sha256:original-image\n"
+                     )) as inspect, \
+                     patch("sima_cli.sdk.utils._container_code_ui_backend", return_value=backend) as live, \
+                     patch("sima_cli.sdk.utils._image_has_code_server", return_value=backend == "code-server") as image:
+                    self.assertEqual(_existing_container_has_code_server("retained-sdk"), backend == "code-server")
+                    self.assertEqual(inspect.call_args.args[0][-1], "retained-sdk")
+                    if running:
+                        live.assert_called_once_with("retained-sdk")
+                        image.assert_not_called()
+                    else:
+                        live.assert_not_called()
+                        image.assert_called_once_with("sha256:original-image")
+
+    def test_existing_editor_inspection_failure_does_not_fall_back_to_tag(self):
+        from sima_cli.sdk.utils import _existing_container_has_code_server
+        with patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=1, stdout="")), \
+             patch("sima_cli.sdk.utils._image_has_code_server") as image:
+            with self.assertRaisesRegex(RuntimeError, "Cannot inspect"):
+                _existing_container_has_code_server("retained-sdk")
+        image.assert_not_called()
+
+    def test_image_code_server_probe_requires_success(self):
+        from sima_cli.sdk.utils import _image_has_code_server
+        for status in (0, 1, 125):
+            with self.subTest(status=status), patch(
+                "sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=status)
+            ) as run:
+                self.assertEqual(_image_has_code_server("sdk:test"), status == 0)
+                self.assertEqual(run.call_args.args[0], [
+                    "docker", "run", "--rm", "--network", "none", "--entrypoint", "sh",
+                    "sdk:test", "-c", "test -x /opt/code-server/bin/code-server",
+                ])
+
+    def test_passwordless_neat_container_environment(self):
+        for no_insight in (False, True):
+            with self.subTest(no_insight=no_insight), TemporaryDirectory() as tmpdir:
+                with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
+                     patch("sima_cli.sdk.neat._ensure_certificates", return_value=(Path(tmpdir) / "cert", Path(tmpdir) / "key")), \
+                     patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="127.0.0.1"), \
+                     patch("sima_cli.sdk.neat._generate_code_ui_token") as generate, \
+                     patch("sima_cli.sdk.neat._write_code_ui_token_cache") as cache:
+                    config = prepare_neat_container_run(
+                        tmpdir, "sdk-latest", no_insight=no_insight,
+                        code_server_without_password=True,
+                    )
+                generate.assert_not_called()
+                cache.assert_not_called()
+                self.assertEqual(config.code_ui_token, "")
+                cmd = []
+                append_neat_docker_args(cmd, config)
+                self.assertIn("CODE_SERVER_WITHOUT_PASSWORD=1", cmd)
+                self.assertFalse(any(arg.startswith(("OPENVSCODE_SERVER_TOKEN=", "CODE_SERVER_PASSWORD=")) for arg in cmd))
+
+    def test_passwordless_binds_only_editor_ports_to_loopback(self):
+        for passwordless in (False, True):
+            with self.subTest(passwordless=passwordless), TemporaryDirectory() as tmpdir:
+                with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
+                     patch("sima_cli.sdk.neat._ensure_certificates", return_value=(Path(tmpdir) / "cert", Path(tmpdir) / "key")), \
+                     patch("sima_cli.sdk.neat._detect_webrtc_host_ip", return_value="127.0.0.1"):
+                    config = prepare_neat_container_run(
+                        tmpdir, "sdk-latest", code_server_without_password=passwordless,
+                    )
+                # Exercise remapped host ports as well as the default container ports.
+                for index, name in enumerate(("codeUI", "codeUIHttps")):
+                    entry = config.port_map[name]
+                    old_mapping = f"{entry['host']}:{entry['container']}/tcp"
+                    entry["host"] = 23000 + index
+                    config.port_args[config.port_args.index(old_mapping)] = f"{entry['host']}:{entry['container']}/tcp"
+                cmd = []
+                append_neat_docker_args(cmd, config)
+                mappings = [cmd[i + 1] for i, value in enumerate(cmd) if value == "-p"]
+                editor = {"23000:9999/tcp", "23001:10000/tcp"}
+                expected = [
+                    f"127.0.0.1:{mapping}" if passwordless and mapping in editor else mapping
+                    for mapping in config.port_args
+                ]
+                self.assertEqual(mappings, expected)
+                if passwordless:
+                    for mapping in editor:
+                        self.assertNotIn(mapping, mappings)
+                        self.assertIn(f"127.0.0.1:{mapping}", mappings)
+
+    def test_setup_passwordless_flag_and_environment(self):
+        for args, env, expected in (
+            (["--code-server-without-password"], {}, True),
+            ([], {"CODE_SERVER_WITHOUT_PASSWORD": "1"}, True),
+            ([], {"CODE_SERVER_WITHOUT_PASSWORD": "0"}, False),
+            ([], {"CODE_SERVER_WITHOUT_PASSWORD": ""}, False),
+        ):
+            with self.subTest(args=args, env=env), \
+                 patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+                result = CliRunner().invoke(sdk, ["setup", *args], env=env)
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertEqual(setup_start.call_args.kwargs["code_server_without_password"], expected)
+
     def test_prepare_neat_container_run_accepts_no_insight(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.neat._is_port_available", return_value=True), \
@@ -2610,6 +2712,43 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("Enter this password when code-server prompts you.", panel_text)
         self.assertIn("Run neat inside the SDK", panel_text)
 
+    def test_passwordless_summary_probes_and_opens_localhost_only_for_editor(self):
+        for https in (False, True):
+            with self.subTest(https=https):
+                config = NeatRunConfig(
+                    port_map={
+                        "codeUI": {"protocol": "tcp", "host": 21333, "container": 9999},
+                        "codeUIHttps": {"protocol": "tcp", "host": 20786, "container": 10000, "scheme": "https"},
+                        "mainUI": {"host": 24031},
+                        "videoUI": {"host": 20907},
+                        "edgematicStudio": {"host": 8088},
+                    },
+                    port_args=[], config_host_dir="", cert_host_dir="/tmp/sdk-cert" if https else "",
+                    port_map_host_path="", cert_file_host_path="", key_file_host_path="",
+                    code_ui_backend="code-server", code_server_without_password=True,
+                )
+                with patch("builtins.print") as output, \
+                     patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="192.168.76.4"), \
+                     patch("sima_cli.sdk.neat.webbrowser.get", return_value=object()), \
+                     patch("sima_cli.sdk.neat._wait_for_code_ui", return_value=True) as wait, \
+                     patch("sima_cli.sdk.neat.webbrowser.open", return_value=True) as browser, \
+                     patch("sima_cli.sdk.neat.console.print"):
+                    print_neat_setup_summary(config)
+                scheme = "https" if https else "http"
+                port = 20786 if https else 21333
+                url = f"{scheme}://localhost:{port}/?folder=/workspace"
+                wait.assert_called_once_with(url)
+                browser.assert_called_once_with(url)
+                printed = "\n".join(str(call.args[0]) for call in output.call_args_list)
+                self.assertIn(url, printed)
+                self.assertIn("http://localhost:21333", printed)
+                self.assertNotIn("192.168.76.4:21333", printed)
+                self.assertNotIn("192.168.76.4:20786", printed)
+                self.assertIn(f"{scheme}://192.168.76.4:24031", printed)
+                self.assertIn(f"{scheme}://192.168.76.4:20907", printed)
+                self.assertIn("http://192.168.76.4:8088", printed)
+                self.assertIn("use the authenticated gateway for remote editor access", printed)
+
     def test_detect_browser_host_prefers_physical_ip_over_vpn(self):
         with patch("sima_cli.sdk.neat._collect_physical_ipv4s_for_certs", return_value=["192.168.76.4"]), \
              patch("sima_cli.sdk.neat.get_local_ip_candidates", return_value=[("utun4", "172.16.1.254")]):
@@ -2911,7 +3050,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertTrue(configure.call_args.kwargs["user_and_workspace_only"])
 
     def test_start_neat_container_passes_no_insight_to_prepare(self):
-        with TemporaryDirectory() as tmpdir:
+        with TemporaryDirectory() as tmpdir, patch("sima_cli.sdk.utils._image_has_code_server", return_value=True):
             neat_config = NeatRunConfig(
                 port_map={
                     "schema": "sima.neat.port-map.v1",
@@ -2941,6 +3080,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                     workspace=tmpdir,
                     image="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest",
                     no_insight=True,
+                    code_server_without_password=True,
                 )
 
         self.assertTrue(prepare.call_args.kwargs["no_insight"])
@@ -2953,6 +3093,55 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("9000-9079:9000-9079/udp", docker_cmd)
         self.assertNotIn("9100-9179:9100-9179/udp", docker_cmd)
         self.assertNotIn("40000-40199:40000-40199/udp", docker_cmd)
+
+        self.assertTrue(prepare.call_args.kwargs["code_server_without_password"])
+
+    def test_passwordless_ignored_without_code_server(self):
+        with TemporaryDirectory() as tmpdir, patch("sima_cli.sdk.utils._image_has_code_server", return_value=False):
+            neat_config = NeatRunConfig(
+                port_map={
+                    "schema": "sima.neat.port-map.v1",
+                    "cert": {"mount": "/sdk-cert", "certFile": "/sdk-cert/neat-sdk.pem", "keyFile": "/sdk-cert/neat-sdk-key.pem"},
+                },
+                port_args=[],
+                config_host_dir=f"{tmpdir}/.sdk-latest/insight-config",
+                cert_host_dir=f"{tmpdir}/.sdk-latest/sdk-cert",
+                port_map_host_path=f"{tmpdir}/.sdk-latest/insight-config/neat-port-map.json",
+                cert_file_host_path=f"{tmpdir}/.sdk-latest/sdk-cert/neat-sdk.pem",
+                key_file_host_path=f"{tmpdir}/.sdk-latest/sdk-cert/neat-sdk-key.pem",
+                webrtc_host_ip="",
+            )
+            docker_result = Mock(returncode=0, stdout="container-id\n", stderr="")
+            with patch("sima_cli.sdk.utils.platform.system", return_value="Linux"), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.utils.os.makedirs"), \
+                 patch("sima_cli.sdk.utils.configure_container"), \
+                 patch("sima_cli.sdk.utils.detect_current_user", return_value=("devuser", 1000, 1000)), \
+                 patch("sima_cli.sdk.neat.prepare_neat_container_run", return_value=neat_config) as prepare, \
+                 patch("sima_cli.sdk.neat.print_neat_setup_summary"), \
+                 patch("sima_cli.sdk.utils.subprocess.run", return_value=docker_result) as run:
+                start_docker_container(
+                    uid=1000,
+                    gid=1000,
+                    port=0,
+                    workspace=tmpdir,
+                    image="ghcr.io/sima-neat/sdk-feature-devkit-sync:latest",
+                    no_insight=True,
+                    code_server_without_password=True,
+                )
+
+        self.assertTrue(prepare.call_args.kwargs["no_insight"])
+        docker_cmd = _last_docker_run_command(run)
+        self.assertNotIn("8022:8022/tcp", docker_cmd)
+        self.assertNotIn("8554:8554/tcp", docker_cmd)
+        self.assertNotIn("9900:9900/tcp", docker_cmd)
+        self.assertNotIn("9999:9999/tcp", docker_cmd)
+        self.assertNotIn("8081:8081/tcp", docker_cmd)
+        self.assertNotIn("9000-9079:9000-9079/udp", docker_cmd)
+        self.assertNotIn("9100-9179:9100-9179/udp", docker_cmd)
+        self.assertNotIn("40000-40199:40000-40199/udp", docker_cmd)
+
+        self.assertFalse(prepare.call_args.kwargs["code_server_without_password"])
 
     def test_start_neat_container_minimal_passes_no_insight_to_prepare_and_configure(self):
         with TemporaryDirectory() as tmpdir:
@@ -3255,6 +3444,29 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertTrue(start_container.call_args.kwargs["minimal"])
         self.assertTrue(start_container.call_args.kwargs["no_insight"])
 
+    def test_setup_forwards_passwordless_to_container_creation(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions") as setup_extensions, \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None), \
+             patch("sima_cli.sdk.install.start_docker_container") as start_container:
+            setup_and_start(code_server_without_password=True, minimal=True, yes_to_all=True, noninteractive=True)
+
+        setup_extensions.assert_not_called()
+        self.assertEqual(start_container.call_args.kwargs["sdk_extensions_dir"], "")
+        self.assertTrue(start_container.call_args.kwargs["no_model_sdk"])
+        self.assertTrue(start_container.call_args.kwargs["minimal"])
+        self.assertTrue(start_container.call_args.kwargs["no_insight"])
+
+        self.assertTrue(start_container.call_args.kwargs["code_server_without_password"])
+
     def test_filter_images_by_selector_matches_ref_tag_and_substring(self):
         from sima_cli.sdk.utils import filter_images_by_selector
         images = ["ghcr.io/sima-neat/sdk:latest", "ghcr.io/sima-neat/sdk:v2.1.2"]
@@ -3485,6 +3697,24 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="ghcr.io-sima-neat-sdk-latest"):
             with self.assertRaisesRegex(RuntimeError, "Cannot apply --no-insight"):
                 setup_and_start(no_insight=True, yes_to_all=False, noninteractive=False)
+
+    def test_setup_passwordless_refuses_existing_neat_container(self):
+        image = "ghcr.io/sima-neat/sdk:latest"
+        with patch("sima_cli.sdk.utils._existing_container_has_code_server", return_value=True) as detect, \
+             patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+             patch("sima_cli.sdk.install.syscheck"), \
+             patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+             patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+             patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+             patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+             patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+             patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+             patch("sima_cli.sdk.install._setup_sdk_extensions", return_value=None), \
+             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="ghcr.io-sima-neat-sdk-latest"):
+            with self.assertRaisesRegex(RuntimeError, "Cannot apply --code-server-without-password"):
+                setup_and_start(code_server_without_password=True, yes_to_all=False, noninteractive=False)
+
+        detect.assert_called_once_with("ghcr.io-sima-neat-sdk-latest")
 
     def test_setup_repairs_existing_container_user_mapping_before_attach(self):
         image = "ghcr.io/sima-neat/sdk:latest"

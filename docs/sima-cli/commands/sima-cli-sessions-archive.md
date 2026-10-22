@@ -15,7 +15,7 @@ sima-cli sessions archive [OPTIONS] SESSION
 | Name | Description |
 | --- | --- |
 | `--all` | Sessions from every folder, not just the current one. |
-| `--agent` | Only sessions of this agent. |
+| `--agent` | Only sessions of this agent (row numbers stay the same). |
 
 ## Arguments
 
@@ -33,6 +33,7 @@ Usage: sima-cli sessions archive [OPTIONS] SESSION
 Options:
   --all                   Sessions from every folder, not just the current
                           one.
-  --agent [claude|codex]  Only sessions of this agent.
+  --agent [claude|codex]  Only sessions of this agent (row numbers stay the
+                          same).
   --help                  Show this message and exit.
 ```

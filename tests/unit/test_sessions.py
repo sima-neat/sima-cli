@@ -14,13 +14,14 @@ import pytest
 from click.testing import CliRunner
 
 from sima_cli.sessions import claude, codex, commands
-from sima_cli.sessions.model import Session, SessionError, pick, relative_time
+from sima_cli.sessions.model import TITLE_LIMIT, Session, SessionError, pick, relative_time
 
 FAKE_CODEX = textwrap.dedent(
     """
     import json, os, sys
 
-    state = json.load(open(os.environ["FAKE_CODEX_STATE"]))
+    sys.stdout.reconfigure(encoding="utf-8")
+    state = json.load(open(os.environ["FAKE_CODEX_STATE"], encoding="utf-8"))
     verb = sys.argv[1]
     if verb in ("archive", "unarchive"):
         with open(os.environ["FAKE_CODEX_LOG"], "a") as log:
@@ -51,9 +52,14 @@ FAKE_CODEX = textwrap.dedent(
             page = threads[start:start + 1]
             more = start + 1 < len(threads)
             result = {"data": page, "nextCursor": str(start + 1) if more else None}
+            if state.get("stuck_cursor"):
+                result["nextCursor"] = "0"
+        if state.get("server_request"):
+            # A request of the server's own, numbered in its own id space.
+            print(json.dumps({"id": message["id"], "method": "item/tool/requestUserInput", "params": {}}), flush=True)
         print("not json", flush=True)
         print(json.dumps({"method": "noise"}), flush=True)
-        print(json.dumps({"id": message["id"], "result": result}), flush=True)
+        print(json.dumps({"id": message["id"], "result": result}, ensure_ascii=False), flush=True)
     """
 )
 
@@ -84,13 +90,17 @@ def home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path / "bin"))
     return home
 
 
 @pytest.fixture
 def fake_codex(tmp_path, monkeypatch):
+    if sys.platform == "win32":
+        pytest.skip("the fake codex is a shebang script")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     executable = bin_dir / "codex"
@@ -102,7 +112,8 @@ def fake_codex(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CODEX_LOG", str(log_file))
 
     def configure(active=(), archived=(), **flags):
-        state_file.write_text(json.dumps({"active": list(active), "archived": list(archived), **flags}))
+        state = {"active": list(active), "archived": list(archived), **flags}
+        state_file.write_text(json.dumps(state), encoding="utf-8")
         return str(executable), log_file
 
     return configure
@@ -162,7 +173,7 @@ def test_claude_long_titles_are_cut(home):
 
     title = claude.read_session(str(path)).title
 
-    assert len(title) == claude.TITLE_LIMIT and title.endswith("…")
+    assert len(title) == TITLE_LIMIT and title.endswith("…")
 
 
 def test_claude_honours_claude_config_dir(home, tmp_path, monkeypatch):
@@ -178,7 +189,7 @@ def test_claude_archive_moves_transcript_and_subagents_and_back(home):
     (projects / "s/subagents").mkdir(parents=True)
     (projects / "s/subagents/agent-1.jsonl").write_text("{}\n")
 
-    claude.archive("s")
+    claude.archive(claude.list_sessions()[0])
 
     archived = home / ".claude/archived_projects/-x"
     assert (archived / "s.jsonl").is_file() and (archived / "s/subagents/agent-1.jsonl").is_file()
@@ -186,7 +197,7 @@ def test_claude_archive_moves_transcript_and_subagents_and_back(home):
     assert [session.id for session in claude.list_sessions(archived=True)] == ["s"]
     assert claude.list_sessions() == []
 
-    claude.unarchive("s")
+    claude.unarchive(claude.list_sessions(archived=True)[0])
 
     assert (projects / "s.jsonl").is_file() and (projects / "s/subagents/agent-1.jsonl").is_file()
 
@@ -197,7 +208,7 @@ def test_claude_archive_lands_next_to_the_real_projects_folder(home, tmp_path):
     (home / ".claude").mkdir()
     os.symlink(host, home / ".claude/projects")
 
-    claude.archive("s")
+    claude.archive(claude.list_sessions()[0])
 
     assert (tmp_path / "sdk-extensions/.agent-sessions/claude/archived_projects/-x/s.jsonl").is_file()
 
@@ -207,7 +218,7 @@ def test_claude_archive_never_overwrites(home):
     write_transcript(home / ".claude/archived_projects/-x/s.jsonl", [user("older")])
 
     with pytest.raises(SessionError, match="already exists"):
-        claude.archive("s")
+        claude.archive(claude.list_sessions()[0])
     assert "active" in (home / ".claude/projects/-x/s.jsonl").read_text()
 
 
@@ -238,7 +249,7 @@ def test_claude_resume_without_any_cli_explains_what_to_do(home):
 def test_codex_lists_every_page_and_prefers_the_name(fake_codex):
     cli, _ = fake_codex(active=[thread("a"), thread("b", name="Named"), thread("c", gitInfo=None)])
 
-    sessions = codex.list_sessions(cli)
+    sessions = codex.list_sessions(cli=cli)
 
     assert [s.id for s in sessions] == ["a", "b", "c"]
     assert [s.title for s in sessions] == ["prompt of a", "Named", "prompt of c"]
@@ -248,7 +259,7 @@ def test_codex_lists_every_page_and_prefers_the_name(fake_codex):
 def test_codex_lists_archived_sessions(fake_codex):
     cli, _ = fake_codex(active=[thread("a")], archived=[thread("z")])
 
-    sessions = codex.list_sessions(cli, archived=True)
+    sessions = codex.list_sessions(archived=True, cli=cli)
 
     assert [(s.id, s.archived) for s in sessions] == [("z", True)]
 
@@ -257,7 +268,7 @@ def test_codex_refusal_is_reported(fake_codex):
     cli, _ = fake_codex(error="boom")
 
     with pytest.raises(SessionError, match="Codex refused thread/list: boom"):
-        codex.list_sessions(cli)
+        codex.list_sessions(cli=cli)
 
 
 def test_codex_silence_times_out(fake_codex):
@@ -270,15 +281,16 @@ def test_codex_silence_times_out(fake_codex):
         server.close()
 
 
-def test_codex_archive_uses_codex_and_reports_its_error(fake_codex):
-    cli, log = fake_codex()
-    codex.archive(cli, "a")
-    codex.unarchive(cli, "a")
+def test_codex_archive_uses_codex_and_reports_its_error(home, fake_codex):
+    _, log = fake_codex()
+    session = Session("codex", "a", "t", "/w", "", 1)
+    codex.archive(session)
+    codex.unarchive(session)
     assert log.read_text() == "archive a\nunarchive a\n"
 
-    cli, _ = fake_codex(refuse=True)
+    fake_codex(refuse=True)
     with pytest.raises(SessionError, match="No active session found"):
-        codex.archive(cli, "a")
+        codex.archive(session)
 
 
 # --- picking and formatting ------------------------------------------------------------------------
@@ -432,3 +444,83 @@ def test_through_the_root_cli_json_stdout_carries_only_the_document(workspace, m
     assert result.exit_code == 0, result.output
     assert [s["id"] for s in json.loads(result.stdout)["sessions"]] == ["here"]
     assert "Environment: sdk (neat)" in result.stderr
+
+
+# --- review fixes ----------------------------------------------------------------------------------
+
+def test_claude_honours_claude_home_like_the_playbooks_manager(home, tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "claude-home"))
+    write_transcript(tmp_path / "claude-home/projects/-x/s.jsonl", [user("hello")])
+
+    assert [session.id for session in claude.list_sessions()] == ["s"]
+
+
+def test_archiving_moves_the_picked_transcript_when_ids_repeat(workspace, home):
+    other = home / ".claude/projects/-a-copy/here.jsonl"
+    write_transcript(other, [user("copied elsewhere", cwd="/elsewhere")], mtime=100)
+
+    result = runner().invoke(commands.sessions, ["archive", "1", "--agent", "claude"])
+
+    assert result.exit_code == 0, result.output
+    assert (home / ".claude/archived_projects/-demo/here.jsonl").is_file()
+    assert other.is_file()
+
+
+def test_archiving_refuses_before_moving_anything_when_the_subagent_folder_exists(home):
+    projects = home / ".claude/projects/-x"
+    write_transcript(projects / "s.jsonl", [user("hello")])
+    (projects / "s").mkdir()
+    (home / ".claude/archived_projects/-x/s").mkdir(parents=True)
+
+    with pytest.raises(SessionError, match="already exists"):
+        claude.archive(claude.list_sessions()[0])
+    assert (projects / "s.jsonl").is_file() and (projects / "s").is_dir()
+
+
+def test_row_numbers_do_not_change_with_the_agent_filter(workspace, fake_codex):
+    fake_codex(active=[thread("cx", cwd=str(workspace), updatedAt=9999)])
+
+    every = json.loads(runner().invoke(commands.sessions, ["list", "--json"]).stdout)
+    claude_only = json.loads(runner().invoke(commands.sessions, ["list", "--agent", "claude", "--json"]).stdout)
+
+    assert [(s["number"], s["id"]) for s in every["sessions"]] == [(1, "cx"), (2, "here")]
+    assert [(s["number"], s["id"]) for s in claude_only["sessions"]] == [(2, "here")]
+    mismatch = runner().invoke(commands.sessions, ["archive", "1", "--agent", "claude"])
+    assert mismatch.exit_code == 1 and "Row 1 is a codex session, not claude" in mismatch.stderr
+
+
+def test_list_json_carries_the_envelope(workspace):
+    document = json.loads(runner().invoke(commands.sessions, ["list", "--agent", "claude", "--json"]).stdout)
+
+    assert (document["schema_version"], document["command"], document["result"]) == ("1.0", "sessions.list", "ok")
+
+
+def test_codex_ignores_a_server_request_that_shares_our_id(fake_codex):
+    cli, _ = fake_codex(active=[thread("a")], server_request=True)
+
+    assert [s.id for s in codex.list_sessions(cli=cli)] == ["a"]
+
+
+def test_codex_stops_on_a_repeated_cursor(fake_codex):
+    cli, _ = fake_codex(active=[thread("a"), thread("b")], stuck_cursor=True)
+
+    assert [s.id for s in codex.list_sessions(cli=cli)] == ["a"]
+
+
+def test_codex_titles_are_read_as_utf8(fake_codex):
+    cli, _ = fake_codex(active=[thread("a", name="Привіт, 世界 🚀")])
+
+    assert codex.list_sessions(cli=cli)[0].title == "Привіт, 世界 🚀"
+
+
+def test_a_session_without_a_time_still_renders():
+    session = Session("codex", "a", "t", "/w", "", 0.0)
+
+    assert relative_time(session.updated) == "-"
+    assert session.as_json()["updated_at"] is None
+
+
+def test_a_row_number_past_the_end_is_not_read_as_an_id(workspace):
+    result = runner().invoke(commands.sessions, ["resume", "9", "--agent", "claude"])
+
+    assert result.exit_code == 1 and "There is no row 9" in result.stderr

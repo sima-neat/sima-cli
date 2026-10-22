@@ -14,14 +14,19 @@ import os
 import shutil
 from typing import Iterable, List, Optional
 
-from .model import Session, SessionError
+from .model import Session, SessionError, one_line
 
 AGENT = "claude"
-TITLE_LIMIT = 80
 
 
 def config_dir() -> str:
-    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    # CLAUDE_CONFIG_DIR is what Claude itself honours; CLAUDE_HOME is the name the playbooks
+    # manager uses for the same folder, so both are respected.
+    for variable in ("CLAUDE_CONFIG_DIR", "CLAUDE_HOME"):
+        value = os.environ.get(variable)
+        if value:
+            return value
+    return os.path.join(os.path.expanduser("~"), ".claude")
 
 
 def projects_dir() -> str:
@@ -45,11 +50,6 @@ def _prompt_text(message: object) -> str:
             if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
                 return part["text"]
     return ""
-
-
-def _one_line(text: str) -> str:
-    line = " ".join(text.split())
-    return line if len(line) <= TITLE_LIMIT else line[: TITLE_LIMIT - 1] + "…"
 
 
 def read_session(path: str, archived: bool = False) -> Optional[Session]:
@@ -92,7 +92,7 @@ def read_session(path: str, archived: bool = False) -> Optional[Session]:
         # Claude hides sessions nobody typed into, and so does this listing.
         return None
     session_id = os.path.splitext(os.path.basename(path))[0]
-    return Session(AGENT, session_id, _one_line(title), cwd, branch, updated, archived)
+    return Session(AGENT, session_id, one_line(title), cwd, branch, updated, archived, path)
 
 
 def _transcripts(root: str) -> Iterable[str]:
@@ -105,37 +105,40 @@ def list_sessions(archived: bool = False) -> List[Session]:
     return [session for session in sessions if session is not None]
 
 
-def _find_transcript(root: str, session_id: str) -> Optional[str]:
-    for path in _transcripts(root):
-        if os.path.splitext(os.path.basename(path))[0] == session_id:
-            return path
-    return None
-
-
-def _move(session_id: str, source_root: str, target_root: str) -> str:
-    transcript = _find_transcript(source_root, session_id)
-    if transcript is None:
-        raise SessionError(f"Claude session {session_id} was not found in {source_root}.")
+def _move(session: Session, target_root: str) -> str:
+    """Move exactly the picked transcript, and its subagent folder, under target_root."""
+    transcript = session.path
+    if not transcript or not os.path.isfile(transcript):
+        raise SessionError(f"The transcript of Claude session {session.id} is gone.")
     project = os.path.basename(os.path.dirname(transcript))
     target_project = os.path.join(target_root, project)
     target = os.path.join(target_project, os.path.basename(transcript))
-    if os.path.exists(target):
-        raise SessionError(f"{target} already exists; nothing was moved.")
-    os.makedirs(target_project, exist_ok=True)
-    shutil.move(transcript, target)
     # Claude keeps a session's subagent transcripts in a folder named after it.
     companion = os.path.splitext(transcript)[0]
-    if os.path.isdir(companion) and not os.path.exists(os.path.join(target_project, session_id)):
-        shutil.move(companion, os.path.join(target_project, session_id))
+    target_companion = os.path.join(target_project, os.path.basename(companion))
+    has_companion = os.path.isdir(companion)
+    for path in (target, target_companion) if has_companion else (target,):
+        if os.path.exists(path):
+            raise SessionError(f"{path} already exists; nothing was moved.")
+
+    os.makedirs(target_project, exist_ok=True)
+    if has_companion:
+        shutil.move(companion, target_companion)
+    try:
+        shutil.move(transcript, target)
+    except OSError:
+        if has_companion:
+            shutil.move(target_companion, companion)
+        raise
     return target
 
 
-def archive(session_id: str) -> str:
-    return _move(session_id, projects_dir(), archive_dir())
+def archive(session: Session) -> str:
+    return _move(session, archive_dir())
 
 
-def unarchive(session_id: str) -> str:
-    return _move(session_id, archive_dir(), projects_dir())
+def unarchive(session: Session) -> str:
+    return _move(session, projects_dir())
 
 
 def _extension_dirs() -> List[str]:
@@ -165,7 +168,7 @@ def find_cli() -> Optional[str]:
     """
     on_path = shutil.which("claude")
     if on_path:
-        return on_path
+        return os.path.abspath(on_path)
     bundled = []
     for directory in _extension_dirs():
         pattern = os.path.join(

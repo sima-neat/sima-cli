@@ -1716,24 +1716,50 @@ AGENT_SESSION_LINKS = (
     ("file", ".codex/session_index.jsonl", "codex/session_index.jsonl"),
 )
 
-_AGENT_SESSIONS_SCRIPT = r"""set -eu
+_AGENT_SESSIONS_SCRIPT = r"""set -euo pipefail
 home=__HOME__
 mount=__MOUNT__
 root="$mount/__DIRNAME__"
 owner=__OWNER__
-if [ ! -d "$mount" ] || [ ! -w "$mount" ]; then
+if [ ! -d "$mount" ]; then
   echo "__SIMA_AGENT_SESSIONS_STATUS=no_mount"
   exit 0
 fi
-mkdir -p "$root"
-chmod 700 "$root"
+if [ ! -w "$mount" ] || ! mkdir -p "$root" 2>/dev/null; then
+  echo "__SIMA_AGENT_SESSIONS_STATUS=not_writable"
+  exit 0
+fi
+# Some bind mounts refuse mode and ownership changes; the sessions still work there.
+chmod 700 "$root" 2>/dev/null || true
+claim() {
+  chown "$@" 2>/dev/null || echo "__SIMA_AGENT_SESSIONS_CHOWN=failed"
+}
+# Copies what the host lacks. A file the host holds with different content is kept
+# under conflicts/ instead, so removing the container copy afterwards loses nothing.
+migrate_dir() {
+  src="$1"; dst="$2"; kept="$root/conflicts/$3"
+  (cd "$src" && find . -mindepth 1 -type d) | while IFS= read -r d; do mkdir -p "$dst/${d#./}"; done
+  (cd "$src" && find . ! -type d) | while IFS= read -r f; do
+    f="${f#./}"
+    if [ ! -e "$dst/$f" ] && [ ! -L "$dst/$f" ]; then
+      cp -P --preserve=mode,timestamps "$src/$f" "$dst/$f"
+    elif ! cmp -s "$src/$f" "$dst/$f"; then
+      mkdir -p "$(dirname "$kept/$f")"
+      cp -P --preserve=mode,timestamps --backup=numbered "$src/$f" "$kept/$f"
+      echo "__SIMA_AGENT_SESSIONS_KEPT=$kept/$f"
+    fi
+  done
+}
 link_path() {
   kind="$1"; src="$home/$2"; dst="$root/$3"
   mkdir -p "$(dirname "$src")" "$(dirname "$dst")"
   if [ -L "$src" ]; then
     if [ "$(readlink "$src")" != "$dst" ]; then
       echo "__SIMA_AGENT_SESSIONS_CONFLICT=$src"
+      return 0
     fi
+    # Already linked, but the host side may have been cleaned up since.
+    if [ "$kind" = dir ]; then mkdir -p "$dst"; else touch "$dst"; fi
     return 0
   fi
   if [ "$kind" = dir ]; then
@@ -1743,8 +1769,7 @@ link_path() {
     fi
     mkdir -p "$dst"
     if [ -d "$src" ]; then
-      # Never overwrite what the host already holds; drop the copy only once it landed.
-      cp -an "$src"/. "$dst"/
+      migrate_dir "$src" "$dst" "$3"
       rm -rf "$src"
     fi
   else
@@ -1754,23 +1779,27 @@ link_path() {
     fi
     if [ -f "$src" ]; then
       # An append-only log: keeping both histories loses nothing.
+      if [ -s "$dst" ] && [ -n "$(tail -c 1 "$dst")" ]; then
+        echo >> "$dst"
+      fi
       cat "$src" >> "$dst"
       rm -f "$src"
     fi
     touch "$dst"
   fi
   ln -s "$dst" "$src"
-  chown -h "$owner" "$src" 2>/dev/null || true
+  claim -h "$owner" "$src"
 }
 __LINKS__
-chown "$owner" "$home/.claude" "$home/.codex" 2>/dev/null || true
-chown -R "$owner" "$root" 2>/dev/null || true
+claim "$owner" "$home/.claude" "$home/.codex"
+claim -R "$owner" "$root"
 python3 - "$home/.claude/settings.json" __DAYS__ <<'PY' || echo "__SIMA_AGENT_SESSIONS_RETENTION=failed"
-import json, os, sys
-path, days = sys.argv[1], int(sys.argv[2])
-settings = {}
+import json, os, stat, sys
+path, days = os.path.realpath(sys.argv[1]), int(sys.argv[2])
+settings, mode = {}, None
 if os.path.exists(path):
     try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
         with open(path) as handle:
             settings = json.load(handle)
     except (OSError, ValueError):
@@ -1782,14 +1811,16 @@ if "cleanupPeriodDays" in settings:
     print("__SIMA_AGENT_SESSIONS_RETENTION=kept")
     sys.exit(0)
 settings["cleanupPeriodDays"] = days
-tmp = path + ".tmp"
+tmp = path + ".sima-cli.tmp"
 with open(tmp, "w") as handle:
     json.dump(settings, handle, indent=2)
     handle.write("\n")
+if mode is not None:
+    os.chmod(tmp, mode)
 os.replace(tmp, path)
 print("__SIMA_AGENT_SESSIONS_RETENTION=set")
 PY
-chown "$owner" "$home/.claude/settings.json" 2>/dev/null || true
+if [ -e "$home/.claude/settings.json" ]; then claim "$owner" "$home/.claude/settings.json"; fi
 echo "__SIMA_AGENT_SESSIONS_STATUS=linked"
 """
 
@@ -1837,15 +1868,19 @@ def _link_agent_sessions(sdk_container_name: str, login_name: str, uid: int, gid
 
     markers = {}
     conflicts = []
+    kept = []
     for line in output.splitlines():
         key, sep, value = line.strip().partition("=")
         if not sep:
             continue
         if key == "__SIMA_AGENT_SESSIONS_CONFLICT":
             conflicts.append(value)
+        elif key == "__SIMA_AGENT_SESSIONS_KEPT":
+            kept.append(value)
         elif key.startswith("__SIMA_AGENT_SESSIONS_"):
             markers[key] = value
 
+    sessions_root = f"{SDK_EXTENSIONS_MOUNT}/{AGENT_SESSIONS_DIRNAME}"
     status = markers.get("__SIMA_AGENT_SESSIONS_STATUS")
     if status == "no_mount":
         print(
@@ -1853,16 +1888,28 @@ def _link_agent_sessions(sdk_container_name: str, login_name: str, uid: int, gid
             "sessions stay in this container and will not carry over to a new SDK release."
         )
         return
+    if status == "not_writable":
+        print(
+            f"⚠️ {SDK_EXTENSIONS_MOUNT} is not writable in '{sdk_container_name}', so Claude and Codex "
+            "sessions stay in this container. Check the permissions of the host extensions folder."
+        )
+        return
     for path in conflicts:
         print(f"⚠️ Left {path} as it is: it already points somewhere else.")
-    if status == "linked":
-        print(
-            f"✅ Claude and Codex sessions for '{login_name}' are kept in "
-            f"{SDK_EXTENSIONS_MOUNT}/{AGENT_SESSIONS_DIRNAME} and survive SDK upgrades."
-        )
-    else:
+    for path in kept:
+        print(f"⚠️ The host already had a different copy; this container's copy was kept at {path}.")
+    if status != "linked":
         print(f"⚠️ Failed to keep Claude and Codex sessions on the host for '{sdk_container_name}'.")
         return
+    print(
+        f"✅ Claude and Codex sessions for '{login_name}' are kept in "
+        f"{sessions_root} and survive SDK upgrades."
+    )
+    if markers.get("__SIMA_AGENT_SESSIONS_CHOWN") == "failed":
+        print(
+            f"⚠️ Could not hand {sessions_root} to '{login_name}'; if Claude or Codex cannot save "
+            "sessions, fix the ownership of that folder on the host."
+        )
 
     retention = markers.get("__SIMA_AGENT_SESSIONS_RETENTION")
     if retention == "set":

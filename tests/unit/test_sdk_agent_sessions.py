@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -12,13 +13,19 @@ from sima_cli.sdk.utils import (
     _link_agent_sessions,
 )
 
-needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+# The script only ever runs inside the Linux SDK container and relies on GNU coreutils.
+needs_bash = pytest.mark.skipif(
+    not sys.platform.startswith("linux") or shutil.which("bash") is None,
+    reason="the script targets the Linux SDK container",
+)
+not_root = pytest.mark.skipif(
+    sys.platform.startswith("linux") and os.geteuid() == 0, reason="root bypasses permission checks"
+)
 
 
-def run_script(home, mount, retention_days=365):
-    script = _agent_sessions_script(
-        str(home), os.getuid(), os.getgid(), mount=str(mount), retention_days=retention_days
-    )
+def run_script(home, mount, retention_days=365, owner=None):
+    uid, gid = owner if owner is not None else (os.getuid(), os.getgid())
+    script = _agent_sessions_script(str(home), uid, gid, mount=str(mount), retention_days=retention_days)
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
     return result.stdout
 
@@ -179,6 +186,93 @@ def test_unreadable_claude_settings_are_not_rewritten(layout):
     assert (home / ".claude/settings.json").read_text() == "{not json"
 
 
+@needs_bash
+def test_a_conflicting_container_copy_is_kept_not_deleted(layout):
+    home, mount, root = layout
+    (home / ".claude/projects/proj").mkdir(parents=True)
+    (home / ".claude/projects/proj/a.jsonl").write_text("container a\n")
+    (home / ".claude/projects/proj/same.jsonl").write_text("same\n")
+    (root / "claude/projects/proj").mkdir(parents=True)
+    (root / "claude/projects/proj/a.jsonl").write_text("host a\n")
+    (root / "claude/projects/proj/same.jsonl").write_text("same\n")
+
+    output = run_script(home, mount)
+
+    kept = root / "conflicts/claude/projects/proj/a.jsonl"
+    assert f"__SIMA_AGENT_SESSIONS_KEPT={root}/conflicts/claude/projects/proj/a.jsonl" in output
+    assert kept.read_text() == "container a\n"
+    assert (root / "claude/projects/proj/a.jsonl").read_text() == "host a\n"
+    assert not (root / "conflicts/claude/projects/proj/same.jsonl").exists()
+    assert (home / ".claude/projects").is_symlink()
+
+
+@needs_bash
+def test_an_existing_link_gets_its_host_folder_back(layout):
+    home, mount, root = layout
+    run_script(home, mount)
+    shutil.rmtree(root)
+
+    output = run_script(home, mount)
+
+    assert "__SIMA_AGENT_SESSIONS_STATUS=linked" in output
+    assert (home / ".claude/projects").resolve().is_dir()
+    assert (home / ".codex/session_index.jsonl").resolve().is_file()
+
+
+@needs_bash
+@not_root
+def test_a_read_only_mount_is_not_reported_as_missing(layout):
+    home, mount, _ = layout
+    mount.chmod(0o555)
+    try:
+        output = run_script(home, mount)
+    finally:
+        mount.chmod(0o755)
+
+    assert "__SIMA_AGENT_SESSIONS_STATUS=not_writable" in output
+
+
+@needs_bash
+def test_session_index_without_trailing_newline_is_not_glued(layout):
+    home, mount, root = layout
+    (home / ".codex").mkdir()
+    (home / ".codex/session_index.jsonl").write_text('{"id":"b"}\n')
+    (root / "codex").mkdir(parents=True)
+    (root / "codex/session_index.jsonl").write_text('{"id":"a"}')
+
+    run_script(home, mount)
+
+    assert (root / "codex/session_index.jsonl").read_text() == '{"id":"a"}\n{"id":"b"}\n'
+
+
+@needs_bash
+def test_claude_settings_symlink_is_followed_and_its_mode_kept(layout, tmp_path):
+    home, mount, _ = layout
+    real = tmp_path / "dotfiles/claude-settings.json"
+    real.parent.mkdir()
+    real.write_text("{}")
+    real.chmod(0o600)
+    (home / ".claude").mkdir()
+    os.symlink(real, home / ".claude/settings.json")
+
+    run_script(home, mount)
+
+    assert (home / ".claude/settings.json").is_symlink()
+    assert json.loads(real.read_text()) == {"cleanupPeriodDays": 365}
+    assert oct(real.stat().st_mode & 0o777) == "0o600"
+
+
+@needs_bash
+@not_root
+def test_failed_ownership_change_is_reported(layout):
+    home, mount, _ = layout
+
+    output = run_script(home, mount, owner=(0, 0))
+
+    assert "__SIMA_AGENT_SESSIONS_CHOWN=failed" in output
+    assert "__SIMA_AGENT_SESSIONS_STATUS=linked" in output
+
+
 def test_link_reports_success(capsys):
     output = "__SIMA_AGENT_SESSIONS_RETENTION=set\n__SIMA_AGENT_SESSIONS_STATUS=linked"
     with patch("sima_cli.sdk.utils.run_command", return_value=output) as run:
@@ -206,6 +300,24 @@ def test_link_reports_conflicts_and_failures(capsys):
     with patch("sima_cli.sdk.utils.run_command", return_value=False):
         _link_agent_sessions("container", "dev", 1000, 1000)
     assert "Failed to keep Claude and Codex sessions" in capsys.readouterr().out
+
+
+def test_link_reports_an_unwritable_mount_kept_copies_and_ownership(capsys):
+    with patch("sima_cli.sdk.utils.run_command", return_value="__SIMA_AGENT_SESSIONS_STATUS=not_writable"):
+        _link_agent_sessions("container", "dev", 1000, 1000)
+    assert "is not writable" in capsys.readouterr().out
+
+    output = "\n".join([
+        "__SIMA_AGENT_SESSIONS_KEPT=/sdk-extensions/.agent-sessions/conflicts/claude/projects/p/a.jsonl",
+        "__SIMA_AGENT_SESSIONS_CHOWN=failed",
+        "__SIMA_AGENT_SESSIONS_STATUS=linked",
+    ])
+    with patch("sima_cli.sdk.utils.run_command", return_value=output):
+        _link_agent_sessions("container", "dev", 1000, 1000)
+    printed = capsys.readouterr().out
+    assert "this container's copy was kept at /sdk-extensions/.agent-sessions/conflicts" in printed
+    assert "Could not hand /sdk-extensions/.agent-sessions to 'dev'" in printed
+    assert "survive SDK upgrades" in printed
 
 
 def _configure(**kwargs):

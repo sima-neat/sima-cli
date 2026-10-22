@@ -1,6 +1,6 @@
 # `sima-cli sessions unarchive`
 
-Bring an archived SESSION back (pick it from `list --archived`).
+Bring back SESSION, picked from `sima-cli sessions list --archived`.
 
 Parent command: [`sima-cli sessions`](./sima-cli-sessions.md)
 
@@ -15,7 +15,7 @@ sima-cli sessions unarchive [OPTIONS] SESSION
 | Name | Description |
 | --- | --- |
 | `--all` | Sessions from every folder, not just the current one. |
-| `--agent` | Only sessions of this agent. |
+| `--agent` | Only sessions of this agent (row numbers stay the same). |
 
 ## Arguments
 
@@ -28,11 +28,12 @@ sima-cli sessions unarchive [OPTIONS] SESSION
 ```text
 Usage: sima-cli sessions unarchive [OPTIONS] SESSION
 
-  Bring an archived SESSION back (pick it from `list --archived`).
+  Bring back SESSION, picked from `sima-cli sessions list --archived`.
 
 Options:
   --all                   Sessions from every folder, not just the current
                           one.
-  --agent [claude|codex]  Only sessions of this agent.
+  --agent [claude|codex]  Only sessions of this agent (row numbers stay the
+                          same).
   --help                  Show this message and exit.
 ```

@@ -8,6 +8,7 @@ Archiving goes through Codex's own commands for the same reason.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -17,18 +18,25 @@ from typing import Any, Dict, List, Optional
 
 from sima_cli.__version__ import __version__
 
-from .model import Session, SessionError
+from .model import Session, SessionError, one_line
 
 AGENT = "codex"
 # The interactive sources, which is what `codex resume` offers by default.
 SOURCE_KINDS = ["cli", "vscode"]
 PAGE_SIZE = 100
 TIMEOUT_SECONDS = 20.0
-TITLE_LIMIT = 80
 
 
 def find_cli() -> Optional[str]:
-    return shutil.which("codex")
+    cli = shutil.which("codex")
+    return os.path.abspath(cli) if cli else None
+
+
+def _require_cli() -> str:
+    cli = find_cli()
+    if cli is None:
+        raise SessionError("The Codex CLI was not found.")
+    return cli
 
 
 class _AppServer:
@@ -44,7 +52,9 @@ class _AppServer:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                text=True,
+                # The protocol is UTF-8 whatever the locale says.
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
         except OSError as error:
@@ -53,10 +63,12 @@ class _AppServer:
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self) -> None:
-        assert self._proc.stdout is not None
-        for line in self._proc.stdout:
-            self._lines.put(line)
-        self._lines.put(None)
+        try:
+            assert self._proc.stdout is not None
+            for line in self._proc.stdout:
+                self._lines.put(line)
+        finally:
+            self._lines.put(None)
 
     def _send(self, message: Dict[str, Any]) -> None:
         assert self._proc.stdin is not None
@@ -88,7 +100,8 @@ class _AppServer:
                 message = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(message, dict) or message.get("id") != request_id:
+            # A request from the server carries a method and its own id space; it is not our answer.
+            if not isinstance(message, dict) or "method" in message or message.get("id") != request_id:
                 continue
             if message.get("error"):
                 error = message["error"]
@@ -104,11 +117,7 @@ class _AppServer:
                 self._proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._proc.kill()
-
-
-def _one_line(text: str) -> str:
-    line = " ".join(text.split())
-    return line if len(line) <= TITLE_LIMIT else line[: TITLE_LIMIT - 1] + "…"
+                self._proc.wait()
 
 
 def _session(thread: Dict[str, Any], archived: bool) -> Optional[Session]:
@@ -122,7 +131,7 @@ def _session(thread: Dict[str, Any], archived: bool) -> Optional[Session]:
     return Session(
         AGENT,
         thread_id,
-        _one_line(title if isinstance(title, str) else ""),
+        one_line(title if isinstance(title, str) else ""),
         thread.get("cwd") if isinstance(thread.get("cwd"), str) else "",
         branch if isinstance(branch, str) else "",
         float(updated) if isinstance(updated, (int, float)) else 0.0,
@@ -130,13 +139,15 @@ def _session(thread: Dict[str, Any], archived: bool) -> Optional[Session]:
     )
 
 
-def list_sessions(cli: str, archived: bool = False) -> List[Session]:
-    server = _AppServer(cli)
+def list_sessions(archived: bool = False, cli: Optional[str] = None) -> List[Session]:
+    server = _AppServer(cli or _require_cli())
     try:
         server.call("initialize", {"clientInfo": {"name": "sima-cli", "version": __version__}})
         server.notify("initialized")
         sessions: List[Session] = []
         cursor = None
+        seen_cursors = set()
+        seen_ids = set()
         while True:
             params: Dict[str, Any] = {"sourceKinds": SOURCE_KINDS, "limit": PAGE_SIZE}
             if archived:
@@ -147,17 +158,19 @@ def list_sessions(cli: str, archived: bool = False) -> List[Session]:
             for thread in page.get("data") or []:
                 if isinstance(thread, dict):
                     session = _session(thread, archived)
-                    if session is not None:
+                    if session is not None and session.id not in seen_ids:
+                        seen_ids.add(session.id)
                         sessions.append(session)
             cursor = page.get("nextCursor")
-            if not cursor:
+            if not cursor or cursor in seen_cursors:
                 return sessions
+            seen_cursors.add(cursor)
     finally:
         server.close()
 
 
-def _run(cli: str, verb: str, session_id: str) -> None:
-    result = subprocess.run([cli, verb, session_id], capture_output=True, text=True, check=False)
+def _run(verb: str, session: Session) -> None:
+    result = subprocess.run([_require_cli(), verb, session.id], capture_output=True, text=True, check=False)
     if result.returncode != 0:
         lines = [line for line in (result.stderr or result.stdout or "").splitlines()
                  if line.strip() and not line.startswith("WARNING:")]
@@ -165,13 +178,13 @@ def _run(cli: str, verb: str, session_id: str) -> None:
         raise SessionError(f"`codex {verb}` failed: {detail}")
 
 
-def archive(cli: str, session_id: str) -> None:
-    _run(cli, "archive", session_id)
+def archive(session: Session) -> None:
+    _run("archive", session)
 
 
-def unarchive(cli: str, session_id: str) -> None:
-    _run(cli, "unarchive", session_id)
+def unarchive(session: Session) -> None:
+    _run("unarchive", session)
 
 
-def resume_command(cli: str, session: Session) -> List[str]:
-    return [cli, "resume", session.id]
+def resume_command(session: Session) -> List[str]:
+    return [_require_cli(), "resume", session.id]

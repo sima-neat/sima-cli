@@ -524,3 +524,16 @@ def test_a_row_number_past_the_end_is_not_read_as_an_id(workspace):
     result = runner().invoke(commands.sessions, ["resume", "9", "--agent", "claude"])
 
     assert result.exit_code == 1 and "There is no row 9" in result.stderr
+
+
+def test_a_prompt_that_starts_with_markup_is_a_real_prompt(home):
+    projects = home / ".claude/projects/-x"
+    pasted = write_transcript(projects / "html.jsonl", [user("<div>why is this red?</div>")])
+    injected = write_transcript(projects / "cmd.jsonl", [
+        user("<local-command-stdout>ok</local-command-stdout>"),
+        user("<system-reminder>note</system-reminder>"),
+        user("the real question"),
+    ])
+
+    assert claude.read_session(str(pasted)).title == "<div>why is this red?</div>"
+    assert claude.read_session(str(injected)).title == "the real question"

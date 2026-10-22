@@ -11,12 +11,18 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 from typing import Iterable, List, Optional
 
 from .model import Session, SessionError, one_line
 
 AGENT = "claude"
+# Text Claude itself injects as a user turn (slash commands, their output, hooks). Only these
+# are skipped: a prompt that merely starts with markup, such as pasted HTML, is a real prompt.
+_INJECTED_PROMPT = re.compile(
+    r"^<(command-[a-z-]+|local-command-[a-z-]+|system-reminder|bash-[a-z-]+|user-prompt-submit-hook)>"
+)
 
 
 def config_dir() -> str:
@@ -81,7 +87,7 @@ def read_session(path: str, archived: bool = False) -> Optional[Session]:
                 if (not first_prompt and kind == "user" and not record.get("isMeta")
                         and not record.get("isSidechain")):
                     text = _prompt_text(record.get("message")).strip()
-                    if text and not text.startswith("<"):
+                    if text and not _INJECTED_PROMPT.match(text):
                         first_prompt = text
         updated = os.path.getmtime(path)
     except OSError:

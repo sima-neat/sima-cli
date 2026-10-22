@@ -168,7 +168,9 @@ def find_cli() -> Optional[str]:
         return on_path
     bundled = []
     for directory in _extension_dirs():
-        pattern = os.path.join(glob.escape(directory), "anthropic.claude-code-*", "resources", "native-binary", "claude")
+        pattern = os.path.join(
+            glob.escape(directory), "anthropic.claude-code-*", "resources", "native-binary", "claude"
+        )
         bundled.extend(path for path in glob.glob(pattern) if os.access(path, os.X_OK))
     if not bundled:
         return None

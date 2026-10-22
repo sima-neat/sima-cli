@@ -212,7 +212,8 @@ def test_claude_archive_never_overwrites(home):
 
 
 def test_claude_cli_found_on_path_before_the_extension(home, tmp_path):
-    bundled = tmp_path / "home/.openvscode-server/extensions/anthropic.claude-code-2.1.266-linux-x64/resources/native-binary/claude"
+    extension = tmp_path / "home/.openvscode-server/extensions/anthropic.claude-code-2.1.266-linux-x64"
+    bundled = extension / "resources/native-binary/claude"
     bundled.parent.mkdir(parents=True)
     bundled.write_text("#!/bin/sh\n")
     bundled.chmod(0o755)

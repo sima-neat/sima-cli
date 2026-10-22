@@ -107,6 +107,7 @@ def _selected_model_detail(
     client: RegistryClient, selected: Dict[str, Any]
 ) -> Dict[str, Any]:
     selected_metadata = selected.get("metadata") or {}
+    fingerprints = selected.get("benchmark_fingerprints") or {}
     component_run_ids = selected_metadata.get("component_run_ids") or {}
     if isinstance(component_run_ids, dict) and component_run_ids:
         components = sorted(
@@ -169,14 +170,8 @@ def _selected_model_detail(
                 for metric in (detail.get("metrics") or {}).get("measurements") or []
             ]
         },
-        "benchmark": next(
-            (detail.get("benchmark") for _, detail in details if detail.get("benchmark")),
-            None,
-        ),
-        "accuracy": next(
-            (detail.get("accuracy") for _, detail in details if detail.get("accuracy")),
-            None,
-        ),
+        "benchmark": client.whole_model_result("performance", fingerprints.get("performance")),
+        "accuracy": client.whole_model_result("accuracy", fingerprints.get("accuracy")),
     }
 
 

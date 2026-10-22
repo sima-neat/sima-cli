@@ -109,6 +109,7 @@ pip install sima-cli
 | [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | 管理並啟動 SiMa SDK 2.0 容器環境（測試版）。 |
 | [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md) | 手動從 PyPI 或直接的 wheel URL 更新 sima-cli。 |
 | [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md) | 連接到 DevKit 的 UART 序列埠控制台。 |
+| [`sima-cli sessions`](../../../sima-cli/commands/sima-cli-sessions.md) | 列出、恢復及封存 Claude 與 Codex 工作階段。 |
 | [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md) | 更新 SiMa DevKit、遠端裝置或 Linux PCIe 主機。 |
 
 ## 完整指令清單
@@ -133,6 +134,7 @@ pip install sima-cli
 - [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md)
 - [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md)
 - [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md)
+- [`sima-cli sessions`](../../../sima-cli/commands/sima-cli-sessions.md)
 - [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md)
 - [`sima-cli appzoo clone`](../../../sima-cli/commands/sima-cli-appzoo-clone.md)
 - [`sima-cli appzoo describe`](../../../sima-cli/commands/sima-cli-appzoo-describe.md)
@@ -173,6 +175,10 @@ pip install sima-cli
 - [`sima-cli sdk start`](../../../sima-cli/commands/sima-cli-sdk-start.md)
 - [`sima-cli sdk stop`](../../../sima-cli/commands/sima-cli-sdk-stop.md)
 - [`sima-cli sdk yocto`](../../../sima-cli/commands/sima-cli-sdk-yocto.md)
+- [`sima-cli sessions archive`](../../../sima-cli/commands/sima-cli-sessions-archive.md)
+- [`sima-cli sessions list`](../../../sima-cli/commands/sima-cli-sessions-list.md)
+- [`sima-cli sessions resume`](../../../sima-cli/commands/sima-cli-sessions-resume.md)
+- [`sima-cli sessions unarchive`](../../../sima-cli/commands/sima-cli-sessions-unarchive.md)
 - [`sima-cli sdk doctor network`](../../../sima-cli/commands/sima-cli-sdk-doctor-network.md)
 - [`sima-cli sdk network repair`](../../../sima-cli/commands/sima-cli-sdk-network-repair.md)
 - [`sima-cli sdk network rollback`](../../../sima-cli/commands/sima-cli-sdk-network-rollback.md)

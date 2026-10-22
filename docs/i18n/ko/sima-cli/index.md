@@ -109,6 +109,7 @@ pip install sima-cli
 | [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | SiMa SDK 2.0 컨테이너 환경을 관리하고 배포합니다(베타 버전). |
 | [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md) | sima-cli를 PyPI 또는 직접적인 휠 URL에서 수동으로 업데이트하세요. |
 | [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md) | DevKit의 UART 직렬 콘솔에 연결합니다. |
+| [`sima-cli sessions`](../../../sima-cli/commands/sima-cli-sessions.md) | Claude 및 Codex 세션을 나열, 재개 및 보관합니다. |
 | [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md) | SiMa DevKit, 원격 장치 또는 Linux PCIe 호스트를 업데이트합니다. |
 
 ## 전체 명령어 목록
@@ -133,6 +134,7 @@ pip install sima-cli
 - [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md)
 - [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md)
 - [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md)
+- [`sima-cli sessions`](../../../sima-cli/commands/sima-cli-sessions.md)
 - [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md)
 - [`sima-cli appzoo clone`](../../../sima-cli/commands/sima-cli-appzoo-clone.md)
 - [`sima-cli appzoo describe`](../../../sima-cli/commands/sima-cli-appzoo-describe.md)
@@ -173,6 +175,10 @@ pip install sima-cli
 - [`sima-cli sdk start`](../../../sima-cli/commands/sima-cli-sdk-start.md)
 - [`sima-cli sdk stop`](../../../sima-cli/commands/sima-cli-sdk-stop.md)
 - [`sima-cli sdk yocto`](../../../sima-cli/commands/sima-cli-sdk-yocto.md)
+- [`sima-cli sessions archive`](../../../sima-cli/commands/sima-cli-sessions-archive.md)
+- [`sima-cli sessions list`](../../../sima-cli/commands/sima-cli-sessions-list.md)
+- [`sima-cli sessions resume`](../../../sima-cli/commands/sima-cli-sessions-resume.md)
+- [`sima-cli sessions unarchive`](../../../sima-cli/commands/sima-cli-sessions-unarchive.md)
 - [`sima-cli sdk doctor network`](../../../sima-cli/commands/sima-cli-sdk-doctor-network.md)
 - [`sima-cli sdk network repair`](../../../sima-cli/commands/sima-cli-sdk-network-repair.md)
 - [`sima-cli sdk network rollback`](../../../sima-cli/commands/sima-cli-sdk-network-rollback.md)

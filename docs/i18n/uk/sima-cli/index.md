@@ -109,6 +109,7 @@ pip install sima-cli
 | [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | Керуйте та розгортайте контейнерні середовища SiMa SDK 2.0 (бета-версія). |
 | [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md) | Оновіть sima-cli вручну, завантаживши його з PyPI або за допомогою прямого посилання на файл. |
 | [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md) | Підключіться до послідовного інтерфейсу UART на платі розробника DevKit. |
+| [`sima-cli sessions`](../../../sima-cli/commands/sima-cli-sessions.md) | Показуйте, продовжуйте та архівуйте сесії Claude і Codex. |
 | [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md) | Оновлює SiMa DevKit, віддалений пристрій або хост Linux PCIe. |
 
 ## Повний перелік команд.
@@ -133,6 +134,7 @@ pip install sima-cli
 - [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md)
 - [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md)
 - [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md)
+- [`sima-cli sessions`](../../../sima-cli/commands/sima-cli-sessions.md)
 - [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md)
 - [`sima-cli appzoo clone`](../../../sima-cli/commands/sima-cli-appzoo-clone.md)
 - [`sima-cli appzoo describe`](../../../sima-cli/commands/sima-cli-appzoo-describe.md)
@@ -173,6 +175,10 @@ pip install sima-cli
 - [`sima-cli sdk start`](../../../sima-cli/commands/sima-cli-sdk-start.md)
 - [`sima-cli sdk stop`](../../../sima-cli/commands/sima-cli-sdk-stop.md)
 - [`sima-cli sdk yocto`](../../../sima-cli/commands/sima-cli-sdk-yocto.md)
+- [`sima-cli sessions archive`](../../../sima-cli/commands/sima-cli-sessions-archive.md)
+- [`sima-cli sessions list`](../../../sima-cli/commands/sima-cli-sessions-list.md)
+- [`sima-cli sessions resume`](../../../sima-cli/commands/sima-cli-sessions-resume.md)
+- [`sima-cli sessions unarchive`](../../../sima-cli/commands/sima-cli-sessions-unarchive.md)
 - [`sima-cli sdk doctor network`](../../../sima-cli/commands/sima-cli-sdk-doctor-network.md)
 - [`sima-cli sdk network repair`](../../../sima-cli/commands/sima-cli-sdk-network-repair.md)
 - [`sima-cli sdk network rollback`](../../../sima-cli/commands/sima-cli-sdk-network-rollback.md)

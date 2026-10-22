@@ -109,6 +109,7 @@ pip install sima-cli
 | [`sima-cli sdk`](commands/sima-cli-sdk.md) | Manage and launch SiMa SDK 2.0 container environments (Beta). |
 | [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md) | Update sima-cli manually from PyPI or a direct wheel URL. |
 | [`sima-cli serial`](commands/sima-cli-serial.md) | Connect to the UART serial console of the DevKit. |
+| [`sima-cli sessions`](commands/sima-cli-sessions.md) | List, resume and archive Claude and Codex sessions. |
 | [`sima-cli update`](commands/sima-cli-update.md) | Update a SiMa DevKit, remote device, or Linux PCIe host. |
 
 ## Complete Command List
@@ -133,6 +134,7 @@ pip install sima-cli
 - [`sima-cli sdk`](commands/sima-cli-sdk.md)
 - [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md)
 - [`sima-cli serial`](commands/sima-cli-serial.md)
+- [`sima-cli sessions`](commands/sima-cli-sessions.md)
 - [`sima-cli update`](commands/sima-cli-update.md)
 - [`sima-cli appzoo clone`](commands/sima-cli-appzoo-clone.md)
 - [`sima-cli appzoo describe`](commands/sima-cli-appzoo-describe.md)
@@ -173,6 +175,10 @@ pip install sima-cli
 - [`sima-cli sdk start`](commands/sima-cli-sdk-start.md)
 - [`sima-cli sdk stop`](commands/sima-cli-sdk-stop.md)
 - [`sima-cli sdk yocto`](commands/sima-cli-sdk-yocto.md)
+- [`sima-cli sessions archive`](commands/sima-cli-sessions-archive.md)
+- [`sima-cli sessions list`](commands/sima-cli-sessions-list.md)
+- [`sima-cli sessions resume`](commands/sima-cli-sessions-resume.md)
+- [`sima-cli sessions unarchive`](commands/sima-cli-sessions-unarchive.md)
 - [`sima-cli sdk doctor network`](commands/sima-cli-sdk-doctor-network.md)
 - [`sima-cli sdk network repair`](commands/sima-cli-sdk-network-repair.md)
 - [`sima-cli sdk network rollback`](commands/sima-cli-sdk-network-rollback.md)

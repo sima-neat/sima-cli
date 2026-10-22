@@ -43,6 +43,7 @@ from sima_cli.playbooks import register_playbook_commands
 from sima_cli.vulcan import register_vulcan_commands
 from sima_cli.models import register_models_commands
 from sima_cli.peripherals import register_peripherals_commands
+from sima_cli.sessions import register_sessions_commands
 from sima_cli.cloudex import register_cloudex_commands
 from sima_cli.vulcan.commands import (
     ENV_METAVAR,
@@ -107,10 +108,10 @@ def _rerun_current_command() -> None:
 
 
 # Command groups whose stdout is a machine-readable document: root diagnostics go to stderr for them.
-QUIET_STDOUT_SUBCOMMANDS = ("models", "peripherals")
-# Command groups that only read the DevKit they run on: no PyPI update check and no Artifactory
+QUIET_STDOUT_SUBCOMMANDS = ("models", "peripherals", "sessions")
+# Command groups that only read the machine they run on: no PyPI update check and no Artifactory
 # gate before them, so they work offline and never prompt or exit early.
-LOCAL_ONLY_SUBCOMMANDS = ("peripherals",)
+LOCAL_ONLY_SUBCOMMANDS = ("peripherals", "sessions")
 
 
 def _initialize_main_context(ctx, internal, yes):
@@ -227,6 +228,7 @@ register_playbook_commands(main)
 register_vulcan_commands(main)
 register_models_commands(main)
 register_peripherals_commands(main)
+register_sessions_commands(main)
 register_cloudex_commands(main)
 
 

@@ -32,7 +32,7 @@ def _staging_option(function):
         "staging",
         is_flag=True,
         default=False,
-        help="Use the staging Model Registry.",
+        help="Use the staging Model Registry unless SIMA_MODELS_REGISTRY_BASE_URL is set.",
     )(function)
 
 
@@ -175,7 +175,14 @@ def _selected_model_detail(
     }
 
 
-@click.group(name="models", help="Browse and download Model Registry artifacts.", hidden=True)
+@click.group(name="models", hidden=True, help=(
+    "Browse and download Model Registry artifacts from production by default "
+    "(https://models-registry.neat.sima.ai). No AWS credentials are required. "
+    "SIMA_MODELS_REGISTRY_BASE_URL overrides all endpoint selections, including --stg. "
+    "Otherwise --stg/--staging selects https://models-registry.stg.neat.sima.ai; "
+    "SIMA_MODELS_REGISTRY_PRODUCTION_URL overrides only the production default. "
+    "Use branches to find published catalogs; main/develop may be unpublished."
+))
 @_staging_option
 @click.pass_context
 def models_group(ctx: click.Context, staging: bool) -> None:
@@ -255,7 +262,7 @@ def list_command(
             echo_json({"branch": branch, "query": query, "models": runs})
             return
         if not runs:
-            click.echo("No completed model builds are available on this branch.")
+            click.echo(f"No completed model builds match branch {branch!r} and the requested query.")
             return
         if not _is_interactive():
             raise ModelRegistryError(

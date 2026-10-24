@@ -235,3 +235,39 @@ Only the public certificate is staged; the mkcert private key stays on the host.
 If the issuing CA cannot be verified, including a plain self-signed fallback,
 no CA download is published. Re-running setup refreshes the staged file even
 when the existing HTTPS certificate does not need to be reissued.
+
+
+### Model Registry preview
+
+The `models` command remains hidden from top-level help, but is directly callable.
+It reads the public production API at `https://models-registry.neat.sima.ai`
+without AWS credentials. This endpoint support does not establish general release
+readiness and does not change `modelzoo`.
+
+```sh
+sima-cli models --help
+sima-cli models branches --json
+# Choose a branch with a published catalog; main/develop may be unpublished.
+sima-cli models list --branch codex/production-resnet50-canary --json
+sima-cli models download --branch codex/production-resnet50-canary \
+  --id resnet_50 --variant w8a8 --output ./models --json
+# Both flag spellings work before or after the subcommand.
+sima-cli models --stg branches --json
+sima-cli models list --staging --branch develop --json
+```
+
+Endpoint precedence, highest first:
+
+1. An explicit `override` passed to the Python `resolve_base_url` helper (there is
+   no CLI URL option).
+2. `SIMA_MODELS_REGISTRY_BASE_URL`, including when staging is selected.
+3. `--stg` / `--staging`: `https://models-registry.stg.neat.sima.ai`.
+4. `SIMA_MODELS_REGISTRY_PRODUCTION_URL`.
+5. The built-in production URL.
+
+Branch listings describe registered runs; a listed branch may still lack a
+published catalog. An unpublished catalog produces an error naming the branch
+and endpoint. A published catalog with no matching builds returns an empty
+`models` array with `--json`, or a clear message interactively. The client never
+falls back to another branch or environment. Downloads retain size and SHA-256
+verification, safe output paths, retries, and existing overwrite/resume behavior.

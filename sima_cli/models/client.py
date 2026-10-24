@@ -23,6 +23,7 @@ from sima_cli.download.parallel import PARALLEL_MIN_SIZE, download_parallel, con
 
 ORGANIZATION = "sima-neat"
 REPOSITORY = "models"
+PRODUCTION_BASE_URL = "https://models-registry.neat.sima.ai"
 STAGING_BASE_URL = "https://models-registry.stg.neat.sima.ai"
 TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
 
@@ -50,10 +51,7 @@ def resolve_base_url(staging: bool = False, override: Optional[str] = None) -> s
     production = os.environ.get("SIMA_MODELS_REGISTRY_PRODUCTION_URL")
     if production:
         return normalize_base_url(production)
-    raise ModelRegistryError(
-        "The production Model Registry endpoint is not configured. "
-        "Use --stg or set SIMA_MODELS_REGISTRY_PRODUCTION_URL."
-    )
+    return PRODUCTION_BASE_URL
 
 
 def _new_session() -> requests.Session:
@@ -468,7 +466,13 @@ class RegistryClient:
         payload = self._get_json(
             ("v1", "repositories", ORGANIZATION, REPOSITORY, "catalogs", "current"),
             params={"git_ref": f"refs/heads/{branch}"},
+            allow_not_found=True,
         )
+        if payload is None:
+            raise ModelRegistryError(
+                f"No published model catalog for branch {branch!r} at {self.base_url} (HTTP 404). "
+                "Use models branches to find available branches; no fallback was attempted."
+            )
         catalog = payload.get("catalog") if payload else None
         document = catalog.get("document") if isinstance(catalog, dict) else None
         models = document.get("models") if isinstance(document, dict) else None

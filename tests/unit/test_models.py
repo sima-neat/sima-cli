@@ -13,6 +13,7 @@ from rich.console import Console
 from sima_cli.cli import main
 from sima_cli.models import rendering
 from sima_cli.models.client import (
+    PRODUCTION_BASE_URL,
     STAGING_BASE_URL,
     ModelRegistryError,
     _download_lock,
@@ -200,13 +201,12 @@ def test_top_level_models_json_keeps_root_diagnostics_on_stderr(arguments):
     assert "Environment:" in result.stderr
 
 
-def test_resolve_base_url_requires_configured_production(monkeypatch):
+def test_resolve_base_url_defaults_to_production(monkeypatch):
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_BASE_URL", raising=False)
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_PRODUCTION_URL", raising=False)
 
     assert resolve_base_url(staging=True) == STAGING_BASE_URL
-    with pytest.raises(ModelRegistryError, match="production Model Registry endpoint"):
-        resolve_base_url()
+    assert resolve_base_url() == PRODUCTION_BASE_URL
 
 
 def test_base_url_override_takes_precedence(monkeypatch):
@@ -1058,14 +1058,20 @@ def test_interactive_package_selection_loads_whole_model_results_for_its_profile
     fake_client.run.assert_called_once_with("package-run")
 
 
-def test_default_command_reports_unconfigured_production(monkeypatch):
+@pytest.mark.parametrize("command", ["branches", "list", "download"])
+def test_default_commands_use_production(monkeypatch, command):
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_BASE_URL", raising=False)
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_PRODUCTION_URL", raising=False)
-
-    result = CliRunner().invoke(models_group, ["branches"])
-
-    assert result.exit_code == 1
-    assert "production Model Registry endpoint is not configured" in result.output
+    client = Mock()
+    client.branches.return_value = []
+    client.catalog_models.return_value = []
+    args = [command, "--json"]
+    if command == "download":
+        args += ["--id", "missing", "--variant", "int8"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client) as constructor:
+        result = CliRunner().invoke(models_group, args)
+    constructor.assert_called_once_with(PRODUCTION_BASE_URL)
+    assert result.exit_code == (1 if command == "download" else 0)
 
 
 def test_download_command_resolves_and_downloads_selected_model(tmp_path):
@@ -1212,3 +1218,91 @@ def test_archive_download_lock_preserves_active_partial(tmp_path):
             RegistryClient("https://registry.example", session=session).download("run", artifact, destination)
     assert partial.read_bytes() == b"active transfer"
     assert session.calls == []
+
+
+@pytest.mark.parametrize("staging", [False, True])
+def test_endpoint_override_precedence(monkeypatch, staging):
+    monkeypatch.setenv("SIMA_MODELS_REGISTRY_PRODUCTION_URL", "https://production.example/")
+    monkeypatch.setenv("SIMA_MODELS_REGISTRY_BASE_URL", "https://base.example/")
+    assert resolve_base_url(staging, "https://explicit.example/") == "https://explicit.example"
+    assert resolve_base_url(staging) == "https://base.example"
+    monkeypatch.delenv("SIMA_MODELS_REGISTRY_BASE_URL")
+    assert resolve_base_url(staging) == (STAGING_BASE_URL if staging else "https://production.example")
+
+
+@pytest.mark.parametrize("flag", ["--stg", "--staging"])
+@pytest.mark.parametrize("before", [True, False])
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("command", ["branches", "list", "download"])
+def test_cli_staging_and_conflicting_overrides(monkeypatch, flag, before, override, command):
+    monkeypatch.delenv("SIMA_MODELS_REGISTRY_BASE_URL", raising=False)
+    monkeypatch.setenv("SIMA_MODELS_REGISTRY_PRODUCTION_URL", "https://production.example")
+    if override:
+        monkeypatch.setenv("SIMA_MODELS_REGISTRY_BASE_URL", "https://base.example")
+    client = Mock()
+    client.branches.return_value = []
+    client.catalog_models.return_value = []
+    args = [flag, command] if before else [command, flag]
+    args += ["--json"]
+    if command == "download":
+        args += ["--id", "missing", "--variant", "int8"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client) as constructor:
+        result = CliRunner().invoke(models_group, args)
+    constructor.assert_called_once_with("https://base.example" if override else STAGING_BASE_URL)
+    assert result.exit_code == (1 if command == "download" else 0)
+
+
+@pytest.mark.parametrize("base_url", [PRODUCTION_BASE_URL, STAGING_BASE_URL])
+@pytest.mark.parametrize("status", [404, 403, 503])
+def test_catalog_errors_never_fall_back(base_url, status):
+    session = FakeSession([FakeResponse(status_code=status, payload={"error": {"message": "Unavailable"}})])
+    client = RegistryClient(base_url, session=session)
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, ["list", "--branch", "develop", "--json"])
+    assert result.exit_code == 1
+    assert base_url in result.output
+    assert str(status) in result.output
+    if status == 404:
+        assert "No published model catalog for branch 'develop'" in result.output
+    assert len(session.calls) == 1
+    assert session.calls[0][1]["params"] == {"git_ref": "refs/heads/develop"}
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_empty_published_catalog_is_clear(json_output):
+    session = FakeSession([FakeResponse(payload={"catalog": {"document": {"models": []}}})])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+    args = ["list", "--branch", "empty"] + (["--json"] if json_output else [])
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+    assert result.exit_code == 0
+    if json_output:
+        assert json.loads(result.output)["models"] == []
+    else:
+        assert "No completed model builds match branch 'empty'" in result.output
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize("base_url", [PRODUCTION_BASE_URL, STAGING_BASE_URL])
+@pytest.mark.parametrize("failure", [None, "size", "checksum"])
+def test_verified_download_on_both_endpoints(tmp_path, base_url, failure):
+    content = b"verified model bytes"
+    artifact = {
+        "name": "package", "size_bytes": len(content) + (failure == "size"),
+        "sha256": "0" * 64 if failure == "checksum" else hashlib.sha256(content).hexdigest(),
+    }
+    session = FakeSession([
+        FakeResponse(payload={"artifact": {"download_url": "https://download.example/model"}}),
+        FakeResponse(content=content),
+    ])
+    client = RegistryClient(base_url, session=session)
+    destination = tmp_path / "model.tar.gz"
+    if failure:
+        with pytest.raises(ModelRegistryError, match="size mismatch" if failure == "size" else "SHA-256 mismatch"):
+            client.download("run", artifact, destination)
+        assert not destination.exists()
+        assert not destination.with_name(".model.tar.gz.part").exists()
+    else:
+        assert client.download("run", artifact, destination) == destination
+        assert destination.read_bytes() == content
+    assert session.calls[0][0] == base_url + "/v1/runs/run/artifacts/package"

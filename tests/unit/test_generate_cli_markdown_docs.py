@@ -90,3 +90,19 @@ def test_compare_dirs_ignores_manual_extra_files():
         (actual / "sdk-networking" / "index.md").write_text("manual guide\n", encoding="utf-8")
 
         assert docs_generator.compare_dirs(expected, actual) == []
+
+
+def test_models_reference_is_generated_without_exposing_hidden_commands(tmp_path):
+    from sima_cli.cli import main
+
+    with patch.dict(main.commands, {"internal-test": click.Command("internal-test", hidden=True)}):
+        docs_generator.write_docs(tmp_path)
+    for suffix in ("", "-branches", "-list", "-download"):
+        assert (tmp_path / "commands" / f"sima-cli-models{suffix}.md").exists()
+    assert not (tmp_path / "commands" / "sima-cli-internal-test.md").exists()
+    assert "sima-cli-models.md" in (tmp_path / "index.md").read_text()
+    page = (tmp_path / "commands" / "sima-cli-models.md").read_text()
+    assert "https://models-registry.neat.sima.ai" in page
+    assert "sima-cli models --stg branches --json" in page
+    assert "\b" not in page
+    assert main.commands["models"].hidden

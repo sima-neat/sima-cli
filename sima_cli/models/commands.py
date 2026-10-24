@@ -176,12 +176,23 @@ def _selected_model_detail(
 
 
 @click.group(name="models", hidden=True, help=(
-    "Browse and download Model Registry artifacts from production by default "
-    "(https://models-registry.neat.sima.ai). No AWS credentials are required. "
-    "SIMA_MODELS_REGISTRY_BASE_URL overrides all endpoint selections, including --stg. "
+    "Browse and download Model Registry artifacts from production by default.\n\n"
+    "Uses https://models-registry.neat.sima.ai without AWS credentials. "
+    "This preview command remains hidden from top-level help.\n\n"
+    "SIMA_MODELS_REGISTRY_BASE_URL overrides all CLI endpoint selections, including --stg. "
     "Otherwise --stg/--staging selects https://models-registry.stg.neat.sima.ai; "
     "SIMA_MODELS_REGISTRY_PRODUCTION_URL overrides only the production default. "
-    "Use branches to find published catalogs; main/develop may be unpublished."
+    "The Python resolve_base_url helper's explicit override takes precedence over environment variables.\n\n"
+    "Branch listings describe registered runs; listed branches may lack a published catalog. "
+    "Unpublished catalogs report an error; published catalogs with no matching builds return "
+    "an empty models array with --json or a message interactively. "
+    "No fallback to another branch or environment is attempted.\n\n"
+    "Examples (choose a currently published branch and model):\n\n\b\n"
+    "  sima-cli models branches --json\n"
+    "  sima-cli models list --branch BRANCH --json\n"
+    "  sima-cli models download --branch BRANCH --id MODEL --variant VARIANT --output ./models --json\n"
+    "  sima-cli models --stg branches --json\n"
+    "  sima-cli models list --staging --branch develop --json"
 ))
 @_staging_option
 @click.pass_context

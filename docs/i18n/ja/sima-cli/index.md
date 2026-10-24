@@ -98,6 +98,7 @@ pip install sima-cli
 | [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md) | SiMa開発者ポータルで認証を行ってください。 |
 | [`sima-cli logout`](../../../sima-cli/commands/sima-cli-logout.md) | キャッシュされた認証情報と設定ファイルを削除することでログアウトできます。 |
 | [`sima-cli mla`](../../../sima-cli/commands/sima-cli-mla.md) | 機械学習アクセラレータ用ユーティリティ。 |
+| [`sima-cli models`](../../../sima-cli/commands/sima-cli-models.md) | デフォルトで本番環境の Model Registry アーティファクトを参照・ダウンロードします。 |
 | [`sima-cli modelzoo`](../../../sima-cli/commands/sima-cli-modelzoo.md) | Model Zooからモデルにアクセスしてください。 |
 | [`sima-cli neat`](../../../sima-cli/commands/sima-cli-neat.md) | Neatのビルドアーティファクトを検索、ダウンロード、インストールしてください。 |
 | [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md) | DevKit のネットワーク IP アドレスを設定します。 |
@@ -122,6 +123,7 @@ pip install sima-cli
 - [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md)
 - [`sima-cli logout`](../../../sima-cli/commands/sima-cli-logout.md)
 - [`sima-cli mla`](../../../sima-cli/commands/sima-cli-mla.md)
+- [`sima-cli models`](../../../sima-cli/commands/sima-cli-models.md)
 - [`sima-cli modelzoo`](../../../sima-cli/commands/sima-cli-modelzoo.md)
 - [`sima-cli neat`](../../../sima-cli/commands/sima-cli-neat.md)
 - [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md)
@@ -140,6 +142,9 @@ pip install sima-cli
 - [`sima-cli appzoo list`](../../../sima-cli/commands/sima-cli-appzoo-list.md)
 - [`sima-cli device discover`](../../../sima-cli/commands/sima-cli-device-discover.md)
 - [`sima-cli mla meminfo`](../../../sima-cli/commands/sima-cli-mla-meminfo.md)
+- [`sima-cli models branches`](../../../sima-cli/commands/sima-cli-models-branches.md)
+- [`sima-cli models download`](../../../sima-cli/commands/sima-cli-models-download.md)
+- [`sima-cli models list`](../../../sima-cli/commands/sima-cli-models-list.md)
 - [`sima-cli modelzoo describe`](../../../sima-cli/commands/sima-cli-modelzoo-describe.md)
 - [`sima-cli modelzoo get`](../../../sima-cli/commands/sima-cli-modelzoo-get.md)
 - [`sima-cli modelzoo list`](../../../sima-cli/commands/sima-cli-modelzoo-list.md)

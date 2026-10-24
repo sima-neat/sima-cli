@@ -1,3 +1,5 @@
+import base64
+import json
 from unittest.mock import Mock, patch
 
 import pytest
@@ -56,6 +58,28 @@ def test_connect_prompts_for_backend_key_without_putting_it_in_argv(monkeypatch)
     assert "Connected to ll2" in result.output
     assert "ssh sima@10.252.1.2" in result.output
     assert connect.call_args.kwargs == {"attempts": 3, "transport": "auto"}
+
+
+@pytest.mark.parametrize("environment", ["vulcan-staging", "vulcan-production"])
+def test_connect_decodes_supported_key_from_prompt(monkeypatch, environment):
+    profile = {
+        "environment": environment,
+        "api_url": "https://{}.example.test".format(environment),
+        "requester": "user-1",
+        "allocation_id": "a" * 32,
+        "allocation_secret": "s" * 48,
+    }
+    encoded = base64.b64encode(json.dumps(profile).encode()).decode()
+    connect = Mock(return_value=_session("b" * 32, "ll2"))
+    monkeypatch.setattr(commands, "connect", connect)
+
+    result = invoke_main(["cloudex", "connect"], input=encoded + "\n")
+
+    assert result.exit_code == 0, result.output
+    assert connect.call_args.args[0] == profile
+    assert "Connected to ll2" in result.output
+    assert encoded not in result.output
+    assert profile["allocation_secret"] not in result.output
 
 
 def test_connect_verbose_prints_sanitized_connection_stages(monkeypatch):

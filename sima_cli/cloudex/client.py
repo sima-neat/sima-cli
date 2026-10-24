@@ -68,8 +68,8 @@ def decode_key(value):
         raise CloudExError("--key contains an invalid value")
     if len(profile["allocation_secret"]) < 32:
         raise CloudExError("--key contains an invalid allocation secret")
-    if profile["environment"] != "vulcan-staging":
-        raise CloudExError("CloudEx currently supports only vulcan-staging allocation keys")
+    if profile["environment"] not in {"vulcan-staging", "vulcan-production"}:
+        raise CloudExError("CloudEx supports only vulcan-staging or vulcan-production allocation keys")
     return profile
 
 

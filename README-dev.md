@@ -143,3 +143,16 @@ twine upload dist/*
 ### 🔗 Related Links
 
 - [SiMa Developer Portal](https://community.sima.ai/)
+
+### Artifact request resilience
+
+The direct-file downloader uses a 10-second connection timeout and a 60-second
+read-inactivity timeout for its preliminary HEAD and sequential GET requests.
+Before response headers arrive, connection/read timeouts and connection failures
+are retried up to three total attempts with 1- and 2-second backoff. HTTP 429,
+500, 502, 503, and 504 responses also receive these bounded retries. Other HTTP
+errors and TLS certificate errors fail immediately.
+
+These retries do not replay an interrupted response body or change the separate
+parallel-download path. Existing partial-file validators, resume checks, and
+atomic publication continue to protect downloaded artifacts.

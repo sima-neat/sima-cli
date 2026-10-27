@@ -98,6 +98,7 @@ pip install sima-cli
 | [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md) | 透過 SiMa 開發者入口網站進行驗證。 |
 | [`sima-cli logout`](../../../sima-cli/commands/sima-cli-logout.md) | 登出時，請刪除快取中的憑證和設定檔。 |
 | [`sima-cli mla`](../../../sima-cli/commands/sima-cli-mla.md) | 機器學習加速器工具。 |
+| [`sima-cli models`](../../../sima-cli/commands/sima-cli-models.md) | 預設瀏覽並下載正式環境的 Model Registry 成品。 |
 | [`sima-cli modelzoo`](../../../sima-cli/commands/sima-cli-modelzoo.md) | 從 Model Zoo 存取模型。 |
 | [`sima-cli neat`](../../../sima-cli/commands/sima-cli-neat.md) | 尋找、下載並安裝 Neat 建置產生的成品。 |
 | [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md) | 在 DevKit 上設定網路 IP 位址。 |
@@ -122,6 +123,7 @@ pip install sima-cli
 - [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md)
 - [`sima-cli logout`](../../../sima-cli/commands/sima-cli-logout.md)
 - [`sima-cli mla`](../../../sima-cli/commands/sima-cli-mla.md)
+- [`sima-cli models`](../../../sima-cli/commands/sima-cli-models.md)
 - [`sima-cli modelzoo`](../../../sima-cli/commands/sima-cli-modelzoo.md)
 - [`sima-cli neat`](../../../sima-cli/commands/sima-cli-neat.md)
 - [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md)
@@ -140,6 +142,9 @@ pip install sima-cli
 - [`sima-cli appzoo list`](../../../sima-cli/commands/sima-cli-appzoo-list.md)
 - [`sima-cli device discover`](../../../sima-cli/commands/sima-cli-device-discover.md)
 - [`sima-cli mla meminfo`](../../../sima-cli/commands/sima-cli-mla-meminfo.md)
+- [`sima-cli models branches`](../../../sima-cli/commands/sima-cli-models-branches.md)
+- [`sima-cli models download`](../../../sima-cli/commands/sima-cli-models-download.md)
+- [`sima-cli models list`](../../../sima-cli/commands/sima-cli-models-list.md)
 - [`sima-cli modelzoo describe`](../../../sima-cli/commands/sima-cli-modelzoo-describe.md)
 - [`sima-cli modelzoo get`](../../../sima-cli/commands/sima-cli-modelzoo-get.md)
 - [`sima-cli modelzoo list`](../../../sima-cli/commands/sima-cli-modelzoo-list.md)

@@ -9,9 +9,9 @@ import pytest
 from sima_cli.cloudex import client, installer
 
 
-def allocation_profile():
+def allocation_profile(environment="vulcan-staging"):
     return {
-        "environment": "vulcan-staging",
+        "environment": environment,
         "api_url": "https://cloudex.example.test",
         "requester": "user-1",
         "allocation_id": "a" * 32,
@@ -35,16 +35,17 @@ def session_record(session_id="b" * 32):
     }
 
 
-def test_decode_key_accepts_exact_allocation_contract():
-    profile = allocation_profile()
+@pytest.mark.parametrize("environment", ["vulcan-staging", "vulcan-production"])
+def test_decode_key_accepts_exact_allocation_contract(environment):
+    profile = allocation_profile(environment)
     encoded = base64.b64encode(json.dumps(profile).encode()).decode()
 
     assert client.decode_key(encoded) == profile
 
 
-def test_decode_key_rejects_non_staging_environment():
-    profile = allocation_profile()
-    profile["environment"] = "vulcan-production"
+@pytest.mark.parametrize("environment", ["vulcan-development", "production", "staging"])
+def test_decode_key_rejects_unsupported_environment(environment):
+    profile = allocation_profile(environment)
     encoded = base64.b64encode(json.dumps(profile).encode()).decode()
 
     with pytest.raises(client.CloudExError, match="vulcan-staging"):
@@ -117,17 +118,28 @@ def test_forwarder_override_is_authoritative(tmp_path, monkeypatch):
     client.shutil.which.assert_not_called()
 
 
-def test_api_signs_allocation_scoped_request(monkeypatch):
+@pytest.mark.parametrize("environment", ["vulcan-staging", "vulcan-production"])
+@pytest.mark.parametrize("restored", [False, True])
+def test_api_signs_allocation_scoped_request(monkeypatch, environment, restored):
     response = Mock(ok=True)
     response.json.return_value = {"status": "connected_direct"}
     request = Mock(return_value=response)
     monkeypatch.setattr(client.requests, "request", request)
-    api = client.CloudExAPI.from_profile(allocation_profile())
+    profile = allocation_profile(environment)
+    profile["api_url"] = "https://{}.example.test".format(environment)
+    encoded = base64.b64encode(json.dumps(profile).encode()).decode()
+    decoded = client.decode_key(encoded)
+    if restored:
+        session = dict(decoded, api_secret=decoded["allocation_secret"])
+        api = client.CloudExAPI.from_session(session)
+    else:
+        api = client.CloudExAPI.from_profile(decoded)
 
     assert api.call("POST", "/v1/p2p/ice-sessions", {"request_id": "b" * 32}) == {
         "status": "connected_direct"
     }
 
+    assert request.call_args.args == ("POST", profile["api_url"] + "/v1/p2p/ice-sessions")
     kwargs = request.call_args.kwargs
     assert kwargs["headers"]["x-p2p-allocation-id"] == "a" * 32
     assert len(kwargs["headers"]["x-p2p-signature"]) == 64

@@ -98,6 +98,7 @@ pip install sima-cli
 | [`sima-cli login`](commands/sima-cli-login.md) | Authenticate with the SiMa Developer Portal. |
 | [`sima-cli logout`](commands/sima-cli-logout.md) | Log out by deleting cached credentials and config files. |
 | [`sima-cli mla`](commands/sima-cli-mla.md) | Machine Learning Accelerator Utilities. |
+| [`sima-cli models`](commands/sima-cli-models.md) | Browse and download Model Registry artifacts from production by default. |
 | [`sima-cli modelzoo`](commands/sima-cli-modelzoo.md) | Access models from the Model Zoo. |
 | [`sima-cli neat`](commands/sima-cli-neat.md) | Discover, download, and install Neat build artifacts. |
 | [`sima-cli network`](commands/sima-cli-network.md) | Setup Network IP address on the DevKit |
@@ -122,6 +123,7 @@ pip install sima-cli
 - [`sima-cli login`](commands/sima-cli-login.md)
 - [`sima-cli logout`](commands/sima-cli-logout.md)
 - [`sima-cli mla`](commands/sima-cli-mla.md)
+- [`sima-cli models`](commands/sima-cli-models.md)
 - [`sima-cli modelzoo`](commands/sima-cli-modelzoo.md)
 - [`sima-cli neat`](commands/sima-cli-neat.md)
 - [`sima-cli network`](commands/sima-cli-network.md)
@@ -140,6 +142,9 @@ pip install sima-cli
 - [`sima-cli appzoo list`](commands/sima-cli-appzoo-list.md)
 - [`sima-cli device discover`](commands/sima-cli-device-discover.md)
 - [`sima-cli mla meminfo`](commands/sima-cli-mla-meminfo.md)
+- [`sima-cli models branches`](commands/sima-cli-models-branches.md)
+- [`sima-cli models download`](commands/sima-cli-models-download.md)
+- [`sima-cli models list`](commands/sima-cli-models-list.md)
 - [`sima-cli modelzoo describe`](commands/sima-cli-modelzoo-describe.md)
 - [`sima-cli modelzoo get`](commands/sima-cli-modelzoo-get.md)
 - [`sima-cli modelzoo list`](commands/sima-cli-modelzoo-list.md)

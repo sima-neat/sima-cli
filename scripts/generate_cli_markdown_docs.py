@@ -19,6 +19,8 @@ import click
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "docs" / "sima-cli"
 README_PATH = ROOT / "README.md"
+# Preview commands may have reference pages while remaining hidden in CLI help.
+DOCUMENTED_HIDDEN_COMMANDS = {("sima-cli", "models")}
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -94,7 +96,9 @@ def command_children(doc: CommandDoc) -> List[CommandDoc]:
     children: List[CommandDoc] = []
     for name in command.list_commands(ctx):
         child = command.get_command(ctx, name)
-        if child is None or getattr(child, "hidden", False):
+        if child is None:
+            continue
+        if child.hidden and tuple(doc.path + [name]) not in DOCUMENTED_HIDDEN_COMMANDS:
             continue
         children.append(CommandDoc(doc.path + [name], child, doc.path))
     return children

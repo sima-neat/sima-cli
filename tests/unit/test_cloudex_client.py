@@ -9,6 +9,12 @@ import pytest
 from sima_cli.cloudex import client, installer
 
 
+@pytest.fixture(autouse=True)
+def host_platform(monkeypatch):
+    # Lifecycle tests must not depend on tools installed on the test host.
+    monkeypatch.setattr(client, "sys", SimpleNamespace(platform="linux"))
+
+
 def allocation_profile(environment="vulcan-staging"):
     return {
         "environment": environment,
@@ -146,7 +152,10 @@ def test_api_signs_allocation_scoped_request(monkeypatch, environment, restored)
     assert "allocation_secret" not in kwargs["data"].decode()
 
 
-def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_path, monkeypatch):
+@pytest.mark.parametrize("host", ["linux", "darwin"])
+def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_path, monkeypatch, host):
+    client.sys.platform = host
+    monkeypatch.setattr(client.shutil, "which", Mock(return_value="/opt/homebrew/bin/tool"))
     store = client.SessionStore(tmp_path / "cloudex")
     forwarder = tmp_path / "forwarder"
     forwarder.write_text("binary")
@@ -183,6 +192,10 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     assert not store.runtime_paths(result["session_id"])[1].exists()
     command = popen.call_args.args[0]
     assert command[:3] == ["sudo", "-n", "--"]
+    if host == "darwin":
+        assert command[3:6] == ["/usr/bin/env", "PATH=" + client.MACOS_TUNNEL_PATH, str(forwarder)]
+    else:
+        assert command[3] == str(forwarder)
     assert popen.call_args.kwargs["stdin"] is client.subprocess.DEVNULL
     api.call.assert_called_once_with(
         "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]},
@@ -657,3 +670,49 @@ def test_benchmark_requires_bidirectional_metrics(monkeypatch):
     client.subprocess.run.return_value = SimpleNamespace(returncode=0, stdout=json.dumps(report))
     with pytest.raises(client.CloudExError, match="bidirectional"):
         client.run_benchmark("forwarder", "10.252.1.2", 10)
+
+
+@pytest.mark.parametrize("brew_bin", ["/opt/homebrew/bin", "/usr/local/bin"])
+def test_macos_forwarder_finds_homebrew_with_restricted_path(monkeypatch, brew_bin):
+    client.sys.platform = "darwin"
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    which = Mock(side_effect=lambda name, path: brew_bin + "/" + name
+                 if brew_bin in path.split(":") else None)
+    monkeypatch.setattr(client.shutil, "which", which)
+
+    assert client._forwarder_sudo_prefix() == [
+        "sudo", "-n", "--", "/usr/bin/env", "PATH=" + client.MACOS_TUNNEL_PATH,
+    ]
+    assert [call.args[0] for call in which.call_args_list] == ["wg", "wireguard-go"]
+    assert all(call.kwargs["path"] == client.MACOS_TUNNEL_PATH for call in which.call_args_list)
+
+
+@pytest.mark.parametrize("missing", [("wg",), ("wireguard-go",), ("wg", "wireguard-go")])
+def test_macos_missing_wireguard_fails_before_session_request(monkeypatch, tmp_path, missing):
+    client.sys.platform = "darwin"
+    monkeypatch.setattr(client.shutil, "which", lambda name, path: None if name in missing else "/usr/local/bin/" + name)
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(client, "_reconcile_existing_connection", Mock(return_value=None))
+    api = Mock()
+    monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
+    install = Mock()
+    monkeypatch.setattr(installer, "ensure_forwarder", install)
+
+    with pytest.raises(client.CloudExError, match="brew install wireguard-tools") as error:
+        client.connect(allocation_profile(), client.SessionStore(tmp_path), Mock())
+
+    assert ", ".join(missing) in str(error.value)
+    api.call.assert_not_called()
+    install.assert_not_called()
+
+
+@pytest.mark.parametrize("detail", ["WireGuard is unavailable", "start wireguard-go"])
+def test_macos_forwarder_failure_includes_install_instruction(tmp_path, detail):
+    client.sys.platform = "darwin"
+    log = tmp_path / "forwarder.log"
+    log.write_text("kerrigan-p2p-forwarder: starting WireGuard tunnel\n" + detail)
+
+    message = client._forwarder_failure(log)
+
+    assert "brew install wireguard-tools" in message
+    assert message.endswith("; last stage: starting WireGuard tunnel")

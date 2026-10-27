@@ -44,11 +44,15 @@ SDK セットアップは DevKit に Docker をインストールも設定もし
 
 この手順を省略するには `--no-container-registry` を使います。既存のレジストリを停止したり削除したりはしません。別のポートを選ぶには、`--container-registry-port <port>` を指定してセットアップを再実行します。ポートを変更しても保存済みのイメージは保持されます。
 
-## Edgematic Studio の明示的な選択
+## Edgematic Studio
 
-既定のセットアップは、Edgematic Studio の確認を表示せず、Studio のインストールやポートの公開も行いません。`-y` と `--noninteractive` でも同様です。
+Neat SDK イメージでは、セットアップは確認なしで Edgematic Studio をインストールし、ポートを公開して起動します。`-y` と `--noninteractive` でも同様です。サマリーの **Edgematic Studio** パネルに Studio の URL が表示されます。Studio はホストのポート `8088` を使い、`8088` が使用中の場合は別の空きポートを使います。
 
-Studio をインストールしてポートを公開するには `--edgematic-studio` を使います。後で手動インストールするためにポートだけを公開するには `--edgematic-studio-port` を使います。
+最初のチャットの前に、Studio の設定からコーディングエージェントにサインインしてください。Studio はコンテナーと一緒には再起動しません。URL が開かなくなった場合は、SDK コンテナーのシェルで `activate-edgematic-studio` を実行してください。
+
+Studio をスキップしてポートを公開しない場合は `--no-edgematic-studio` を使います。後で手動インストールするためにポートだけを公開するには `--edgematic-studio-port` を使います。`--minimal` と `--no-insight` も Studio をスキップします。Docker のポートマッピングは後から変更できないため、これらの選択はコンテナーの作成時に適用されます。
+
+Studio のインストールに失敗してもセットアップは続行し、後で SDK コンテナーのシェルからインストールするためのコマンドを表示します。
 
 ## ブラウザー版 VS Code の拡張機能の選択
 
@@ -62,7 +66,7 @@ Neat は現在の SDK ユーザー向けに、確認なしで自動インスト�
 sima-cli sdk setup --noninteractive --all-extensions
 ```
 
-`--all-extensions` は拡張機能の選択だけを省略します。他の質問を省略するには `--noninteractive` を使います。既存の SDK コンテナーを再利用する場合も拡張機能をインストールします。このオプションがなければ、従来の `SIMA_CLI_INSTALL_CODEX_EXTENSION` 設定で要求されない限り、`-y` と `--noninteractive` は任意の拡張機能をスキップします。`--all-extensions` は `--minimal` と併用できず、Edgematic Studio を有効にしたり Model Compiler の選択を変えたりしません。
+`--all-extensions` は拡張機能の選択だけを省略します。他の質問を省略するには `--noninteractive` を使います。既存の SDK コンテナーを再利用する場合も拡張機能をインストールします。このオプションがなければ、従来の `SIMA_CLI_INSTALL_CODEX_EXTENSION` 設定で要求されない限り、`-y` と `--noninteractive` は任意の拡張機能をスキップします。`--all-extensions` は `--minimal` と併用できず、Edgematic Studio や Model Compiler の選択を変えません。
 
 ## ブラウザー版 VS Code の拡張機能のバージョン
 

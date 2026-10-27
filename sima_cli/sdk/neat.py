@@ -284,7 +284,7 @@ def allocate_neat_ports(
             ]
         )
 
-    # Opt-in, and settled before create: port maps are immutable afterwards.
+    # Settled before create, on by default: port maps are immutable afterwards.
     # --no-insight excludes it either way; Studio drives the Insight APIs.
     if publish_edgematic_studio_port and not no_insight:
         edgematic_studio = _allocate_single_port(EDGEMATIC_STUDIO_CONTAINER_PORT, "tcp", reserved)
@@ -1078,13 +1078,15 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
             editor_host = "localhost" if config.code_server_without_password else display_host
             rows.append(("codeUIHttp", f"http://{editor_host}:{port_map['codeUI']['host']}"))
     show_edgematic_studio = "edgematicStudio" in port_map
+    studio_url = ""
     if show_edgematic_studio:
         # Studio serves plain HTTP; web_scheme tracks the Insight/Code UI certs.
         studio_url = f"http://{display_host}:{port_map['edgematicStudio']['host']}"
-        if not config.edgematic_studio_installed:
-            # --edgematic-studio-port publishes the mapping with nothing behind it.
-            studio_url = f"{studio_url} (port published; Studio not installed)"
-        rows.append(("edgematicStudio", studio_url))
+        if config.edgematic_studio_installed:
+            rows.append(("edgematicStudio", studio_url))
+        else:
+            # --edgematic-studio-port, or a failed install, leaves nothing behind the mapping.
+            rows.append(("edgematicStudio", f"{studio_url} (port published; Studio not installed)"))
     if "videoUI" in port_map:
         rows.append(("videoUI", f"{web_scheme}://{display_host}:{port_map['videoUI']['host']}"))
     if "webSSH" in port_map:
@@ -1148,6 +1150,29 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         print("   Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.")
     opened = _open_code_ui_if_browser_available(code_url)
     _print_code_ui_panel(config, code_url, opened)
+    if show_edgematic_studio and config.edgematic_studio_installed:
+        _print_edgematic_studio_panel(studio_url)
+
+
+def _print_edgematic_studio_panel(studio_url: str) -> None:
+    # Nothing restarts Studio with the container, so say how to bring it back.
+    console.print(
+        Panel(
+            "\n".join(
+                [
+                    "[bold]Open this URL in your browser.[/bold]",
+                    f"[cyan]{studio_url}[/cyan]",
+                    "",
+                    "Sign in to your coding agent from Studio's settings before the first chat.",
+                    "If the page does not load, for example after a container restart,",
+                    "run activate-edgematic-studio in the SDK container shell.",
+                ]
+            ),
+            title="Edgematic Studio",
+            border_style="cyan",
+            expand=False,
+        )
+    )
 
 
 def is_docker_port_collision_error(error_text: str) -> bool:

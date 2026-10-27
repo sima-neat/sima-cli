@@ -76,13 +76,24 @@ existing registry. To select a different port, run setup again with
 `--container-registry-port <port>`. Existing stored images are kept when the
 port changes.
 
-## Edgematic Studio opt-in
+## Edgematic Studio
 
-Default setup does not display an Edgematic Studio prompt, install Studio, or
-publish its port. This also applies to `-y` and `--noninteractive`.
+On Neat SDK images, setup installs Edgematic Studio, publishes its port, and
+starts it, without a prompt. This also applies to `-y` and `--noninteractive`.
+The summary shows Studio's URL in an **Edgematic Studio** panel. Studio uses
+host port `8088`, or another free port when `8088` is taken.
 
-Use `--edgematic-studio` to install Studio and publish its port. Use
+Sign in to your coding agent from Studio's settings before the first chat.
+Studio does not restart with the container; if its URL stops loading, run
+`activate-edgematic-studio` in the SDK container shell.
+
+Use `--no-edgematic-studio` to skip Studio and leave its port unpublished. Use
 `--edgematic-studio-port` to publish only the port for a later manual install.
+`--minimal` and `--no-insight` also skip Studio. These choices apply when the
+container is created, because Docker port mappings cannot change afterwards.
+
+If the Studio install fails, setup continues and prints the command to install
+it later from the SDK container shell.
 
 ## Browser VS Code extension selection
 
@@ -104,8 +115,8 @@ sima-cli sdk setup --noninteractive --all-extensions
 skip other questions. It also installs extensions when reusing an existing SDK
 container. Without it, `-y` and `--noninteractive` skip optional extensions
 unless the legacy `SIMA_CLI_INSTALL_CODEX_EXTENSION` setting requests them.
-`--all-extensions` cannot be combined with `--minimal` and does not enable
-Edgematic Studio or alter Model Compiler selection.
+`--all-extensions` cannot be combined with `--minimal` and does not change
+Edgematic Studio or Model Compiler selection.
 
 ## Browser VS Code extension versions
 

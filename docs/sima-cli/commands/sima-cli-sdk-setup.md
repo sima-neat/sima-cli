@@ -22,7 +22,8 @@ sima-cli sdk setup [OPTIONS]
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
 | `--all-extensions` | Install Codex and Claude VS Code extensions without prompting. Neat is installed automatically. SDK_SKIP_CODING_AGENT_INSTALL overrides this option. |
-| `--edgematic-studio, --studio` | Install the Edgematic Studio extension and publish its port. Off by default. |
+| `--edgematic-studio, --studio` | Install the Edgematic Studio extension and publish its port. This is the default; the option is kept for compatibility. |
+| `--no-edgematic-studio, --no-studio` | Skip the Edgematic Studio extension and do not publish its port. |
 | `--edgematic-studio-port, --studio-port` | Publish the Edgematic Studio port without installing it, for a manual install later. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
@@ -78,7 +79,11 @@ Options:
                                   automatically. SDK_SKIP_CODING_AGENT_INSTALL
                                   overrides this option.
   --edgematic-studio, --studio    Install the Edgematic Studio extension and
-                                  publish its port. Off by default.
+                                  publish its port. This is the default; the
+                                  option is kept for compatibility.
+  --no-edgematic-studio, --no-studio
+                                  Skip the Edgematic Studio extension and do
+                                  not publish its port.
   --edgematic-studio-port, --studio-port
                                   Publish the Edgematic Studio port without
                                   installing it, for a manual install later.

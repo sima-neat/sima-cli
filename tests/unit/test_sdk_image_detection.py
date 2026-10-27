@@ -1955,8 +1955,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("--studio", result.output)
         self.assertIn("--edgematic-studio-port", result.output)
         self.assertIn("--studio-port", result.output)
-        # Studio is opt-in; there is no negative form to remember.
-        self.assertNotIn("--no-edgematic-studio", result.output)
+        # Studio is on by default, so the negative form is the one that matters.
+        self.assertIn("--no-edgematic-studio", result.output)
+        self.assertIn("--no-studio", result.output)
 
     def test_setup_accepts_edgematic_studio_aliases(self):
         for flag in ("--edgematic-studio", "--studio"):
@@ -1980,14 +1981,40 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 self.assertTrue(setup_start.call_args.kwargs["edgematic_studio_port"])
                 self.assertFalse(setup_start.call_args.kwargs["edgematic_studio"])
 
-    def test_setup_defaults_to_no_edgematic_studio(self):
+    def test_setup_passes_no_edgematic_studio_options_by_default(self):
+        # The default (install and publish) is resolved in setup_and_start.
         with patch("sima_cli.sdk.commands.check_and_start_docker"), \
              patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
             result = CliRunner().invoke(sdk, ["setup", "-y", "-n"])
 
         self.assertEqual(result.exit_code, 0)
         self.assertFalse(setup_start.call_args.kwargs["edgematic_studio"])
+        self.assertFalse(setup_start.call_args.kwargs["no_edgematic_studio"])
         self.assertFalse(setup_start.call_args.kwargs["edgematic_studio_port"])
+
+    def test_setup_accepts_no_edgematic_studio_aliases(self):
+        for flag in ("--no-edgematic-studio", "--no-studio"):
+            with self.subTest(flag=flag), \
+                 patch("sima_cli.sdk.commands.check_and_start_docker"), \
+                 patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+                result = CliRunner().invoke(sdk, ["setup", flag, "-y", "-n"])
+
+                self.assertEqual(result.exit_code, 0)
+                self.assertTrue(setup_start.call_args.kwargs["no_edgematic_studio"])
+                self.assertFalse(setup_start.call_args.kwargs["edgematic_studio"])
+
+    def test_setup_rejects_edgematic_studio_options_with_their_negative_form(self):
+        for option in ("--edgematic-studio", "--edgematic-studio-port"):
+            with self.subTest(option=option), \
+                 patch("sima_cli.sdk.commands.check_and_start_docker"), \
+                 patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
+                result = CliRunner().invoke(
+                    sdk, ["setup", option, "--no-edgematic-studio", "-y", "-n"]
+                )
+
+                self.assertEqual(result.exit_code, 2)
+                self.assertIn(f"{option} cannot be used with --no-edgematic-studio", result.output)
+                setup_start.assert_not_called()
 
     def test_neat_port_allocator_uses_defaults_when_available(self):
         with patch("sima_cli.sdk.neat._is_port_available", return_value=True):
@@ -2075,7 +2102,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("8088:8088/tcp", port_args)
 
     def test_neat_port_allocator_omits_edgematic_studio_by_default(self):
-        # Opt-in: binding a host port for an undocumented service needs positive intent.
+        # The allocator publishes only what setup resolved; the default lives in
+        # resolve_edgematic_studio_choice.
         with patch("sima_cli.sdk.neat._is_port_available", return_value=True):
             port_map, port_args = allocate_neat_ports()
 
@@ -2820,6 +2848,40 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertIn("http://localhost:8088 (port published; Studio not installed)", output)
         self.assertNotIn("8761-8770", output)
 
+    def test_print_neat_setup_summary_shows_edgematic_studio_panel_only_when_installed(self):
+        for installed in (True, False):
+            config = NeatRunConfig(
+                port_map={"edgematicStudio": {"protocol": "tcp", "host": 18500, "container": 8088}},
+                port_args=[],
+                config_host_dir="",
+                cert_host_dir="",
+                port_map_host_path="",
+                cert_file_host_path="",
+                key_file_host_path="",
+            )
+            config.code_ui_supported = False
+            config.edgematic_studio_installed = installed
+
+            with self.subTest(installed=installed), \
+                 patch("sima_cli.sdk.neat._detect_browser_host_ip", return_value="10.0.0.5"), \
+                 patch("sima_cli.sdk.neat._open_code_ui_if_browser_available", return_value=False), \
+                 patch("sima_cli.sdk.neat.console.print") as console_print, \
+                 patch("builtins.print"):
+                print_neat_setup_summary(config)
+
+                panels = [
+                    call.args[0] for call in console_print.call_args_list
+                    if call.args and getattr(call.args[0], "title", None) == "Edgematic Studio"
+                ]
+                if not installed:
+                    self.assertEqual(panels, [])
+                    continue
+                self.assertEqual(len(panels), 1)
+                body = str(panels[0].renderable)
+                self.assertIn("http://10.0.0.5:18500", body)
+                # Nothing restarts Studio with the container.
+                self.assertIn("activate-edgematic-studio", body)
+
     def test_print_neat_setup_summary_omits_edgematic_studio_terminal_caveat_when_absent(self):
         config = NeatRunConfig(
             port_map={"mainUI": {"protocol": "tcp", "host": 9900, "container": 9900}},
@@ -3253,7 +3315,6 @@ table ip6 nm-shared-enx6c1ff720d573 {
     def test_setup_forwards_all_extensions_to_new_container(self):
         start_container = self._run_setup_for_studio(noninteractive=True, all_extensions=True)
         self.assertTrue(start_container.call_args.kwargs["all_extensions"])
-        self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
 
     def test_setup_installs_and_publishes_edgematic_studio_when_requested(self):
         start_container = self._run_setup_for_studio(
@@ -3272,22 +3333,27 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
         self.assertTrue(start_container.call_args.kwargs["publish_edgematic_studio_port"])
 
-    def test_setup_skips_edgematic_studio_by_default_in_noninteractive_mode(self):
-        # -y / --noninteractive must not opt a user into an undocumented component.
+    def test_setup_installs_edgematic_studio_by_default_in_noninteractive_mode(self):
         start_container = self._run_setup_for_studio(yes_to_all=True, noninteractive=True)
 
-        self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
-        self.assertFalse(start_container.call_args.kwargs["publish_edgematic_studio_port"])
+        self.assertTrue(start_container.call_args.kwargs["install_edgematic_studio"])
+        self.assertTrue(start_container.call_args.kwargs["publish_edgematic_studio_port"])
 
-    def test_setup_is_silent_about_edgematic_studio_by_default_interactively(self):
-        with patch("sima_cli.sdk.utils.yes_no_prompt", return_value=True) as prompt, \
-             patch("sima_cli.sdk.utils.console.print") as panel, \
-             patch("builtins.print") as printed:
+    def test_setup_installs_edgematic_studio_by_default_without_prompting(self):
+        # Like the browser VS Code: available by default, never asked about.
+        with patch("sima_cli.sdk.utils.yes_no_prompt", return_value=False) as prompt:
             start_container = self._run_setup_for_studio()
 
         prompt.assert_not_called()
-        output = str(panel.call_args_list) + str(printed.call_args_list)
-        self.assertNotIn("edgematic", output.lower())
+        self.assertTrue(start_container.call_args.kwargs["install_edgematic_studio"])
+        self.assertTrue(start_container.call_args.kwargs["publish_edgematic_studio_port"])
+
+    def test_setup_no_edgematic_studio_skips_install_and_port(self):
+        # An explicit no binds nothing on the host.
+        start_container = self._run_setup_for_studio(
+            no_edgematic_studio=True, yes_to_all=True, noninteractive=True
+        )
+
         self.assertFalse(start_container.call_args.kwargs["install_edgematic_studio"])
         self.assertFalse(start_container.call_args.kwargs["publish_edgematic_studio_port"])
 
@@ -3333,7 +3399,18 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
                 self.assertIn(expected, str(raised.exception))
 
-    def test_setup_warns_that_edgematic_studio_cannot_reach_an_existing_container(self):
+    def test_setup_warns_that_edgematic_studio_options_cannot_reach_an_existing_container(self):
+        for option, kwargs in (
+            ("--edgematic-studio", {"edgematic_studio": True}),
+            ("--edgematic-studio-port", {"edgematic_studio_port": True}),
+            # Without the warning the opt-out would be dropped silently and keep Studio's port.
+            ("--no-edgematic-studio", {"no_edgematic_studio": True}),
+        ):
+            with self.subTest(option=option):
+                output = self._run_setup_on_an_existing_studio_container(**kwargs)
+                self.assertIn(f"{option} has no effect on the existing container", output)
+
+    def _run_setup_on_an_existing_studio_container(self, **kwargs):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.neat.refresh_neat_certificates"), \
              patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
@@ -3354,10 +3431,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install._refresh_mpk_config_json"), \
              patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)), \
              patch("sima_cli.sdk.install.click.echo") as echoed:
-            setup_and_start(edgematic_studio=True, yes_to_all=True, noninteractive=True)
+            setup_and_start(yes_to_all=True, noninteractive=True, **kwargs)
 
-        output = "\n".join(str(call.args[0]) for call in echoed.call_args_list if call.args)
-        self.assertIn("--edgematic-studio has no effect on the existing container", output)
+        return "\n".join(str(call.args[0]) for call in echoed.call_args_list if call.args)
 
     def test_setup_warns_for_larger_insight_channel_count_and_forwards_it(self):
         image = "ghcr.io/sima-neat/sdk:latest"
@@ -4267,15 +4343,24 @@ table ip6 nm-shared-enx6c1ff720d573 {
         prompt.assert_not_called()
         self.assertEqual(run_command.call_count, 1)
 
-    def test_edgematic_studio_choice_defaults_to_off_without_a_terminal(self):
-        with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
-             patch("sima_cli.sdk.utils.yes_no_prompt") as prompt:
+    def test_edgematic_studio_choice_defaults_to_on_without_prompting(self):
+        for interactive in (True, False):
+            with self.subTest(interactive=interactive), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+                 patch("sima_cli.sdk.utils.yes_no_prompt") as prompt:
+                self.assertEqual(
+                    resolve_edgematic_studio_choice(interactive=interactive),
+                    (True, True),
+                )
+
+                prompt.assert_not_called()
+
+    def test_edgematic_studio_choice_honours_the_skip_option(self):
+        with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"):
             self.assertEqual(
-                resolve_edgematic_studio_choice(interactive=False),
+                resolve_edgematic_studio_choice(skip_requested=True),
                 (False, False),
             )
-
-        prompt.assert_not_called()
 
     def test_edgematic_studio_choice_honours_the_positive_options(self):
         with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
@@ -4293,17 +4378,13 @@ table ip6 nm-shared-enx6c1ff720d573 {
         prompt.assert_not_called()
 
     def test_edgematic_studio_choice_is_silent_without_explicit_options(self):
-        for interactive in (True, False):
-            with self.subTest(interactive=interactive), \
-                 patch("sima_cli.sdk.utils._edgematic_studio_install_args") as install_args, \
+        for machine, expected in (("x86_64", (True, True)), ("riscv64", (False, False))):
+            with self.subTest(machine=machine), \
+                 patch("sima_cli.sdk.utils.platform.machine", return_value=machine), \
                  patch("sima_cli.sdk.utils.yes_no_prompt") as prompt, \
                  patch("sima_cli.sdk.utils.console.print") as panel, \
                  patch("builtins.print") as printed:
-                self.assertEqual(
-                    resolve_edgematic_studio_choice(interactive=interactive),
-                    (False, False),
-                )
-                install_args.assert_not_called()
+                self.assertEqual(resolve_edgematic_studio_choice(), expected)
                 prompt.assert_not_called()
                 panel.assert_not_called()
                 printed.assert_not_called()
@@ -4373,6 +4454,21 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.utils.run_command"):
             self.assertFalse(ensure_edgematic_studio_installed("container", "docker"))
 
+    def test_edgematic_studio_install_failure_is_not_fatal(self):
+        # Studio is on by default, so a failed download must not end the SDK setup.
+        with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:latest"), \
+             patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"), \
+             patch("sima_cli.sdk.utils.run_command", return_value=False) as run_command, \
+             patch("sima_cli.sdk.utils._activate_edgematic_studio") as activate, \
+             patch("builtins.print") as printed:
+            self.assertFalse(ensure_edgematic_studio_installed("container", "docker"))
+
+        self.assertFalse(run_command.call_args.kwargs["fatal"])
+        activate.assert_not_called()
+        output = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        self.assertIn("continuing setup without it", output)
+        self.assertIn("sima-cli neat install edgematic-studio/amd64@main", output)
+
     def test_configure_container_installs_edgematic_studio_only_when_told_to(self):
         def run_configure(**kwargs):
             with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
@@ -4388,7 +4484,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
                 return configure_container("container", noninteractive=True, **kwargs), studio
 
-        # Opt-in, and never a side effect of -y: the caller resolved this already.
+        # The caller resolved the default already; configure_container only follows it.
         installed, studio = run_configure()
         self.assertFalse(installed)
         studio.assert_not_called()
@@ -4401,7 +4497,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         from sima_cli.sdk.utils import yes_no_prompt
 
         # Enter used to be honoured only for Y/n, so a y/N prompt looped forever
-        # calling it invalid — which is exactly how Studio's opt-in prompt asks.
+        # calling it invalid.
         with patch("builtins.input", return_value=""):
             self.assertTrue(yes_no_prompt("go?"))
             self.assertFalse(yes_no_prompt("go?", default_yes=False))
@@ -4549,7 +4645,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed"):
             from sima_cli.sdk.utils import configure_container
 
-            # -y alone must not reach the install; the option has to be positive.
+            # -y alone does not decide it; setup resolves Studio before create.
             self.assertFalse(configure_container("container", yes_to_all=True))
 
         studio.assert_not_called()

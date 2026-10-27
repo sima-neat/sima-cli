@@ -1167,6 +1167,7 @@ def setup_and_start(
     no_model_sdk: bool = False,
     edgematic_studio: bool = False,
     edgematic_studio_port: bool = False,
+    no_edgematic_studio: bool = False,
     minimal: bool = False,
     workspace: Optional[str] = None,
     persistent_network_profile: bool = False,
@@ -1318,7 +1319,7 @@ def setup_and_start(
     if minimal and any(is_neat_sdk_image(img) for img in selected_images):
         click.echo("ℹ️  Skipping Insight setup because --minimal was specified.")
 
-    # Asked once, on the first Neat container that is actually created.
+    # Resolved once, on the first Neat container that is actually created.
     studio_choice = None
 
     for img in selected_images:
@@ -1349,6 +1350,7 @@ def setup_and_start(
                         install_requested=edgematic_studio,
                         port_only=edgematic_studio_port,
                         interactive=not (noninteractive or yes_to_all),
+                        skip_requested=no_edgematic_studio,
                     )
                 install_studio, publish_studio_port = studio_choice
 

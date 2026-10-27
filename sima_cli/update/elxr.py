@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from sima_cli.update.apt_channels import disable_deb822, deb822_fields, url_channel
 from sima_cli.utils.env import is_devkit_running_elxr
 
 APT_SOURCE_FILE = "/etc/apt/sources.list.d/0000mirror.list"
@@ -15,6 +16,7 @@ APT_MAIN_SOURCE_FILE = "/etc/apt/sources.list"
 APT_SOURCE_DIR = "/etc/apt/sources.list.d"
 BUILDINFO_FILES = ["/etc/build", "/etc/buildinfo"]
 EXTERNAL_REPO_URL = "https://repo.sima.ai/elxr/deb/release"
+EXTERNAL_DAILY_REPO_URL = "https://debian.neat.sima.ai/daily"
 EXTERNAL_PRERELEASE_REPO_URL = "https://debian.neat.sima.ai/pre-release"
 LEGACY_EXTERNAL_PRERELEASE_REPO_URLS = (
     "https://debian.neat.sima.ai",
@@ -100,6 +102,7 @@ def _parse_elxr_repo_line(line: str) -> Optional[Tuple[str, str, bool]]:
         repo_url not in (
             EXTERNAL_REPO_URL,
             EXTERNAL_PRERELEASE_REPO_URL,
+            EXTERNAL_DAILY_REPO_URL,
             *LEGACY_EXTERNAL_PRERELEASE_REPO_URLS,
         )
         and not repo_url.startswith(INTERNAL_REPO_PREFIX)
@@ -127,6 +130,7 @@ def _is_managed_elxr_repo(repo_url: str) -> bool:
     return repo_url in (
         EXTERNAL_REPO_URL,
         EXTERNAL_PRERELEASE_REPO_URL,
+        EXTERNAL_DAILY_REPO_URL,
         *LEGACY_EXTERNAL_PRERELEASE_REPO_URLS,
     ) or repo_url.startswith(INTERNAL_REPO_PREFIX)
 
@@ -143,7 +147,7 @@ def _list_apt_source_files() -> List[str]:
     try:
         for name in sorted(os.listdir(APT_SOURCE_DIR)):
             path = os.path.join(APT_SOURCE_DIR, name)
-            if name.endswith(".list") and os.path.isfile(path):
+            if name.endswith((".list", ".sources")) and os.path.isfile(path):
                 files.append(path)
     except OSError:
         pass
@@ -238,7 +242,16 @@ def _select_elxr_repo_channel_files(
     all_lines: List[str] = []
     for content in contents.values():
         all_lines.extend(content.splitlines())
-    suite = _detect_repo_suite(all_lines)
+    suite_lines = list(all_lines)
+    for path, content in contents.items():
+        if path.endswith(".sources"):
+            for block in re.split(r"\n\s*\n", content.strip()):
+                fields = deb822_fields(block)
+                for url in fields.get("uris", "").split():
+                    if url_channel(url):
+                        for suite_name in fields.get("suites", "").split():
+                            suite_lines.append(f"deb {url} {suite_name} non-free")
+    suite = _detect_repo_suite(suite_lines)
     target_url = target_url or (INTERNAL_REPO_URL if internal else EXTERNAL_REPO_URL)
     target_seen = any(
         parsed[0] == target_url
@@ -251,6 +264,12 @@ def _select_elxr_repo_channel_files(
     switching = False
 
     for path, content in contents.items():
+        if path.endswith(".sources"):
+            updated = disable_deb822(content)
+            updated_contents[path] = updated
+            changed = changed or updated != content
+            switching = switching or updated != content
+            continue
         updated, file_changed, file_switching = _select_elxr_repo_channel(
             content,
             internal,

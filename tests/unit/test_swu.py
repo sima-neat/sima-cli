@@ -949,3 +949,31 @@ def test_device_reboot_requires_verified_pending_activation(tmp_path, running, l
                             capture_output=True, text=True, timeout=5)
     assert (result.returncode == 0) is (outcome == 'pending'), result.stdout + result.stderr
     assert scheduled.exists() is (outcome == 'pending')
+
+
+@pytest.mark.parametrize('build', ['3.0.0_daily_develop_B42', '3.0.0_pre-release_master_B42', '3.0.0'])
+def test_successful_swu_sets_resolved_build_channel_after_install(tmp_path, build):
+    with patch.object(swu, 'configure_command', return_value='configure-apt-channel') as configure:
+        target = run_install(tmp_path, source_version=build)
+    configure.assert_called_once_with(build)
+    commands=[c.args[0] for c in target.run.call_args_list]
+    assert commands.index('configure-apt-channel') > next(i for i,c in enumerate(commands) if 'swupdate -v' in c)
+
+
+@pytest.mark.parametrize('options', [{'dryrun': True}, {'fail': True}])
+def test_no_apt_mutation_for_dry_run_or_failed_swu(tmp_path, options):
+    with patch.object(swu, 'configure_command') as configure:
+        run_install(tmp_path, source_version='3.0.0_master_B42', **options)
+    configure.assert_not_called()
+
+
+def test_verified_reboot_reapplies_prerelease_channel_after_overlay_reset():
+    state = parse_state(STATE.replace('active slot : A', 'active slot : B').replace('running slot: A', 'running slot: B'))
+    state['active version'] = '3.0.0_master_B42'
+    target,peer=MagicMock(),MagicMock()
+    with patch.object(swu,'Target',return_value=peer), patch.object(swu,'inspect_target',return_value=state), \
+         patch.object(swu.time,'sleep'), patch.object(swu.time,'monotonic',side_effect=[0,1]), \
+         patch.object(swu,'configure_command',return_value='configure-apt-channel') as configure:
+        swu._reboot_and_verify(target,parse_state(STATE),'192.0.2.1','test',expected='3.0.0_pre-release_master_B42')
+    configure.assert_called_once_with('3.0.0_pre-release_master_B42')
+    peer.run.assert_called_once_with('configure-apt-channel')

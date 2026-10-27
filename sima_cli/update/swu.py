@@ -13,6 +13,7 @@ import requests
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from sima_cli.download import download_file_from_url
+from sima_cli.update.apt_channels import channel_for_build, configure_command
 from sima_cli.update.ab_state import inspect_target
 from sima_cli.update.overlay import inspect_overlay
 from sima_cli.update.swu_artifacts import (
@@ -423,10 +424,12 @@ def _reboot_and_verify(target, before, ip, passwd, expected=None):
                 if state.get('running slot') != before.get('running slot') and state.get('running slot') in ('A', 'B'):
                     if state.get('upgrade_available', '').lower() == 'no' and state.get('rollback') == 'normal':
                         actual = state.get('active version', '').strip().strip('\"\'')
-                        normalized_expected = re.sub(r'^(\d+\.\d+\.\d+)_(?:daily|custom)_', r'\1_', expected or '')
+                        normalized_expected = re.sub(r'^(\d+\.\d+\.\d+)_(?:daily|pre-release|custom)_', r'\1_', expected or '')
                         if expected and actual != normalized_expected:
                             raise click.ClickException(f'Updated slot reports {actual or "unknown"}, expected {expected}. Inspect before retrying.')
                         inspect_target(peer)
+                        if channel_for_build(expected):
+                            peer.run(configure_command(expected))
                         click.echo('Updated slot is running and the board health service has committed the boot.')
                         return
             except click.ClickException:
@@ -596,6 +599,18 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
         expected_slot = 'B' if before['running slot'] == 'A' else 'A'
         if after.get('next-boot', '').upper() != expected_slot or after.get('upgrade_available', '').lower() != 'yes':
             raise click.ClickException('SWUpdate exited successfully, but pending activation could not be verified. Run update --inspect before rebooting.')
+        selected_build = getattr(source, 'version', None)
+        parts = urlparse(source).path.split('/')
+        if not selected_build and 'bsp' in parts:
+            index = parts.index('bsp') + 2
+            if index < len(parts):
+                selected_build = parts[index]
+        if channel_for_build(selected_build):
+            phase = 'configuring the selected firmware APT channel'
+            target.run(configure_command(selected_build))
+            click.echo('APT channel configured for selected firmware: ' + channel_for_build(selected_build))
+        else:
+            click.echo('Selected bundle has no recognized build identity; existing APT channel preserved.')
         click.echo('Full system installed. Reboot required; the new slot is not yet health-confirmed.')
         if reboot:
             expected = getattr(source, 'version', None)

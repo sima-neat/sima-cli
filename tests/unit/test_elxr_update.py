@@ -744,3 +744,22 @@ class TestUnsupportedElxrSpecificVersionUpdate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_legacy_channel_switch_disables_daily_and_deb822_conflicts():
+    from sima_cli.update.elxr import EXTERNAL_DAILY_REPO_URL
+    contents={APT_SOURCE_FILE: f'deb {EXTERNAL_DAILY_REPO_URL} agate non-free\n',
+              '/etc/apt/sources.list.d/daily.sources': f'Types: deb\nURIs: {EXTERNAL_DAILY_REPO_URL}\nSuites: agate\nComponents: non-free\n'}
+    updated,changed,switching=_select_elxr_repo_channel_files(contents,False,target_url=EXTERNAL_PRERELEASE_REPO_URL)
+    assert changed and switching
+    assert f'# deb {EXTERNAL_DAILY_REPO_URL} agate non-free' in updated[APT_SOURCE_FILE]
+    assert f'deb [trusted=yes] {EXTERNAL_PRERELEASE_REPO_URL} agate non-free' in updated[APT_SOURCE_FILE]
+    assert 'Enabled: no' in updated['/etc/apt/sources.list.d/daily.sources']
+
+
+def test_legacy_deb822_only_channel_keeps_agate_suite_and_adds_active_target():
+    contents={APT_SOURCE_FILE: '', '/etc/apt/sources.list.d/channel.sources':
+        f'Types: deb\nURIs: {EXTERNAL_PRERELEASE_REPO_URL}\nSuites: agate\nComponents: non-free\n'}
+    updated,_,_=_select_elxr_repo_channel_files(contents,False,target_url=EXTERNAL_PRERELEASE_REPO_URL)
+    assert f'{EXTERNAL_PRERELEASE_REPO_URL} agate non-free' in updated[APT_SOURCE_FILE]
+    assert 'Enabled: no' in updated['/etc/apt/sources.list.d/channel.sources']

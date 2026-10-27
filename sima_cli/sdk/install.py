@@ -1386,8 +1386,12 @@ def setup_and_start(
                         "container. Remove and recreate the container when prompted to change "
                         "its authentication environment."
                     )
-            if (edgematic_studio or edgematic_studio_port) and is_neat_sdk_image(img):
-                option = "--edgematic-studio" if edgematic_studio else "--edgematic-studio-port"
+            if (edgematic_studio or edgematic_studio_port or no_edgematic_studio) and is_neat_sdk_image(img):
+                option = (
+                    "--no-edgematic-studio" if no_edgematic_studio
+                    else "--edgematic-studio" if edgematic_studio
+                    else "--edgematic-studio-port"
+                )
                 click.echo(
                     f"⚠️  {option} has no effect on the existing container "
                     f"'{existing_container}': Docker port mappings are fixed at create time. "

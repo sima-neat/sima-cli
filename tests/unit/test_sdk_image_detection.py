@@ -3399,7 +3399,18 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
                 self.assertIn(expected, str(raised.exception))
 
-    def test_setup_warns_that_edgematic_studio_cannot_reach_an_existing_container(self):
+    def test_setup_warns_that_edgematic_studio_options_cannot_reach_an_existing_container(self):
+        for option, kwargs in (
+            ("--edgematic-studio", {"edgematic_studio": True}),
+            ("--edgematic-studio-port", {"edgematic_studio_port": True}),
+            # Without the warning the opt-out would be dropped silently and keep Studio's port.
+            ("--no-edgematic-studio", {"no_edgematic_studio": True}),
+        ):
+            with self.subTest(option=option):
+                output = self._run_setup_on_an_existing_studio_container(**kwargs)
+                self.assertIn(f"{option} has no effect on the existing container", output)
+
+    def _run_setup_on_an_existing_studio_container(self, **kwargs):
         image = "ghcr.io/sima-neat/sdk:latest"
         with patch("sima_cli.sdk.neat.refresh_neat_certificates"), \
              patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
@@ -3420,10 +3431,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install._refresh_mpk_config_json"), \
              patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)), \
              patch("sima_cli.sdk.install.click.echo") as echoed:
-            setup_and_start(edgematic_studio=True, yes_to_all=True, noninteractive=True)
+            setup_and_start(yes_to_all=True, noninteractive=True, **kwargs)
 
-        output = "\n".join(str(call.args[0]) for call in echoed.call_args_list if call.args)
-        self.assertIn("--edgematic-studio has no effect on the existing container", output)
+        return "\n".join(str(call.args[0]) for call in echoed.call_args_list if call.args)
 
     def test_setup_warns_for_larger_insight_channel_count_and_forwards_it(self):
         image = "ghcr.io/sima-neat/sdk:latest"

@@ -1027,6 +1027,8 @@ def _model_sdk_extension_install_args(base_version: str, arch: str = None) -> Li
         return []
     if not arch:
         return []
+    if base_version == "3.0.0":
+        return ["neat", "install", f"model-compiler/{arch}@v3.0.0"]
     if _version_at_least(base_version, "2.1.3"):
         # Model Compiler 2.1.3+ is published through Vulcan. Install the
         # released artifact compatible with this SDK generation.
@@ -1300,7 +1302,10 @@ def ensure_model_sdk_extension_installed(
             expand=False,
         )
     )
-    expected_version = "2.1.3" if _version_at_least(base_version, "2.1.3") else base_version
+    expected_version = (
+        "2.1.3" if base_version != "3.0.0" and _version_at_least(base_version, "2.1.3")
+        else base_version
+    )
     local_archive = discover_archive(arch, expected_version)
     unattended = noninteractive or auto_install or not sys.stdin.isatty()
     source = select_source(local_archive, noninteractive=unattended, yes=auto_install)

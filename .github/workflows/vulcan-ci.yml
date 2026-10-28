@@ -563,6 +563,16 @@ jobs:
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --minimal
 
+      - name: Install CloudEx prerequisites on macOS
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install wireguard-tools
+          # Use the same restricted path as the privileged CloudEx forwarder.
+          export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+          command -v wg
+          command -v wireguard-go
+
       - name: Test CloudEx forwarder install and update
         if: runner.os != 'Windows'
         run: |

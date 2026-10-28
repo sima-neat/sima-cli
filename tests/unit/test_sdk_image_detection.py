@@ -2357,6 +2357,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ([], {"CODE_SERVER_WITHOUT_PASSWORD": ""}, False),
         ):
             with self.subTest(args=args, env=env), \
+                 patch("sima_cli.sdk.commands.check_and_start_docker"), \
                  patch("sima_cli.sdk.commands.setup_and_start") as setup_start:
                 result = CliRunner().invoke(sdk, ["setup", *args], env=env)
                 self.assertEqual(result.exit_code, 0, result.output)

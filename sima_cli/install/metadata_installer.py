@@ -1436,8 +1436,8 @@ def _run_installation_script(metadata: Dict, extract_path: str = ".", force: boo
     Behavior:
       • Force installs set FORCE_INSTALL=1 in the script environment.
       • macOS / Linux / eLxr:
-          - Run via interactive login shell unless nested inside sima-cli
-          - Safely source the first available RC file among:
+          - Run via non-interactive login shell unless nested inside sima-cli
+          - Nested installs source the first available RC file among:
               ~/.zshrc → ~/.bashrc → ~/.bash_profile → ~/.profile
       • Windows:
           - Run via cmd.exe or PowerShell
@@ -1493,9 +1493,9 @@ def _run_installation_script(metadata: Dict, extract_path: str = ".", force: boo
                 cmd = ["bash", "-c", f"{rc_source}{script}"]
 
             else:
-                # Normal context → interactive login shell
-                shell_name = os.path.basename(shell)
-                cmd = [shell, "-i", "-l", "-c", script]
+                # Load login setup without enabling interactive job control on
+                # the caller's terminal (including when invoked over ssh -t).
+                cmd = [shell, "-l", "-c", script]
 
             result = subprocess.run(cmd, cwd=extract_path, env=env)
             exit_code = result.returncode

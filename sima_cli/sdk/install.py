@@ -47,6 +47,9 @@ from sima_cli.sdk.utils import (
     prompt_image_selection,
     filter_images_by_selector,
     confirm_to_remove_exiting_container,
+    _link_agent_sessions,
+    _rescue_agent_sessions,
+    _container_session_owners,
     sanitize_container_name,
     ensure_simasdkbridge_network,
     resolve_edgematic_studio_choice,
@@ -1326,9 +1329,32 @@ def setup_and_start(
         container_build = img in container_build_images
         container_name = sanitize_container_name(img)
         print_section(f"🔄 CONTAINER START SEQUENCE for {container_name}")
+        before_remove = None
+        if is_neat_sdk_image(img):
+            session_owner = detect_current_user()[0] if check_os() in ["linux", "macos"] else "docker"
+            # --minimal and older ARM64 setups configure no extensions folder, but a container
+            # being replaced may still hold sessions; they go to the default host store, where a
+            # later container that mounts it picks them up.
+            rescue_dir = sdk_extensions_dir or str(Path.home() / "sima-sdk-extensions")
+
+            def before_remove(name, owner=session_owner, store=rescue_dir):
+                # Recreating the container must not take its agent sessions with it. A running
+                # agent could still append a turn after its folder was copied, so the container is
+                # stopped first; if the user then keeps it, the reuse path below starts it again.
+                if is_container_running(name):
+                    click.echo(f"ℹ️  Stopping '{name}' so its agent sessions are copied complete.")
+                    stopped = subprocess.run(["docker", "stop", name], check=False)
+                    if getattr(stopped, "returncode", 0) != 0:
+                        click.echo(f"⚠️  Could not stop '{name}'; turns written during the copy may be missing.")
+                # A list, not a generator: one user's failure must not skip the others.
+                saved = [_rescue_agent_sessions(name, user, store)
+                         for user in _container_session_owners(name, owner)]
+                return all(saved)
+
         existing_container = confirm_to_remove_exiting_container(
             container_name,
             yes_to_all=(yes_to_all or noninteractive),
+            before_remove=before_remove,
         )
 
         if existing_container == None:
@@ -1437,6 +1463,8 @@ def setup_and_start(
             if not minimal and is_neat_sdk_image(img):
                 if check_os() not in ["linux", "macos"]:
                     login_name, user_uid, user_gid = "docker", 900, 900
+                # A reused container never went through configure_container, so link it here.
+                _link_agent_sessions(existing_container, login_name, user_uid, user_gid)
                 ensure_codex_vscode_extension_installed(
                     existing_container, login_name, all_extensions=all_extensions,
                     allow_prompt=False, uid=user_uid, gid=user_gid,

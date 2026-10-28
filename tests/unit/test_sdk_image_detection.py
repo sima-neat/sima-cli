@@ -3423,6 +3423,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
              patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/extensions"), \
+             patch("sima_cli.sdk.install._link_agent_sessions"), \
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="sdk-latest"), \
              patch("sima_cli.sdk.install.is_container_running", return_value=True), \
              patch("sima_cli.sdk.install.check_os", return_value="linux"), \
@@ -3770,6 +3771,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
              patch("sima_cli.sdk.install._setup_sdk_extensions", return_value=None), \
+             patch("sima_cli.sdk.install._link_agent_sessions"), \
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="ghcr.io-sima-neat-sdk-latest"):
             with self.assertRaisesRegex(RuntimeError, "Cannot apply --no-insight"):
                 setup_and_start(no_insight=True, yes_to_all=False, noninteractive=False)
@@ -3786,6 +3788,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
              patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
              patch("sima_cli.sdk.install._setup_sdk_extensions", return_value=None), \
+             patch("sima_cli.sdk.install._link_agent_sessions"), \
              patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="ghcr.io-sima-neat-sdk-latest"):
             with self.assertRaisesRegex(RuntimeError, "Cannot apply --code-server-without-password"):
                 setup_and_start(code_server_without_password=True, yes_to_all=False, noninteractive=False)

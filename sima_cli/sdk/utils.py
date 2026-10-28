@@ -1,5 +1,6 @@
 # utils.py
 from typing import Dict, List, Set, Tuple
+import filecmp
 import hashlib
 import locale
 import os
@@ -1713,6 +1714,468 @@ echo "__SIMA_CODEX_SKILLS_STATUS=copied"
         print(proc.stderr.strip())
 
 
+SDK_EXTENSIONS_MOUNT = "/sdk-extensions"
+AGENT_SESSIONS_DIRNAME = ".agent-sessions"
+CLAUDE_SESSION_RETENTION_DAYS = 365
+
+# Session data only: logins, config and skills stay in the container, and
+# Codex's SQLite index is rebuilt from these files by Codex itself.
+AGENT_SESSION_LINKS = (
+    ("dir", ".claude/projects", "claude/projects"),
+    ("dir", ".codex/sessions", "codex/sessions"),
+    ("dir", ".codex/archived_sessions", "codex/archived_sessions"),
+    ("file", ".codex/session_index.jsonl", "codex/session_index.jsonl"),
+)
+
+_AGENT_SESSIONS_SCRIPT = r"""set -euo pipefail
+home=__HOME__
+mount=__MOUNT__
+root="$mount/__DIRNAME__"
+owner=__OWNER__
+if [ ! -d "$mount" ]; then
+  echo "__SIMA_AGENT_SESSIONS_STATUS=no_mount"
+  exit 0
+fi
+if [ ! -w "$mount" ] || ! mkdir -p "$root" 2>/dev/null; then
+  echo "__SIMA_AGENT_SESSIONS_STATUS=not_writable"
+  exit 0
+fi
+# Some bind mounts refuse mode and ownership changes; the sessions still work there.
+chmod 700 "$root" 2>/dev/null || true
+claim() {
+  chown "$@" 2>/dev/null || echo "__SIMA_AGENT_SESSIONS_CHOWN=failed"
+}
+# A running Claude or Codex may still be writing into the folders being moved.
+agents_running() {
+  local proc comm argv0 argv1
+  for proc in __PROC__/[0-9]*; do
+    comm=$(cat "$proc/comm" 2>/dev/null) || continue
+    argv0='' argv1=''
+    { IFS= read -r -d '' argv0; IFS= read -r -d '' argv1; } 2>/dev/null < "$proc/cmdline" || true
+    # The name alone is not enough: npm installs run as node, and the native
+    # installer's binaries are named after their version.
+    case "$comm|${argv0##*/}" in
+      claude\|*|codex\|*|*\|claude|*\|codex) ;;
+      node\|*)
+        case "$argv1" in
+          claude|codex|*/claude|*/codex|*/@anthropic-ai/claude-code/*|*/@openai/codex/*) ;;
+          *) continue ;;
+        esac ;;
+      *)
+        case "$argv0" in */claude/versions/*) ;; *) continue ;; esac ;;
+    esac
+    # An exited agent nobody reaped still has its name, but writes nothing.
+    grep -qs '^State:[[:space:]]*Z' "$proc/status" || return 0
+  done
+  return 1
+}
+# Copies what the host lacks. A file the host holds with different content is kept
+# under conflicts/ instead, so removing the container copy afterwards loses nothing.
+migrate_dir() {
+  src="$1"; dst="$2"; kept="$root/conflicts/$3"
+  (cd "$src" && find . -mindepth 1 -type d) | while IFS= read -r d; do mkdir -p "$dst/${d#./}"; done
+  (cd "$src" && find . ! -type d) | while IFS= read -r f; do
+    f="${f#./}"
+    if [ ! -e "$dst/$f" ] && [ ! -L "$dst/$f" ]; then
+      cp -P --preserve=mode,timestamps "$src/$f" "$dst/$f"
+    elif ! cmp -s "$src/$f" "$dst/$f"; then
+      mkdir -p "$(dirname "$kept/$f")"
+      cp -P --preserve=mode,timestamps --backup=numbered "$src/$f" "$kept/$f"
+      echo "__SIMA_AGENT_SESSIONS_KEPT=$kept/$f"
+    fi
+  done
+}
+link_path() {
+  kind="$1"; src="$home/$2"; dst="$root/$3"
+  mkdir -p "$(dirname "$src")" "$(dirname "$dst")"
+  if [ -L "$src" ]; then
+    if [ "$(readlink "$src")" != "$dst" ]; then
+      echo "__SIMA_AGENT_SESSIONS_CONFLICT=$src"
+      return 0
+    fi
+    # Already linked, but the host side may have been cleaned up since.
+    if [ "$kind" = dir ]; then mkdir -p "$dst"; else touch "$dst"; fi
+    return 0
+  fi
+  if [ "$kind" = dir ]; then
+    if [ -e "$src" ] && [ ! -d "$src" ]; then
+      echo "__SIMA_AGENT_SESSIONS_CONFLICT=$src"
+      return 0
+    fi
+    if [ -d "$src" ] && agents_running; then
+      echo "__SIMA_AGENT_SESSIONS_BUSY=$src"
+      return 0
+    fi
+    mkdir -p "$dst"
+    if [ -d "$src" ]; then
+      migrate_dir "$src" "$dst" "$3"
+      # The copy takes a while; an agent started meanwhile may have written to the
+      # original, so it stays. The host copy is harmless: a rerun adds only what changed.
+      if agents_running; then
+        echo "__SIMA_AGENT_SESSIONS_BUSY=$src"
+        return 0
+      fi
+      rm -rf "$src"
+    fi
+  else
+    if [ -d "$src" ]; then
+      echo "__SIMA_AGENT_SESSIONS_CONFLICT=$src"
+      return 0
+    fi
+    if [ -f "$src" ] && agents_running; then
+      echo "__SIMA_AGENT_SESSIONS_BUSY=$src"
+      return 0
+    fi
+    if [ -f "$src" ]; then
+      # An append-only log: keeping both histories loses nothing.
+      if [ -s "$dst" ] && [ -n "$(tail -c 1 "$dst")" ]; then
+        echo >> "$dst"
+      fi
+      cat "$src" >> "$dst"
+      rm -f "$src"
+    fi
+    touch "$dst"
+  fi
+  ln -s "$dst" "$src"
+  claim -h "$owner" "$src"
+}
+__LINKS__
+claim "$owner" "$home/.claude" "$home/.codex"
+claim -R "$owner" "$root"
+python3 - "$home/.claude/settings.json" __DAYS__ <<'PY' || echo "__SIMA_AGENT_SESSIONS_RETENTION=failed"
+import json, os, stat, sys
+path, days = os.path.realpath(sys.argv[1]), int(sys.argv[2])
+settings, mode = {}, None
+if os.path.exists(path):
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        with open(path) as handle:
+            settings = json.load(handle)
+    except (OSError, ValueError):
+        settings = None
+if not isinstance(settings, dict):
+    print("__SIMA_AGENT_SESSIONS_RETENTION=unreadable")
+    sys.exit(0)
+if "cleanupPeriodDays" in settings:
+    print("__SIMA_AGENT_SESSIONS_RETENTION=kept")
+    sys.exit(0)
+settings["cleanupPeriodDays"] = days
+tmp = path + ".sima-cli.tmp"
+with open(tmp, "w") as handle:
+    json.dump(settings, handle, indent=2)
+    handle.write("\n")
+if mode is not None:
+    os.chmod(tmp, mode)
+os.replace(tmp, path)
+print("__SIMA_AGENT_SESSIONS_RETENTION=set")
+PY
+if [ -e "$home/.claude/settings.json" ]; then claim "$owner" "$home/.claude/settings.json"; fi
+echo "__SIMA_AGENT_SESSIONS_STATUS=linked"
+"""
+
+
+def _agent_sessions_script(
+    home_directory: str,
+    uid: int,
+    gid: int,
+    mount: str = SDK_EXTENSIONS_MOUNT,
+    retention_days: int = CLAUDE_SESSION_RETENTION_DAYS,
+    proc_root: str = "/proc",
+) -> str:
+    """Build the in-container script that keeps agent sessions on the extensions mount.
+
+    Every SDK release runs in a new container, so sessions kept in the container
+    home are lost on upgrade. The extensions mount is a host folder shared by all
+    releases, which is also why the Edgematic Studio state survives an upgrade.
+    """
+    links = "\n".join(
+        f"link_path {kind} {shlex.quote(home_path)} {shlex.quote(stored_path)}"
+        for kind, home_path, stored_path in AGENT_SESSION_LINKS
+    )
+    return (
+        _AGENT_SESSIONS_SCRIPT
+        .replace("__HOME__", shlex.quote(home_directory))
+        .replace("__MOUNT__", shlex.quote(mount))
+        .replace("__DIRNAME__", AGENT_SESSIONS_DIRNAME)
+        .replace("__OWNER__", shlex.quote(f"{uid}:{gid}"))
+        .replace("__LINKS__", links)
+        .replace("__DAYS__", str(int(retention_days)))
+        .replace("__PROC__", shlex.quote(proc_root))
+    )
+
+
+def _link_agent_sessions(sdk_container_name: str, login_name: str, uid: int, gid: int) -> None:
+    script = _agent_sessions_script(f"/home/{login_name}", uid, gid)
+    output = run_command(
+        ["docker", "exec", "-u", "root", sdk_container_name, "bash", "-lc", script],
+        capture_output=True,
+        fatal=False,
+    )
+    if output is False:
+        print(f"⚠️ Failed to keep Claude and Codex sessions on the host for '{sdk_container_name}'.")
+        return
+    if not isinstance(output, str):
+        return
+
+    markers = {}
+    conflicts = []
+    kept = []
+    busy = []
+    for line in output.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if not sep:
+            continue
+        if key == "__SIMA_AGENT_SESSIONS_CONFLICT":
+            conflicts.append(value)
+        elif key == "__SIMA_AGENT_SESSIONS_KEPT":
+            kept.append(value)
+        elif key == "__SIMA_AGENT_SESSIONS_BUSY":
+            busy.append(value)
+        elif key.startswith("__SIMA_AGENT_SESSIONS_"):
+            markers[key] = value
+
+    sessions_root = f"{SDK_EXTENSIONS_MOUNT}/{AGENT_SESSIONS_DIRNAME}"
+    status = markers.get("__SIMA_AGENT_SESSIONS_STATUS")
+    if status == "no_mount":
+        print(
+            f"ℹ️  {SDK_EXTENSIONS_MOUNT} is not mounted in '{sdk_container_name}', so Claude and Codex "
+            "sessions stay in this container and will not carry over to a new SDK release."
+        )
+        return
+    if status == "not_writable":
+        print(
+            f"⚠️ {SDK_EXTENSIONS_MOUNT} is not writable in '{sdk_container_name}', so Claude and Codex "
+            "sessions stay in this container. Check the permissions of the host extensions folder."
+        )
+        return
+    for path in conflicts:
+        print(f"⚠️ Left {path} as it is: it already points somewhere else.")
+    for path in kept:
+        print(f"⚠️ The host already had a different copy; this container's copy was kept at {path}.")
+    if busy:
+        print(
+            f"⚠️ Claude or Codex is running in '{sdk_container_name}', so {', '.join(busy)} "
+            "was left in place. Close them and run `sima-cli sdk setup` again to keep these sessions on the host."
+        )
+    if status != "linked":
+        print(f"⚠️ Failed to keep Claude and Codex sessions on the host for '{sdk_container_name}'.")
+        return
+    if not busy:
+        print(
+            f"✅ Claude and Codex sessions for '{login_name}' are kept in "
+            f"{sessions_root} and survive SDK upgrades."
+        )
+    if markers.get("__SIMA_AGENT_SESSIONS_CHOWN") == "failed":
+        print(
+            f"⚠️ Could not hand {sessions_root} to '{login_name}'; if Claude or Codex cannot save "
+            "sessions, fix the ownership of that folder on the host."
+        )
+
+    retention = markers.get("__SIMA_AGENT_SESSIONS_RETENTION")
+    if retention == "set":
+        print(f"ℹ️  Claude now keeps sessions for {CLAUDE_SESSION_RETENTION_DAYS} days (cleanupPeriodDays).")
+    elif retention in ("unreadable", "failed"):
+        print(
+            "⚠️ Could not set cleanupPeriodDays in ~/.claude/settings.json; "
+            "Claude deletes sessions after 30 days by default."
+        )
+
+
+def _docker_cp_out(container_name: str, source: str, destination: str) -> str:
+    """Copy one path out of a container, running or stopped: 'ok', 'missing' or 'error'."""
+    try:
+        result = subprocess.run(
+            ["docker", "cp", f"{container_name}:{source}", destination],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return "error"
+    if result.returncode == 0:
+        return "ok"
+    detail = f"{result.stdout}\n{result.stderr}"
+    if "Could not find the file" in detail or "No such container:path" in detail:
+        return "missing"
+    return "error"
+
+
+def _merge_session_tree(source: str, destination: str, conflicts: str) -> Tuple[int, List[str], bool]:
+    """Copy what destination lacks; keep differing files under conflicts.
+
+    Returns (copied, kept, complete); complete is False when part of source could not be read.
+    """
+    copied, kept, unreadable = 0, [], []
+    for folder, _dirs, files in os.walk(source, onerror=unreadable.append):
+        relative_folder = os.path.relpath(folder, source)
+        for name in files:
+            relative = os.path.normpath(os.path.join(relative_folder, name))
+            src = os.path.join(source, relative)
+            dst = os.path.join(destination, relative)
+            if os.path.islink(src):
+                continue
+            if not os.path.lexists(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                copied += 1
+                continue
+            # A dangling link on the host holds nothing, so the container copy is kept aside.
+            if os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False):
+                continue
+            target = os.path.join(conflicts, relative)
+            candidates = [target] + [f"{target}.~{n}~" for n in range(1, 1000)]
+            existing = [path for path in candidates if os.path.lexists(path)]
+            if any(os.path.isfile(path) and filecmp.cmp(src, path, shallow=False) for path in existing):
+                continue  # Already kept by an earlier run.
+            target = next((path for path in candidates if not os.path.lexists(path)), None)
+            if target is None:
+                raise OSError(f"no free name left under {os.path.dirname(target or conflicts)}")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(src, target)
+            kept.append(target)
+    return copied, kept, not unreadable
+
+
+def _append_new_lines(source: str, target: str) -> bool:
+    """Append the lines of source that target lacks, on their own lines. Returns True if any."""
+    with open(source, "rb") as handle:
+        lines = [line.rstrip(b"\n") for line in handle if line.strip()]
+    present = set()
+    if os.path.exists(target):
+        with open(target, "rb") as handle:
+            present = {line.rstrip(b"\n") for line in handle}
+    missing = [line for line in lines if line not in present]
+    if not missing:
+        return False
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "ab+") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell():
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) != b"\n":
+                handle.write(b"\n")
+        handle.write(b"\n".join(missing) + b"\n")
+    return True
+
+
+def _mount_source(container_name: str, destination: str) -> str:
+    """The host folder a container has mounted at destination, or "" when unknown."""
+    template = '{{range .Mounts}}{{if eq .Destination "%s"}}{{.Source}}{{end}}{{end}}' % destination
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", template, container_name], text=True, capture_output=True, check=False
+        )
+    except OSError:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _container_session_owners(container_name: str, caller: str) -> list:
+    """The users whose sessions a container may hold: the one it was set up for, then the caller.
+
+    Setup records the user it created the container for, and rerunning it under another
+    account (with sudo, say) must not send the rescue to that account's empty home.
+    """
+    owners = []
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{json .Config}}", container_name],
+            text=True, capture_output=True, check=False,
+        )
+        config = json.loads(result.stdout) if result.returncode == 0 else {}
+    except (OSError, ValueError, TypeError):
+        config = {}
+    if not isinstance(config, dict):
+        config = {}
+    env = dict(item.split("=", 1) for item in config.get("Env") or [] if "=" in item)
+    owners += [env.get("CODE_SERVER_USER"), env.get("OPENVSCODE_SERVER_USER")]
+    try:
+        metadata = json.loads((config.get("Labels") or {}).get("devcontainer.metadata") or "[]")
+        owners += [entry.get("remoteUser") for entry in metadata if isinstance(entry, dict)]
+    except (ValueError, TypeError, AttributeError):
+        pass
+    owners.append(caller)
+    # Each name becomes a /home/<name> path, so anything that is not a plain user name is dropped.
+    valid = [o for o in owners if isinstance(o, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", o)]
+    return list(dict.fromkeys(valid))
+
+
+def _same_folder(left: str, right: str) -> bool:
+    try:
+        return os.path.realpath(left) == os.path.realpath(right) or os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
+def _rescue_agent_sessions(container_name: str, login_name: str, sdk_extensions_dir: str) -> bool:
+    """Save a container's Claude and Codex sessions to the host store before it is removed.
+
+    `sdk setup` removes an existing container to recreate it, which would take the sessions in
+    its home with it, including those of containers created before sessions were linked to the
+    host. They are copied out with `docker cp`, which works on a stopped container too, using
+    the same rules as the in-container migration: nothing on the host is overwritten, and a
+    repeated run adds nothing twice. Returns False when sessions exist that could not be saved.
+    """
+    store = os.path.join(sdk_extensions_dir, AGENT_SESSIONS_DIRNAME) if sdk_extensions_dir else ""
+    home = f"/home/{login_name}"
+    copied, kept, failed, unsaved = 0, [], [], []
+    old_mount = _mount_source(container_name, SDK_EXTENSIONS_MOUNT)
+    with _docker_cp_staging_dir() as staging:
+        for index, (kind, home_path, stored_path) in enumerate(AGENT_SESSION_LINKS):
+            local = os.path.join(staging, str(index))
+            status = _docker_cp_out(container_name, f"{home}/{home_path}", local)
+            if status == "missing":
+                continue
+            if status == "error":
+                failed.append(home_path)
+                continue
+            # Already linked: docker cp copies the link, not the data. The data is then already in
+            # the host folder that container mounted, unless setup now uses a different folder.
+            if os.path.islink(local):
+                # Only a link this tool made is followed, and only to its own path in the old store.
+                ours = os.readlink(local) == f"{SDK_EXTENSIONS_MOUNT}/{AGENT_SESSIONS_DIRNAME}/{stored_path}"
+                if not (store and old_mount and ours) or _same_folder(old_mount, sdk_extensions_dir):
+                    continue
+                local = os.path.join(old_mount, AGENT_SESSIONS_DIRNAME, *stored_path.split("/"))
+                if not os.path.exists(local):
+                    continue
+            if not store:
+                # No host store to save into (no /sdk-extensions mount, e.g. ARM64 before 2.1.1).
+                unsaved.append(home_path)
+                continue
+            target = os.path.join(store, *stored_path.split("/"))
+            try:
+                if kind == "dir" and os.path.isdir(local):
+                    conflicts = os.path.join(store, "conflicts", *stored_path.split("/"))
+                    added, saved, complete = _merge_session_tree(local, target, conflicts)
+                    copied += added
+                    kept.extend(saved)
+                    if not complete:
+                        failed.append(home_path)
+                elif kind == "file" and os.path.isfile(local):
+                    copied += int(_append_new_lines(local, target))
+            except OSError:
+                failed.append(home_path)
+
+    for path in kept:
+        print(f"⚠️ The host already had a different copy; '{container_name}''s copy was kept at {path}.")
+    if unsaved:
+        print(
+            f"⚠️ '{container_name}' holds Claude or Codex sessions ({', '.join('~/' + p for p in unsaved)}), "
+            "but there is no SDK extensions folder to save them to; they go away with the container."
+        )
+        return False
+    if failed:
+        print(
+            f"⚠️ Could not save {', '.join('~/' + path for path in failed)} from '{container_name}' "
+            "before removing it."
+        )
+        return False
+    if copied or kept:
+        print(f"✅ Saved Claude and Codex sessions from '{container_name}' to {store} before removing it.")
+    return True
+
+
 def _sudoers_drop_in_script(login_name: str) -> str:
     sudoers_line = f"{login_name} ALL=(ALL:ALL) NOPASSWD:ALL"
     return (
@@ -2085,6 +2548,9 @@ def configure_container(
             uid=uid,
             gid=gid,
         )
+    if not minimal:
+        # Before anything can start an agent and create real session folders.
+        _link_agent_sessions(sdk_container_name, login_name, uid, gid)
     _sync_codex_skills(sdk_container_name, login_name, uid, gid)
     if minimal:
         print("ℹ️  Skipping Neat coding agent playbook installation because --minimal was specified.")
@@ -3399,8 +3865,13 @@ def filter_images_by_selector(images, selectors):
     return result
 
 
-def confirm_to_remove_exiting_container(image, yes_to_all=False):
-    """Start a container for the given SDK image."""
+def confirm_to_remove_exiting_container(image, yes_to_all=False, before_remove=None):
+    """Start a container for the given SDK image.
+
+    before_remove, when given, runs on the container just before it is removed and returns
+    False when it could not save something; interactively the user then decides whether to
+    remove the container anyway or keep it.
+    """
     container_name = image.split("/")[-1].replace(":", "_")
 
     # 🔍 Check if container already exists
@@ -3413,11 +3884,21 @@ def confirm_to_remove_exiting_container(image, yes_to_all=False):
         console.print(f"[yellow]⚠️  Container '{container_name}' already exists.[/yellow]")
         if yes_to_all:
             console.print(f"[cyan]Auto-removing '{container_name}' (yes_to_all=True).[/cyan]")
+            if before_remove is not None and before_remove(container_name) is False:
+                console.print(
+                    f"[bold red]⚠️  Removing '{container_name}' anyway (yes_to_all=True): the sessions "
+                    "listed above that could not be saved are deleted with it.[/bold red]"
+                )
             subprocess.run(["docker", "rm", "-f", container_name], check=False)
             console.print(f"✅ Removed old container '{container_name}'.", style="green")
         else:
             resp = input("🗑️  Remove and recreate it? [Y/n]: ").strip().lower()
             if resp in {"", "y", "yes"}:
+                if before_remove is not None and before_remove(container_name) is False:
+                    keep = input("⚠️  Remove it anyway? [y/N]: ").strip().lower()
+                    if keep not in {"y", "yes"}:
+                        console.print(f"⏩ Keeping existing '{container_name}'.", style="yellow")
+                        return container_name
                 subprocess.run(["docker", "rm", "-f", container_name], check=False)
                 console.print(f"✅ Removed old container '{container_name}'.", style="green")
             else:

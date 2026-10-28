@@ -25,9 +25,24 @@ not_root = pytest.mark.skipif(
 )
 
 
-def run_script(home, mount, retention_days=365, owner=None):
+def run_script(home, mount, retention_days=365, owner=None, running=(), zombies=()):
     uid, gid = owner if owner is not None else (os.getuid(), os.getgid())
-    script = _agent_sessions_script(str(home), uid, gid, mount=str(mount), retention_days=retention_days)
+    # A private /proc, so agents running on the test machine itself do not count.
+    proc = mount.parent / "fake-proc"
+    proc.mkdir(exist_ok=True)
+    # A process is its name, or (name, argv) when the two differ.
+    processes = [(p, "S (sleeping)") for p in running] + [(p, "Z (zombie)") for p in zombies]
+    for pid, (process, state) in enumerate(processes, 100):
+        name, argv = (process, [process]) if isinstance(process, str) else process
+        if state.startswith("Z"):
+            argv = []
+        (proc / str(pid)).mkdir(exist_ok=True)
+        (proc / str(pid) / "comm").write_text(name + "\n")
+        (proc / str(pid) / "cmdline").write_bytes(b"".join(a.encode() + b"\0" for a in argv))
+        (proc / str(pid) / "status").write_text(f"Name:\t{name}\nState:\t{state}\n")
+    script = _agent_sessions_script(
+        str(home), uid, gid, mount=str(mount), retention_days=retention_days, proc_root=str(proc)
+    )
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
     return result.stdout
 
@@ -689,3 +704,90 @@ def test_a_kept_stopped_container_is_started_again():
     _, _, _, _, started = _setup_existing("sdk-latest", running=False)
 
     assert started == [["docker", "start", "sdk-latest"]]
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    "agent",
+    [
+        "claude",
+        "codex",
+        # The native installer's binary, started by its real path.
+        ("2.1.312", ["/home/dev/.local/share/claude/versions/2.1.312"]),
+        # npm installs.
+        ("node", ["node", "/usr/local/bin/claude", "-p", "hi"]),
+        ("node", ["node", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"]),
+        ("node", ["/usr/bin/node", "/usr/local/lib/node_modules/@openai/codex/bin/codex.js"]),
+    ],
+    ids=["claude", "codex", "claude-native-version", "claude-npm", "claude-npm-package-path", "codex-npm"],
+)
+def test_live_session_folders_are_left_alone_while_an_agent_runs(layout, agent):
+    home, mount, root = layout
+    (home / ".claude/projects/p").mkdir(parents=True)
+    (home / ".claude/projects/p/s.jsonl").write_text("live\n")
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex/session_index.jsonl").write_text('{"id":"a"}\n')
+
+    output = run_script(home, mount, running=["bash", agent])
+
+    assert f"__SIMA_AGENT_SESSIONS_BUSY={home}/.claude/projects" in output
+    assert f"__SIMA_AGENT_SESSIONS_BUSY={home}/.codex/session_index.jsonl" in output
+    assert not (home / ".claude/projects").is_symlink()
+    assert (home / ".claude/projects/p/s.jsonl").read_text() == "live\n"
+    assert not (home / ".codex/session_index.jsonl").is_symlink()
+    # Folders with nothing to move are still linked.
+    assert (home / ".codex/sessions").is_symlink()
+
+
+@needs_bash
+def test_other_processes_do_not_block_the_migration(layout):
+    home, mount, _ = layout
+    (home / ".claude/projects/p").mkdir(parents=True)
+    (home / ".claude/projects/p/s.jsonl").write_text("idle\n")
+
+    output = run_script(
+        home,
+        mount,
+        running=["bash", ("node", ["node", "/srv/app/server.js"]), "claude-helper", ("vim", ["vim", "notes/claude"])],
+    )
+
+    assert "BUSY" not in output
+    assert (home / ".claude/projects").is_symlink()
+
+
+@needs_bash
+def test_already_linked_folders_are_kept_linked_while_an_agent_runs(layout):
+    home, mount, root = layout
+    (home / ".claude/projects/p").mkdir(parents=True)
+    (home / ".claude/projects/p/s.jsonl").write_text("first\n")
+    run_script(home, mount)
+
+    output = run_script(home, mount, running=["claude"])
+
+    assert "BUSY" not in output
+    assert (home / ".claude/projects").is_symlink()
+    assert (root / "claude/projects/p/s.jsonl").read_text() == "first\n"
+
+
+@needs_bash
+def test_an_exited_agent_left_as_a_zombie_does_not_block_the_migration(layout):
+    home, mount, _ = layout
+    (home / ".claude/projects/p").mkdir(parents=True)
+    (home / ".claude/projects/p/s.jsonl").write_text("done\n")
+
+    output = run_script(home, mount, zombies=["claude", "codex"])
+
+    assert "BUSY" not in output
+    assert (home / ".claude/projects").is_symlink()
+    assert (mount / ".agent-sessions/claude/projects/p/s.jsonl").read_text() == "done\n"
+
+
+def test_link_reports_folders_left_in_place_for_a_running_agent(capsys):
+    output = "__SIMA_AGENT_SESSIONS_BUSY=/home/dev/.claude/projects\n__SIMA_AGENT_SESSIONS_STATUS=linked"
+    with patch("sima_cli.sdk.utils.run_command", return_value=output):
+        _link_agent_sessions("container", "dev", 1000, 1000)
+
+    printed = capsys.readouterr().out
+    assert "Claude or Codex is running in 'container'" in printed
+    assert "run `sima-cli sdk setup` again" in printed
+    assert "survive SDK upgrades" not in printed

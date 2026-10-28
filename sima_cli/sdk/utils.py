@@ -1745,6 +1745,30 @@ chmod 700 "$root" 2>/dev/null || true
 claim() {
   chown "$@" 2>/dev/null || echo "__SIMA_AGENT_SESSIONS_CHOWN=failed"
 }
+# A running Claude or Codex may still be writing into the folders being moved.
+agents_running() {
+  local proc comm argv0 argv1
+  for proc in __PROC__/[0-9]*; do
+    comm=$(cat "$proc/comm" 2>/dev/null) || continue
+    argv0='' argv1=''
+    { IFS= read -r -d '' argv0; IFS= read -r -d '' argv1; } 2>/dev/null < "$proc/cmdline" || true
+    # The name alone is not enough: npm installs run as node, and the native
+    # installer's binaries are named after their version.
+    case "$comm|${argv0##*/}" in
+      claude\|*|codex\|*|*\|claude|*\|codex) ;;
+      node\|*)
+        case "$argv1" in
+          claude|codex|*/claude|*/codex|*/@anthropic-ai/claude-code/*|*/@openai/codex/*) ;;
+          *) continue ;;
+        esac ;;
+      *)
+        case "$argv0" in */claude/versions/*) ;; *) continue ;; esac ;;
+    esac
+    # An exited agent nobody reaped still has its name, but writes nothing.
+    grep -qs '^State:[[:space:]]*Z' "$proc/status" || return 0
+  done
+  return 1
+}
 # Copies what the host lacks. A file the host holds with different content is kept
 # under conflicts/ instead, so removing the container copy afterwards loses nothing.
 migrate_dir() {
@@ -1778,6 +1802,10 @@ link_path() {
       echo "__SIMA_AGENT_SESSIONS_CONFLICT=$src"
       return 0
     fi
+    if [ -d "$src" ] && agents_running; then
+      echo "__SIMA_AGENT_SESSIONS_BUSY=$src"
+      return 0
+    fi
     mkdir -p "$dst"
     if [ -d "$src" ]; then
       migrate_dir "$src" "$dst" "$3"
@@ -1786,6 +1814,10 @@ link_path() {
   else
     if [ -d "$src" ]; then
       echo "__SIMA_AGENT_SESSIONS_CONFLICT=$src"
+      return 0
+    fi
+    if [ -f "$src" ] && agents_running; then
+      echo "__SIMA_AGENT_SESSIONS_BUSY=$src"
       return 0
     fi
     if [ -f "$src" ]; then
@@ -1842,6 +1874,7 @@ def _agent_sessions_script(
     gid: int,
     mount: str = SDK_EXTENSIONS_MOUNT,
     retention_days: int = CLAUDE_SESSION_RETENTION_DAYS,
+    proc_root: str = "/proc",
 ) -> str:
     """Build the in-container script that keeps agent sessions on the extensions mount.
 
@@ -1861,6 +1894,7 @@ def _agent_sessions_script(
         .replace("__OWNER__", shlex.quote(f"{uid}:{gid}"))
         .replace("__LINKS__", links)
         .replace("__DAYS__", str(int(retention_days)))
+        .replace("__PROC__", shlex.quote(proc_root))
     )
 
 
@@ -1880,6 +1914,7 @@ def _link_agent_sessions(sdk_container_name: str, login_name: str, uid: int, gid
     markers = {}
     conflicts = []
     kept = []
+    busy = []
     for line in output.splitlines():
         key, sep, value = line.strip().partition("=")
         if not sep:
@@ -1888,6 +1923,8 @@ def _link_agent_sessions(sdk_container_name: str, login_name: str, uid: int, gid
             conflicts.append(value)
         elif key == "__SIMA_AGENT_SESSIONS_KEPT":
             kept.append(value)
+        elif key == "__SIMA_AGENT_SESSIONS_BUSY":
+            busy.append(value)
         elif key.startswith("__SIMA_AGENT_SESSIONS_"):
             markers[key] = value
 
@@ -1909,13 +1946,19 @@ def _link_agent_sessions(sdk_container_name: str, login_name: str, uid: int, gid
         print(f"⚠️ Left {path} as it is: it already points somewhere else.")
     for path in kept:
         print(f"⚠️ The host already had a different copy; this container's copy was kept at {path}.")
+    if busy:
+        print(
+            f"⚠️ Claude or Codex is running in '{sdk_container_name}', so {', '.join(busy)} "
+            "was left in place. Close them and run `sima-cli sdk setup` again to keep these sessions on the host."
+        )
     if status != "linked":
         print(f"⚠️ Failed to keep Claude and Codex sessions on the host for '{sdk_container_name}'.")
         return
-    print(
-        f"✅ Claude and Codex sessions for '{login_name}' are kept in "
-        f"{sessions_root} and survive SDK upgrades."
-    )
+    if not busy:
+        print(
+            f"✅ Claude and Codex sessions for '{login_name}' are kept in "
+            f"{sessions_root} and survive SDK upgrades."
+        )
     if markers.get("__SIMA_AGENT_SESSIONS_CHOWN") == "failed":
         print(
             f"⚠️ Could not hand {sessions_root} to '{login_name}'; if Claude or Codex cannot save "

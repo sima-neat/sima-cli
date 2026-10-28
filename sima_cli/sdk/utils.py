@@ -1809,6 +1809,12 @@ link_path() {
     mkdir -p "$dst"
     if [ -d "$src" ]; then
       migrate_dir "$src" "$dst" "$3"
+      # The copy takes a while; an agent started meanwhile may have written to the
+      # original, so it stays. The host copy is harmless: a rerun adds only what changed.
+      if agents_running; then
+        echo "__SIMA_AGENT_SESSIONS_BUSY=$src"
+        return 0
+      fi
       rm -rf "$src"
     fi
   else
@@ -2062,6 +2068,36 @@ def _mount_source(container_name: str, destination: str) -> str:
     except OSError:
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _container_session_owners(container_name: str, caller: str) -> list:
+    """The users whose sessions a container may hold: the one it was set up for, then the caller.
+
+    Setup records the user it created the container for, and rerunning it under another
+    account (with sudo, say) must not send the rescue to that account's empty home.
+    """
+    owners = []
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{json .Config}}", container_name],
+            text=True, capture_output=True, check=False,
+        )
+        config = json.loads(result.stdout) if result.returncode == 0 else {}
+    except (OSError, ValueError, TypeError):
+        config = {}
+    if not isinstance(config, dict):
+        config = {}
+    env = dict(item.split("=", 1) for item in config.get("Env") or [] if "=" in item)
+    owners += [env.get("CODE_SERVER_USER"), env.get("OPENVSCODE_SERVER_USER")]
+    try:
+        metadata = json.loads((config.get("Labels") or {}).get("devcontainer.metadata") or "[]")
+        owners += [entry.get("remoteUser") for entry in metadata if isinstance(entry, dict)]
+    except (ValueError, TypeError, AttributeError):
+        pass
+    owners.append(caller)
+    # Each name becomes a /home/<name> path, so anything that is not a plain user name is dropped.
+    valid = [o for o in owners if isinstance(o, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", o)]
+    return list(dict.fromkeys(valid))
 
 
 def _same_folder(left: str, right: str) -> bool:

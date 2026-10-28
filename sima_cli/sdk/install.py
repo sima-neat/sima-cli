@@ -49,6 +49,7 @@ from sima_cli.sdk.utils import (
     confirm_to_remove_exiting_container,
     _link_agent_sessions,
     _rescue_agent_sessions,
+    _container_session_owners,
     sanitize_container_name,
     ensure_simasdkbridge_network,
     resolve_edgematic_studio_choice,
@@ -1345,7 +1346,10 @@ def setup_and_start(
                     stopped = subprocess.run(["docker", "stop", name], check=False)
                     if getattr(stopped, "returncode", 0) != 0:
                         click.echo(f"⚠️  Could not stop '{name}'; turns written during the copy may be missing.")
-                return _rescue_agent_sessions(name, owner, store)
+                # A list, not a generator: one user's failure must not skip the others.
+                saved = [_rescue_agent_sessions(name, user, store)
+                         for user in _container_session_owners(name, owner)]
+                return all(saved)
 
         existing_container = confirm_to_remove_exiting_container(
             container_name,

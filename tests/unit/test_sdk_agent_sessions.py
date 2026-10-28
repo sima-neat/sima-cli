@@ -12,6 +12,7 @@ from sima_cli.sdk.utils import (
     _agent_sessions_script,
     _link_agent_sessions,
     _rescue_agent_sessions,
+    _container_session_owners,
     confirm_to_remove_exiting_container,
 )
 
@@ -561,7 +562,7 @@ def test_interactive_removal_can_go_ahead_anyway():
     assert ["docker", "rm", "-f", "sdk-latest"] in calls
 
 
-def _setup_existing(existing_container, minimal=False, running=True):
+def _setup_existing(existing_container, minimal=False, running=True, owners=("devuser",), rescued=None):
     from contextlib import ExitStack
 
     from sima_cli.sdk.install import setup_and_start
@@ -597,13 +598,14 @@ def _setup_existing(existing_container, minimal=False, running=True):
             patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=existing_container)
         )
         rescue = stack.enter_context(patch("sima_cli.sdk.install._rescue_agent_sessions", return_value=True))
+        stack.enter_context(patch("sima_cli.sdk.install._container_session_owners", return_value=list(owners)))
         link = stack.enter_context(patch("sima_cli.sdk.install._link_agent_sessions"))
         run = stack.enter_context(patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)))
 
         setup_and_start(yes_to_all=True, noninteractive=True)
         started = [call.args[0] for call in run.mock_calls if call.args and call.args[0][:2] == ["docker", "start"]]
         run.reset_mock()
-        rescue.side_effect = lambda *a: run.mock_calls.append("rescue") or True
+        rescue.side_effect = lambda *a: run.mock_calls.append("rescue") or (rescued or {}).get(a[1], True)
         saved = confirm.call_args.kwargs["before_remove"]("sdk-latest")
         order = [call if call == "rescue" else call.args[0][:2] for call in run.mock_calls]
     return saved, rescue, link, order, started
@@ -616,6 +618,68 @@ def test_setup_saves_sessions_before_removing_a_neat_container():
     rescue.assert_called_once_with("sdk-latest", "devuser", "/tmp/extensions")
     # A running container is stopped first, so no agent appends a turn after it was copied.
     assert order == [["docker", "stop"], "rescue"]
+
+
+def test_setup_rescues_the_user_the_container_was_set_up_for():
+    # Setup rerun with sudo runs as root, but the sessions live in the original user's home.
+    saved, rescue, _, order, _ = _setup_existing("sdk-latest", owners=["alice", "root"])
+
+    assert saved is True
+    assert [c.args for c in rescue.call_args_list] == [
+        ("sdk-latest", "alice", "/tmp/extensions"),
+        ("sdk-latest", "root", "/tmp/extensions"),
+    ]
+    assert order == [["docker", "stop"], "rescue", "rescue"]
+
+
+def test_one_user_failing_to_save_still_rescues_the_others_and_reports_it():
+    saved, rescue, _, _, _ = _setup_existing("sdk-latest", owners=["alice", "root"], rescued={"alice": False})
+
+    assert saved is False
+    assert [c.args[1] for c in rescue.call_args_list] == ["alice", "root"]
+
+
+def _inspect_config(config, returncode=0):
+    return Mock(returncode=returncode, stdout=json.dumps(config) if config is not None else "")
+
+
+def test_session_owners_come_from_the_container_then_the_caller():
+    config = {
+        "Env": ["PATH=/bin", "CODE_SERVER_USER=alice", "OPENVSCODE_SERVER_USER=alice"],
+        "Labels": {"devcontainer.metadata": json.dumps([{"remoteUser": "alice", "workspaceFolder": "/workspace"}])},
+    }
+    with patch("sima_cli.sdk.utils.subprocess.run", return_value=_inspect_config(config)) as run:
+        assert _container_session_owners("old", "root") == ["alice", "root"]
+    assert run.call_args.args[0] == ["docker", "inspect", "-f", "{{json .Config}}", "old"]
+
+
+def test_session_owners_use_the_label_when_the_environment_has_no_user():
+    config = {"Env": ["PATH=/bin"], "Labels": {"devcontainer.metadata": json.dumps([{"remoteUser": "bob"}])}}
+    with patch("sima_cli.sdk.utils.subprocess.run", return_value=_inspect_config(config)):
+        assert _container_session_owners("old", "bob") == ["bob"]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        _inspect_config(None, returncode=1),
+        Mock(returncode=0, stdout="not json"),
+        _inspect_config(["a", "list"]),
+        _inspect_config({"Env": None, "Labels": {"devcontainer.metadata": "{broken"}}),
+        _inspect_config({"Labels": {"devcontainer.metadata": json.dumps({"remoteUser": "x"})}}),
+    ],
+    ids=["inspect-failed", "not-json", "not-an-object", "broken-label", "label-not-a-list"],
+)
+def test_session_owners_fall_back_to_the_caller(result):
+    with patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
+        assert _container_session_owners("old", "devuser") == ["devuser"]
+
+
+def test_session_owners_that_are_not_plain_user_names_are_ignored():
+    config = {"Env": ["CODE_SERVER_USER=../etc", "OPENVSCODE_SERVER_USER=a/b"],
+              "Labels": {"devcontainer.metadata": json.dumps([{"remoteUser": ""}, {"remoteUser": 7}])}}
+    with patch("sima_cli.sdk.utils.subprocess.run", return_value=_inspect_config(config)):
+        assert _container_session_owners("old", "devuser") == ["devuser"]
 
 
 def test_minimal_setup_still_rescues_sessions_into_the_default_host_store():
@@ -753,6 +817,33 @@ def test_other_processes_do_not_block_the_migration(layout):
 
     assert "BUSY" not in output
     assert (home / ".claude/projects").is_symlink()
+
+
+@needs_bash
+def test_an_agent_started_during_the_copy_keeps_the_original(layout, tmp_path):
+    home, mount, root = layout
+    (home / ".claude/projects/p").mkdir(parents=True)
+    (home / ".claude/projects/p/s.jsonl").write_text("live\n")
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    # A cp that starts claude once it has copied, as if from another terminal.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "cp").write_text(
+        f"#!/bin/bash\n/bin/cp \"$@\" || exit\nmkdir -p {proc}/900\n"
+        f"echo claude > {proc}/900/comm\nprintf 'State:\\tS\\n' > {proc}/900/status\n"
+    )
+    (bin_dir / "cp").chmod(0o755)
+    script = _agent_sessions_script(str(home), os.getuid(), os.getgid(), mount=str(mount), proc_root=str(proc))
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+
+    output = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True, env=env).stdout
+
+    assert f"__SIMA_AGENT_SESSIONS_BUSY={home}/.claude/projects" in output
+    assert not (home / ".claude/projects").is_symlink()
+    assert (home / ".claude/projects/p/s.jsonl").read_text() == "live\n"
+    # The copy already made is kept and harmless.
+    assert (root / "claude/projects/p/s.jsonl").read_text() == "live\n"
 
 
 @needs_bash

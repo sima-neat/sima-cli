@@ -152,10 +152,16 @@ def test_api_signs_allocation_scoped_request(monkeypatch, environment, restored)
     assert "allocation_secret" not in kwargs["data"].decode()
 
 
-@pytest.mark.parametrize("host", ["linux", "darwin"])
-def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_path, monkeypatch, host):
+@pytest.mark.parametrize("host,bootstrap", [("linux", False), ("darwin", False), ("darwin", True)])
+def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_path, monkeypatch, host, bootstrap):
     client.sys.platform = host
-    monkeypatch.setattr(client.shutil, "which", Mock(return_value="/opt/homebrew/bin/tool"))
+    which = Mock(return_value="/opt/homebrew/bin/tool")
+    if bootstrap:
+        which.side_effect = [None, None, "/opt/homebrew/bin/brew",
+                             "/opt/homebrew/bin/wg", "/opt/homebrew/bin/wireguard-go"]
+    monkeypatch.setattr(client.shutil, "which", which)
+    brew = Mock(return_value=SimpleNamespace(returncode=0))
+    monkeypatch.setattr(client.subprocess, "run", brew)
     store = client.SessionStore(tmp_path / "cloudex")
     forwarder = tmp_path / "forwarder"
     forwarder.write_text("binary")
@@ -184,6 +190,10 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
 
     result = client.connect(allocation_profile(), store, Mock(), attempts=1, transport="p2p")
 
+    if bootstrap:
+        assert brew.call_args.args[0] == ["/opt/homebrew/bin/brew", "install", "wireguard-tools", "wireguard-go"]
+    else:
+        brew.assert_not_called()
     assert result["device"] == "ll2"
     assert result["target"] == "10.252.1.2"
     assert result["ice_path"] == "direct"
@@ -687,10 +697,46 @@ def test_macos_forwarder_finds_homebrew_with_restricted_path(monkeypatch, brew_b
     assert all(call.kwargs["path"] == client.MACOS_TUNNEL_PATH for call in which.call_args_list)
 
 
+@pytest.mark.parametrize("brew_bin", ["/opt/homebrew/bin", "/usr/local/bin"])
 @pytest.mark.parametrize("missing", [("wg",), ("wireguard-go",), ("wg", "wireguard-go")])
-def test_macos_missing_wireguard_fails_before_session_request(monkeypatch, tmp_path, missing):
+def test_macos_installs_missing_dependencies_as_user(monkeypatch, brew_bin, missing):
     client.sys.platform = "darwin"
-    monkeypatch.setattr(client.shutil, "which", lambda name, path: None if name in missing else "/usr/local/bin/" + name)
+    installed = set()
+
+    def which(name, path):
+        assert path == client.MACOS_TUNNEL_PATH
+        return None if name in missing and name not in installed else brew_bin + "/" + name
+
+    def install(command, **kwargs):
+        installed.update(missing)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(client.shutil, "which", which)
+    run = Mock(side_effect=install)
+    monkeypatch.setattr(client.subprocess, "run", run)
+    prefix = client._forwarder_sudo_prefix(progress=Mock())
+    assert prefix == ["sudo", "-n", "--", "/usr/bin/env", "PATH=" + client.MACOS_TUNNEL_PATH]
+    run.assert_called_once()
+    assert run.call_args.args[0] == [brew_bin + "/brew", "install", *[
+        "wireguard-tools" if name == "wg" else name for name in missing]]
+    assert run.call_args.kwargs["env"]["PATH"] == client.MACOS_TUNNEL_PATH
+    assert run.call_args.kwargs["stdin"] is client.subprocess.DEVNULL
+    assert run.call_args.kwargs["timeout"] == 600
+
+
+@pytest.mark.parametrize("failure", ["no-brew", "exit", "timeout", "oserror", "still-missing"])
+def test_macos_dependency_failure_stops_before_session_request(monkeypatch, tmp_path, failure):
+    client.sys.platform = "darwin"
+    monkeypatch.setattr(client.shutil, "which", lambda name, path:
+                        "/opt/homebrew/bin/brew" if name == "brew" and failure != "no-brew" else None)
+    run = Mock(return_value=SimpleNamespace(returncode=0, stderr="", stdout=""))
+    if failure == "exit":
+        run.return_value = SimpleNamespace(returncode=1, stderr="brew install failed", stdout="")
+    elif failure == "timeout":
+        run.side_effect = client.subprocess.TimeoutExpired("brew", 600)
+    elif failure == "oserror":
+        run.side_effect = OSError("brew unavailable")
+    monkeypatch.setattr(client.subprocess, "run", run)
     monkeypatch.setattr(client, "authorize_admin", Mock())
     monkeypatch.setattr(client, "_reconcile_existing_connection", Mock(return_value=None))
     api = Mock()
@@ -698,12 +744,17 @@ def test_macos_missing_wireguard_fails_before_session_request(monkeypatch, tmp_p
     install = Mock()
     monkeypatch.setattr(installer, "ensure_forwarder", install)
 
-    with pytest.raises(client.CloudExError, match="brew install wireguard-tools") as error:
+    with pytest.raises(client.CloudExError) as error:
         client.connect(allocation_profile(), client.SessionStore(tmp_path), Mock())
 
-    assert ", ".join(missing) in str(error.value)
+    expected = {"no-brew": "Install Homebrew", "exit": "brew install failed",
+                "timeout": "Could not install", "oserror": "Could not install",
+                "still-missing": "still cannot find"}
+    assert expected[failure] in str(error.value)
     api.call.assert_not_called()
     install.assert_not_called()
+    if failure == "no-brew":
+        run.assert_not_called()
 
 
 @pytest.mark.parametrize("detail", ["WireGuard is unavailable", "start wireguard-go"])

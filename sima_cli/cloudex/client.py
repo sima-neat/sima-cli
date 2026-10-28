@@ -558,19 +558,47 @@ def _reconcile_existing_connection(profile, store, progress):
     return None
 
 
-def _forwarder_sudo_prefix():
-    """Keep Homebrew tools visible after sudo without inheriting the user's PATH."""
+def _forwarder_sudo_prefix(progress=None):
+    """Install missing macOS tools as the user, then expose them through sudo."""
     prefix = ["sudo", "-n", "--"]
     if sys.platform != "darwin":
         return prefix
     missing = [name for name in ("wg", "wireguard-go")
                if shutil.which(name, path=MACOS_TUNNEL_PATH) is None]
     if missing:
-        raise CloudExError(
-            "CloudEx requires {} on macOS. {}".format(
-                ", ".join(missing), MACOS_WIREGUARD_INSTALL
+        brew = shutil.which("brew", path=MACOS_TUNNEL_PATH)
+        if brew is None:
+            raise CloudExError(
+                "CloudEx requires {} on macOS. Install Homebrew, then retry CloudEx; "
+                "missing WireGuard dependencies will be installed automatically.".format(
+                    ", ".join(missing)
+                )
             )
-        )
+        packages = ["wireguard-tools" if name == "wg" else name for name in missing]
+        if progress:
+            progress.update("Installing missing WireGuard dependencies with Homebrew")
+        environment = dict(os.environ, PATH=MACOS_TUNNEL_PATH)
+        try:
+            result = subprocess.run(
+                [brew, "install", *packages],
+                env=environment, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CloudExError(
+                "Could not install WireGuard dependencies with Homebrew. " + MACOS_WIREGUARD_INSTALL
+            ) from exc
+        if result.returncode:
+            detail = (result.stderr or result.stdout or "Homebrew failed").strip()
+            raise CloudExError("WireGuard dependency installation failed: " + detail[-1024:])
+        missing = [name for name in ("wg", "wireguard-go")
+                   if shutil.which(name, path=MACOS_TUNNEL_PATH) is None]
+        if missing:
+            raise CloudExError(
+                "Homebrew completed but CloudEx still cannot find: {}. {}".format(
+                    ", ".join(missing), MACOS_WIREGUARD_INSTALL
+                )
+            )
     return prefix + ["/usr/bin/env", "PATH=" + MACOS_TUNNEL_PATH]
 
 
@@ -583,7 +611,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
     existing = _reconcile_existing_connection(profile, store, progress)
     if existing:
         return existing
-    sudo_prefix = _forwarder_sudo_prefix()
+    sudo_prefix = _forwarder_sudo_prefix(progress=progress)
     forwarder = ensure_forwarder(progress=progress)
     choices = (["p2p"] * attempts + ["routed"] if transport == "auto"
                else ["routed"] if transport == "turn" else ["p2p"] * attempts)

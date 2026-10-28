@@ -373,7 +373,8 @@ def old_container(tmp_path):
             return "missing"
         return "ok"
 
-    with patch("sima_cli.sdk.utils._docker_cp_out", side_effect=docker_cp_out):
+    with patch("sima_cli.sdk.utils._docker_cp_out", side_effect=docker_cp_out), \
+         patch("sima_cli.sdk.utils._mount_source", return_value=str(store)):
         yield root / "home/dev", store / AGENT_SESSIONS_DIRNAME, str(store)
 
 
@@ -612,3 +613,44 @@ def test_setup_links_sessions_in_a_reused_container():
     _, _, link = _setup_existing("sdk-latest")
 
     link.assert_called_once_with("sdk-latest", "devuser", 1000, 1000)
+
+
+def test_a_linked_container_whose_store_moved_brings_its_sessions_along(old_container, tmp_path):
+    home, root, store = old_container
+    previous = tmp_path / "previous-extensions"
+    (previous / ".agent-sessions/claude/projects/p").mkdir(parents=True)
+    (previous / ".agent-sessions/claude/projects/p/s.jsonl").write_text("from the old store\n")
+    (home / ".claude").mkdir(parents=True)
+    os.symlink("/sdk-extensions/.agent-sessions/claude/projects", home / ".claude/projects")
+
+    with patch("sima_cli.sdk.utils._mount_source", return_value=str(previous)):
+        assert _rescue_agent_sessions("old", "dev", store) is True
+
+    assert (root / "claude/projects/p/s.jsonl").read_text() == "from the old store\n"
+    assert (previous / ".agent-sessions/claude/projects/p/s.jsonl").exists()
+
+
+@pytest.mark.parametrize("mount", ["same", ""])
+def test_a_linked_container_on_the_same_or_an_unknown_store_needs_nothing(old_container, mount):
+    home, root, store = old_container
+    (home / ".claude").mkdir(parents=True)
+    os.symlink("/sdk-extensions/.agent-sessions/claude/projects", home / ".claude/projects")
+
+    with patch("sima_cli.sdk.utils._mount_source", return_value=store if mount == "same" else ""):
+        assert _rescue_agent_sessions("old", "dev", store) is True
+
+    assert not root.exists()
+
+
+def test_a_foreign_link_is_never_followed_into_the_old_store(old_container, tmp_path):
+    home, root, store = old_container
+    previous = tmp_path / "previous-extensions"
+    (previous / "elsewhere").mkdir(parents=True)
+    (previous / "elsewhere/secret.jsonl").write_text("not a session\n")
+    (home / ".claude").mkdir(parents=True)
+    os.symlink("/sdk-extensions/../elsewhere", home / ".claude/projects")
+
+    with patch("sima_cli.sdk.utils._mount_source", return_value=str(previous)):
+        assert _rescue_agent_sessions("old", "dev", store) is True
+
+    assert not root.exists()

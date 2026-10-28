@@ -2009,6 +2009,25 @@ def _append_new_lines(source: str, target: str) -> bool:
     return True
 
 
+def _mount_source(container_name: str, destination: str) -> str:
+    """The host folder a container has mounted at destination, or "" when unknown."""
+    template = '{{range .Mounts}}{{if eq .Destination "%s"}}{{.Source}}{{end}}{{end}}' % destination
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", template, container_name], text=True, capture_output=True, check=False
+        )
+    except OSError:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _same_folder(left: str, right: str) -> bool:
+    try:
+        return os.path.realpath(left) == os.path.realpath(right) or os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
 def _rescue_agent_sessions(container_name: str, login_name: str, sdk_extensions_dir: str) -> bool:
     """Save a container's Claude and Codex sessions to the host store before it is removed.
 
@@ -2021,6 +2040,7 @@ def _rescue_agent_sessions(container_name: str, login_name: str, sdk_extensions_
     store = os.path.join(sdk_extensions_dir, AGENT_SESSIONS_DIRNAME) if sdk_extensions_dir else ""
     home = f"/home/{login_name}"
     copied, kept, failed, unsaved = 0, [], [], []
+    old_mount = _mount_source(container_name, SDK_EXTENSIONS_MOUNT)
     with _docker_cp_staging_dir() as staging:
         for index, (kind, home_path, stored_path) in enumerate(AGENT_SESSION_LINKS):
             local = os.path.join(staging, str(index))
@@ -2030,9 +2050,16 @@ def _rescue_agent_sessions(container_name: str, login_name: str, sdk_extensions_
             if status == "error":
                 failed.append(home_path)
                 continue
-            # Already linked to the host store: docker cp copies the link, not the data.
+            # Already linked: docker cp copies the link, not the data. The data is then already in
+            # the host folder that container mounted, unless setup now uses a different folder.
             if os.path.islink(local):
-                continue
+                # Only a link this tool made is followed, and only to its own path in the old store.
+                ours = os.readlink(local) == f"{SDK_EXTENSIONS_MOUNT}/{AGENT_SESSIONS_DIRNAME}/{stored_path}"
+                if not (store and old_mount and ours) or _same_folder(old_mount, sdk_extensions_dir):
+                    continue
+                local = os.path.join(old_mount, AGENT_SESSIONS_DIRNAME, *stored_path.split("/"))
+                if not os.path.exists(local):
+                    continue
             if not store:
                 # No host store to save into (no /sdk-extensions mount, e.g. ARM64 before 2.1.1).
                 unsaved.append(home_path)

@@ -280,3 +280,27 @@ def test_missing_version_cannot_be_auto_selected(tmp_path, monkeypatch, capsys, 
         with stage_archive(path, "arm64", "2.1.3", "container", "1000:1000", run):
             pytest.fail("Invalid bundle must not reach installation")
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("arch,machine", [("amd64", "x86_64"), ("arm64", "aarch64")])
+@pytest.mark.parametrize("local_version", [None, "3.0.0", "2.1.3"])
+def test_sdk_300_installs_matching_compiler(tmp_path, monkeypatch, arch, machine, local_version):
+    monkeypatch.chdir(tmp_path)
+    if local_version:
+        bundle(tmp_path / f"model-compiler-{arch}.zip", arch=arch, version=local_version)
+    with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:3.0.0"), \
+         patch("sima_cli.sdk.utils.subprocess.run", side_effect=[
+             Mock(returncode=0, stdout="SDK Version = 3.0.0_Palette_SDK_neat_main_release\n"),
+             Mock(returncode=0, stdout=machine + "\n")]), \
+         patch("sima_cli.sdk.utils.run_command") as run:
+        ensure_model_sdk_extension_installed("container", "developer", auto_install=True)
+
+    scripts = [call.args[0][-1] for call in run.call_args_list if "bash" in call.args[0]]
+    assert len(scripts) == 1
+    if local_version == "3.0.0":
+        assert "bash ./install_modelsdk_wheels.sh" in scripts[0]
+        assert "neat install" not in scripts[0]
+    else:
+        assert f'"$SIMA_CLI_BIN" neat install model-compiler/{arch}@v3.0.0' in scripts[0]
+        assert "@v2.1.3.1" not in scripts[0]
+        assert "install_modelsdk_wheels.sh" not in scripts[0]

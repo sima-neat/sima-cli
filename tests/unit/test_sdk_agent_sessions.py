@@ -3,7 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -11,6 +11,8 @@ from sima_cli.sdk.utils import (
     AGENT_SESSIONS_DIRNAME,
     _agent_sessions_script,
     _link_agent_sessions,
+    _rescue_agent_sessions,
+    confirm_to_remove_exiting_container,
 )
 
 # The script only ever runs inside the Linux SDK container and relies on GNU coreutils.
@@ -348,3 +350,262 @@ def test_configure_links_sessions_before_agents_are_set_up():
 
 def test_configure_minimal_skips_session_links():
     assert "sessions" not in _configure(minimal=True)
+
+
+# --- sessions of a container that sdk setup removes or reuses -------------------------------------
+
+@pytest.fixture
+def old_container(tmp_path):
+    """A container filesystem, served to the code under test through a fake `docker cp`."""
+    root = tmp_path / "container"
+    store = tmp_path / "host-extensions"
+    store.mkdir()
+
+    def docker_cp_out(container, source, destination):
+        path = root / source.lstrip("/")
+        if os.path.islink(path):
+            os.symlink(os.readlink(path), destination)
+        elif path.is_dir():
+            shutil.copytree(path, destination, symlinks=True)
+        elif path.is_file():
+            shutil.copy2(path, destination)
+        else:
+            return "missing"
+        return "ok"
+
+    with patch("sima_cli.sdk.utils._docker_cp_out", side_effect=docker_cp_out):
+        yield root / "home/dev", store / AGENT_SESSIONS_DIRNAME, str(store)
+
+
+def test_rescue_copies_sessions_the_host_lacks(old_container, capsys):
+    home, root, store = old_container
+    (home / ".claude/projects/-workspace-demo").mkdir(parents=True)
+    (home / ".claude/projects/-workspace-demo/s1.jsonl").write_text("old claude\n")
+    (home / ".codex/sessions/2026/10/01").mkdir(parents=True)
+    (home / ".codex/sessions/2026/10/01/rollout-1.jsonl").write_text("old codex\n")
+
+    assert _rescue_agent_sessions("old", "dev", store) is True
+
+    assert (root / "claude/projects/-workspace-demo/s1.jsonl").read_text() == "old claude\n"
+    assert (root / "codex/sessions/2026/10/01/rollout-1.jsonl").read_text() == "old codex\n"
+    assert "Saved Claude and Codex sessions from 'old'" in capsys.readouterr().out
+
+
+def test_rescue_never_overwrites_the_host_and_keeps_the_difference(old_container):
+    home, root, store = old_container
+    (home / ".claude/projects/p").mkdir(parents=True)
+    (home / ".claude/projects/p/a.jsonl").write_text("container a\n")
+    (home / ".claude/projects/p/same.jsonl").write_text("same\n")
+    (root / "claude/projects/p").mkdir(parents=True)
+    (root / "claude/projects/p/a.jsonl").write_text("host a\n")
+    (root / "claude/projects/p/same.jsonl").write_text("same\n")
+    (root / "conflicts/claude/projects/p").mkdir(parents=True)
+    (root / "conflicts/claude/projects/p/a.jsonl").write_text("earlier conflict\n")
+
+    assert _rescue_agent_sessions("old", "dev", store) is True
+
+    assert (root / "claude/projects/p/a.jsonl").read_text() == "host a\n"
+    assert (root / "conflicts/claude/projects/p/a.jsonl").read_text() == "earlier conflict\n"
+    assert (root / "conflicts/claude/projects/p/a.jsonl.~1~").read_text() == "container a\n"
+    assert not (root / "conflicts/claude/projects/p/same.jsonl").exists()
+
+
+def test_rescue_skips_a_container_that_is_already_linked(old_container, capsys):
+    home, root, store = old_container
+    (home / ".claude").mkdir(parents=True)
+    os.symlink("/sdk-extensions/.agent-sessions/claude/projects", home / ".claude/projects")
+
+    assert _rescue_agent_sessions("old", "dev", store) is True
+
+    assert not root.exists()
+    assert capsys.readouterr().out == ""
+
+
+def test_rescue_appends_the_session_index_on_its_own_line(old_container):
+    home, root, store = old_container
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex/session_index.jsonl").write_text('{"id":"b"}\n')
+    (root / "codex").mkdir(parents=True)
+    (root / "codex/session_index.jsonl").write_text('{"id":"a"}')
+
+    _rescue_agent_sessions("old", "dev", store)
+
+    assert (root / "codex/session_index.jsonl").read_text() == '{"id":"a"}\n{"id":"b"}\n'
+
+
+def test_rescue_reports_what_could_not_be_saved(old_container, capsys):
+    home, _, store = old_container
+    with patch("sima_cli.sdk.utils._docker_cp_out", return_value="error"):
+        assert _rescue_agent_sessions("old", "dev", store) is False
+
+    assert "Could not save ~/.claude/projects" in capsys.readouterr().out
+
+
+def test_rescue_without_an_extensions_folder_warns_when_sessions_would_be_lost(old_container, capsys):
+    home, _, _ = old_container
+    assert _rescue_agent_sessions("old", "dev", "") is True
+
+    (home / ".claude/projects/p").mkdir(parents=True)
+    (home / ".claude/projects/p/s.jsonl").write_text("x\n")
+    assert _rescue_agent_sessions("old", "dev", "") is False
+    assert "no SDK extensions folder to save them to" in capsys.readouterr().out
+
+
+def test_a_repeated_rescue_adds_nothing_twice(old_container):
+    home, root, store = old_container
+    (home / ".claude/projects/p").mkdir(parents=True)
+    (home / ".claude/projects/p/a.jsonl").write_text("container a\n")
+    (root / "claude/projects/p").mkdir(parents=True)
+    (root / "claude/projects/p/a.jsonl").write_text("host a\n")
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex/session_index.jsonl").write_text('{"id":"b"}\n')
+
+    _rescue_agent_sessions("old", "dev", store)
+    _rescue_agent_sessions("old", "dev", store)
+
+    assert sorted(os.listdir(root / "conflicts/claude/projects/p")) == ["a.jsonl"]
+    assert (root / "codex/session_index.jsonl").read_text() == '{"id":"b"}\n'
+
+
+def test_a_dangling_link_on_the_host_does_not_swallow_the_container_copy(old_container):
+    home, root, store = old_container
+    (home / ".claude/projects/p").mkdir(parents=True)
+    (home / ".claude/projects/p/a.jsonl").write_text("container a\n")
+    (root / "claude/projects/p").mkdir(parents=True)
+    os.symlink("/nowhere/a.jsonl", root / "claude/projects/p/a.jsonl")
+
+    _rescue_agent_sessions("old", "dev", store)
+
+    assert (root / "conflicts/claude/projects/p/a.jsonl").read_text() == "container a\n"
+
+
+@pytest.mark.parametrize("stderr,expected", [
+    ("Error response from daemon: Could not find the file /home/dev/.codex in container old", "missing"),
+    ("Error: No such container:path: old:/home/dev/.codex", "missing"),
+    ("Error response from daemon: No such container: old", "error"),
+    ("permission denied", "error"),
+])
+def test_docker_cp_errors_are_told_apart_from_missing_paths(stderr, expected):
+    from sima_cli.sdk.utils import _docker_cp_out
+
+    with patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=1, stdout="", stderr=stderr)):
+        assert _docker_cp_out("old", "/home/dev/.codex", "/tmp/x") == expected
+
+
+def test_automated_removal_warns_loudly_when_sessions_could_not_be_saved():
+    calls, run = _docker(["sdk-latest"])
+    with patch("sima_cli.sdk.utils.subprocess.run", side_effect=run), \
+         patch("sima_cli.sdk.utils.console") as console:
+        confirm_to_remove_exiting_container("sdk-latest", yes_to_all=True, before_remove=lambda name: False)
+
+    printed = " ".join(str(call.args[0]) for call in console.print.call_args_list)
+    assert "deleted with it" in printed
+    assert ["docker", "rm", "-f", "sdk-latest"] in calls
+
+
+def _docker(existing_names):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return Mock(returncode=0, stdout="\n".join(existing_names))
+
+    return calls, run
+
+
+def test_removal_saves_sessions_first_when_automated():
+    calls, run = _docker(["sdk-latest"])
+    order = []
+    with patch("sima_cli.sdk.utils.subprocess.run", side_effect=lambda cmd, **kw: (order.append(cmd[1]), run(cmd))[1]):
+        result = confirm_to_remove_exiting_container(
+            "sdk-latest", yes_to_all=True, before_remove=lambda name: order.append("rescue") or True
+        )
+
+    assert result is None
+    assert order == ["ps", "rescue", "rm"]
+
+
+def test_interactive_removal_keeps_the_container_when_sessions_could_not_be_saved():
+    calls, run = _docker(["sdk-latest"])
+    with patch("sima_cli.sdk.utils.subprocess.run", side_effect=run), \
+         patch("builtins.input", side_effect=["", "n"]):
+        result = confirm_to_remove_exiting_container("sdk-latest", before_remove=lambda name: False)
+
+    assert result == "sdk-latest"
+    assert not any(cmd[:2] == ["docker", "rm"] for cmd in calls)
+
+
+def test_interactive_removal_can_go_ahead_anyway():
+    calls, run = _docker(["sdk-latest"])
+    with patch("sima_cli.sdk.utils.subprocess.run", side_effect=run), \
+         patch("builtins.input", side_effect=["y", "y"]):
+        result = confirm_to_remove_exiting_container("sdk-latest", before_remove=lambda name: False)
+
+    assert result is None
+    assert ["docker", "rm", "-f", "sdk-latest"] in calls
+
+
+def _setup_existing(existing_container, minimal=False):
+    from sima_cli.sdk.install import setup_and_start
+
+    image = "ghcr.io/sima-neat/sdk:latest"
+    with patch("sima_cli.sdk.neat.refresh_neat_certificates"), \
+         patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
+         patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+         patch("sima_cli.sdk.install.syscheck"), \
+         patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+         patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+         patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+         patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+         patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+         patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+         patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/extensions"), \
+         patch("sima_cli.sdk.install.confirm_to_remove_exiting_container",
+               return_value=existing_container) as confirm, \
+         patch("sima_cli.sdk.install._rescue_agent_sessions", return_value=True) as rescue, \
+         patch("sima_cli.sdk.install._link_agent_sessions") as link, \
+         patch("sima_cli.sdk.install.is_container_running", return_value=True), \
+         patch("sima_cli.sdk.install.check_os", return_value="linux"), \
+         patch("sima_cli.sdk.install.detect_current_user", return_value=("devuser", 1000, 1000)), \
+         patch("sima_cli.sdk.install.configure_container_user"), \
+         patch("sima_cli.sdk.install._refresh_mpk_config_json"), \
+         patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)):
+        setup_and_start(yes_to_all=True, noninteractive=True)
+        saved = confirm.call_args.kwargs["before_remove"]("sdk-latest")
+    return saved, rescue, link
+
+
+def test_setup_saves_sessions_before_removing_a_neat_container():
+    saved, rescue, _ = _setup_existing("sdk-latest")
+
+    assert saved is True
+    rescue.assert_called_once_with("sdk-latest", "devuser", "/tmp/extensions")
+
+
+def test_minimal_setup_does_not_rescue_sessions():
+    from sima_cli.sdk.install import setup_and_start
+
+    image = "ghcr.io/sima-neat/sdk:latest"
+    with patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
+         patch("sima_cli.sdk.install.syscheck"), \
+         patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
+         patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
+         patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
+         patch("sima_cli.sdk.install.get_container_status", return_value={}), \
+         patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
+         patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
+         patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/extensions"), \
+         patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None) as confirm, \
+         patch("sima_cli.sdk.install.start_docker_container"), \
+         patch("sima_cli.sdk.install.check_os", return_value="linux"), \
+         patch("sima_cli.sdk.install.detect_current_user", return_value=("devuser", 1000, 1000)), \
+         patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)):
+        setup_and_start(yes_to_all=True, noninteractive=True, minimal=True)
+
+    assert confirm.call_args.kwargs["before_remove"] is None
+
+
+def test_setup_links_sessions_in_a_reused_container():
+    _, _, link = _setup_existing("sdk-latest")
+
+    link.assert_called_once_with("sdk-latest", "devuser", 1000, 1000)

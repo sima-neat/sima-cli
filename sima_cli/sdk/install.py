@@ -47,6 +47,8 @@ from sima_cli.sdk.utils import (
     prompt_image_selection,
     filter_images_by_selector,
     confirm_to_remove_exiting_container,
+    _link_agent_sessions,
+    _rescue_agent_sessions,
     sanitize_container_name,
     ensure_simasdkbridge_network,
     resolve_edgematic_studio_choice,
@@ -1325,9 +1327,18 @@ def setup_and_start(
         container_build = img in container_build_images
         container_name = sanitize_container_name(img)
         print_section(f"🔄 CONTAINER START SEQUENCE for {container_name}")
+        before_remove = None
+        if not minimal and is_neat_sdk_image(img):
+            session_owner = detect_current_user()[0] if check_os() in ["linux", "macos"] else "docker"
+
+            def before_remove(name, owner=session_owner):
+                # Recreating the container must not take its agent sessions with it.
+                return _rescue_agent_sessions(name, owner, sdk_extensions_dir)
+
         existing_container = confirm_to_remove_exiting_container(
             container_name,
             yes_to_all=(yes_to_all or noninteractive),
+            before_remove=before_remove,
         )
 
         if existing_container == None:
@@ -1431,6 +1442,8 @@ def setup_and_start(
             if not minimal and is_neat_sdk_image(img):
                 if check_os() not in ["linux", "macos"]:
                     login_name, user_uid, user_gid = "docker", 900, 900
+                # A reused container never went through configure_container, so link it here.
+                _link_agent_sessions(existing_container, login_name, user_uid, user_gid)
                 ensure_codex_vscode_extension_installed(
                     existing_container, login_name, all_extensions=all_extensions,
                     allow_prompt=False, uid=user_uid, gid=user_gid,

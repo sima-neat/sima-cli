@@ -1,5 +1,6 @@
 # utils.py
 from typing import Dict, List, Set, Tuple
+import filecmp
 import hashlib
 import locale
 import os
@@ -1921,6 +1922,144 @@ def _link_agent_sessions(sdk_container_name: str, login_name: str, uid: int, gid
         )
 
 
+def _docker_cp_out(container_name: str, source: str, destination: str) -> str:
+    """Copy one path out of a container, running or stopped: 'ok', 'missing' or 'error'."""
+    try:
+        result = subprocess.run(
+            ["docker", "cp", f"{container_name}:{source}", destination],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return "error"
+    if result.returncode == 0:
+        return "ok"
+    detail = f"{result.stdout}\n{result.stderr}"
+    if "Could not find the file" in detail or "No such container:path" in detail:
+        return "missing"
+    return "error"
+
+
+def _merge_session_tree(source: str, destination: str, conflicts: str) -> Tuple[int, List[str], bool]:
+    """Copy what destination lacks; keep differing files under conflicts.
+
+    Returns (copied, kept, complete); complete is False when part of source could not be read.
+    """
+    copied, kept, unreadable = 0, [], []
+    for folder, _dirs, files in os.walk(source, onerror=unreadable.append):
+        relative_folder = os.path.relpath(folder, source)
+        for name in files:
+            relative = os.path.normpath(os.path.join(relative_folder, name))
+            src = os.path.join(source, relative)
+            dst = os.path.join(destination, relative)
+            if os.path.islink(src):
+                continue
+            if not os.path.lexists(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                copied += 1
+                continue
+            # A dangling link on the host holds nothing, so the container copy is kept aside.
+            if os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False):
+                continue
+            target = os.path.join(conflicts, relative)
+            candidates = [target] + [f"{target}.~{n}~" for n in range(1, 1000)]
+            existing = [path for path in candidates if os.path.lexists(path)]
+            if any(os.path.isfile(path) and filecmp.cmp(src, path, shallow=False) for path in existing):
+                continue  # Already kept by an earlier run.
+            target = next((path for path in candidates if not os.path.lexists(path)), None)
+            if target is None:
+                raise OSError(f"no free name left under {os.path.dirname(target or conflicts)}")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(src, target)
+            kept.append(target)
+    return copied, kept, not unreadable
+
+
+def _append_new_lines(source: str, target: str) -> bool:
+    """Append the lines of source that target lacks, on their own lines. Returns True if any."""
+    with open(source, "rb") as handle:
+        lines = [line.rstrip(b"\n") for line in handle if line.strip()]
+    present = set()
+    if os.path.exists(target):
+        with open(target, "rb") as handle:
+            present = {line.rstrip(b"\n") for line in handle}
+    missing = [line for line in lines if line not in present]
+    if not missing:
+        return False
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "ab+") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell():
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) != b"\n":
+                handle.write(b"\n")
+        handle.write(b"\n".join(missing) + b"\n")
+    return True
+
+
+def _rescue_agent_sessions(container_name: str, login_name: str, sdk_extensions_dir: str) -> bool:
+    """Save a container's Claude and Codex sessions to the host store before it is removed.
+
+    `sdk setup` removes an existing container to recreate it, which would take the sessions in
+    its home with it, including those of containers created before sessions were linked to the
+    host. They are copied out with `docker cp`, which works on a stopped container too, using
+    the same rules as the in-container migration: nothing on the host is overwritten, and a
+    repeated run adds nothing twice. Returns False when sessions exist that could not be saved.
+    """
+    store = os.path.join(sdk_extensions_dir, AGENT_SESSIONS_DIRNAME) if sdk_extensions_dir else ""
+    home = f"/home/{login_name}"
+    copied, kept, failed, unsaved = 0, [], [], []
+    with _docker_cp_staging_dir() as staging:
+        for index, (kind, home_path, stored_path) in enumerate(AGENT_SESSION_LINKS):
+            local = os.path.join(staging, str(index))
+            status = _docker_cp_out(container_name, f"{home}/{home_path}", local)
+            if status == "missing":
+                continue
+            if status == "error":
+                failed.append(home_path)
+                continue
+            # Already linked to the host store: docker cp copies the link, not the data.
+            if os.path.islink(local):
+                continue
+            if not store:
+                # No host store to save into (no /sdk-extensions mount, e.g. ARM64 before 2.1.1).
+                unsaved.append(home_path)
+                continue
+            target = os.path.join(store, *stored_path.split("/"))
+            try:
+                if kind == "dir" and os.path.isdir(local):
+                    conflicts = os.path.join(store, "conflicts", *stored_path.split("/"))
+                    added, saved, complete = _merge_session_tree(local, target, conflicts)
+                    copied += added
+                    kept.extend(saved)
+                    if not complete:
+                        failed.append(home_path)
+                elif kind == "file" and os.path.isfile(local):
+                    copied += int(_append_new_lines(local, target))
+            except OSError:
+                failed.append(home_path)
+
+    for path in kept:
+        print(f"⚠️ The host already had a different copy; '{container_name}''s copy was kept at {path}.")
+    if unsaved:
+        print(
+            f"⚠️ '{container_name}' holds Claude or Codex sessions ({', '.join('~/' + p for p in unsaved)}), "
+            "but there is no SDK extensions folder to save them to; they go away with the container."
+        )
+        return False
+    if failed:
+        print(
+            f"⚠️ Could not save {', '.join('~/' + path for path in failed)} from '{container_name}' "
+            "before removing it."
+        )
+        return False
+    if copied or kept:
+        print(f"✅ Saved Claude and Codex sessions from '{container_name}' to {store} before removing it.")
+    return True
+
+
 def _sudoers_drop_in_script(login_name: str) -> str:
     sudoers_line = f"{login_name} ALL=(ALL:ALL) NOPASSWD:ALL"
     return (
@@ -3610,8 +3749,13 @@ def filter_images_by_selector(images, selectors):
     return result
 
 
-def confirm_to_remove_exiting_container(image, yes_to_all=False):
-    """Start a container for the given SDK image."""
+def confirm_to_remove_exiting_container(image, yes_to_all=False, before_remove=None):
+    """Start a container for the given SDK image.
+
+    before_remove, when given, runs on the container just before it is removed and returns
+    False when it could not save something; interactively the user then decides whether to
+    remove the container anyway or keep it.
+    """
     container_name = image.split("/")[-1].replace(":", "_")
 
     # 🔍 Check if container already exists
@@ -3624,11 +3768,21 @@ def confirm_to_remove_exiting_container(image, yes_to_all=False):
         console.print(f"[yellow]⚠️  Container '{container_name}' already exists.[/yellow]")
         if yes_to_all:
             console.print(f"[cyan]Auto-removing '{container_name}' (yes_to_all=True).[/cyan]")
+            if before_remove is not None and before_remove(container_name) is False:
+                console.print(
+                    f"[bold red]⚠️  Removing '{container_name}' anyway (yes_to_all=True): the sessions "
+                    "listed above that could not be saved are deleted with it.[/bold red]"
+                )
             subprocess.run(["docker", "rm", "-f", container_name], check=False)
             console.print(f"✅ Removed old container '{container_name}'.", style="green")
         else:
             resp = input("🗑️  Remove and recreate it? [Y/n]: ").strip().lower()
             if resp in {"", "y", "yes"}:
+                if before_remove is not None and before_remove(container_name) is False:
+                    keep = input("⚠️  Remove it anyway? [y/N]: ").strip().lower()
+                    if keep not in {"y", "yes"}:
+                        console.print(f"⏩ Keeping existing '{container_name}'.", style="yellow")
+                        return container_name
                 subprocess.run(["docker", "rm", "-f", container_name], check=False)
                 console.print(f"✅ Removed old container '{container_name}'.", style="green")
             else:

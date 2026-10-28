@@ -1337,7 +1337,14 @@ def setup_and_start(
             rescue_dir = sdk_extensions_dir or str(Path.home() / "sima-sdk-extensions")
 
             def before_remove(name, owner=session_owner, store=rescue_dir):
-                # Recreating the container must not take its agent sessions with it.
+                # Recreating the container must not take its agent sessions with it. A running
+                # agent could still append a turn after its folder was copied, so the container is
+                # stopped first; if the user then keeps it, the reuse path below starts it again.
+                if is_container_running(name):
+                    click.echo(f"ℹ️  Stopping '{name}' so its agent sessions are copied complete.")
+                    stopped = subprocess.run(["docker", "stop", name], check=False)
+                    if getattr(stopped, "returncode", 0) != 0:
+                        click.echo(f"⚠️  Could not stop '{name}'; turns written during the copy may be missing.")
                 return _rescue_agent_sessions(name, owner, store)
 
         existing_container = confirm_to_remove_exiting_container(

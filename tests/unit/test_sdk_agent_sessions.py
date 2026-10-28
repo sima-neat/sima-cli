@@ -546,41 +546,61 @@ def test_interactive_removal_can_go_ahead_anyway():
     assert ["docker", "rm", "-f", "sdk-latest"] in calls
 
 
-def _setup_existing(existing_container, minimal=False):
+def _setup_existing(existing_container, minimal=False, running=True):
+    from contextlib import ExitStack
+
     from sima_cli.sdk.install import setup_and_start
 
     image = "ghcr.io/sima-neat/sdk:latest"
-    with patch("sima_cli.sdk.neat.refresh_neat_certificates"), \
-         patch("sima_cli.sdk.install.ensure_codex_vscode_extension_installed"), \
-         patch("sima_cli.sdk.install.ensure_simasdkbridge_network"), \
-         patch("sima_cli.sdk.install.syscheck"), \
-         patch("sima_cli.sdk.install.get_local_sima_images", return_value=[image]), \
-         patch("sima_cli.sdk.install.prompt_image_selection", return_value=[image]), \
-         patch("sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk"), \
-         patch("sima_cli.sdk.install.get_container_status", return_value={}), \
-         patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
-         patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
-         patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/extensions"), \
-         patch("sima_cli.sdk.install.confirm_to_remove_exiting_container",
-               return_value=existing_container) as confirm, \
-         patch("sima_cli.sdk.install._rescue_agent_sessions", return_value=True) as rescue, \
-         patch("sima_cli.sdk.install._link_agent_sessions") as link, \
-         patch("sima_cli.sdk.install.is_container_running", return_value=True), \
-         patch("sima_cli.sdk.install.check_os", return_value="linux"), \
-         patch("sima_cli.sdk.install.detect_current_user", return_value=("devuser", 1000, 1000)), \
-         patch("sima_cli.sdk.install.configure_container_user"), \
-         patch("sima_cli.sdk.install._refresh_mpk_config_json"), \
-         patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)):
+    plain = [
+        "sima_cli.sdk.neat.refresh_neat_certificates",
+        "sima_cli.sdk.install.ensure_codex_vscode_extension_installed",
+        "sima_cli.sdk.install.ensure_simasdkbridge_network",
+        "sima_cli.sdk.install.syscheck",
+        "sima_cli.sdk.install.ensure_colima_resources_for_neat_sdk",
+        "sima_cli.sdk.install.ensure_existing_neat_container_startable",
+        "sima_cli.sdk.install.configure_container_user",
+        "sima_cli.sdk.install._refresh_mpk_config_json",
+    ]
+    values = {
+        "sima_cli.sdk.install.get_local_sima_images": [image],
+        "sima_cli.sdk.install.prompt_image_selection": [image],
+        "sima_cli.sdk.install.get_container_status": {},
+        "sima_cli.sdk.install.get_workspace": "/tmp/workspace",
+        "sima_cli.sdk.install._setup_devkit_share": None,
+        "sima_cli.sdk.install._setup_sdk_extensions": "/tmp/extensions",
+        "sima_cli.sdk.install.is_container_running": running,
+        "sima_cli.sdk.install.check_os": "linux",
+        "sima_cli.sdk.install.detect_current_user": ("devuser", 1000, 1000),
+    }
+    with ExitStack() as stack:
+        for target in plain:
+            stack.enter_context(patch(target))
+        for target, value in values.items():
+            stack.enter_context(patch(target, return_value=value))
+        confirm = stack.enter_context(
+            patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=existing_container)
+        )
+        rescue = stack.enter_context(patch("sima_cli.sdk.install._rescue_agent_sessions", return_value=True))
+        link = stack.enter_context(patch("sima_cli.sdk.install._link_agent_sessions"))
+        run = stack.enter_context(patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)))
+
         setup_and_start(yes_to_all=True, noninteractive=True)
+        started = [call.args[0] for call in run.mock_calls if call.args and call.args[0][:2] == ["docker", "start"]]
+        run.reset_mock()
+        rescue.side_effect = lambda *a: run.mock_calls.append("rescue") or True
         saved = confirm.call_args.kwargs["before_remove"]("sdk-latest")
-    return saved, rescue, link
+        order = [call if call == "rescue" else call.args[0][:2] for call in run.mock_calls]
+    return saved, rescue, link, order, started
 
 
 def test_setup_saves_sessions_before_removing_a_neat_container():
-    saved, rescue, _ = _setup_existing("sdk-latest")
+    saved, rescue, _, order, _ = _setup_existing("sdk-latest")
 
     assert saved is True
     rescue.assert_called_once_with("sdk-latest", "devuser", "/tmp/extensions")
+    # A running container is stopped first, so no agent appends a turn after it was copied.
+    assert order == [["docker", "stop"], "rescue"]
 
 
 def test_minimal_setup_still_rescues_sessions_into_the_default_host_store():
@@ -598,11 +618,13 @@ def test_minimal_setup_still_rescues_sessions_into_the_default_host_store():
          patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/extensions"), \
          patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value=None) as confirm, \
          patch("sima_cli.sdk.install.start_docker_container"), \
+         patch("sima_cli.sdk.install.is_container_running", return_value=False), \
          patch("sima_cli.sdk.install.check_os", return_value="linux"), \
          patch("sima_cli.sdk.install.detect_current_user", return_value=("devuser", 1000, 1000)), \
          patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)):
         setup_and_start(yes_to_all=True, noninteractive=True, minimal=True)
-        with patch("sima_cli.sdk.install._rescue_agent_sessions", return_value=True) as rescue:
+        with patch("sima_cli.sdk.install._rescue_agent_sessions", return_value=True) as rescue, \
+             patch("sima_cli.sdk.install.is_container_running", return_value=False):
             confirm.call_args.kwargs["before_remove"]("sdk-latest")
 
     default_store = os.path.join(os.path.expanduser("~"), "sima-sdk-extensions")
@@ -610,7 +632,7 @@ def test_minimal_setup_still_rescues_sessions_into_the_default_host_store():
 
 
 def test_setup_links_sessions_in_a_reused_container():
-    _, _, link = _setup_existing("sdk-latest")
+    _, _, link, _, _ = _setup_existing("sdk-latest")
 
     link.assert_called_once_with("sdk-latest", "devuser", 1000, 1000)
 
@@ -654,3 +676,16 @@ def test_a_foreign_link_is_never_followed_into_the_old_store(old_container, tmp_
         assert _rescue_agent_sessions("old", "dev", store) is True
 
     assert not root.exists()
+
+
+def test_an_already_stopped_container_is_not_stopped_again():
+    _, _, _, order, _ = _setup_existing("sdk-latest", running=False)
+
+    assert order == ["rescue"]
+
+
+def test_a_kept_stopped_container_is_started_again():
+    # After a failed rescue the user may keep the container; setup then reuses and starts it.
+    _, _, _, _, started = _setup_existing("sdk-latest", running=False)
+
+    assert started == [["docker", "start", "sdk-latest"]]

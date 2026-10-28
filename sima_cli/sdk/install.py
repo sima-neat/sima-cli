@@ -1329,12 +1329,16 @@ def setup_and_start(
         container_name = sanitize_container_name(img)
         print_section(f"🔄 CONTAINER START SEQUENCE for {container_name}")
         before_remove = None
-        if not minimal and is_neat_sdk_image(img):
+        if is_neat_sdk_image(img):
             session_owner = detect_current_user()[0] if check_os() in ["linux", "macos"] else "docker"
+            # --minimal and older ARM64 setups configure no extensions folder, but a container
+            # being replaced may still hold sessions; they go to the default host store, where a
+            # later container that mounts it picks them up.
+            rescue_dir = sdk_extensions_dir or str(Path.home() / "sima-sdk-extensions")
 
-            def before_remove(name, owner=session_owner):
+            def before_remove(name, owner=session_owner, store=rescue_dir):
                 # Recreating the container must not take its agent sessions with it.
-                return _rescue_agent_sessions(name, owner, sdk_extensions_dir)
+                return _rescue_agent_sessions(name, owner, store)
 
         existing_container = confirm_to_remove_exiting_container(
             container_name,

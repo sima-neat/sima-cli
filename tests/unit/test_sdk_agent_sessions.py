@@ -582,7 +582,7 @@ def test_setup_saves_sessions_before_removing_a_neat_container():
     rescue.assert_called_once_with("sdk-latest", "devuser", "/tmp/extensions")
 
 
-def test_minimal_setup_does_not_rescue_sessions():
+def test_minimal_setup_still_rescues_sessions_into_the_default_host_store():
     from sima_cli.sdk.install import setup_and_start
 
     image = "ghcr.io/sima-neat/sdk:latest"
@@ -601,8 +601,11 @@ def test_minimal_setup_does_not_rescue_sessions():
          patch("sima_cli.sdk.install.detect_current_user", return_value=("devuser", 1000, 1000)), \
          patch("sima_cli.sdk.install.subprocess.run", return_value=Mock(returncode=0)):
         setup_and_start(yes_to_all=True, noninteractive=True, minimal=True)
+        with patch("sima_cli.sdk.install._rescue_agent_sessions", return_value=True) as rescue:
+            confirm.call_args.kwargs["before_remove"]("sdk-latest")
 
-    assert confirm.call_args.kwargs["before_remove"] is None
+    default_store = os.path.join(os.path.expanduser("~"), "sima-sdk-extensions")
+    rescue.assert_called_once_with("sdk-latest", "devuser", default_store)
 
 
 def test_setup_links_sessions_in_a_reused_container():

@@ -3,6 +3,8 @@ import hashlib
 import os
 import shlex
 import subprocess
+import time
+from datetime import datetime, timezone
 
 import click
 from rich.progress import Progress
@@ -21,6 +23,39 @@ class Target:
     def close(self):
         if self.ssh:
             self.ssh.close()
+
+    def sync_clock(self, dryrun=False):
+        """Use the invoking host's clock for remote updates with over five minutes of drift."""
+        if not self.ip:
+            return
+
+        def drift():
+            started = time.time()
+            try:
+                remote = int(self.run('date -u +%s').strip())
+            except ValueError as exc:
+                raise click.ClickException('Cannot read the DevKit clock; update stopped.') from exc
+            host = (started + time.time()) / 2
+            return remote, host, abs(remote - host)
+
+        remote, host, difference = drift()
+        if difference <= 300:
+            return
+        def utc(epoch):
+            return datetime.fromtimestamp(epoch, timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+
+        click.echo(f'DevKit clock: {utc(remote)}; host clock: {utc(host)} '
+                   f'(drift {difference:.0f} seconds).')
+        if dryrun:
+            click.echo('Dry run: would synchronize the DevKit clock to host time.')
+            return
+        click.echo('Synchronizing the DevKit clock to host time...')
+        self.run(f'date -u -s @{int(time.time())} >/dev/null')
+        _, _, difference = drift()
+        if difference > 5:
+            raise click.ClickException(
+                f'DevKit clock synchronization failed (drift {difference:.0f} seconds); update stopped.')
+        click.echo('DevKit clock synchronized.')
 
     def run(self, script, stream=None, check=True):
         command = ['sudo', '-S', '-p', '', 'sh', '-c', script]

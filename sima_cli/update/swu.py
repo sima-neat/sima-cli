@@ -486,6 +486,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
     phase = "checking the target"
     try:
         click.echo('Checking target and A/B state...')
+        target.sync_clock(dryrun=dryrun)
         key, key_directory = prepare_key(target, dryrun=dryrun, signing_cert=signing_cert, internal=internal)
         before = preflight(target, key)
         overlay_report = inspect_overlay(target, state=before, details=verbose)

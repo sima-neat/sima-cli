@@ -1028,6 +1028,8 @@ def _model_sdk_extension_install_args(base_version: str, arch: str = None) -> Li
         return []
     if not arch:
         return []
+    if base_version == "3.0.0":
+        return ["neat", "install", f"model-compiler/{arch}@v3.0.0"]
     if _version_at_least(base_version, "2.1.3"):
         # Model Compiler 2.1.3+ is published through Vulcan. Install the
         # released artifact compatible with this SDK generation.
@@ -1055,17 +1057,19 @@ def resolve_edgematic_studio_choice(
     install_requested: bool = False,
     port_only: bool = False,
     interactive: bool = True,
+    skip_requested: bool = False,
 ) -> Tuple[bool, bool]:
     """
     Decide whether setup installs Edgematic Studio and publishes its port.
 
-    Only explicit flags enable Studio; default setup never advertises or asks
-    about it. The interactive argument is retained for caller compatibility
-    and does not change the choice.
+    Studio is installed and published by default, without a prompt, like the
+    browser VS Code. --no-edgematic-studio turns both off, and
+    --edgematic-studio-port keeps only the port. The interactive argument is
+    retained for caller compatibility and does not change the choice.
 
     Returns (install, publish_port).
     """
-    if not install_requested and not port_only:
+    if skip_requested:
         return False, False
 
     extension_install_args = _edgematic_studio_install_args()
@@ -1074,10 +1078,7 @@ def resolve_edgematic_studio_choice(
             print("ℹ️  Edgematic Studio is not available on this host platform; skipping.")
         return False, False
 
-    if install_requested:
-        return True, True
-
-    if port_only:
+    if port_only and not install_requested:
         print(
             "ℹ️  Publishing Edgematic Studio's port without installing it "
             "(--edgematic-studio-port). Install it from the SDK container shell with: "
@@ -1085,7 +1086,7 @@ def resolve_edgematic_studio_choice(
         )
         return False, True
 
-    return False, False
+    return True, True
 
 
 def ensure_edgematic_studio_installed(
@@ -1151,7 +1152,9 @@ def ensure_edgematic_studio_installed(
         f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
     )
     print("ℹ️  Installing Edgematic Studio extension...")
-    run_command(
+    # Studio is part of the default setup, so a failed install must not take
+    # the rest of the SDK down with it.
+    if not run_command(
         [
             "docker",
             "exec",
@@ -1161,8 +1164,12 @@ def ensure_edgematic_studio_installed(
             "bash",
             "-lc",
             install_script,
-        ]
-    )
+        ],
+        fatal=False,
+    ):
+        print("⚠️  Edgematic Studio installation failed; continuing setup without it.")
+        print(f"   Install it later from the SDK container shell with: sima-cli {shlex.join(extension_install_args)}")
+        return False
     print("✅ Edgematic Studio extension installed.")
     _activate_edgematic_studio(sdk_container_name, login_name)
     return True
@@ -1296,7 +1303,10 @@ def ensure_model_sdk_extension_installed(
             expand=False,
         )
     )
-    expected_version = "2.1.3" if _version_at_least(base_version, "2.1.3") else base_version
+    expected_version = (
+        "2.1.3" if base_version != "3.0.0" and _version_at_least(base_version, "2.1.3")
+        else base_version
+    )
     local_archive = discover_archive(arch, expected_version)
     unattended = noninteractive or auto_install or not sys.stdin.isatty()
     source = select_source(local_archive, noninteractive=unattended, yes=auto_install)

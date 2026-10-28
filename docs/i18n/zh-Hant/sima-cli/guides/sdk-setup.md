@@ -44,11 +44,15 @@ SDK 設定不會在 DevKit 上安裝或設定 Docker。第一個 `dk container` 
 
 使用 `--no-container-registry` 可略過此步驟。這不會停止或移除現有的登錄庫。若要選擇其他連接埠，請使用 `--container-registry-port <port>` 重新執行設定。變更連接埠時，已儲存的映像檔會保留。
 
-## 選擇啟用 Edgematic Studio
+## Edgematic Studio
 
-預設設定不會顯示 Edgematic Studio 提示、不會安裝 Studio，也不會公開其連接埠。這也適用於 `-y` 與 `--noninteractive`。
+在 Neat SDK 映像上，設定會在不提示的情況下安裝 Edgematic Studio、公開其連接埠並啟動它。這也適用於 `-y` 與 `--noninteractive`。摘要會在 **Edgematic Studio** 面板中顯示 Studio 的 URL。Studio 使用主機連接埠 `8088`；若 `8088` 已被占用，則改用其他可用的連接埠。
 
-使用 `--edgematic-studio` 安裝 Studio 並公開其連接埠。若只要公開連接埠以供之後手動安裝，請使用 `--edgematic-studio-port`。
+第一次聊天前，請從 Studio 的設定登入您的程式開發代理。Studio 不會隨容器重新啟動；若其 URL 無法再開啟，請在 SDK 容器 shell 中執行 `activate-edgematic-studio`。
+
+使用 `--no-edgematic-studio` 略過 Studio，且不公開其連接埠。若只要公開連接埠以供之後手動安裝，請使用 `--edgematic-studio-port`。`--minimal` 與 `--no-insight` 也會略過 Studio。由於 Docker 連接埠對應在建立後無法變更，這些選擇會在建立容器時套用。
+
+若 Studio 安裝失敗，設定會繼續進行，並顯示之後從 SDK 容器 shell 安裝的指令。
 
 ## 選擇瀏覽器版 VS Code 擴充功能
 
@@ -62,7 +66,7 @@ Neat 會自動安裝到目前 SDK 使用者的目錄，不需詢問。新的 SDK
 sima-cli sdk setup --noninteractive --all-extensions
 ```
 
-`--all-extensions` 只略過擴充功能選取。使用 `--noninteractive` 略過其他問題。重複使用既有 SDK 容器時也會安裝擴充功能。未指定此選項時，除非舊版 `SIMA_CLI_INSTALL_CODEX_EXTENSION` 設定要求安裝，否則 `-y` 與 `--noninteractive` 會略過選用擴充功能。`--all-extensions` 不能與 `--minimal` 合併使用，也不會啟用 Edgematic Studio 或改變 Model Compiler 選擇。
+`--all-extensions` 只略過擴充功能選取。使用 `--noninteractive` 略過其他問題。重複使用既有 SDK 容器時也會安裝擴充功能。未指定此選項時，除非舊版 `SIMA_CLI_INSTALL_CODEX_EXTENSION` 設定要求安裝，否則 `-y` 與 `--noninteractive` 會略過選用擴充功能。`--all-extensions` 不能與 `--minimal` 合併使用，也不會改變 Edgematic Studio 或 Model Compiler 選擇。
 
 ## 瀏覽器版 VS Code 擴充功能版本
 

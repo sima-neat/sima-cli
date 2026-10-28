@@ -1169,6 +1169,7 @@ def setup_and_start(
     no_model_sdk: bool = False,
     edgematic_studio: bool = False,
     edgematic_studio_port: bool = False,
+    no_edgematic_studio: bool = False,
     minimal: bool = False,
     workspace: Optional[str] = None,
     persistent_network_profile: bool = False,
@@ -1320,7 +1321,7 @@ def setup_and_start(
     if minimal and any(is_neat_sdk_image(img) for img in selected_images):
         click.echo("ℹ️  Skipping Insight setup because --minimal was specified.")
 
-    # Asked once, on the first Neat container that is actually created.
+    # Resolved once, on the first Neat container that is actually created.
     studio_choice = None
 
     for img in selected_images:
@@ -1360,6 +1361,7 @@ def setup_and_start(
                         install_requested=edgematic_studio,
                         port_only=edgematic_studio_port,
                         interactive=not (noninteractive or yes_to_all),
+                        skip_requested=no_edgematic_studio,
                     )
                 install_studio, publish_studio_port = studio_choice
 
@@ -1395,8 +1397,12 @@ def setup_and_start(
                         "container. Remove and recreate the container when prompted to change "
                         "its authentication environment."
                     )
-            if (edgematic_studio or edgematic_studio_port) and is_neat_sdk_image(img):
-                option = "--edgematic-studio" if edgematic_studio else "--edgematic-studio-port"
+            if (edgematic_studio or edgematic_studio_port or no_edgematic_studio) and is_neat_sdk_image(img):
+                option = (
+                    "--no-edgematic-studio" if no_edgematic_studio
+                    else "--edgematic-studio" if edgematic_studio
+                    else "--edgematic-studio-port"
+                )
                 click.echo(
                     f"⚠️  {option} has no effect on the existing container "
                     f"'{existing_container}': Docker port mappings are fixed at create time. "

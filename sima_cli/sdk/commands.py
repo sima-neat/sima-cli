@@ -371,7 +371,14 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     "--studio",
     "edgematic_studio",
     is_flag=True,
-    help="Install the Edgematic Studio extension and publish its port. Off by default.",
+    help="Install the Edgematic Studio extension and publish its port. This is the default; the option is kept for compatibility.",
+)
+@click.option(
+    "--no-edgematic-studio",
+    "--no-studio",
+    "no_edgematic_studio",
+    is_flag=True,
+    help="Skip the Edgematic Studio extension and do not publish its port.",
 )
 @click.option(
     "--edgematic-studio-port",
@@ -425,6 +432,7 @@ def setup(
     insight_video_channels,
     no_model_sdk,
     edgematic_studio,
+    no_edgematic_studio,
     edgematic_studio_port,
     minimal,
     workspace,
@@ -449,6 +457,10 @@ def setup(
         raise click.UsageError(
             "--no-container-registry cannot be used with --container-registry-port."
         )
+    if edgematic_studio and no_edgematic_studio:
+        raise click.UsageError("--edgematic-studio cannot be used with --no-edgematic-studio.")
+    if edgematic_studio_port and no_edgematic_studio:
+        raise click.UsageError("--edgematic-studio-port cannot be used with --no-edgematic-studio.")
     devkit_ip = _resolve_devkit_ip(devkit)
     devkit_user, devkit_password = _resolve_devkit_credentials(
         devkit_ip,
@@ -466,6 +478,7 @@ def setup(
             insight_video_channels=insight_video_channels,
             no_model_sdk=no_model_sdk,
             edgematic_studio=edgematic_studio,
+            no_edgematic_studio=no_edgematic_studio,
             edgematic_studio_port=edgematic_studio_port,
             minimal=minimal,
             workspace=workspace,

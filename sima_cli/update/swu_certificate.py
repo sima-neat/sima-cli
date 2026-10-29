@@ -8,8 +8,7 @@ import requests
 from cryptography import x509
 
 INTERNAL_SIGNING_CERT_URL = 'https://debian.neat.sima.ai/daily/swupdate-signing-cert.pem'
-# Configure this when the production signing certificate is published.
-PRODUCTION_SIGNING_CERT_URL = None
+PRODUCTION_SIGNING_CERT_URL = 'https://repo.sima.ai/elxr/deb/swupdate-signing-cert.pem'
 MAX_CERTIFICATE_BYTES = 64 * 1024
 
 

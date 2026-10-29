@@ -33,7 +33,7 @@ def response_for(data):
     return response
 
 
-@pytest.mark.parametrize('source', [cert.INTERNAL_SIGNING_CERT_URL, 'https://updates.example/cert.pem', 'http://updates.example/cert.pem'])
+@pytest.mark.parametrize('source', [cert.INTERNAL_SIGNING_CERT_URL, cert.PRODUCTION_SIGNING_CERT_URL, 'https://updates.example/cert.pem', 'http://updates.example/cert.pem'])
 def test_default_and_custom_url(source, pem):
     with patch.object(cert.requests, 'get', return_value=response_for(pem)) as get:
         text, before, after = cert.load_certificate(source)
@@ -175,7 +175,7 @@ def test_explicit_certificate_overrides_both_channels(internal):
 
 def test_channel_defaults_are_separate():
     assert cert.certificate_source(internal=True) == cert.INTERNAL_SIGNING_CERT_URL
-    assert cert.certificate_source() is None
+    assert cert.certificate_source() == 'https://repo.sima.ai/elxr/deb/swupdate-signing-cert.pem'
     with patch.object(cert, 'PRODUCTION_SIGNING_CERT_URL', 'https://production.example/cert.pem'):
         assert cert.certificate_source() == 'https://production.example/cert.pem'
         assert cert.certificate_source(internal=True) == cert.INTERNAL_SIGNING_CERT_URL
@@ -183,7 +183,8 @@ def test_channel_defaults_are_separate():
 
 def test_unconfigured_production_certificate_is_silently_skipped(capsys):
     target = MagicMock()
-    with patch.object(swu, 'load_certificate') as load:
+    with patch.object(cert, 'PRODUCTION_SIGNING_CERT_URL', None), \
+            patch.object(swu, 'load_certificate') as load:
         assert swu.prepare_key(target) == (None, None)
     load.assert_not_called()
     target.run.assert_not_called()

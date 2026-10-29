@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 
 from sima_cli.peripherals import model
 from tests.unit.peripherals_fixtures import (
-    NO_USB_OVERLAY,
+    MJPEG_ONLY,
     NV12_ONLY,
+    USB_CAMERA_NAME,
     board,
     catalog,
     devkit,
@@ -21,7 +22,7 @@ from tests.unit.peripherals_fixtures import (
 )
 
 
-def test_a_mipi_camera_is_supported_when_any_mode_is_and_a_usb_camera_is_not():
+def test_a_mipi_camera_is_supported_when_any_mode_is_and_a_pre_usb_verdict_sentinels_usb_camera_is_not():
     mipi = model.summarize(mipi_camera())
     assert (mipi["type_label"], mipi["connection"], mipi["name"], mipi["status"]) == \
         ("Camera", "MIPI CSI-2", "imx477 5-001a", "Connected")
@@ -30,7 +31,13 @@ def test_a_mipi_camera_is_supported_when_any_mode_is_and_a_usb_camera_is_not():
 
     usb = model.summarize(usb_camera())
     assert (usb["connection"], usb["name"]) == ("USB", "HD Pro Webcam C920")
-    assert (usb["support"], usb["support_reason"], usb["available_modes"]) == ("unsupported", NO_USB_OVERLAY, 0)
+    assert (usb["support"], usb["support_reason"], usb["available_modes"]) == ("unsupported", model.USB_UPDATE_REASON, 0)
+    # Its stale overlay verdicts say nothing about Neat's USB camera input: every mode asks for the update (as Insight).
+    assert {(row["available"], row["reason"]) for row in model.mode_rows(usb_camera())} == {(False, model.USB_UPDATE_REASON)}
+    assert model.support(without_verdicts(usb_camera())) == ("unsupported", model.USB_UPDATE_REASON)
+    assert model.support(usb_camera(modes=[])) == ("unsupported", "The camera reports no modes.")
+    judged = usb_camera(identity={"driver": "uvcvideo"}, modes=[mode("MJPG", 1920, 1080, available=True)])
+    assert model.support(judged) == ("available", "")
 
 
 def test_the_verdict_reason_is_the_one_most_modes_give():
@@ -51,6 +58,14 @@ def test_support_falls_back_to_the_isp_reason_and_to_no_modes():
     assert model.support(mipi_camera(modes=[mode("NV12", 1920, 1080, available=False)])) == ("unsupported", "")
     assert model.support(mipi_camera(modes=[mode("NV12", 1920, 1080, available=False, reason="")])) == ("unsupported", "")
     assert model.support(microphone()) == (None, "")
+    # Unsupported only when Sentinel judged every mode false; an unjudged mode leaves the device unjudged.
+    assert model.support(usb_camera(identity={"driver": "uvcvideo"}, modes=[
+        mode("MJPG", 1920, 1080), mode("YUYV", 640, 480, available=False, reason=MJPEG_ONLY)])) == (None, "")
+    # The reason comes from the modes in the format Neat's input reads, even when another format has more modes.
+    no_name = "Neat's USB camera input cannot name this camera (no firmware node or USB ID)."
+    refused = [mode("MJPG", 160 + 16 * i, 120, available=False, reason=no_name) for i in range(17)] + \
+              [mode("YUYV", 160 + 16 * i, 120, available=False, reason=MJPEG_ONLY) for i in range(18)]
+    assert model.support(usb_camera(identity={"driver": "uvcvideo"}, modes=refused)) == ("unsupported", no_name)
 
 
 def test_mode_rows_carry_sentinels_verdict_and_source():
@@ -138,6 +153,10 @@ def test_describe_projects_the_facts_its_type_owns_and_the_board():
     assert usb["facts"] == {"device_path": "/dev/video1",
                             "by_id_path": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_BE998CAF-video-index0"}
     assert "board" not in usb
+    identity = {**usb_camera()["identity"], "driver": "uvcvideo", "camera_name": USB_CAMERA_NAME}
+    assert "camera_name" not in model.describe(usb_camera(identity=identity), None)["facts"]
+    assert model.describe(mipi_camera(identity={"camera_name": "other"}), None)["facts"]["camera_name"] == \
+        "imx477 5-001a", "a MIPI camera's top-level camera_name is the one fact"
     assert model.describe(microphone(), board())["facts"] == {
         "device_node": "/dev/snd/pcmC0D0c", "by_id": "/dev/snd/by-id/usb-046d_HD_Pro_Webcam_C920_BE998CAF-02",
         "driver": "USB-Audio", "alsa_device": "plughw:CARD=C920,DEV=0"}

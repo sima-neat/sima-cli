@@ -11,7 +11,9 @@ from click.testing import CliRunner
 
 from sima_cli.peripherals import commands
 from sima_cli.peripherals.sentinel import SentinelError
-from tests.unit.peripherals_fixtures import NV12_ONLY, board, catalog, devkit, microphone, mipi_camera, usb_camera, without_verdicts
+from tests.unit.peripherals_fixtures import (
+    MJPEG_ONLY, NV12_ONLY, USB_CAMERA_NAME, board, catalog, devkit, microphone, mipi_camera, mode, usb_camera, without_verdicts,
+)
 
 
 def runner():
@@ -117,6 +119,24 @@ def test_describe_a_fixed_isp_camera_does_not_claim_run_time_sizing(on_devkit, m
     result = runner().invoke(commands.peripherals, ["describe", "imx477"])
     assert result.exit_code == 0 and "run time" not in result.output
     assert "66.18 fps at 1920x1080" in result.output and "Platform" in result.output and "2.1.3" in result.output
+
+
+def test_describe_a_usb_camera_shows_sentinels_verdicts_and_no_camera_name(on_devkit, monkeypatch):
+    """Sentinel judges UVC modes (MJPEG available, other formats not) and names the camera_name Neat's
+    USB camera input takes; `describe` shows the verdicts but not that name, which says nothing to a user."""
+    modes = [mode("MJPG", 1920, 1080, available=True, frame_intervals=[{"type": "discrete", "numerator": 1, "denominator": 30}]),
+             mode("YUYV", 640, 480, available=False, reason=MJPEG_ONLY)]
+    identity = {"product": "UVC Webcam", "driver": "uvcvideo", "camera_name": USB_CAMERA_NAME}
+    use_client(monkeypatch, FakeClient(catalog(usb_camera(modes=modes, identity=identity))))
+    result = runner().invoke(commands.peripherals, ["describe", "camera:v4l2:421bbe426738013b"])
+    assert result.exit_code == 0, result.output
+    facts, table = result.output.split("\n\n", 1)
+    assert "USB" in facts and "Camera name" not in result.output and USB_CAMERA_NAME not in result.output
+    rows = [line.split(maxsplit=4) for line in table.splitlines()]
+    assert rows[1] == ["MJPG", "1920x1080", "30", "Supported"]
+    assert rows[2] == ["YUYV", "640x480", "-", "Unsupported", MJPEG_ONLY]
+    document = json.loads(runner().invoke(commands.peripherals, ["describe", "camera:v4l2:421bbe426738013b", "--json"]).stdout)
+    assert "camera_name" not in document["facts"] and document["summary"]["support"] == "available"
 
 
 def test_describe_a_microphone_shows_its_nodes_and_sample_rates(on_devkit, monkeypatch):

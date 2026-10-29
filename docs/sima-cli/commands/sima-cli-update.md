@@ -10,32 +10,6 @@ Parent command: [`sima-cli`](./sima-cli.md)
 sima-cli update [OPTIONS] [VERSION_OR_URL]
 ```
 
-### Reset the current system overlay
-
-```bash
-sima-cli update --reset-overlay --dryrun
-sima-cli update --reset-overlay --reboot
-# Remote, unattended reset:
-sima-cli update --ip 192.168.6.5 --reset-overlay --reboot -y
-```
-
-This operation keeps the installed firmware and selected A/B slot. It uses the
-platform update script's rename-then-delete cleanup for `/data/overlay/upper`
-and `/data/overlay/work`. The next boot creates a fresh overlay. Without
-`--reboot`, reboot promptly and avoid further system changes until then.
-
-All overlay changes are discarded, including installed packages, local software,
-configuration, credentials, and home-directory files. Back up needed files first.
-Other files under `/data` are retained. A verified metadata inventory is saved
-under `/data/.overlay-backup`; it contains no file contents and cannot restore
-your files. Reinstall custom software after reboot. Network and SSH settings may
-return to their image defaults, so remote access may change.
-
-The command prompts before resetting unless `-y` is supplied. `--dryrun` makes no
-changes. Pending or unhealthy boot state and unverified overlay paths prevent
-reset. Do not combine this operation with a version, `--inspect`, `--swap`, or
-installation options. After reboot, run `sima-cli update --inspect` to verify.
-
 ## Options
 
 | Name | Description |
@@ -48,8 +22,8 @@ installation options. After reboot, run `sima-cli update --inspect` to verify.
 | `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror (eLxr only). eLxr 3.0+ still verifies signed full-system bundles. On eLxr 2.1, this disables repository signature verification and, without --internal, selects the mirror directly. |
 | `-t, --troot_only` | Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion. |
 | `--dryrun` | For eLxr, preview an update, slot swap, or overlay reset without making changes. |
-| `--reset-overlay` | Reset the current eLxr 3.0+ overlay without downloading firmware or switching slots. Removes local software, settings, and home-directory files; reboot required. |
 | `--inspect` | Show eLxr 3.0+ A/B slots and overlay customizations without updating (local or --ip). |
+| `--reset-overlay` | Discard local overlay software and settings without updating firmware; reboot to use the clean system (eLxr 3.0+). |
 | `--swap` | Select the available inactive eLxr 3.0+ slot for next boot; use --reboot to restart now. |
 | `--verbose` | Show detailed overlay file categories during eLxr 3.0+ inspection or update. |
 | `--signing-cert` | SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the certificate for the selected channel when configured (eLxr 3.0+). |
@@ -64,16 +38,14 @@ installation options. After reboot, run `sima-cli update --inspect` to verify.
 ## Full Help
 
 ```text
-⚠️  You have disabled update check with SIMA_CLI_CHECK_FOR_UPDATE environment variable, skipping sima-cli update check..
-🔧 Environment: host (mac)
-Usage: main update [OPTIONS] [VERSION_OR_URL]
+Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
 
   Update a SiMa DevKit, remote device, or Linux PCIe host.
 
   This command downloads and applies system software updates across different
-  SiMa environments (Modalix, MLSoC/Davinci, headless images, or remote devices
-  accessible over the network). Updates may be installed directly on the device
-  or pushed from a development host.
+  SiMa environments (Modalix, MLSoC/Davinci, headless images, or remote
+  devices accessible over the network). Updates may be installed directly on
+  the device or pushed from a development host.
 
   eLxr 3.0+ uses signed full-system SWU bundles. Use --inspect for A/B state,
   --ip for remote updates, and --reboot to reboot after installation.
@@ -97,25 +69,25 @@ Usage: main update [OPTIONS] [VERSION_OR_URL]
   certificate. Developer-portal version lookup for 3.0 is not available yet.
 
   Internal mode warns that pre-release software may be unstable and is used at
-  your own risk. On eLxr 3.0+, unavailable Artifactory access falls back to the
-  public daily platform mirror, including missing login, HTTP 401/403,
+  your own risk. On eLxr 3.0+, unavailable Artifactory access falls back to
+  the public daily platform mirror, including missing login, HTTP 401/403,
   connection failures, timeouts, and server errors. Exact build names select
   directly; partial matches show builds newest first by build number.
 
   Mirror downloads verify the indexed size and SHA-256 before signed
-  installation. A missing build or failed download stops before installation. A
-  connection loss after installation starts requires inspecting the board before
-  retrying. Devices running eLxr 2.1.3 retain the APT update flow; upgrading
-  those devices to 3.0 requires recovery/provisioning first.
+  installation. A missing build or failed download stops before installation.
+  A connection loss after installation starts requires inspecting the board
+  before retrying. Devices running eLxr 2.1.3 retain the APT update flow;
+  upgrading those devices to 3.0 requires recovery/provisioning first.
 
   How Version Resolution Works:
 
-    • If a version string is provided (e.g., ``1.7.0``), sima-cli automatically
-    resolves it to the correct downloadable firmware asset based on channel,
-    flavor, and board type.
+    • If a version string is provided (e.g., ``1.7.0``), sima-cli
+    automatically resolves it to the correct downloadable firmware asset based
+    on channel, flavor, and board type.
 
-    • If a URL or local bundle path is provided, sima-cli will use the specified
-    file directly.
+    • If a URL or local bundle path is provided, sima-cli will use the
+    specified file directly.
 
     • The ``--version`` option overrides the positional argument
     (``VERSION_OR_URL``).
@@ -165,7 +137,8 @@ Usage: main update [OPTIONS] [VERSION_OR_URL]
 
       sima-cli update -v 1.7.0 -y
 
-      # Update legacy eLxr (<3.0) to the latest official release without prompts
+      # Update legacy eLxr (<3.0) to the latest official release without
+      prompts
 
       sima-cli update -y
 
@@ -202,22 +175,24 @@ Options:
                                  argument if both are given.
   --ip TEXT                      Target device IP address for remote firmware
                                  update.
-  -y, --yes                      Assume yes for update confirmation prompts and
-                                 select the newest matching full-system build.
+  -y, --yes                      Assume yes for update confirmation prompts
+                                 and select the newest matching full-system
+                                 build.
   -p, --passwd TEXT              Password for remote board SSH or local ELXR
                                  sudo authentication.  [default: edgeai]
-  --flavor [headless|full|auto]  Firmware flavor: 'full' image supports NVMe and
-                                 GUI on Modalix DevKit. This option is
+  --flavor [headless|full|auto]  Firmware flavor: 'full' image supports NVMe
+                                 and GUI on Modalix DevKit. This option is
                                  deprecated for 2.0 and above  [default: auto]
   -f, --force                    If the internal mirror is unreachable, fall
                                  back to the external pre-release mirror (eLxr
                                  only). eLxr 3.0+ still verifies signed full-
                                  system bundles. On eLxr 2.1, this disables
-                                 repository signature verification and, without
-                                 --internal, selects the mirror directly.
-  -t, --troot_only               Only update tRoot and not the root file system,
-                                 compatible with Yocto system only, used for
-                                 Yocto to eLxr conversion.
+                                 repository signature verification and,
+                                 without --internal, selects the mirror
+                                 directly.
+  -t, --troot_only               Only update tRoot and not the root file
+                                 system, compatible with Yocto system only,
+                                 used for Yocto to eLxr conversion.
   --dryrun                       For eLxr, preview an update, slot swap, or
                                  overlay reset without making changes.
   --inspect                      Show eLxr 3.0+ A/B slots and overlay
@@ -230,11 +205,12 @@ Options:
                                  for next boot; use --reboot to restart now.
   --verbose                      Show detailed overlay file categories during
                                  eLxr 3.0+ inspection or update.
-  --signing-cert URL_OR_FILE     SWUpdate PEM verification certificate: HTTP(S)
-                                 URL or local file. Defaults to the certificate
-                                 for the selected channel when configured (eLxr
-                                 3.0+).
-  --reboot                       Reboot after successful eLxr 3.0+ installation,
-                                 slot selection, or overlay reset.
-  -?, -h, --help                 Show this message and exit.
+  --signing-cert URL_OR_FILE     SWUpdate PEM verification certificate:
+                                 HTTP(S) URL or local file. Defaults to the
+                                 certificate for the selected channel when
+                                 configured (eLxr 3.0+).
+  --reboot                       Reboot after successful eLxr 3.0+
+                                 installation, slot selection, or overlay
+                                 reset.
+  --help                         Show this message and exit.
 ```

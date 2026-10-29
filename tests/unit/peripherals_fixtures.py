@@ -11,7 +11,7 @@ NO_USB_OVERLAY = "USB cameras have no camera overlay on this board."
 IMX477_OVERLAY = "modalix-som-waveshare-ARDU-IMX477-1CAM.dtbo"
 MJPEG_ONLY = "Neat's USB camera input reads MJPEG only."
 # Sentinel's `identity.camera_name` for a UVC camera: the name Neat's UsbCameraInputOptions::camera_name takes.
-USB_CAMERA_NAME = "/base/pci@7000000000-3.1:1.0-046d:08e5"
+USB_CAMERA_NAME = "/base/pci@7000000000-3.1:1.0-1a2b:3c4d"
 
 
 def mode(fmt, width, height, available=None, reason=None, **extra):

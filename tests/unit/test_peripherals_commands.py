@@ -126,7 +126,7 @@ def test_describe_a_usb_camera_shows_sentinels_verdicts_and_no_camera_name(on_de
     USB camera input takes; `describe` shows the verdicts but not that name, which says nothing to a user."""
     modes = [mode("MJPG", 1920, 1080, available=True, frame_intervals=[{"type": "discrete", "numerator": 1, "denominator": 30}]),
              mode("YUYV", 640, 480, available=False, reason=MJPEG_ONLY)]
-    identity = {"product": "HD Pro Webcam C920", "driver": "uvcvideo", "camera_name": USB_CAMERA_NAME}
+    identity = {"product": "UVC Webcam", "driver": "uvcvideo", "camera_name": USB_CAMERA_NAME}
     use_client(monkeypatch, FakeClient(catalog(usb_camera(modes=modes, identity=identity))))
     result = runner().invoke(commands.peripherals, ["describe", "camera:v4l2:421bbe426738013b"])
     assert result.exit_code == 0, result.output

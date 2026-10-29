@@ -49,7 +49,7 @@ def test_every_recorded_device_summarizes_and_describes(snapshot):
             assert (row["reason"] != "") == (row["available"] is False) or row["available"] is not False
 
 
-# The USB C920's summary per recording: Sentinel's example judges it against Neat's USB camera input
+# The USB webcam's summary per recording: Sentinel's example judges it against Neat's USB camera input
 # (one MJPG mode Supported); the 3.0 recording is from a pre-USB-verdict Sentinel, so the CLI asks for an update.
 USB_SUMMARY = {
     "catalog-example.json": ("available", "", 1),
@@ -59,7 +59,7 @@ USB_SUMMARY = {
 
 def test_the_recorded_devkit_trio_reads_as_documented(snapshot):
     """Each recording holds the same three devices: a MIPI IMX477 (Supported, NV12 sizes only), a USB
-    C920 (as USB_SUMMARY) and the C920's microphone (no verdict)."""
+    webcam (as USB_SUMMARY) and its microphone (no verdict)."""
     name, catalog = snapshot
     by_backend = {d["backend"]: model.summarize(d) for d in catalog["devices"]}
     assert set(by_backend) == {"mipi", "v4l2", "alsa"}, name

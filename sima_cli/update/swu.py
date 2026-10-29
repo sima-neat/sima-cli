@@ -184,8 +184,9 @@ def preserve_overlay_info(target, report, state, source):
     manifest = {
         'schema': 1,
         'created_utc': timestamp,
-        'purpose': 'sima-cli clean-overlay update inventory',
-        'selected_bundle': source_text,
+        'purpose': ('sima-cli clean-overlay update inventory' if source_text
+                    else 'sima-cli standalone overlay reset inventory'),
+        'selected_bundle': source_text or None,
         'boot_state': {key: value for key, value in state.items() if key != 'raw'},
         'overlay': report,
         'contains_file_contents': False,
@@ -649,9 +650,9 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
 def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_confirm=False,
                   dryrun=False, reboot=False, inspect=False,
                   force=False, troot_only=False, flavor='auto', local_elxr=False,
-                  signing_cert=None, verbose=False, swap=False):
+                  signing_cert=None, verbose=False, swap=False, reset_overlay=False):
     """Return False for legacy platforms; handle all eLxr 3.0+ operations here."""
-    if not (ip or local_elxr or inspect or swap):
+    if not (ip or local_elxr or inspect or swap or reset_overlay):
         if signing_cert is not None:
             raise click.ClickException('--signing-cert requires a local eLxr 3.0+ DevKit or --ip.')
         return False
@@ -665,6 +666,13 @@ def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_conf
     board, fwtype = board.strip().strip('\"\''), fwtype.strip().strip('\"\'').lower()
     running = release_tuple(version)
     requested_release = release_tuple(requested)
+    if reset_overlay:
+        if fwtype != 'elxr' or not running or running < (3, 0, 0) or board != 'modalix':
+            raise click.ClickException('Overlay reset requires a reachable Modalix eLxr 3.0+ board.')
+        from sima_cli.update.reset_overlay import reset_system_overlay
+        reset_system_overlay(ip=ip, passwd=passwd, auto_confirm=auto_confirm,
+                             dryrun=dryrun, reboot=reboot, verbose=verbose)
+        return True
     if swap:
         if fwtype != 'elxr' or not running or running < (3, 0, 0) or board != 'modalix':
             raise click.ClickException('Slot swapping requires a reachable Modalix eLxr 3.0+ board.')

@@ -138,14 +138,21 @@ class TypeAdapter:
     def support(self, device: Dict[str, Any]) -> Tuple[Optional[str], str]:
         """Sentinel's verdict for the device: ("available"|"unsupported", reason), or (None, "") when
         Sentinel wrote none. Supported when any mode is; Unsupported when Sentinel judged every mode
-        false, with the reason most of them give (a reason is explanatory; its absence changes nothing)."""
+        false, with the reason most of them give; a USB camera's MJPG modes, the format Neat's USB camera
+        input reads, count first when there are any (a reason is explanatory; its absence changes nothing)."""
         rows = self.mode_rows(device)
         if any(row["available"] is True for row in rows):
             return "available", ""
-        if any(row["available"] is False for row in rows):
-            reasons = Counter(row["reason"] for row in rows if row["reason"])
+        if rows and all(row["available"] is False for row in rows):
+            wanted = [row for row in rows if row["format"] == "MJPG"] or rows
+            reasons = Counter(row["reason"] for row in wanted if row["reason"])
             return "unsupported", reasons.most_common(1)[0][0] if reasons else ""
         return None, ""
+
+
+# A Sentinel that judges USB cameras against Neat's USB camera input names the camera's driver
+# (`identity.driver`); an older one's USB verdicts (if any) apply the MIPI overlay rule. Insight says the same.
+USB_UPDATE_REASON = "Update SiMa Sentinel on the board to check USB cameras."
 
 
 class CameraAdapter(TypeAdapter):
@@ -186,6 +193,13 @@ class CameraAdapter(TypeAdapter):
             else:
                 lines.append((key.replace("_", " ").capitalize(), str(value)))
         return lines
+
+    def mode_rows(self, device: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows = super().mode_rows(device)
+        identity = device.get("identity") if isinstance(device.get("identity"), dict) else {}
+        if device.get("backend") == "v4l2" and not identity.get("driver"):
+            rows = [dict(row, available=False, reason=USB_UPDATE_REASON) for row in rows]
+        return rows
 
     def mode_row(self, mode: Dict[str, Any]) -> Dict[str, Any]:
         return {

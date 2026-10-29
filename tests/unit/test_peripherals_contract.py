@@ -49,9 +49,17 @@ def test_every_recorded_device_summarizes_and_describes(snapshot):
             assert (row["reason"] != "") == (row["available"] is False) or row["available"] is not False
 
 
+# The USB C920's summary per recording: Sentinel's example judges it against Neat's USB camera input
+# (one MJPG mode Supported); the 3.0 recording is from a pre-USB-verdict Sentinel, so the CLI asks for an update.
+USB_SUMMARY = {
+    "catalog-example.json": ("available", "", 1),
+    "devkit-3.0-B1859.json": ("unsupported", model.USB_UPDATE_REASON, 0),
+}
+
+
 def test_the_recorded_devkit_trio_reads_as_documented(snapshot):
     """Each recording holds the same three devices: a MIPI IMX477 (Supported, NV12 sizes only), a USB
-    C920 (Unsupported: no overlay) and the C920's microphone (no verdict)."""
+    C920 (as USB_SUMMARY) and the C920's microphone (no verdict)."""
     name, catalog = snapshot
     by_backend = {d["backend"]: model.summarize(d) for d in catalog["devices"]}
     assert set(by_backend) == {"mipi", "v4l2", "alsa"}, name
@@ -60,7 +68,8 @@ def test_the_recorded_devkit_trio_reads_as_documented(snapshot):
     assert 0 < mipi["available_modes"] < mipi["modes"]
     nv12_only = {row["format"] for row in model.mode_rows(model.find_device(catalog["devices"], mipi["id"])) if row["available"]}
     assert nv12_only == {"NV12"}, name
-    assert (usb["connection"], usb["support"], usb["available_modes"]) == ("USB", "unsupported", 0)
+    assert usb["connection"] == "USB"
+    assert (usb["support"], usb["support_reason"], usb["available_modes"]) == USB_SUMMARY[name]
     assert (alsa["type_label"], alsa["support"]) == ("Microphone", None)
     assert [row["sample_rates_hz"] for row in model.mode_rows(model.find_device(catalog["devices"], alsa["id"]))] == \
         [[16000], [24000], [32000]]

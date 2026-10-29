@@ -150,6 +150,8 @@
       "device_path": "/dev/video1",
       "id": "camera:v4l2:421bbe426738013b",
       "identity": {
+        "camera_name": "/base/pci@7000000000-3.1:1.0-046d:08e5",
+        "driver": "uvcvideo",
         "interface": "00",
         "node_index": "0",
         "product_id": "08e5",
@@ -209,8 +211,7 @@
           ],
           "height": 1080,
           "width": 1920,
-          "available": false,
-          "reason": "USB cameras have no camera overlay on this board."
+          "available": true
         },
         {
           "format": "YUYV",
@@ -231,7 +232,7 @@
           "height": 1472,
           "width": 2560,
           "available": false,
-          "reason": "USB cameras have no camera overlay on this board."
+          "reason": "Neat's USB camera input reads MJPEG only."
         }
       ],
       "type": "camera"

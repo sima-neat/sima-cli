@@ -424,7 +424,7 @@ def _reboot_and_verify(target, before, ip, passwd, expected=None):
                 if state.get('running slot') != before.get('running slot') and state.get('running slot') in ('A', 'B'):
                     if state.get('upgrade_available', '').lower() == 'no' and state.get('rollback') == 'normal':
                         actual = state.get('active version', '').strip().strip('\"\'')
-                        normalized_expected = re.sub(r'^(\d+\.\d+\.\d+)_(?:daily|custom)_', r'\1_', expected or '')
+                        normalized_expected = re.sub(r'^(\d+\.\d+\.\d+)_(?:daily|custom|pre-release|release)_', r'\1_', expected or '')
                         if expected and actual != normalized_expected:
                             raise click.ClickException(f'Updated slot reports {actual or "unknown"}, expected {expected}. Inspect before retrying.')
                         inspect_target(peer)

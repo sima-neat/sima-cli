@@ -83,7 +83,7 @@ def test_list_host_packages_uses_index_and_sorts_newest_first(session_factory):
     ]
     assert session.trust_env is False
     session.get.assert_called_once_with(
-        "https://artifacts.neat.sima.ai/daily-platform-images/index.json",
+        "https://artifacts.neat.sima.ai/daily-platform-images/index-v2.json",
         timeout=15,
     )
 
@@ -252,3 +252,13 @@ def test_install_host_package_translates_installer_launch_failure(
 
     with pytest.raises(click.ClickException, match="Unable to launch.*sudo is not installed"):
         install_host_package(VERSION, auto_confirm=True)
+
+
+@patch("sima_cli.update.host.requests.Session")
+def test_release_candidate_host_package_is_discoverable(session_factory):
+    version = '3.0.0_release_master_B2479'
+    session = session_factory.return_value.__enter__.return_value
+    session.get.return_value.json.return_value = _index(VERSION, version)
+    packages = list_host_packages()
+    assert packages[0]['name'] == version
+    assert packages[0]['sha256'] == PACKAGE_SHA256

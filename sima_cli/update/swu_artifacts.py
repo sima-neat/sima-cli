@@ -10,6 +10,7 @@ import requests
 
 from sima_cli.auth.devportal import login_external
 from sima_cli.update.query import ARTIFACTORY_BASE_URL
+from sima_cli.update.mirror_catalog import read_mirror_index
 from sima_cli.utils.config import get_auth_token
 
 
@@ -67,9 +68,7 @@ def mirror_bundles(board, requested, netboot=False):
         with requests.Session() as session:
             # No Artifactory credentials or ambient .netrc credentials on the mirror.
             session.trust_env = False
-            response = session.get(DAILY_MIRROR + 'index.json', timeout=30)
-            response.raise_for_status()
-            index = response.json()
+            index = read_mirror_index(session, DAILY_MIRROR + 'index-v2.json', timeout=30)
         if index.get('schema_version') != 1 or index.get('platform') != board:
             raise ValueError('unsupported index schema or platform')
         builds = []

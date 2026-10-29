@@ -585,13 +585,14 @@ def test_factory_mode_does_not_override_a_pending_flag():
             swu.preflight(MagicMock(), '/tmp/test-signing-cert.pem')
 
 
-def test_artifactory_daily_prefix_is_not_part_of_on_device_build_identity():
+@pytest.mark.parametrize('family,branch', [('daily', 'develop'), ('custom', 'develop'), ('pre-release', 'master'), ('release', 'master')])
+def test_artifactory_daily_prefix_is_not_part_of_on_device_build_identity(family, branch):
     state = parse_state(STATE.replace('active slot : A', 'active slot : B').replace('running slot: A', 'running slot: B'))
-    state['active version'] = '3.0.0_develop_B1211'
+    state['active version'] = f'3.0.0_{branch}_B1211'
     target, peer = MagicMock(), MagicMock()
     with patch.object(swu, 'Target', return_value=peer), patch.object(swu, 'inspect_target', return_value=state), \
             patch.object(swu.time, 'sleep'), patch.object(swu.time, 'monotonic', side_effect=[0, 1]):
-        swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_daily_develop_B1211')
+        swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected=f'3.0.0_{family}_{branch}_B1211')
 
 
 @pytest.mark.parametrize('local', [False, True])
@@ -949,3 +950,13 @@ def test_device_reboot_requires_verified_pending_activation(tmp_path, running, l
                             capture_output=True, text=True, timeout=5)
     assert (result.returncode == 0) is (outcome == 'pending'), result.stdout + result.stderr
     assert scheduled.exists() is (outcome == 'pending')
+
+
+def test_release_reboot_verification_rejects_a_different_build():
+    state = parse_state(STATE.replace('active slot : A', 'active slot : B').replace('running slot: A', 'running slot: B'))
+    state['active version'] = '3.0.0_master_B2478'
+    target, peer = MagicMock(), MagicMock()
+    with patch.object(swu, 'Target', return_value=peer), patch.object(swu, 'inspect_target', return_value=state), \
+            patch.object(swu.time, 'sleep'), patch.object(swu.time, 'monotonic', side_effect=[0, 1]):
+        with pytest.raises(click.ClickException, match='expected 3.0.0_release_master_B2479'):
+            swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_release_master_B2479')

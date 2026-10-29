@@ -11,10 +11,11 @@ import click
 import requests
 
 from sima_cli.download import download_file_from_url
+from sima_cli.update.mirror_catalog import read_mirror_index
 
 
 HOST_PACKAGE_BASE_URL = "https://artifacts.neat.sima.ai/daily-platform-images"
-HOST_PACKAGE_INDEX_URL = f"{HOST_PACKAGE_BASE_URL}/index.json"
+HOST_PACKAGE_INDEX_URL = f"{HOST_PACKAGE_BASE_URL}/index-v2.json"
 HOST_PACKAGE_NAME = "sima_pcie_host_pkg.sh"
 HOST_PACKAGE_PATH = f"artifacts/host_files/{HOST_PACKAGE_NAME}"
 _BUILD_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -66,9 +67,7 @@ def list_host_packages() -> List[Dict]:
         with requests.Session() as session:
             # Never send ambient proxy or .netrc credentials to the public mirror.
             session.trust_env = False
-            response = session.get(HOST_PACKAGE_INDEX_URL, timeout=15)
-            response.raise_for_status()
-            index = response.json()
+            index = read_mirror_index(session, HOST_PACKAGE_INDEX_URL, timeout=15)
     except (requests.RequestException, json.JSONDecodeError, ValueError) as exc:
         raise click.ClickException(f"Unable to load the host package catalog: {exc}") from exc
 

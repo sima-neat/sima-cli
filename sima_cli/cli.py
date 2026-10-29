@@ -398,7 +398,8 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
 
     The verification certificate is downloaded for the selected channel when configured; use
     --signing-cert URL_OR_FILE for an image signed with your own certificate.
-    Developer-portal version lookup for 3.0 is not available yet.
+    For official eLxr 3.0+ releases, specify -v 3.0.0 (or -v 3.0) to
+    download the SWU from docs.sima.ai using your developer-portal login.
 
     Internal mode warns that pre-release software may be unstable and is used
     at your own risk. On eLxr 3.0+, unavailable Artifactory access falls back

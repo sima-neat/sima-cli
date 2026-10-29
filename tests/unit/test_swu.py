@@ -169,11 +169,30 @@ def test_no_matching_swu_is_failure():
             swu_artifacts.resolve_bundle('3.0', 'modalix', True)
 
 
-def test_external_release_lookup_is_explicitly_deferred():
+@pytest.mark.parametrize('requested', ['3.0', '3.0.0'])
+def test_external_release_uses_portal_swu_path(requested):
     with patch.object(swu_artifacts, '_portal_session') as session:
-        with pytest.raises(click.ClickException, match='not published'):
-            swu_artifacts.resolve_bundle('3.0', 'modalix')
-        session.assert_not_called()
+        source = swu_artifacts.resolve_bundle(requested, 'modalix')
+    assert source == ('https://docs.sima.ai/pkg_downloads/SDK3.0.0/devkit/modalix/elxr/'
+                      'elxr-palette-modalix-3.0.0-agate-arm64.swu')
+    assert source.version == '3.0.0'
+    session.assert_not_called()
+
+
+@pytest.mark.parametrize('requested', [None, 'latest', '3.0.0_daily_B11', '../3.0.0'])
+def test_external_release_requires_explicit_release(requested):
+    with pytest.raises(click.ClickException, match='Specify an official release'):
+        swu_artifacts.resolve_bundle(requested, 'modalix')
+
+
+def test_external_release_size_uses_portal_login():
+    with patch.object(swu_artifacts, '_portal_session') as login:
+        response = login.return_value.head.return_value
+        response.headers = {'Content-Length': '1234'}
+        source = swu_artifacts.resolve_bundle('3.0.0', 'modalix')
+        assert swu_artifacts.bundle_size(source) == 1234
+    login.assert_called_once_with()
+    login.return_value.head.assert_called_once_with(source, headers={}, timeout=30)
 
 
 def test_installer_uses_signed_full_collection_and_progress_without_reboot():

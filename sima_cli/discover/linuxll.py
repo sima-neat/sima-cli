@@ -11,8 +11,40 @@ import re
 import time
 import shlex
 import subprocess
+import shutil
+import sys
+
+import click
 from sima_cli.utils.env import get_environment_type
 from typing import Optional, Dict
+
+def ensure_discovery_tools():
+    """Provision required Linux discovery tools only after an interactive opt-in."""
+    if shutil.which('ip'):
+        return
+    guidance = (
+        "Device discovery needs 'ip' (package iproute2). "
+        "On Ubuntu/Debian run: sudo apt-get update && sudo apt-get install -y iproute2 ethtool. "
+        "For netboot, pass --devkit-ip <IPv4> to bypass auto-discovery."
+    )
+    if not shutil.which('apt-get') or not sys.stdin.isatty():
+        raise click.ClickException(guidance)
+    packages = ['iproute2']
+    if not shutil.which('ethtool'):
+        packages.append('ethtool')
+    if not click.confirm('Device discovery needs host packages. Install ' + ' '.join(packages) + '?', default=False):
+        raise click.ClickException(guidance)
+    prefix = [] if os.geteuid() == 0 else ['sudo']
+    if prefix and not shutil.which('sudo'):
+        raise click.ClickException(guidance + ' sudo is unavailable; ask an administrator to install them.')
+    try:
+        subprocess.run(prefix + ['apt-get', 'update'], check=True)
+        subprocess.run(prefix + ['apt-get', 'install', '-y', '--no-install-recommends'] + packages, check=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise click.ClickException(f'Device discovery package installation failed: {error}. {guidance}') from error
+    if not shutil.which('ip'):
+        raise click.ClickException(guidance)
+
 
 def _run(cmd: str, check=False, capture=True) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -24,7 +56,7 @@ def _run(cmd: str, check=False, capture=True) -> subprocess.CompletedProcess:
     )
 
 def _has_nmcli() -> bool:
-    return _run("which nmcli").returncode == 0
+    return shutil.which("nmcli") is not None
 
 
 def _iface_has_ipv4(iface: str) -> bool:
@@ -41,7 +73,7 @@ def _get_mac(iface: str) -> str:
 def _is_usb_ethernet(iface: str) -> bool:
     """Return True if this interface is a USB Ethernet device."""
     dev_path = f"/sys/class/net/{iface}/device"
-    if not os.path.exists(dev_path):
+    if not os.path.exists(dev_path) or not shutil.which("udevadm"):
         return False
 
     cp = _run(f"udevadm info -q property -p {dev_path}", capture=True)
@@ -63,7 +95,7 @@ def _usb_attrs(iface: str) -> Dict[str, str]:
     Returns possibly empty dict.
     """
     dev_path = f"/sys/class/net/{iface}/device"
-    if not os.path.exists(dev_path):
+    if not os.path.exists(dev_path) or not shutil.which("udevadm"):
         return {}
 
     cp = _run(f"udevadm info -q property -p {dev_path}", capture=True)
@@ -100,6 +132,8 @@ def _usb_attrs(iface: str) -> Dict[str, str]:
 
 
 def _driver_info(iface: str) -> Dict[str, str]:
+    if not shutil.which("ethtool"):
+        return {"driver": "", "bus-info": "", "firmware": ""}
     cp = _run(f"ethtool -i {iface}", capture=True)
     info = {}
     for line in cp.stdout.splitlines():
@@ -227,6 +261,7 @@ def suggest_and_switch_to_linklocal():
     envtype, env_subtype = get_environment_type()
 
     if envtype == 'host' and env_subtype == 'linux':
+        ensure_discovery_tools()
         cp = _run("ip -o link", capture=True)
         ifaces = []
         for line in cp.stdout.splitlines():

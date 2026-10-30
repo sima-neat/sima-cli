@@ -14,7 +14,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 
 from sima_cli.download import download_file_from_url
 from sima_cli.update.ab_state import inspect_target
-from sima_cli.update.overlay import inspect_overlay
+from sima_cli.update.overlay import inspect_overlay, package_identity_label
 from sima_cli.update.swu_artifacts import (
     release_tuple, resolve_bundle, bundle_size, is_mirror_source, fallback_for_bundle,
 )
@@ -85,8 +85,10 @@ nohup sh -c 'sleep 3; /sbin/reboot' >/dev/null 2>&1 </dev/null &
 
 
 def _source_build_id(source):
-    """Return the numeric platform build carried by an artifact source, if known."""
+    """Return the official release or numeric platform build of an artifact source."""
     version = getattr(source, 'version', '')
+    if re.fullmatch(r'\d+\.\d+\.\d+', version or ''):
+        return version
     match = re.search(r'(?:^|[_-])B(\d+)(?:$|[_-])', version or '')
     return match.group(1) if match else None
 
@@ -109,10 +111,10 @@ def _overlay_reset_reason(report, source):
     if target_build == metadata_build:
         return None
     if target_build:
-        return ('The selected image is B%s, but the overlay package metadata is B%s.' %
-                (target_build, metadata_build))
+        return ('The selected image is %s, but the overlay package metadata is %s.' %
+                (package_identity_label(target_build), package_identity_label(metadata_build)))
     return ('The selected image build could not be identified, while the overlay contains '
-            'package metadata for B%s.' % metadata_build)
+            'package metadata for %s.' % package_identity_label(metadata_build))
 
 
 def _print_overlay_reset_panel(reason):
@@ -166,7 +168,7 @@ def preserve_overlay_info(target, report, state, source):
     image_id = str(report.get('package_builds', {}).get('image', 'unknown'))
     metadata_id = str(report.get('package_builds', {}).get('metadata', 'unknown'))
     timestamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-    backup_id = (f'{timestamp}-image-B{image_id}-metadata-B{metadata_id}-'
+    backup_id = (f'{timestamp}-image-{package_identity_label(image_id)}-metadata-{package_identity_label(metadata_id)}-'
                  f'{time.time_ns()}')
     if not re.fullmatch(r'[A-Za-z0-9._-]+', backup_id):
         raise click.ClickException('Cannot construct a safe overlay backup identifier.')

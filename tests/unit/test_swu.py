@@ -979,3 +979,21 @@ def test_release_reboot_verification_rejects_a_different_build():
             patch.object(swu.time, 'sleep'), patch.object(swu.time, 'monotonic', side_effect=[0, 1]):
         with pytest.raises(click.ClickException, match='expected 3.0.0_release_master_B2479'):
             swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_release_master_B2479')
+
+
+@pytest.mark.parametrize('metadata,version,expected', [
+    ('3.0.0', '3.0.0', None),
+    ('3.0.0', '3.0.1', 'selected image is 3.0.1'),
+    ('2372', '3.0.0', 'overlay package metadata is B2372'),
+    ('3.0.0', '3.0.0_master_B2501', 'selected image is B2501'),
+])
+def test_official_release_overlay_identity(metadata, version, expected):
+    from sima_cli.update.swu_artifacts import BundleSource
+    report = {'package_builds': {'image': '3.0.0', 'metadata': metadata},
+              'entries': [{'path': '/var/lib/dpkg/status'}]}
+    reason = swu._overlay_reset_reason(report, BundleSource('https://example.test/image.swu', version))
+    if expected is None:
+        assert reason is None
+    else:
+        assert expected in reason
+        assert 'B3.0.' not in reason

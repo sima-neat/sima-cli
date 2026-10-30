@@ -824,6 +824,8 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
         else:
             write_image(version, boardtype, fwtype, internal, flavor='headless', recovery=recovery)
             click.echo("✅ Boot image successfully written.")
+    except click.ClickException:
+        raise
     except Exception as e:
         click.echo(f"❌ Failed to write boot image: {e}", err=True)
         ctx.exit(1)

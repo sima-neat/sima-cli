@@ -5,6 +5,7 @@ import subprocess
 import json
 import time
 import re
+import shutil
 import psutil
 from typing import List, Dict
 from rich.console import Console
@@ -51,6 +52,9 @@ def get_sima_devices_from_arp():
             try:
                 output = subprocess.check_output(["ip", "neigh", "show"], text=True)
             except FileNotFoundError:
+                if not shutil.which("arp"):
+                    console.print("[yellow]ARP lookup unavailable: install iproute2 (ip) or net-tools (arp); continuing with multicast discovery.[/yellow]")
+                    return []
                 output = subprocess.check_output(["arp", "-n"], text=True)
             pattern = re.compile(
                 r"(?P<ip>\d+\.\d+\.\d+\.\d+).*?(?P<mac>(?:[0-9a-f]{1,2}:){5}[0-9a-f]{1,2})",

@@ -655,6 +655,20 @@ def _offer_reboot_into_emmc(selected_ip):
     return True
 
 
+def _copy_flash_image(client_manager, ip, path, remote_dir, attempts):
+    """A failed upload is safe to repeat; programming is never retried here."""
+    for attempt in range(1, attempts + 1):
+        if attempts > 1 and client_manager.shutdown_event.is_set():
+            return False
+        if copy_file_to_remote_board(ip, path, remote_dir, passwd=DEFAULT_PASSWORD):
+            return True
+        if attempt < attempts:
+            click.echo(f'Image transfer attempt {attempt}/{attempts} failed; retrying in 10 seconds.')
+            if client_manager.shutdown_event.wait(10):
+                break
+    return False
+
+
 def flash_emmc(
     client_manager,
     emmc_image_paths,
@@ -663,6 +677,7 @@ def flash_emmc(
     configuration=None,
     manual_reboot=True,
     offer_reboot=False,
+    transfer_attempts=1,
 ):
     """Flash eMMC on a selected client device."""
     if not emmc_image_paths:
@@ -702,8 +717,8 @@ def flash_emmc(
             remote_blob = shlex.quote(f"/tmp/{os.path.basename(troot_image_path)}")
             troot_command = f"sudo troot_upgrade {remote_blob}"
         click.echo(f"📤 Copying tRoot image {troot_image_path} to {selected_ip}:{remote_dir}")
-        success = copy_file_to_remote_board(
-            selected_ip, troot_image_path, remote_dir, passwd=DEFAULT_PASSWORD
+        success = _copy_flash_image(
+            client_manager, selected_ip, troot_image_path, remote_dir, transfer_attempts
         )
         if not success:
             click.echo(f"❌ Failed to copy {troot_image_path} to {selected_ip}. Aborting.")
@@ -713,8 +728,8 @@ def flash_emmc(
 
     for path in emmc_image_paths:
         click.echo(f"📤 Copying {path} to {selected_ip}:{remote_dir}")
-        success = copy_file_to_remote_board(
-            selected_ip, path, remote_dir, passwd=DEFAULT_PASSWORD
+        success = _copy_flash_image(
+            client_manager, selected_ip, path, remote_dir, transfer_attempts
         )
         if not success:
             click.echo(f"❌ Failed to copy {path} to {selected_ip}. Aborting.")
@@ -1181,6 +1196,60 @@ def _schedule_reboot_into_emmc(selected_ip):
         ssh.close()
 
 
+def _wait_for_flash_readiness(ip, cancel_event, deadline, attempts=8, retry_delay=15):
+    """Retry only non-destructive startup probes, never a flash operation."""
+    from sima_cli.update.remote import run_remote_command_capture
+
+    last_error = 'readiness deadline expired'
+    for attempt in range(1, attempts + 1):
+        remaining = deadline - time.monotonic()
+        if cancel_event.is_set():
+            return False
+        if remaining <= 0:
+            break
+        ssh = None
+        timer = None
+        try:
+            click.echo(f'Probing SSH/transfer readiness on {ip} (attempt {attempt}/{attempts})...')
+            ssh = init_ssh_session(ip, password=DEFAULT_PASSWORD, timeout=min(10, remaining))
+            # Bound command and SFTP setup as well as authentication. Closing the
+            # transport interrupts blocked reads/channel setup without replaying writes.
+            timer = threading.Timer(max(0, min(15, deadline - time.monotonic())), ssh.close)
+            timer.daemon = True
+            timer.start()
+            code, cmdline, _ = run_remote_command_capture(ssh, 'cat /proc/cmdline')
+            if code != 0:
+                raise RuntimeError('could not read netboot command line')
+            if 'root=/dev/ram0' not in cmdline.split():
+                raise click.ClickException('Automatic flashing stopped: the selected DevKit is not confirmed '
+                                           'to be running the network boot image.')
+            code, _, error = run_remote_command_capture(
+                ssh, 'test -b /dev/mmcblk0 && test -w /tmp && '
+                'command -v python3 >/dev/null && command -v gzip >/dev/null && '
+                'command -v dd >/dev/null', sudo_pty=False)
+            if code != 0:
+                raise RuntimeError(f'flash prerequisites are not ready: {error.strip()}')
+            with ssh.open_sftp() as sftp:
+                sftp.stat('/tmp')
+            if time.monotonic() >= deadline:
+                raise TimeoutError('readiness deadline expired')
+            return not cancel_event.is_set()
+        except click.ClickException:
+            raise
+        except Exception as error:
+            last_error = str(error)
+            click.echo(f'Netboot readiness attempt {attempt} failed: {last_error}')
+        finally:
+            if timer is not None:
+                timer.cancel()
+            if ssh is not None:
+                ssh.close()
+        if attempt < attempts and cancel_event.wait(min(retry_delay, max(0, deadline - time.monotonic()))):
+            return False
+    raise click.ClickException(f'Netboot readiness failed on {ip}; no automatic flash was started. '
+                               f'Last failure: {last_error}')
+
+
 def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
     """Flash only the confirmed device, once, after its network boot is ready."""
     click.echo(f'Waiting for SSH on {selected_ip}; flashing will start automatically.')
@@ -1189,19 +1258,13 @@ def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
         connected = any(ip == selected_ip and info.get('state') == 'Connected'
                         for ip, info in client_manager.get_client_info())
         if connected:
-            from sima_cli.update.remote import run_remote_command_capture
-            ssh = init_ssh_session(selected_ip, password=DEFAULT_PASSWORD)
-            try:
-                code, cmdline, _ = run_remote_command_capture(ssh, 'cat /proc/cmdline')
-            finally:
-                ssh.close()
-            if code != 0 or 'root=/dev/ram0' not in cmdline.split():
-                raise click.ClickException('Automatic flashing stopped: the selected DevKit is not confirmed '
-                                           'to be running the network boot image.')
+            if not _wait_for_flash_readiness(selected_ip, client_manager.shutdown_event,
+                                             deadline=min(deadline, time.monotonic() + 180)):
+                return False
             click.echo(f'Starting automatic flash on {selected_ip}.')
             flashed = flash_emmc(client_manager, emmc_image_paths, override_ip=selected_ip,
                                  troot_image_path=troot_image_path, configuration=configuration,
-                                 manual_reboot=False)
+                                 manual_reboot=False, transfer_attempts=3)
             if not flashed:
                 raise click.ClickException('Automatic eMMC flash failed.')
             _schedule_reboot_into_emmc(selected_ip)

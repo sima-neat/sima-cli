@@ -55,6 +55,7 @@ class NeatRunConfig:
     key_file_host_path: str
     webrtc_host_ip: str = ""
     code_ui_token: str = ""
+    code_server_without_password: bool = False
     code_ui_supported: bool = True
     code_ui_backend: str = "openvscode"
     code_ui_container_name: str = ""
@@ -283,7 +284,7 @@ def allocate_neat_ports(
             ]
         )
 
-    # Opt-in, and settled before create: port maps are immutable afterwards.
+    # Settled before create, on by default: port maps are immutable afterwards.
     # --no-insight excludes it either way; Studio drives the Insight APIs.
     if publish_edgematic_studio_port and not no_insight:
         edgematic_studio = _allocate_single_port(EDGEMATIC_STUDIO_CONTAINER_PORT, "tcp", reserved)
@@ -858,6 +859,7 @@ def prepare_neat_container_run(
     reserved_ports: Optional[set] = None,
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
     publish_edgematic_studio_port: bool = False,
+    code_server_without_password: bool = False,
 ) -> NeatRunConfig:
     no_insight = no_insight or minimal
     container_dir = Path(workspace) / f".{container_name}"
@@ -879,6 +881,7 @@ def prepare_neat_container_run(
             cert_file_host_path="",
             key_file_host_path="",
             webrtc_host_ip="",
+            code_server_without_password=code_server_without_password,
         )
     webrtc_host_ip = _detect_webrtc_host_ip(devkit_env)
     cert_file, key_file = _ensure_certificates(
@@ -888,8 +891,9 @@ def prepare_neat_container_run(
         noninteractive=noninteractive,
     )
     code_ui_token = ""
+    code_ui_url = ""
     code_ui = port_map.get("codeUI")
-    if isinstance(code_ui, dict):
+    if isinstance(code_ui, dict) and not code_server_without_password:
         code_ui_token = _generate_code_ui_token()
         code_ui_https = port_map.get("codeUIHttps")
         code_ui_url = f"http://localhost:{int(code_ui['host'])}"
@@ -908,6 +912,7 @@ def prepare_neat_container_run(
         code_ui_token=code_ui_token,
         code_ui_container_name=container_name,
         code_ui_base_url=code_ui_url if isinstance(code_ui, dict) else "",
+        code_server_without_password=code_server_without_password,
     )
 
 
@@ -916,7 +921,9 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         docker_cmd.extend(["-e", f"MTX_RTSPTRANSPORTS={NEAT_MEDIAMTX_RTSP_TRANSPORTS}"])
     if config.webrtc_host_ip:
         docker_cmd.extend(["-e", f"CONTAINER_HOST_IP={config.webrtc_host_ip}"])
-    if config.code_ui_token:
+    if config.code_server_without_password:
+        docker_cmd.extend(["-e", "CODE_SERVER_WITHOUT_PASSWORD=1"])
+    elif config.code_ui_token:
         docker_cmd.extend(["-e", f"CODE_SERVER_PASSWORD={config.code_ui_token}"])
         docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_TOKEN={config.code_ui_token}"])
     cert_config = config.port_map.get("cert")
@@ -929,7 +936,15 @@ def append_neat_docker_args(docker_cmd: List[str], config: NeatRunConfig) -> Non
         if isinstance(code_ui_https, dict):
             docker_cmd.extend(["-e", f"CODE_SERVER_HTTPS_PORT={code_ui_https['container']}"])
             docker_cmd.extend(["-e", f"OPENVSCODE_SERVER_HTTPS_PORT={code_ui_https['container']}"])
+    editor_mappings = set()
+    if config.code_server_without_password:
+        for name in ("codeUI", "codeUIHttps"):
+            entry = config.port_map.get(name)
+            if isinstance(entry, dict):
+                editor_mappings.add(f"{entry['host']}:{entry['container']}/{entry['protocol']}")
     for mapping in config.port_args:
+        if mapping in editor_mappings:
+            mapping = f"127.0.0.1:{mapping}"
         docker_cmd.extend(["-p", mapping])
     if config.config_host_dir:
         docker_cmd.extend(["-v", f"{config.config_host_dir}:/home/docker/.insight-config"])
@@ -945,6 +960,8 @@ def _code_ui_url(config: NeatRunConfig, display_host: str) -> str:
     display_entry = port_map.get("codeUIHttps") if config.cert_host_dir else None
     if not isinstance(display_entry, dict):
         display_entry = port_map["codeUI"]
+    if config.code_server_without_password:
+        display_host = "localhost"
     scheme = display_entry.get("scheme", "http")
     code_url = f"{scheme}://{display_host}:{display_entry['host']}"
     token = config.code_ui_token or port_map["codeUI"].get("token")
@@ -1015,7 +1032,9 @@ def _print_code_ui_panel(config: NeatRunConfig, code_url: str, opened: bool) -> 
     if not code_url:
         return
     status = "Opened in your browser." if opened else "Open this URL in your browser."
-    if config.code_ui_backend == "code-server":
+    if config.code_server_without_password:
+        security_lines = ["Password authentication disabled; editor ports bind to 127.0.0.1. Access through your authenticated gateway."]
+    elif config.code_ui_backend == "code-server":
         security_lines = [
             f"[yellow]Password:[/yellow] {config.code_ui_token}",
             "Enter this password when code-server prompts you.",
@@ -1056,15 +1075,18 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
         if config.code_ui_backend == "code-server" and config.code_ui_token:
             rows.append(("codeUIPassword", config.code_ui_token))
         if "codeUIHttps" in port_map:
-            rows.append(("codeUIHttp", f"http://{display_host}:{port_map['codeUI']['host']}"))
+            editor_host = "localhost" if config.code_server_without_password else display_host
+            rows.append(("codeUIHttp", f"http://{editor_host}:{port_map['codeUI']['host']}"))
     show_edgematic_studio = "edgematicStudio" in port_map
+    studio_url = ""
     if show_edgematic_studio:
         # Studio serves plain HTTP; web_scheme tracks the Insight/Code UI certs.
         studio_url = f"http://{display_host}:{port_map['edgematicStudio']['host']}"
-        if not config.edgematic_studio_installed:
-            # --edgematic-studio-port publishes the mapping with nothing behind it.
-            studio_url = f"{studio_url} (port published; Studio not installed)"
-        rows.append(("edgematicStudio", studio_url))
+        if config.edgematic_studio_installed:
+            rows.append(("edgematicStudio", studio_url))
+        else:
+            # --edgematic-studio-port, or a failed install, leaves nothing behind the mapping.
+            rows.append(("edgematicStudio", f"{studio_url} (port published; Studio not installed)"))
     if "videoUI" in port_map:
         rows.append(("videoUI", f"{web_scheme}://{display_host}:{port_map['videoUI']['host']}"))
     if "webSSH" in port_map:
@@ -1120,12 +1142,37 @@ def print_neat_setup_summary(config: NeatRunConfig) -> None:
             "   Note: Edgematic Studio's device terminal is unavailable here — the browser connects "
             f"straight to a sidecar on container ports {EDGEMATIC_STUDIO_TERMINAL_PORT_RANGE}, which are not published."
         )
-    if display_host == "localhost":
+    if config.code_server_without_password:
+        print("   Note: Editor URLs are local to this host; use the authenticated gateway for remote editor access. Other service URLs use the shown host address.")
+    elif display_host == "localhost":
         print("   Note: Use localhost for local access, or replace it with this machine's external IP/DNS name for remote access.")
     else:
         print("   Note: Use the shown host IP for remote access, or replace it with localhost/127.0.0.1 for local access.")
     opened = _open_code_ui_if_browser_available(code_url)
     _print_code_ui_panel(config, code_url, opened)
+    if show_edgematic_studio and config.edgematic_studio_installed:
+        _print_edgematic_studio_panel(studio_url)
+
+
+def _print_edgematic_studio_panel(studio_url: str) -> None:
+    # Nothing restarts Studio with the container, so say how to bring it back.
+    console.print(
+        Panel(
+            "\n".join(
+                [
+                    "[bold]Open this URL in your browser.[/bold]",
+                    f"[cyan]{studio_url}[/cyan]",
+                    "",
+                    "Sign in to your coding agent from Studio's settings before the first chat.",
+                    "If the page does not load, for example after a container restart,",
+                    "run activate-edgematic-studio in the SDK container shell.",
+                ]
+            ),
+            title="Edgematic Studio",
+            border_style="cyan",
+            expand=False,
+        )
+    )
 
 
 def is_docker_port_collision_error(error_text: str) -> bool:

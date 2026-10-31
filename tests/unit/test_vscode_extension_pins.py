@@ -328,6 +328,7 @@ def test_automatic_neat_and_requested_agents_apply_to_existing_sdk(all_extension
          patch("sima_cli.sdk.install.get_workspace", return_value="/tmp/workspace"), \
          patch("sima_cli.sdk.install._setup_devkit_share", return_value=None), \
          patch("sima_cli.sdk.install._setup_sdk_extensions", return_value="/tmp/extensions"), \
+         patch("sima_cli.sdk.install._link_agent_sessions"), \
          patch("sima_cli.sdk.install.confirm_to_remove_exiting_container", return_value="existing"), \
          patch("sima_cli.sdk.install.is_container_running", return_value=True), \
          patch("sima_cli.sdk.install.check_os", return_value="linux"), \

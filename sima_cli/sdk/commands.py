@@ -337,6 +337,12 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Configure DevKit integration for setup. Use '--devkit <IP>'.",
 )
 @click.option(
+    "--code-server-without-password",
+    is_flag=True,
+    envvar="CODE_SERVER_WITHOUT_PASSWORD",
+    help="Disable code-server password authentication and bind editor ports to 127.0.0.1 for an authenticated gateway. Requires container recreation.",
+)
+@click.option(
     "--no-insight",
     is_flag=True,
     help="Start Neat SDK without Insight UI/video/WebRTC port mappings.",
@@ -365,7 +371,14 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     "--studio",
     "edgematic_studio",
     is_flag=True,
-    help="Install the Edgematic Studio extension and publish its port. Off by default.",
+    help="Install the Edgematic Studio extension and publish its port. This is the default; the option is kept for compatibility.",
+)
+@click.option(
+    "--no-edgematic-studio",
+    "--no-studio",
+    "no_edgematic_studio",
+    is_flag=True,
+    help="Skip the Edgematic Studio extension and do not publish its port.",
 )
 @click.option(
     "--edgematic-studio-port",
@@ -414,10 +427,12 @@ def setup(
     yes,
     noninteractive,
     devkit,
+    code_server_without_password,
     no_insight,
     insight_video_channels,
     no_model_sdk,
     edgematic_studio,
+    no_edgematic_studio,
     edgematic_studio_port,
     minimal,
     workspace,
@@ -427,11 +442,25 @@ def setup(
     image_selectors,
     all_extensions,
 ):
-    """Initialize SDK environment and select components to start."""
+    """Initialize SDK environment and select components to start.
+
+    Set CODE_SERVER_WITHOUT_PASSWORD=1 or pass --code-server-without-password
+    for code-server behind an authenticated gateway with trusted HTTPS.
+    Passwordless HTTP and HTTPS editor ports bind to 127.0.0.1 only; the gateway
+    must reach them through the Docker host loopback interface.
+    The option only applies when code-server is detected in the SDK image;
+    OpenVSCode authentication remains unchanged. Existing code-server containers
+    must be recreated. Keep password authentication for direct remote HTTPS
+    access to retain the login page certificate-help flow.
+    """
     if no_container_registry and container_registry_port is not None:
         raise click.UsageError(
             "--no-container-registry cannot be used with --container-registry-port."
         )
+    if edgematic_studio and no_edgematic_studio:
+        raise click.UsageError("--edgematic-studio cannot be used with --no-edgematic-studio.")
+    if edgematic_studio_port and no_edgematic_studio:
+        raise click.UsageError("--edgematic-studio-port cannot be used with --no-edgematic-studio.")
     devkit_ip = _resolve_devkit_ip(devkit)
     devkit_user, devkit_password = _resolve_devkit_credentials(
         devkit_ip,
@@ -444,10 +473,12 @@ def setup(
             devkit_ip=devkit_ip,
             devkit_user=devkit_user,
             devkit_password=devkit_password,
+            code_server_without_password=code_server_without_password,
             no_insight=no_insight,
             insight_video_channels=insight_video_channels,
             no_model_sdk=no_model_sdk,
             edgematic_studio=edgematic_studio,
+            no_edgematic_studio=no_edgematic_studio,
             edgematic_studio_port=edgematic_studio_port,
             minimal=minimal,
             workspace=workspace,

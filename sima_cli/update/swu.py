@@ -14,7 +14,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 
 from sima_cli.download import download_file_from_url
 from sima_cli.update.ab_state import inspect_target
-from sima_cli.update.overlay import inspect_overlay
+from sima_cli.update.overlay import inspect_overlay, package_identity_label
 from sima_cli.update.swu_artifacts import (
     release_tuple, resolve_bundle, bundle_size, is_mirror_source, fallback_for_bundle,
 )
@@ -85,8 +85,10 @@ nohup sh -c 'sleep 3; /sbin/reboot' >/dev/null 2>&1 </dev/null &
 
 
 def _source_build_id(source):
-    """Return the numeric platform build carried by an artifact source, if known."""
+    """Return the official release or numeric platform build of an artifact source."""
     version = getattr(source, 'version', '')
+    if re.fullmatch(r'\d+\.\d+\.\d+', version or ''):
+        return version
     match = re.search(r'(?:^|[_-])B(\d+)(?:$|[_-])', version or '')
     return match.group(1) if match else None
 
@@ -109,10 +111,10 @@ def _overlay_reset_reason(report, source):
     if target_build == metadata_build:
         return None
     if target_build:
-        return ('The selected image is B%s, but the overlay package metadata is B%s.' %
-                (target_build, metadata_build))
+        return ('The selected image is %s, but the overlay package metadata is %s.' %
+                (package_identity_label(target_build), package_identity_label(metadata_build)))
     return ('The selected image build could not be identified, while the overlay contains '
-            'package metadata for B%s.' % metadata_build)
+            'package metadata for %s.' % package_identity_label(metadata_build))
 
 
 def _print_overlay_reset_panel(reason):
@@ -166,7 +168,7 @@ def preserve_overlay_info(target, report, state, source):
     image_id = str(report.get('package_builds', {}).get('image', 'unknown'))
     metadata_id = str(report.get('package_builds', {}).get('metadata', 'unknown'))
     timestamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-    backup_id = (f'{timestamp}-image-B{image_id}-metadata-B{metadata_id}-'
+    backup_id = (f'{timestamp}-image-{package_identity_label(image_id)}-metadata-{package_identity_label(metadata_id)}-'
                  f'{time.time_ns()}')
     if not re.fullmatch(r'[A-Za-z0-9._-]+', backup_id):
         raise click.ClickException('Cannot construct a safe overlay backup identifier.')
@@ -184,8 +186,9 @@ def preserve_overlay_info(target, report, state, source):
     manifest = {
         'schema': 1,
         'created_utc': timestamp,
-        'purpose': 'sima-cli clean-overlay update inventory',
-        'selected_bundle': source_text,
+        'purpose': ('sima-cli clean-overlay update inventory' if source_text
+                    else 'sima-cli standalone overlay reset inventory'),
+        'selected_bundle': source_text or None,
         'boot_state': {key: value for key, value in state.items() if key != 'raw'},
         'overlay': report,
         'contains_file_contents': False,
@@ -423,7 +426,7 @@ def _reboot_and_verify(target, before, ip, passwd, expected=None):
                 if state.get('running slot') != before.get('running slot') and state.get('running slot') in ('A', 'B'):
                     if state.get('upgrade_available', '').lower() == 'no' and state.get('rollback') == 'normal':
                         actual = state.get('active version', '').strip().strip('\"\'')
-                        normalized_expected = re.sub(r'^(\d+\.\d+\.\d+)_(?:daily|custom)_', r'\1_', expected or '')
+                        normalized_expected = re.sub(r'^(\d+\.\d+\.\d+)_(?:daily|custom|pre-release|release)_', r'\1_', expected or '')
                         if expected and actual != normalized_expected:
                             raise click.ClickException(f'Updated slot reports {actual or "unknown"}, expected {expected}. Inspect before retrying.')
                         inspect_target(peer)
@@ -486,6 +489,7 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
     phase = "checking the target"
     try:
         click.echo('Checking target and A/B state...')
+        target.sync_clock(dryrun=dryrun)
         key, key_directory = prepare_key(target, dryrun=dryrun, signing_cert=signing_cert, internal=internal)
         before = preflight(target, key)
         overlay_report = inspect_overlay(target, state=before, details=verbose)
@@ -648,9 +652,9 @@ def update_system(requested, board, ip=None, passwd='edgeai', internal=False,
 def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_confirm=False,
                   dryrun=False, reboot=False, inspect=False,
                   force=False, troot_only=False, flavor='auto', local_elxr=False,
-                  signing_cert=None, verbose=False, swap=False):
+                  signing_cert=None, verbose=False, swap=False, reset_overlay=False):
     """Return False for legacy platforms; handle all eLxr 3.0+ operations here."""
-    if not (ip or local_elxr or inspect or swap):
+    if not (ip or local_elxr or inspect or swap or reset_overlay):
         if signing_cert is not None:
             raise click.ClickException('--signing-cert requires a local eLxr 3.0+ DevKit or --ip.')
         return False
@@ -664,6 +668,13 @@ def handle_update(requested, ip=None, passwd='edgeai', internal=False, auto_conf
     board, fwtype = board.strip().strip('\"\''), fwtype.strip().strip('\"\'').lower()
     running = release_tuple(version)
     requested_release = release_tuple(requested)
+    if reset_overlay:
+        if fwtype != 'elxr' or not running or running < (3, 0, 0) or board != 'modalix':
+            raise click.ClickException('Overlay reset requires a reachable Modalix eLxr 3.0+ board.')
+        from sima_cli.update.reset_overlay import reset_system_overlay
+        reset_system_overlay(ip=ip, passwd=passwd, auto_confirm=auto_confirm,
+                             dryrun=dryrun, reboot=reboot, verbose=verbose)
+        return True
     if swap:
         if fwtype != 'elxr' or not running or running < (3, 0, 0) or board != 'modalix':
             raise click.ClickException('Slot swapping requires a reachable Modalix eLxr 3.0+ board.')

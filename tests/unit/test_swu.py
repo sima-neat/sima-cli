@@ -169,11 +169,30 @@ def test_no_matching_swu_is_failure():
             swu_artifacts.resolve_bundle('3.0', 'modalix', True)
 
 
-def test_external_release_lookup_is_explicitly_deferred():
+@pytest.mark.parametrize('requested', ['3.0', '3.0.0'])
+def test_external_release_uses_portal_swu_path(requested):
     with patch.object(swu_artifacts, '_portal_session') as session:
-        with pytest.raises(click.ClickException, match='not published'):
-            swu_artifacts.resolve_bundle('3.0', 'modalix')
-        session.assert_not_called()
+        source = swu_artifacts.resolve_bundle(requested, 'modalix')
+    assert source == ('https://docs.sima.ai/pkg_downloads/SDK3.0.0/devkit/modalix/elxr/'
+                      'elxr-palette-modalix-3.0.0-agate-arm64.swu')
+    assert source.version == '3.0.0'
+    session.assert_not_called()
+
+
+@pytest.mark.parametrize('requested', [None, 'latest', '3.0.0_daily_B11', '../3.0.0'])
+def test_external_release_requires_explicit_release(requested):
+    with pytest.raises(click.ClickException, match='Specify an official release'):
+        swu_artifacts.resolve_bundle(requested, 'modalix')
+
+
+def test_external_release_size_uses_portal_login():
+    with patch.object(swu_artifacts, '_portal_session') as login:
+        response = login.return_value.head.return_value
+        response.headers = {'Content-Length': '1234'}
+        source = swu_artifacts.resolve_bundle('3.0.0', 'modalix')
+        assert swu_artifacts.bundle_size(source) == 1234
+    login.assert_called_once_with()
+    login.return_value.head.assert_called_once_with(source, headers={}, timeout=30)
 
 
 def test_installer_uses_signed_full_collection_and_progress_without_reboot():
@@ -585,13 +604,14 @@ def test_factory_mode_does_not_override_a_pending_flag():
             swu.preflight(MagicMock(), '/tmp/test-signing-cert.pem')
 
 
-def test_artifactory_daily_prefix_is_not_part_of_on_device_build_identity():
+@pytest.mark.parametrize('family,branch', [('daily', 'develop'), ('custom', 'develop'), ('pre-release', 'master'), ('release', 'master')])
+def test_artifactory_daily_prefix_is_not_part_of_on_device_build_identity(family, branch):
     state = parse_state(STATE.replace('active slot : A', 'active slot : B').replace('running slot: A', 'running slot: B'))
-    state['active version'] = '3.0.0_develop_B1211'
+    state['active version'] = f'3.0.0_{branch}_B1211'
     target, peer = MagicMock(), MagicMock()
     with patch.object(swu, 'Target', return_value=peer), patch.object(swu, 'inspect_target', return_value=state), \
             patch.object(swu.time, 'sleep'), patch.object(swu.time, 'monotonic', side_effect=[0, 1]):
-        swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_daily_develop_B1211')
+        swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected=f'3.0.0_{family}_{branch}_B1211')
 
 
 @pytest.mark.parametrize('local', [False, True])
@@ -949,3 +969,31 @@ def test_device_reboot_requires_verified_pending_activation(tmp_path, running, l
                             capture_output=True, text=True, timeout=5)
     assert (result.returncode == 0) is (outcome == 'pending'), result.stdout + result.stderr
     assert scheduled.exists() is (outcome == 'pending')
+
+
+def test_release_reboot_verification_rejects_a_different_build():
+    state = parse_state(STATE.replace('active slot : A', 'active slot : B').replace('running slot: A', 'running slot: B'))
+    state['active version'] = '3.0.0_master_B2478'
+    target, peer = MagicMock(), MagicMock()
+    with patch.object(swu, 'Target', return_value=peer), patch.object(swu, 'inspect_target', return_value=state), \
+            patch.object(swu.time, 'sleep'), patch.object(swu.time, 'monotonic', side_effect=[0, 1]):
+        with pytest.raises(click.ClickException, match='expected 3.0.0_release_master_B2479'):
+            swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.0_release_master_B2479')
+
+
+@pytest.mark.parametrize('metadata,version,expected', [
+    ('3.0.0', '3.0.0', None),
+    ('3.0.0', '3.0.1', 'selected image is 3.0.1'),
+    ('2372', '3.0.0', 'overlay package metadata is B2372'),
+    ('3.0.0', '3.0.0_master_B2501', 'selected image is B2501'),
+])
+def test_official_release_overlay_identity(metadata, version, expected):
+    from sima_cli.update.swu_artifacts import BundleSource
+    report = {'package_builds': {'image': '3.0.0', 'metadata': metadata},
+              'entries': [{'path': '/var/lib/dpkg/status'}]}
+    reason = swu._overlay_reset_reason(report, BundleSource('https://example.test/image.swu', version))
+    if expected is None:
+        assert reason is None
+    else:
+        assert expected in reason
+        assert 'B3.0.' not in reason

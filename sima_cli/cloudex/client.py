@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -17,6 +18,8 @@ import requests
 
 DEFAULT_ROOT = Path.home() / ".sima-cli" / "cloudex"
 FORWARDER_NAME = "kerrigan-p2p-forwarder"
+MACOS_TUNNEL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+MACOS_WIREGUARD_INSTALL = "Install WireGuard CLI support with: brew install wireguard-tools"
 CONNECTION_SETUP_TIMEOUT_SECONDS = 60
 DIAGNOSTIC_LOG_LINES = 50
 SAFE_FORWARDER_STAGES = {
@@ -393,6 +396,9 @@ def _forwarder_failure(log_path):
         "start wireguard-go": "the WireGuard interface could not start",
         "invalid session config": "the native forwarder rejected the session configuration",
     }
+    if sys.platform == "darwin":
+        for needle in ("wireguard is unavailable", "start wireguard-go"):
+            mappings[needle] += ". " + MACOS_WIREGUARD_INSTALL
     for needle, message in mappings.items():
         if needle in detail:
             return message + suffix
@@ -552,6 +558,50 @@ def _reconcile_existing_connection(profile, store, progress):
     return None
 
 
+def _forwarder_sudo_prefix(progress=None):
+    """Install missing macOS tools as the user, then expose them through sudo."""
+    prefix = ["sudo", "-n", "--"]
+    if sys.platform != "darwin":
+        return prefix
+    missing = [name for name in ("wg", "wireguard-go")
+               if shutil.which(name, path=MACOS_TUNNEL_PATH) is None]
+    if missing:
+        brew = shutil.which("brew", path=MACOS_TUNNEL_PATH)
+        if brew is None:
+            raise CloudExError(
+                "CloudEx requires {} on macOS. Install Homebrew, then retry CloudEx; "
+                "missing WireGuard dependencies will be installed automatically.".format(
+                    ", ".join(missing)
+                )
+            )
+        packages = ["wireguard-tools" if name == "wg" else name for name in missing]
+        if progress:
+            progress.update("Installing missing WireGuard dependencies with Homebrew")
+        environment = dict(os.environ, PATH=MACOS_TUNNEL_PATH)
+        try:
+            result = subprocess.run(
+                [brew, "install", *packages],
+                env=environment, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CloudExError(
+                "Could not install WireGuard dependencies with Homebrew. " + MACOS_WIREGUARD_INSTALL
+            ) from exc
+        if result.returncode:
+            detail = (result.stderr or result.stdout or "Homebrew failed").strip()
+            raise CloudExError("WireGuard dependency installation failed: " + detail[-1024:])
+        missing = [name for name in ("wg", "wireguard-go")
+                   if shutil.which(name, path=MACOS_TUNNEL_PATH) is None]
+        if missing:
+            raise CloudExError(
+                "Homebrew completed but CloudEx still cannot find: {}. {}".format(
+                    ", ".join(missing), MACOS_WIREGUARD_INSTALL
+                )
+            )
+    return prefix + ["/usr/bin/env", "PATH=" + MACOS_TUNNEL_PATH]
+
+
 def connect(profile, store, progress, attempts=3, transport="auto"):
     """Create a session and return its durable local record."""
     from .installer import ensure_forwarder
@@ -561,6 +611,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
     existing = _reconcile_existing_connection(profile, store, progress)
     if existing:
         return existing
+    sudo_prefix = _forwarder_sudo_prefix(progress=progress)
     forwarder = ensure_forwarder(progress=progress)
     choices = (["p2p"] * attempts + ["routed"] if transport == "auto"
                else ["routed"] if transport == "turn" else ["p2p"] * attempts)
@@ -610,8 +661,8 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             config_path.chmod(0o600)
             with log_path.open("x", encoding="utf-8") as log:
                 process = subprocess.Popen(
-                    [
-                        "sudo", "-n", "--", str(forwarder), "session", "--role", "user",
+                    sudo_prefix + [
+                        str(forwarder), "session", "--role", "user",
                         "--config", str(config_path), "--report", str(report_path),
                     ],
                     stdin=subprocess.DEVNULL,

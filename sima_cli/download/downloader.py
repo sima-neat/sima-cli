@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import hashlib
 import re
@@ -12,6 +13,40 @@ from typing import List
 from sima_cli.utils.config import get_auth_token
 from sima_cli.auth.login import login
 from sima_cli.install.github_assets import download_github_asset
+
+# Separate connect and read limits; a cold CDN request can exceed ten seconds.
+_DOWNLOAD_TIMEOUT = (10, 60)
+_DOWNLOAD_ATTEMPTS = 3
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+def _request_download(request_fn, url, **kwargs):
+    """Retry transient failures before response headers, never replay a body."""
+    for attempt in range(_DOWNLOAD_ATTEMPTS):
+        response = None
+        try:
+            response = request_fn(url, timeout=_DOWNLOAD_TIMEOUT, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.SSLError:
+            raise
+        except requests.HTTPError:
+            if response is None or response.status_code not in _RETRYABLE_STATUS_CODES:
+                if response is not None:
+                    response.close()
+                raise
+            response.close()
+            if attempt == _DOWNLOAD_ATTEMPTS - 1:
+                raise
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt == _DOWNLOAD_ATTEMPTS - 1:
+                raise
+        delay = 2 ** attempt
+        # Do not print URLs: authenticated downloads can include credentials.
+        print(f"⚠️ Transient download request failure; retrying in {delay}s "
+              f"(attempt {attempt + 2}/{_DOWNLOAD_ATTEMPTS}).")
+        time.sleep(delay)
+
 
 def _list_directory_files(url: str, internal: bool = False) -> List[str]:
     """
@@ -110,7 +145,7 @@ def download_file_from_url(url: str, dest_folder: str = ".", internal: bool = Fa
             head_fn = session.head            
 
         # Only resume a partial when a strong validator identifies its bytes.
-        head = head_fn(url, headers=headers, timeout=10, allow_redirects=True)
+        head = _request_download(head_fn, url, headers=headers, allow_redirects=True)
         try:
             head.raise_for_status()
             raw_size = head.headers.get('content-length')
@@ -148,7 +183,7 @@ def download_file_from_url(url: str, dest_folder: str = ".", internal: bool = Fa
             headers['Range'] = f'bytes={existing_size}-'
             headers['If-Range'] = etag
 
-        with request_fn(url, stream=True, headers=headers, timeout=30) as r:
+        with _request_download(request_fn, url, stream=True, headers=headers) as r:
             r.raise_for_status()
             if r.headers.get('Content-Encoding', 'identity').lower() != 'identity':
                 raise ValueError("Server ignored identity content encoding")

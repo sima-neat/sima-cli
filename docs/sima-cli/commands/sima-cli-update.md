@@ -21,12 +21,13 @@ sima-cli update [OPTIONS] [VERSION_OR_URL]
 | `--flavor` | Firmware flavor: 'full' image supports NVMe and GUI on Modalix DevKit. This option is deprecated for 2.0 and above (default: auto) |
 | `-f, --force` | If the internal mirror is unreachable, fall back to the external pre-release mirror (eLxr only). eLxr 3.0+ still verifies signed full-system bundles. On eLxr 2.1, this disables repository signature verification and, without --internal, selects the mirror directly. |
 | `-t, --troot_only` | Only update tRoot and not the root file system, compatible with Yocto system only, used for Yocto to eLxr conversion. |
-| `--dryrun` | For eLxr, preview an update or slot swap without installing, switching slots, or rebooting. |
+| `--dryrun` | For eLxr, preview an update, slot swap, or overlay reset without making changes. |
 | `--inspect` | Show eLxr 3.0+ A/B slots and overlay customizations without updating (local or --ip). |
+| `--reset-overlay` | Discard local overlay software and settings without updating firmware; reboot to use the clean system (eLxr 3.0+). |
 | `--swap` | Select the available inactive eLxr 3.0+ slot for next boot; use --reboot to restart now. |
 | `--verbose` | Show detailed overlay file categories during eLxr 3.0+ inspection or update. |
 | `--signing-cert` | SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the certificate for the selected channel when configured (eLxr 3.0+). |
-| `--reboot` | Reboot after successful eLxr 3.0+ installation or slot selection; verify remote boot health. |
+| `--reboot` | Reboot after successful eLxr 3.0+ installation, slot selection, or overlay reset. |
 
 ## Arguments
 
@@ -49,6 +50,11 @@ Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
   eLxr 3.0+ uses signed full-system SWU bundles. Use --inspect for A/B state,
   --ip for remote updates, and --reboot to reboot after installation.
 
+  Use --reset-overlay to discard local software and settings without updating
+  firmware or switching slots. Save needed files first; the saved inventory
+  contains metadata only. Reboot promptly, or add --reboot. Use --dryrun to
+  preview.
+
   Use --swap to select the valid inactive slot without downloading an update.
   The current and target versions are shown before confirmation; --yes skips
   confirmation. Reboot separately to apply, or add --reboot to restart now.
@@ -60,7 +66,8 @@ Usage: sima-cli update [OPTIONS] [VERSION_OR_URL]
 
   The verification certificate is downloaded for the selected channel when
   configured; use --signing-cert URL_OR_FILE for an image signed with your own
-  certificate. Developer-portal version lookup for 3.0 is not available yet.
+  certificate. For official eLxr 3.0+ releases, specify -v 3.0.0 (or -v 3.0)
+  to download the SWU from docs.sima.ai using your developer-portal login.
 
   Internal mode warns that pre-release software may be unstable and is used at
   your own risk. On eLxr 3.0+, unavailable Artifactory access falls back to
@@ -187,12 +194,14 @@ Options:
   -t, --troot_only               Only update tRoot and not the root file
                                  system, compatible with Yocto system only,
                                  used for Yocto to eLxr conversion.
-  --dryrun                       For eLxr, preview an update or slot swap
-                                 without installing, switching slots, or
-                                 rebooting.
+  --dryrun                       For eLxr, preview an update, slot swap, or
+                                 overlay reset without making changes.
   --inspect                      Show eLxr 3.0+ A/B slots and overlay
                                  customizations without updating (local or
                                  --ip).
+  --reset-overlay                Discard local overlay software and settings
+                                 without updating firmware; reboot to use the
+                                 clean system (eLxr 3.0+).
   --swap                         Select the available inactive eLxr 3.0+ slot
                                  for next boot; use --reboot to restart now.
   --verbose                      Show detailed overlay file categories during
@@ -202,7 +211,7 @@ Options:
                                  certificate for the selected channel when
                                  configured (eLxr 3.0+).
   --reboot                       Reboot after successful eLxr 3.0+
-                                 installation or slot selection; verify remote
-                                 boot health.
+                                 installation, slot selection, or overlay
+                                 reset.
   --help                         Show this message and exit.
 ```

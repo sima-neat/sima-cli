@@ -13,6 +13,7 @@ from rich.console import Console
 from sima_cli.cli import main
 from sima_cli.models import rendering
 from sima_cli.models.client import (
+    PRODUCTION_BASE_URL,
     STAGING_BASE_URL,
     ModelRegistryError,
     _download_lock,
@@ -56,6 +57,49 @@ def _package_summary(run):
         "name": "package", "artifact_type": "model-package", "object_status": "available",
         "size_bytes": 123, "sha256": "c" * 64, "media_type": "application/gzip",
     }]}
+
+
+FINGERPRINT = "f" * 64
+PYNEAT = "0.6.0+feat-benchmark-sentinel-telemetry.82d758ef18ee"
+# Trimmed from the Models repository's artifact-browser/fixtures/model-report-*.json.
+PERFORMANCE_REPORT = {
+    "schema": "sima.model-report",
+    "schema_version": 1,
+    "stage": "performance",
+    "runtime": {"pyneat": PYNEAT, "build": {}},
+    "workload": "Model.benchmark with default options",
+    "metrics": {
+        "throughput_fps": 886.925587921827,
+        "latency_avg_ms": 2.4093143350000013,
+        "avg_power_watts": 11.316666666666666,
+        "energy_per_inference_joules": 0.01276,
+    },
+    "telemetry": {"status": "ok"},
+    "components": {"model": {"execution_plan": {}, "layer_stats": []}},
+}
+ACCURACY_REPORT = {
+    "schema": "sima.model-report",
+    "schema_version": 1,
+    "stage": "accuracy",
+    "runtime": {"pyneat": PYNEAT, "build": {}},
+    "datasets": {
+        "imagenet-2012-mini": {
+            "split": "val",
+            "evaluated_samples": 1000,
+            "available_samples": 1000,
+            "metrics": {"top5_accuracy": 0.9318, "top1_accuracy": 0.7652},
+            "details": {"inference_seconds": 41.3},
+        }
+    },
+}
+
+
+def _test_result(suite, summary, name="model", status="passed"):
+    """A /v1/runs/{id}/test-results entry as the registry returns it."""
+    return {
+        "id": f"{suite}-{name}", "suite": suite, "name": name, "version": "1", "status": status,
+        "duration_ms": None, "attempt": 1, "failure_classification": None, "summary": summary,
+    }
 
 
 class FakeResponse:
@@ -157,13 +201,12 @@ def test_top_level_models_json_keeps_root_diagnostics_on_stderr(arguments):
     assert "Environment:" in result.stderr
 
 
-def test_resolve_base_url_requires_configured_production(monkeypatch):
+def test_resolve_base_url_defaults_to_production(monkeypatch):
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_BASE_URL", raising=False)
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_PRODUCTION_URL", raising=False)
 
     assert resolve_base_url(staging=True) == STAGING_BASE_URL
-    with pytest.raises(ModelRegistryError, match="production Model Registry endpoint"):
-        resolve_base_url()
+    assert resolve_base_url() == PRODUCTION_BASE_URL
 
 
 def test_base_url_override_takes_precedence(monkeypatch):
@@ -249,9 +292,10 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
                         "description": "Grouped object detector.",
                         "categories": {"tasks": ["object_detection"]},
                         "builds": [
-                            {"component_id": "backbone", "run_id": "backbone"},
-                            {"component_id": "transformer", "run_id": "transformer"},
+                            {"build_profile_id": "modalix_int8_bf16", "component_id": "backbone", "run_id": "backbone"},
+                            {"build_profile_id": "modalix_int8_bf16", "component_id": "transformer", "run_id": "transformer"},
                         ],
+                        "benchmark_fingerprints": {"modalix_int8_bf16": {"performance": FINGERPRINT}},
                         "packages": [
                             {
                                 "run_id": "package-run",
@@ -303,6 +347,7 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
         "backbone": "backbone",
         "transformer": "transformer",
     }
+    assert package["benchmark_fingerprints"] == {"performance": FINGERPRINT}
     assert find_latest_run(models, "rf_detr_small", "modalix_int8_bf16") == package
     assert session.calls[0][1]["params"] == {"git_ref": "refs/heads/develop"}
     assert len(session.calls) == 2
@@ -317,7 +362,7 @@ def test_client_resolves_promoted_grouped_model_package_from_catalog():
 def test_client_uses_exact_selected_root(selection_field, branch, failure):
     run = _run("selected-run", model_id="qwen3_5_0_8b", variant_id="w4a16")
     run.update(run_type="model_package", git_ref="refs/heads/feature/model")
-    run["metadata"].update(package_id="default")
+    run["metadata"].update(package_id="default", component_run_ids={"model": "candidate-build"})
     artifact = {
         "name": "package", "artifact_type": "model-package", "object_status": "available",
         "size_bytes": 100, "sha256": "c" * 64, "media_type": "application/json",
@@ -335,6 +380,8 @@ def test_client_uses_exact_selected_root(selection_field, branch, failure):
     catalog = {"catalog": {"document": {"models": [{
         "id": "qwen3_5_0_8b", "display_name": "Qwen3.5-0.8B", "build_on_demand": True,
         "packages": [{"run_id": "newer-unapproved", "build_profile_id": "w4a16"}],
+        "builds": [{"build_profile_id": "w4a16", "component_id": "model", "run_id": "catalog-build"}],
+        "benchmark_fingerprints": {"w4a16": {"performance": FINGERPRINT}},
         selection_field: {"w4a16": {
             "deployment_id": "11111111-1111-4111-8111-111111111111", "manifest_digest": "b" * 64,
             "artifacts": [{
@@ -362,6 +409,8 @@ def test_client_uses_exact_selected_root(selection_field, branch, failure):
         assert selected["git_ref"] == "refs/heads/feature/model"
         assert selected["size_bytes"] == 10000
         assert selected["sha256"] == "c" * 64
+        # The fingerprint measured the catalog's build, not this deployment's.
+        assert selected["benchmark_fingerprints"] == {}
     assert len(session.calls) == 2
     assert session.calls[0][1]["params"] == {"git_ref": f"refs/heads/{branch}"}
     assert session.calls[1][0].endswith("/v1/runs/selected-run")
@@ -481,20 +530,36 @@ def test_client_rejects_catalog_without_models():
         client.catalog_models("develop")
 
 
-def test_client_treats_missing_benchmark_as_normal():
-    client = RegistryClient(
-        "https://registry.example",
-        session=FakeSession([FakeResponse(status_code=404, payload={"error": {}})]),
-    )
-    assert client.benchmark("run") is None
+def test_whole_model_result_without_fingerprint_makes_no_request():
+    session = FakeSession([])
+    assert RegistryClient("https://registry.example", session=session).whole_model_result("accuracy", None) is None
+    assert session.calls == []
 
 
-def test_client_treats_missing_accuracy_as_normal():
-    client = RegistryClient(
-        "https://registry.example",
-        session=FakeSession([FakeResponse(status_code=404, payload={"error": {}})]),
-    )
-    assert client.accuracy("run") is None
+def test_whole_model_result_treats_unmeasured_fingerprint_as_normal():
+    session = FakeSession([FakeResponse(status_code=404, payload={"error": {"code": "fingerprint_not_found"}})])
+    client = RegistryClient("https://registry.example", session=session)
+
+    assert client.whole_model_result("performance", FINGERPRINT) is None
+    assert session.calls[0][0] == "https://registry.example/v1/repositories/sima-neat/models/resolve"
+    assert session.calls[0][1]["params"] == {"run_type": "model_performance", "fingerprint": FINGERPRINT}
+
+
+def test_whole_model_result_returns_the_model_test_of_the_resolved_run():
+    model_result = _test_result("accuracy", ACCURACY_REPORT)
+    session = FakeSession([
+        FakeResponse(payload={"run": {"id": "accuracy-run", "run_type": "model_accuracy", "status": "completed"}}),
+        FakeResponse(payload={"run_id": "accuracy-run", "test_results": [
+            _test_result("accuracy", {"schema_version": 2}, name="coco_accuracy"),
+            model_result,
+            _test_result("performance", PERFORMANCE_REPORT),
+        ]}),
+    ])
+
+    result = RegistryClient("https://registry.example", session=session).whole_model_result("accuracy", FINGERPRINT)
+
+    assert result == model_result
+    assert session.calls[1][0] == "https://registry.example/v1/runs/accuracy-run/test-results"
 
 
 def test_select_model_artifact_requires_one_available_model_package():
@@ -611,162 +676,84 @@ def test_checksum_failure_removes_partial_file(tmp_path):
     assert list(tmp_path.iterdir()) == [tmp_path / f".{artifact['name']}.lock"]
 
 
-def test_model_card_handles_supported_and_unsupported_benchmarks():
-    detail = {
-        "summary": {
-            "run": _run(),
-            "artifacts": [],
-        },
+def _detail(benchmark=None, accuracy=None):
+    return {
+        "summary": {"run": _run(), "artifacts": []},
         "provenance": {
             "inputs": [{"metadata": {"model_card": "https://huggingface.co/example/model"}}],
             "parameters": {"parameters": {"compile_parameters": {"precision": "INT8"}}},
         },
         "tests": {"test_results": []},
         "metrics": {"measurements": []},
-        "benchmark": {
-            "result": {
-                "schema_version": 5,
-                "status": "passed",
-                "metrics": {
-                    "latency_avg_ms": {
-                        "status": "measured",
-                        "value": 3.5,
-                        "unit": "ms",
-                        "aggregation": "mean",
-                    }
-                },
-                "configuration": {"samples": 100},
-                "compatibility": {
-                    "actual_platform_version": "2.1.3",
-                    "actual_neat_version": "2.1.0",
-                },
-                "trials": [{"trial": 1}],
-                "environment": {
-                    "observations": {
-                        "start": {"temperatures_c": [{"celsius": 40.0}]},
-                        "end": {"temperatures_c": [{"celsius": 42.0}]},
-                    }
-                },
-            }
-        },
-        "accuracy": {
-            "result": {
-                "schema_version": 1,
-                "report_scope": "sampled_accuracy_smoke",
-                "dataset": {
-                    "id": "imagenet-2012",
-                    "variant": "mini",
-                    "split": "validation",
-                    "evaluated_samples": 500,
-                    "available_samples": 5000,
-                },
-                "evaluation": {"status": "provisional", "profile": "regular"},
-                "execution": {"samples_per_second": 5.669},
-                "metrics": {
-                    "candidate": {"top1_accuracy": 0.762, "top5_accuracy": 0.934},
-                    "reference": {"top1_accuracy": 0.798, "top5_accuracy": 0.95},
-                    "comparison": {
-                        "top1_delta": -0.036,
-                        "top5_delta": -0.016,
-                        "top1_agreement": 0.88,
-                    },
-                },
-            }
-        },
+        "benchmark": benchmark,
+        "accuracy": accuracy,
     }
 
-    card = model_card(detail)
+
+def test_model_card_reads_whole_model_reports():
+    card = model_card(_detail(
+        _test_result("performance", PERFORMANCE_REPORT, status="failed"),
+        _test_result("accuracy", ACCURACY_REPORT),
+    ))
+
     assert card["compiler"]["precision"] == "INT8"
     assert card["model_card"] == "https://huggingface.co/example/model"
     assert card["github_model_folder"] == (
         f"https://github.com/sima-neat/models/tree/{'a' * 40}/models/resnet_50"
     )
-    assert card["benchmark"]["measurements"]["latency_avg_ms"]["value"] == 3.5
-    assert card["benchmark"]["temperature_c"]["maximum"] == 42.0
-    assert card["accuracy"]["metrics"]["top1_accuracy"]["candidate"] == 0.762
-    assert card["accuracy"]["evaluated_samples"] == 500
+    assert card["benchmark"]["status"] == "failed"
+    assert card["benchmark"]["pyneat_version"] == PYNEAT
+    assert list(card["benchmark"]["measurements"]) == [
+        "avg_power_watts", "energy_per_inference_joules", "latency_avg_ms", "throughput_fps",
+    ]
+    assert card["accuracy"]["status"] == "passed"
+    assert card["accuracy"]["datasets"] == [{
+        "id": "imagenet-2012-mini",
+        "split": "val",
+        "evaluated_samples": 1000,
+        "available_samples": 1000,
+        "metrics": {"top1_accuracy": 0.7652, "top5_accuracy": 0.9318},
+    }]
 
-    detail["benchmark"]["result"]["schema_version"] = 99
-    assert model_card(detail)["benchmark"]["status"] == "unsupported schema"
+
+@pytest.mark.parametrize("report", [
+    {**PERFORMANCE_REPORT, "schema_version": 2},
+    {**PERFORMANCE_REPORT, "schema": "sima.benchmark"},
+    {**PERFORMANCE_REPORT, "stage": "accuracy"},
+    {**PERFORMANCE_REPORT, "metrics": None},
+    None,
+])
+def test_model_card_rejects_unsupported_reports(report):
+    benchmark = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    assert benchmark["status"] == "unsupported format"
+    assert benchmark["measurements"] == {}
 
 
-def test_model_card_rendering_uses_panels_and_readable_metric_labels(monkeypatch):
+def test_model_card_reports_unmeasured_stages():
+    card = model_card(_detail())
+    assert card["benchmark"]["status"] == "not measured"
+    assert card["accuracy"] == {"status": "not measured", "pyneat_version": None, "datasets": []}
+
+
+def test_model_card_rendering_uses_panels_and_report_metrics(monkeypatch):
     output = StringIO()
     monkeypatch.setattr(
         rendering,
         "_console",
-        lambda: Console(file=output, width=80, color_system=None),
+        lambda: Console(file=output, width=100, color_system=None),
     )
-    card = {
-        "model_id": "yolo26_tiny_drone",
-        "variant_id": "modalix_int8_tessellation_mla",
-        "display_name": "yolo26_tiny_drone",
-        "description": None,
-        "model_card": "https://github.com/sima-neat/models/pull/27",
-        "branch": "develop",
-        "commit_sha": "a" * 40,
-        "github_model_folder": (
-            f"https://github.com/sima-neat/models/tree/{'a' * 40}/"
-            "models/yolo26_tiny_drone"
-        ),
-        "finished_at": "2026-08-30T12:00:00Z",
-        "compiler": {
-            "name": "sima-model-compiler",
-            "version": "2.1.3",
-            "target": "modalix",
-            "precision": "int8",
-        },
-        "categories": {
-            "model_type": "Vision",
-            "architecture": "YOLO26",
-            "paradigm": "CNN",
-            "tasks": ["Object Detection"],
-        },
-        "artifacts": [
-            {
-                "name": "mpk",
-                "artifact_type": "model-pack",
-                "size_bytes": 31_469_497,
-                "sha256": "c" * 64,
-            }
-        ],
-        "tests": [{"suite": "compile", "name": "mpk-validation", "status": "passed"}],
-        "accuracy": {
-            "status": "provisional",
-            "schema_version": 1,
-            "scope": "sampled_accuracy_smoke",
-            "profile": "regular",
-            "dataset": "imagenet-2012 / mini / validation",
-            "evaluated_samples": 500,
-            "available_samples": 5000,
-            "samples_per_second": 5.669,
-            "metrics": {
-                "top1_accuracy": {
-                    "candidate": 0.762,
-                    "reference": 0.798,
-                    "delta": -0.036,
-                },
-                "top5_accuracy": {
-                    "candidate": 0.934,
-                    "reference": 0.95,
-                    "delta": -0.016,
-                },
-                "top1_agreement": 0.88,
-            },
-        },
-        "benchmark": {
-            "status": "passed",
-            "schema_version": 3,
-            "samples": 100,
-            "trials": [{}, {}, {}],
-            "platform_version": "2.1.3",
-            "neat_version": "0.4.0",
-            "temperature_c": None,
-            "measurements": {
-                "latency_avg_ms": {"value": 26.416, "unit": "ms", "aggregation": "mean"}
-            },
-        },
-    }
+    card = model_card(_detail(
+        _test_result("performance", PERFORMANCE_REPORT),
+        _test_result("accuracy", ACCURACY_REPORT),
+    ))
+    card["artifacts"] = [
+        {
+            "name": "mpk",
+            "artifact_type": "model-pack",
+            "size_bytes": 31_469_497,
+            "sha256": "c" * 64,
+        }
+    ]
 
     render_model_card(card)
     rendered = output.getvalue()
@@ -774,14 +761,15 @@ def test_model_card_rendering_uses_panels_and_readable_metric_labels(monkeypatch
     assert "╭─ Model Card" in rendered
     assert "╭─ Artifacts" in rendered
     assert "30.0 MiB" in rendered
-    assert "Average latency" in rendered
-    assert "latency_avg_ms" not in rendered
-    assert "Accuracy" in rendered
-    assert "76.2%" in rendered
-    assert "-3.6%" in rendered
+    assert "throughput_fps" in rendered
+    assert "886.926" in rendered
+    assert "imagenet-2012-mini / val" in rendered
+    assert "1,000 / 1,000" in rendered
+    assert "76.52%" in rendered
+    assert "93.18%" in rendered
     assert "GitHub commit" not in rendered
     assert "Model folder" in rendered
-    assert "/models/yolo26_tiny_drone" in rendered
+    assert "/models/resnet_50" in rendered
 
 
 def test_branches_accepts_staging_flag_before_or_after_subcommand():
@@ -1002,9 +990,8 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
         "provenance": {},
         "tests": {"test_results": []},
         "metrics": {"measurements": []},
-        "benchmark": None,
-        "accuracy": None,
     }
+    fake_client.whole_model_result.return_value = None
     fake_client.taxonomy.return_value = None
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client), patch(
@@ -1019,12 +1006,13 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
     assert result.exit_code == 0, result.output
     assert "resnet_50" in result.output
     assert "Benchmark" in result.output
+    assert "not measured" in result.output
     assert "Package    Target    Size" not in result.output
     fake_client.detail.assert_called_once_with("run-1")
     fake_client.download.assert_not_called()
 
 
-def test_interactive_package_selection_loads_component_benchmark_and_accuracy():
+def test_interactive_package_selection_loads_whole_model_results_for_its_profile():
     package = _run(run_id="package-run", variant_id="modalix_int8")
     package["run_type"] = "model_package"
     package["metadata"].update(
@@ -1034,8 +1022,9 @@ def test_interactive_package_selection_loads_component_benchmark_and_accuracy():
             "component_run_ids": {"model": "compile-run"},
         }
     )
+    package["benchmark_fingerprints"] = {"performance": FINGERPRINT}
     compile_run = _run(run_id="compile-run", variant_id="modalix_int8")
-    fake_client = Mock()
+    fake_client = Mock(spec=RegistryClient)
     fake_client.catalog_models.return_value = [package]
     fake_client.run.return_value = {"run": package, "artifacts": []}
     fake_client.detail.return_value = {
@@ -1043,34 +1032,10 @@ def test_interactive_package_selection_loads_component_benchmark_and_accuracy():
         "provenance": {},
         "tests": {"test_results": []},
         "metrics": {"measurements": []},
-        "benchmark": {
-            "result": {
-                "schema_version": 5,
-                "status": "passed",
-                "metrics": {
-                    "latency_avg_ms": {
-                        "status": "measured",
-                        "value": 3.5,
-                        "unit": "ms",
-                        "aggregation": "mean",
-                    }
-                },
-            }
-        },
-        "accuracy": {
-            "result": {
-                "schema_version": 1,
-                "report_scope": "sampled_accuracy_smoke",
-                "dataset": {"id": "imagenet-2012", "evaluated_samples": 500},
-                "evaluation": {"status": "provisional", "profile": "regular"},
-                "metrics": {
-                    "candidate": {"top1_accuracy": 0.762},
-                    "reference": {"top1_accuracy": 0.798},
-                    "comparison": {"top1_delta": -0.036},
-                },
-            }
-        },
     }
+    fake_client.whole_model_result.side_effect = lambda stage, fingerprint: (
+        _test_result("performance", PERFORMANCE_REPORT) if fingerprint else None
+    )
     fake_client.taxonomy.return_value = None
 
     with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client), patch(
@@ -1083,23 +1048,30 @@ def test_interactive_package_selection_loads_component_benchmark_and_accuracy():
         )
 
     assert result.exit_code == 0, result.output
-    assert "Average latency" in result.output
-    assert "76.2%" in result.output
-    assert "-3.6%" in result.output
-    assert "500 / not available" in result.output
-    assert "500 / 0" not in result.output
+    assert "latency_avg_ms" in result.output
+    assert "not measured" in result.output
+    assert [call.args for call in fake_client.whole_model_result.call_args_list] == [
+        ("performance", FINGERPRINT),
+        ("accuracy", None),
+    ]
     fake_client.detail.assert_called_once_with("compile-run")
     fake_client.run.assert_called_once_with("package-run")
 
 
-def test_default_command_reports_unconfigured_production(monkeypatch):
+@pytest.mark.parametrize("command", ["branches", "list", "download"])
+def test_default_commands_use_production(monkeypatch, command):
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_BASE_URL", raising=False)
     monkeypatch.delenv("SIMA_MODELS_REGISTRY_PRODUCTION_URL", raising=False)
-
-    result = CliRunner().invoke(models_group, ["branches"])
-
-    assert result.exit_code == 1
-    assert "production Model Registry endpoint is not configured" in result.output
+    client = Mock()
+    client.branches.return_value = []
+    client.catalog_models.return_value = []
+    args = [command, "--json"]
+    if command == "download":
+        args += ["--id", "missing", "--variant", "int8"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client) as constructor:
+        result = CliRunner().invoke(models_group, args)
+    constructor.assert_called_once_with(PRODUCTION_BASE_URL)
+    assert result.exit_code == (1 if command == "download" else 0)
 
 
 def test_download_command_resolves_and_downloads_selected_model(tmp_path):
@@ -1246,3 +1218,91 @@ def test_archive_download_lock_preserves_active_partial(tmp_path):
             RegistryClient("https://registry.example", session=session).download("run", artifact, destination)
     assert partial.read_bytes() == b"active transfer"
     assert session.calls == []
+
+
+@pytest.mark.parametrize("staging", [False, True])
+def test_endpoint_override_precedence(monkeypatch, staging):
+    monkeypatch.setenv("SIMA_MODELS_REGISTRY_PRODUCTION_URL", "https://production.example/")
+    monkeypatch.setenv("SIMA_MODELS_REGISTRY_BASE_URL", "https://base.example/")
+    assert resolve_base_url(staging, "https://explicit.example/") == "https://explicit.example"
+    assert resolve_base_url(staging) == "https://base.example"
+    monkeypatch.delenv("SIMA_MODELS_REGISTRY_BASE_URL")
+    assert resolve_base_url(staging) == (STAGING_BASE_URL if staging else "https://production.example")
+
+
+@pytest.mark.parametrize("flag", ["--stg", "--staging"])
+@pytest.mark.parametrize("before", [True, False])
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("command", ["branches", "list", "download"])
+def test_cli_staging_and_conflicting_overrides(monkeypatch, flag, before, override, command):
+    monkeypatch.delenv("SIMA_MODELS_REGISTRY_BASE_URL", raising=False)
+    monkeypatch.setenv("SIMA_MODELS_REGISTRY_PRODUCTION_URL", "https://production.example")
+    if override:
+        monkeypatch.setenv("SIMA_MODELS_REGISTRY_BASE_URL", "https://base.example")
+    client = Mock()
+    client.branches.return_value = []
+    client.catalog_models.return_value = []
+    args = [flag, command] if before else [command, flag]
+    args += ["--json"]
+    if command == "download":
+        args += ["--id", "missing", "--variant", "int8"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client) as constructor:
+        result = CliRunner().invoke(models_group, args)
+    constructor.assert_called_once_with("https://base.example" if override else STAGING_BASE_URL)
+    assert result.exit_code == (1 if command == "download" else 0)
+
+
+@pytest.mark.parametrize("base_url", [PRODUCTION_BASE_URL, STAGING_BASE_URL])
+@pytest.mark.parametrize("status", [404, 403, 503])
+def test_catalog_errors_never_fall_back(base_url, status):
+    session = FakeSession([FakeResponse(status_code=status, payload={"error": {"message": "Unavailable"}})])
+    client = RegistryClient(base_url, session=session)
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, ["list", "--branch", "develop", "--json"])
+    assert result.exit_code == 1
+    assert base_url in result.output
+    assert str(status) in result.output
+    if status == 404:
+        assert "No published model catalog for branch 'develop'" in result.output
+    assert len(session.calls) == 1
+    assert session.calls[0][1]["params"] == {"git_ref": "refs/heads/develop"}
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_empty_published_catalog_is_clear(json_output):
+    session = FakeSession([FakeResponse(payload={"catalog": {"document": {"models": []}}})])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+    args = ["list", "--branch", "empty"] + (["--json"] if json_output else [])
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+    assert result.exit_code == 0
+    if json_output:
+        assert json.loads(result.output)["models"] == []
+    else:
+        assert "No completed model builds match branch 'empty'" in result.output
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize("base_url", [PRODUCTION_BASE_URL, STAGING_BASE_URL])
+@pytest.mark.parametrize("failure", [None, "size", "checksum"])
+def test_verified_download_on_both_endpoints(tmp_path, base_url, failure):
+    content = b"verified model bytes"
+    artifact = {
+        "name": "package", "size_bytes": len(content) + (failure == "size"),
+        "sha256": "0" * 64 if failure == "checksum" else hashlib.sha256(content).hexdigest(),
+    }
+    session = FakeSession([
+        FakeResponse(payload={"artifact": {"download_url": "https://download.example/model"}}),
+        FakeResponse(content=content),
+    ])
+    client = RegistryClient(base_url, session=session)
+    destination = tmp_path / "model.tar.gz"
+    if failure:
+        with pytest.raises(ModelRegistryError, match="size mismatch" if failure == "size" else "SHA-256 mismatch"):
+            client.download("run", artifact, destination)
+        assert not destination.exists()
+        assert not destination.with_name(".model.tar.gz.part").exists()
+    else:
+        assert client.download("run", artifact, destination) == destination
+        assert destination.read_bytes() == content
+    assert session.calls[0][0] == base_url + "/v1/runs/run/artifacts/package"

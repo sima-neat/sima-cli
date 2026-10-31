@@ -223,11 +223,21 @@ def run_remote_command(ssh, command: str, password: str = DEFAULT_PASSWORD,
             raise RuntimeError(f"Remote command failed with exit status {exit_code}: {display_command}")
 
 
-def init_ssh_session(ip: str, password: str = DEFAULT_PASSWORD):
+def init_ssh_session(ip: str, password: str = DEFAULT_PASSWORD, timeout: float = 10):
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-    ssh.connect(ip, username=DEFAULT_USER, password=password, timeout=10)
+    timer = threading.Timer(timeout, ssh.close)
+    timer.daemon = True
+    timer.start()
+    try:
+        ssh.connect(ip, username=DEFAULT_USER, password=password, timeout=timeout,
+                    banner_timeout=timeout, auth_timeout=timeout)
+    except BaseException:
+        ssh.close()
+        raise
+    finally:
+        timer.cancel()
     return ssh
 
 def reboot_remote_board(ip: str, passwd: str):
@@ -309,7 +319,8 @@ def copy_file_to_remote_board(ip: str, file_path: str, remote_dir: str, passwd: 
 
     sftp = None
     try:
-        ssh.connect(ip, username=DEFAULT_USER, password=passwd, timeout=10)
+        ssh.connect(ip, username=DEFAULT_USER, password=passwd, timeout=10,
+                    banner_timeout=10, auth_timeout=10)
         sftp = ssh.open_sftp()
 
         base_file_path = os.path.basename(file_path)

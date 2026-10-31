@@ -180,7 +180,7 @@ class InspectionAwareGroup(click.Group):
             _command_name_from_argv(['sima-cli'] + options) == 'bootimg'
             and any(arg in ('--netboot', '-n', '--autoflash', '-a') for arg in options)
         )
-        if _command_name_from_argv(['sima-cli'] + options) == 'update' and any(arg in ('--inspect', '--swap') for arg in options):
+        if _command_name_from_argv(['sima-cli'] + options) == 'update' and any(arg in ('--inspect', '--swap', '--reset-overlay') for arg in options):
             ctx.meta['update_inspect'] = True
         return super().parse_args(ctx, args)
 
@@ -363,15 +363,16 @@ def download(ctx, url, dest):
     "--dryrun",
     is_flag=True,
     default=False,
-    help="For eLxr, preview an update or slot swap without installing, switching slots, or rebooting."
+    help="For eLxr, preview an update, slot swap, or overlay reset without making changes."
 )
 @click.option("--inspect", "inspect_state", is_flag=True, help="Show eLxr 3.0+ A/B slots and overlay customizations without updating (local or --ip).")
+@click.option("--reset-overlay", is_flag=True, help="Discard local overlay software and settings without updating firmware; reboot to use the clean system (eLxr 3.0+).")
 @click.option("--swap", is_flag=True, help="Select the available inactive eLxr 3.0+ slot for next boot; use --reboot to restart now.")
 @click.option("--verbose", is_flag=True, help="Show detailed overlay file categories during eLxr 3.0+ inspection or update.")
 @click.option("--signing-cert", metavar="URL_OR_FILE", help="SWUpdate PEM verification certificate: HTTP(S) URL or local file. Defaults to the certificate for the selected channel when configured (eLxr 3.0+).")
-@click.option("--reboot", is_flag=True, help="Reboot after successful eLxr 3.0+ installation or slot selection; verify remote boot health.")
+@click.option("--reboot", is_flag=True, help="Reboot after successful eLxr 3.0+ installation, slot selection, or overlay reset.")
 @click.pass_context
-def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, verbose, reboot, signing_cert, swap):
+def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, troot_only, dryrun, inspect_state, verbose, reboot, signing_cert, swap, reset_overlay):
     """
     Update a SiMa DevKit, remote device, or Linux PCIe host.
 
@@ -383,6 +384,10 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
     eLxr 3.0+ uses signed full-system SWU bundles. Use --inspect for A/B
     state, --ip for remote updates, and --reboot to reboot after installation.
 
+    Use --reset-overlay to discard local software and settings without updating
+    firmware or switching slots. Save needed files first; the saved inventory
+    contains metadata only. Reboot promptly, or add --reboot. Use --dryrun to preview.
+
     Use --swap to select the valid inactive slot without downloading an update.
     The current and target versions are shown before confirmation; --yes skips
     confirmation. Reboot separately to apply, or add --reboot to restart now.
@@ -393,7 +398,8 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
 
     The verification certificate is downloaded for the selected channel when configured; use
     --signing-cert URL_OR_FILE for an image signed with your own certificate.
-    Developer-portal version lookup for 3.0 is not available yet.
+    For official eLxr 3.0+ releases, specify -v 3.0.0 (or -v 3.0) to
+    download the SWU from docs.sima.ai using your developer-portal login.
 
     Internal mode warns that pre-release software may be unstable and is used
     at your own risk. On eLxr 3.0+, unavailable Artifactory access falls back
@@ -501,6 +507,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
         or troot_only
         or inspect_state
         or swap
+        or reset_overlay
         or verbose
         or reboot
         or force
@@ -518,6 +525,8 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
         return
 
     is_elxr = is_devkit_running_elxr()
+    if reset_overlay and (inspect_state or swap or version_or_url or force or troot_only or signing_cert is not None or flavor != "auto"):
+        raise click.UsageError("--reset-overlay cannot be combined with --inspect, --swap, or installation options.")
     if swap and (inspect_state or version_or_url or force or troot_only or signing_cert is not None or flavor != "auto"):
         raise click.UsageError("--swap cannot be combined with --inspect or installation options.")
     if inspect_state and (version_or_url or dryrun or force or troot_only or reboot or signing_cert is not None or flavor != 'auto'):
@@ -527,7 +536,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
                          internal=ctx.obj.get("internal", False),
                          auto_confirm=yes or ctx.obj.get("yes", False), dryrun=dryrun,
                          signing_cert=signing_cert, reboot=reboot, inspect=inspect_state, force=force,
-                         troot_only=troot_only, flavor=flavor, local_elxr=is_elxr, verbose=verbose, swap=swap):
+                         troot_only=troot_only, flavor=flavor, local_elxr=is_elxr, verbose=verbose, swap=swap, reset_overlay=reset_overlay):
             return
     except (click.ClickException, click.Abort):
         raise
@@ -815,6 +824,8 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
         else:
             write_image(version, boardtype, fwtype, internal, flavor='headless', recovery=recovery)
             click.echo("✅ Boot image successfully written.")
+    except click.ClickException:
+        raise
     except Exception as e:
         click.echo(f"❌ Failed to write boot image: {e}", err=True)
         ctx.exit(1)

@@ -30,6 +30,7 @@ None.
 - [`sima-cli login`](./sima-cli-login.md): Authenticate with the SiMa Developer Portal.
 - [`sima-cli logout`](./sima-cli-logout.md): Log out by deleting cached credentials and config files.
 - [`sima-cli mla`](./sima-cli-mla.md): Machine Learning Accelerator Utilities.
+- [`sima-cli models`](./sima-cli-models.md): Browse and download Model Registry artifacts from production by default.
 - [`sima-cli modelzoo`](./sima-cli-modelzoo.md): Access models from the Model Zoo.
 - [`sima-cli neat`](./sima-cli-neat.md): Discover, download, and install Neat build artifacts.
 - [`sima-cli network`](./sima-cli-network.md): Setup Network IP address on the DevKit

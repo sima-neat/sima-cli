@@ -23,9 +23,9 @@ from sima_cli.download.parallel import PARALLEL_MIN_SIZE, download_parallel, con
 
 ORGANIZATION = "sima-neat"
 REPOSITORY = "models"
+PRODUCTION_BASE_URL = "https://models-registry.neat.sima.ai"
 STAGING_BASE_URL = "https://models-registry.stg.neat.sima.ai"
 TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
-SUPPORTED_BENCHMARK_SCHEMAS = (1, 2, 3, 4, 5)
 
 
 class ModelRegistryError(RuntimeError):
@@ -51,10 +51,7 @@ def resolve_base_url(staging: bool = False, override: Optional[str] = None) -> s
     production = os.environ.get("SIMA_MODELS_REGISTRY_PRODUCTION_URL")
     if production:
         return normalize_base_url(production)
-    raise ModelRegistryError(
-        "The production Model Registry endpoint is not configured. "
-        "Use --stg or set SIMA_MODELS_REGISTRY_PRODUCTION_URL."
-    )
+    return PRODUCTION_BASE_URL
 
 
 def _new_session() -> requests.Session:
@@ -132,6 +129,17 @@ def latest_runs_by_model_variant(runs: Sequence[Dict[str, Any]]) -> List[Dict[st
             _build_profile_id(run.get("metadata", {})).lower(),
         ),
     )
+
+
+def _benchmark_fingerprints(model: Dict[str, Any], profile: str, run_ids: Sequence[str]) -> Dict[str, str]:
+    """A fingerprint names the builds it measured, so only a row showing exactly the catalog builds keeps it."""
+    builds = {
+        build.get("run_id") for build in model.get("builds") or []
+        if isinstance(build, dict) and build.get("build_profile_id") == profile
+    }
+    if not run_ids or set(run_ids) != builds:
+        return {}
+    return (model.get("benchmark_fingerprints") or {}).get(profile) or {}
 
 
 def find_latest_run(
@@ -458,7 +466,13 @@ class RegistryClient:
         payload = self._get_json(
             ("v1", "repositories", ORGANIZATION, REPOSITORY, "catalogs", "current"),
             params={"git_ref": f"refs/heads/{branch}"},
+            allow_not_found=True,
         )
+        if payload is None:
+            raise ModelRegistryError(
+                f"No published model catalog for branch {branch!r} at {self.base_url} (HTTP 404). "
+                "Use models branches to find available branches; no fallback was attempted."
+            )
         catalog = payload.get("catalog") if payload else None
         document = catalog.get("document") if isinstance(catalog, dict) else None
         models = document.get("models") if isinstance(document, dict) else None
@@ -513,6 +527,10 @@ class RegistryClient:
                 )
                 artifact_metadata = artifact.get("metadata") or {}
                 model = definitions[model_id]
+                shown_run_ids = (
+                    list((metadata.get("component_run_ids") or {}).values())
+                    if root.get("package_id") else [run["id"]]
+                )
                 searchable = " ".join(str(value) for value in (
                     model_id, profile, model.get("display_name"), model.get("description"),
                     model.get("categories"), branch,
@@ -529,6 +547,7 @@ class RegistryClient:
                     "model_categories": model.get("categories") or {},
                     "size_bytes": artifact_metadata.get("deployment_size_bytes", artifact.get("size_bytes")),
                     "sha256": artifact.get("sha256"),
+                    "benchmark_fingerprints": _benchmark_fingerprints(model, profile, shown_run_ids),
                 })
 
         return sorted(
@@ -607,15 +626,23 @@ class RegistryClient:
         payload = self._get_json(("v1", "runs", run_id, "metrics"))
         return payload or {}
 
-    def benchmark(self, run_id: str) -> Optional[Dict[str, Any]]:
-        return self._get_json(
-            ("v1", "runs", run_id, "benchmarks", "latest"), allow_not_found=True
+    def whole_model_result(self, stage: str, fingerprint: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Return the model test result of the newest completed run for a benchmark fingerprint."""
+        if not fingerprint:
+            return None
+        resolved = self._get_json(
+            ("v1", "repositories", ORGANIZATION, REPOSITORY, "resolve"),
+            params={"run_type": f"model_{stage}", "fingerprint": fingerprint},
+            allow_not_found=True,
         )
-
-    def accuracy(self, run_id: str) -> Optional[Dict[str, Any]]:
-        return self._get_json(
-            ("v1", "runs", run_id, "accuracy", "latest"), allow_not_found=True
-        )
+        run_id = ((resolved or {}).get("run") or {}).get("id")
+        if not run_id:
+            return None
+        results = [
+            result for result in self.test_results(str(run_id)).get("test_results") or []
+            if isinstance(result, dict) and result.get("suite") == stage and result.get("name") == "model"
+        ]
+        return results[-1] if results else None
 
     def taxonomy(self) -> Optional[Dict[str, Any]]:
         return self._get_json(
@@ -629,8 +656,6 @@ class RegistryClient:
             "provenance": self.provenance(run_id),
             "tests": self.test_results(run_id),
             "metrics": self.metrics(run_id),
-            "benchmark": self.benchmark(run_id),
-            "accuracy": self.accuracy(run_id),
         }
 
     def artifact_download(self, run_id: str, name: str) -> Dict[str, Any]:

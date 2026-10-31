@@ -44,7 +44,7 @@ def test_index_filters_and_sorts_by_build_number(query, expected):
         rows = artifacts.mirror_bundles('modalix', query)
     assert [row['version'] for row in rows] == expected
     assert client.trust_env is False
-    client.get.assert_called_once_with(artifacts.DAILY_MIRROR + 'index.json', timeout=30)
+    client.get.assert_called_once_with(artifacts.DAILY_MIRROR + 'index-v2.json', timeout=30)
     if rows:
         assert rows[0]['url'].sha256 == hashlib.sha256(CONTENT).hexdigest()
 
@@ -167,7 +167,7 @@ def test_mirror_install_verifies_integrity_and_preserves_version(tmp_path, failu
             assert fallback.call_args.kwargs['exact'] is True
 
 
-@pytest.mark.parametrize('running,requested,handled', [('3.0.0', '3.0', True), ('2.1.3', '2.1.3', False), ('2.1.3', '3.0', None)])
+@pytest.mark.parametrize('running,requested,handled', [('3.0.0', '3.0', True), ('3.0.0', '3.0.0_release_master_B2479', True), ('2.1.3', '2.1.3', False), ('2.1.3', '3.0', None)])
 def test_offline_cli_defers_access_until_device_dispatch(running, requested, handled):
     with patch('sima_cli.cli.check_for_update', return_value=False), \
             patch('sima_cli.cli.internal_resource_exists', return_value=True), \
@@ -348,3 +348,14 @@ def test_yes_selects_newest_matching_build_without_prompt(fallback, requested):
                                           allow_external_fallback=fallback, auto_confirm=True)
     assert source == expected['url']
     picker.assert_not_called()
+
+
+def test_release_candidate_is_selected_from_complete_catalog_with_integrity():
+    version = '3.0.0_release_master_B2479'
+    with patch.object(artifacts.requests, 'Session') as session:
+        mock_index(session, index(build(), build(version, 2479)))
+        source = artifacts.select_mirror_bundle(version, 'modalix', 'Offline.', exact=True, auto_confirm=True)
+    assert source.version == version
+    assert source == artifacts.DAILY_MIRROR + version + '/' + SWU
+    assert source.sha256 == hashlib.sha256(CONTENT).hexdigest()
+    assert source.size == len(CONTENT)

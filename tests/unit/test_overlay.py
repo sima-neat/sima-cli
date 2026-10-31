@@ -3,6 +3,7 @@ import os
 from unittest.mock import patch, MagicMock
 
 import click
+import pytest
 
 from sima_cli.update.overlay import collect_overlay, inspect_overlay, render_overlay
 from sima_cli.update import swu
@@ -242,8 +243,8 @@ def test_normal_summary_hides_package_version_details(capsys):
     assert 'Image packages absent from the overlay package database: 1' in output
     assert 'base:arm64' not in output
     assert 'linux-libc-dev:arm64' not in output
-    assert 'Image build ID: B1454' in output
-    assert 'Overlay package-metadata build ID: B1369' in output
+    assert 'Image package identity: B1454' in output
+    assert 'Overlay package identity: B1369' in output
     assert 'persistent overlay retained the package database' in output
     assert 'earlier' in output
     assert 'apt install was used' in output
@@ -307,3 +308,41 @@ def test_overlay_section_headings_are_blue():
                      or 'software directories' in call.args[0].plain.lower())]
     assert headings
     assert all('blue' in str(heading.style) for heading in headings)
+
+
+@pytest.mark.parametrize('image,metadata,expected', [
+    ('3.0.0', '3.0.0~pre2372', ('3.0.0', '2372')),
+    ('3.0.0', '3.0.0', ('3.0.0', '3.0.0')),
+    ('3.0.0~pre2372', '3.0.0', ('2372', '3.0.0')),
+])
+def test_official_and_prerelease_package_identities(tmp_path, image, metadata, expected):
+    from io import StringIO
+
+    lower, upper = tmp_path / 'lower', tmp_path / 'upper'
+    lower.mkdir()
+    upper.mkdir()
+    def status(version):
+        return ('Package: simaai-palette-modalix\nArchitecture: all\n'
+                'Status: install ok installed\nVersion: ' + version + '\n\n')
+    def read(path, *args, **kwargs):
+        if str(path).endswith('/var/lib/dpkg/status'):
+            return StringIO(status(image if str(path).startswith(str(lower)) else metadata))
+        raise OSError(str(path))
+    mount = {'filesystems': [{'fstype': 'overlay',
+                             'options': f'lowerdir={lower},upperdir={upper}'}]}
+    with patch('builtins.open', side_effect=read), \
+            patch('subprocess.check_output', side_effect=[json.dumps(mount), '']):
+        report = collect_overlay()
+    assert report['package_builds'] == {
+        'image': expected[0], 'metadata': expected[1], 'source': 'simaai-palette-modalix'}
+    output = package_report(report)
+    assert 'B3.0.0' not in output
+    assert 'Package metadata could not be compared' not in output
+
+
+def package_report(report):
+    from io import StringIO
+    from rich.console import Console
+    stream = StringIO()
+    render_overlay(report, console=Console(file=stream, width=120))
+    return stream.getvalue()

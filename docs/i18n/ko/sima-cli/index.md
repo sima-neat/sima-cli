@@ -98,6 +98,7 @@ pip install sima-cli
 | [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md) | SiMa 개발자 포털을 통해 인증하세요. |
 | [`sima-cli logout`](../../../sima-cli/commands/sima-cli-logout.md) | 캐시된 자격 증명과 구성 파일을 삭제하여 로그아웃합니다. |
 | [`sima-cli mla`](../../../sima-cli/commands/sima-cli-mla.md) | 머신 러닝 가속기 유틸리티. |
+| [`sima-cli models`](../../../sima-cli/commands/sima-cli-models.md) | 기본적으로 프로덕션 Model Registry 아티팩트를 탐색하고 다운로드합니다. |
 | [`sima-cli modelzoo`](../../../sima-cli/commands/sima-cli-modelzoo.md) | Model Zoo에서 모델에 접근하세요. |
 | [`sima-cli neat`](../../../sima-cli/commands/sima-cli-neat.md) | Neat 빌드 아티팩트를 찾아 다운로드하고 설치하세요. |
 | [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md) | DevKit에서 네트워크 IP 주소를 설정합니다. |
@@ -122,6 +123,7 @@ pip install sima-cli
 - [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md)
 - [`sima-cli logout`](../../../sima-cli/commands/sima-cli-logout.md)
 - [`sima-cli mla`](../../../sima-cli/commands/sima-cli-mla.md)
+- [`sima-cli models`](../../../sima-cli/commands/sima-cli-models.md)
 - [`sima-cli modelzoo`](../../../sima-cli/commands/sima-cli-modelzoo.md)
 - [`sima-cli neat`](../../../sima-cli/commands/sima-cli-neat.md)
 - [`sima-cli network`](../../../sima-cli/commands/sima-cli-network.md)
@@ -140,6 +142,9 @@ pip install sima-cli
 - [`sima-cli appzoo list`](../../../sima-cli/commands/sima-cli-appzoo-list.md)
 - [`sima-cli device discover`](../../../sima-cli/commands/sima-cli-device-discover.md)
 - [`sima-cli mla meminfo`](../../../sima-cli/commands/sima-cli-mla-meminfo.md)
+- [`sima-cli models branches`](../../../sima-cli/commands/sima-cli-models-branches.md)
+- [`sima-cli models download`](../../../sima-cli/commands/sima-cli-models-download.md)
+- [`sima-cli models list`](../../../sima-cli/commands/sima-cli-models-list.md)
 - [`sima-cli modelzoo describe`](../../../sima-cli/commands/sima-cli-modelzoo-describe.md)
 - [`sima-cli modelzoo get`](../../../sima-cli/commands/sima-cli-modelzoo-get.md)
 - [`sima-cli modelzoo list`](../../../sima-cli/commands/sima-cli-modelzoo-list.md)

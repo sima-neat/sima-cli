@@ -10,7 +10,9 @@ import requests
 
 from sima_cli.auth.devportal import login_external
 from sima_cli.update.query import ARTIFACTORY_BASE_URL
+from sima_cli.update.mirror_catalog import read_mirror_index
 from sima_cli.utils.config import get_auth_token
+from sima_cli.utils.config_loader import load_resource_config
 
 
 DAILY_MIRROR = 'https://artifacts.neat.sima.ai/daily-platform-images/'
@@ -67,9 +69,7 @@ def mirror_bundles(board, requested, netboot=False):
         with requests.Session() as session:
             # No Artifactory credentials or ambient .netrc credentials on the mirror.
             session.trust_env = False
-            response = session.get(DAILY_MIRROR + 'index.json', timeout=30)
-            response.raise_for_status()
-            index = response.json()
+            index = read_mirror_index(session, DAILY_MIRROR + 'index-v2.json', timeout=30)
         if index.get('schema_version') != 1 or index.get('platform') != board:
             raise ValueError('unsupported index schema or platform')
         builds = []
@@ -261,9 +261,20 @@ def resolve_bundle(requested, board, internal=False, *, allow_external_fallback=
             {'name': b['version'].ljust(version_width) + '  Created: ' + (b['created'].strftime('%Y-%m-%d %H:%M:%S UTC') if b['created'] else 'unknown'),
              'value': b['url']} for b in builds
         ]).execute()
-    raise click.ClickException(
-        'eLxr 3.0 developer-portal releases are not published yet. '
-        'Use --internal to select an Artifactory build, or supply a .swu URL/local file.'
+    if not requested or not re.fullmatch(r'\d+\.\d+(?:\.\d+)?', requested):
+        raise click.ClickException(
+            'Specify an official release with -v (for example, -v 3.0.0), '
+            'or supply a .swu URL/local file. Use --internal for daily builds.'
+        )
+    version = requested + '.0' if requested.count('.') == 1 else requested
+    if release_tuple(version) < (3, 0, 0):
+        raise click.ClickException('Full-system SWU releases require eLxr 3.0 or newer.')
+    if not re.fullmatch(r'[a-z0-9-]+', board):
+        raise click.ClickException('Invalid board identity.')
+    base = load_resource_config()['public']['download']['download_url'].rstrip('/')
+    return BundleSource(
+        f'{base}/SDK{version}/devkit/{board}/elxr/'
+        f'elxr-palette-{board}-{version}-agate-arm64.swu', version
     )
 
 

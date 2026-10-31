@@ -6,6 +6,11 @@ import shlex
 import click
 
 
+def package_identity_label(identity):
+    """Display official releases without inventing a numeric build ID."""
+    return 'B' + identity if identity.isdigit() else identity
+
+
 def collect_overlay():
     """Executed on the device using only Python's standard library."""
     import json
@@ -82,13 +87,19 @@ def collect_overlay():
                 marker = next((key for key in original
                                if key.split(':', 1)[0].startswith('simaai-palette-')
                                and key in current), None)
+                def platform_identity(version):
+                    if re.fullmatch(r'\d+\.\d+\.\d+', version):
+                        return version
+                    match = re.search(r'(?:~pre|-)(\d+)$', version)
+                    return match.group(1) if match else None
+
                 if marker:
-                    image_match = re.search(r'-(\d+)$', original[marker])
-                    metadata_match = re.search(r'-(\d+)$', current[marker])
+                    image_match = platform_identity(original[marker])
+                    metadata_match = platform_identity(current[marker])
                     if image_match and metadata_match:
                         report['package_builds'] = {
-                            'image': image_match.group(1),
-                            'metadata': metadata_match.group(1),
+                            'image': image_match,
+                            'metadata': metadata_match,
                             'source': marker.split(':', 1)[0],
                         }
                 if 'package_builds' not in report:
@@ -213,13 +224,14 @@ def render_overlay(report, state=None, details=False, console=None):
     package_builds = report.get('package_builds', {})
     if package_builds and package_builds['image'] != package_builds['metadata']:
         console.print(Panel(
-            Text('Image build ID: B%s\n'
-                 'Overlay package-metadata build ID: B%s\n\n'
+            Text('Image package identity: %s\n'
+                 'Overlay package identity: %s\n\n'
                  'Why: the persistent overlay retained the package database from an earlier image. '
                  'This commonly happens when apt install was used on the previous platform version.\n'
                  'Risk: APT/dpkg may report incorrect installed versions or select incompatible packages, '
                  'while the filesystem contains a mixture of image and overlay files.' %
-                 (package_builds['image'], package_builds['metadata'])),
+                 (package_identity_label(package_builds['image']),
+                  package_identity_label(package_builds['metadata']))),
             title='Package metadata mismatch', style='yellow', border_style='yellow'))
     if packages:
         requested = [value.split()[0].split(':')[0] for value in packages.get('requested', [])]

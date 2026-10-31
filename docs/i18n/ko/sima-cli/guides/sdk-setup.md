@@ -44,11 +44,15 @@ SDK 설정은 DevKit에 Docker를 설치하거나 구성하지 않습니다. 첫
 
 이 단계를 건너뛰려면 `--no-container-registry`를 사용합니다. 기존 레지스트리를 중지하거나 제거하지는 않습니다. 다른 포트를 선택하려면 `--container-registry-port <port>`로 설정을 다시 실행합니다. 포트가 변경되어도 기존에 저장된 이미지는 유지됩니다.
 
-## Edgematic Studio 선택 설치
+## Edgematic Studio
 
-기본 설정에서는 Edgematic Studio 질문을 표시하거나 Studio를 설치하거나 포트를 공개하지 않습니다. `-y`와 `--noninteractive`에도 동일하게 적용됩니다.
+Neat SDK 이미지에서는 설정이 질문 없이 Edgematic Studio를 설치하고 포트를 공개한 뒤 시작합니다. `-y`와 `--noninteractive`에도 동일하게 적용됩니다. 요약의 **Edgematic Studio** 패널에 Studio URL이 표시됩니다. Studio는 호스트 포트 `8088`을 사용하며, `8088`이 사용 중이면 다른 사용 가능한 포트를 사용합니다.
 
-`--edgematic-studio`로 Studio를 설치하고 포트를 공개합니다. 나중에 수동으로 설치하기 위해 포트만 공개하려면 `--edgematic-studio-port`를 사용합니다.
+첫 채팅 전에 Studio 설정에서 코딩 에이전트에 로그인하세요. Studio는 컨테이너와 함께 다시 시작되지 않습니다. URL이 더 이상 열리지 않으면 SDK 컨테이너 셸에서 `activate-edgematic-studio`를 실행하세요.
+
+Studio를 건너뛰고 포트를 공개하지 않으려면 `--no-edgematic-studio`를 사용합니다. 나중에 수동으로 설치하기 위해 포트만 공개하려면 `--edgematic-studio-port`를 사용합니다. `--minimal`과 `--no-insight`도 Studio를 건너뜁니다. Docker 포트 매핑은 나중에 변경할 수 없으므로 이 선택은 컨테이너를 만들 때 적용됩니다.
+
+Studio 설치가 실패해도 설정은 계속되며, 나중에 SDK 컨테이너 셸에서 설치할 수 있는 명령을 출력합니다.
 
 ## 브라우저 VS Code 확장 선택
 
@@ -62,7 +66,7 @@ Neat는 확인 없이 현재 SDK 사용자에게 자동으로 설치됩니다. �
 sima-cli sdk setup --noninteractive --all-extensions
 ```
 
-`--all-extensions`는 확장 선택만 건너뜁니다. 다른 질문도 건너뛰려면 `--noninteractive`를 사용합니다. 기존 SDK 컨테이너를 재사용할 때도 확장을 설치합니다. 이 옵션이 없으면 이전 `SIMA_CLI_INSTALL_CODEX_EXTENSION` 설정이 설치를 요청하지 않는 한 `-y`와 `--noninteractive`는 선택적 확장을 건너뜁니다. `--all-extensions`는 `--minimal`과 함께 사용할 수 없으며 Edgematic Studio를 활성화하거나 Model Compiler 선택을 변경하지 않습니다.
+`--all-extensions`는 확장 선택만 건너뜁니다. 다른 질문도 건너뛰려면 `--noninteractive`를 사용합니다. 기존 SDK 컨테이너를 재사용할 때도 확장을 설치합니다. 이 옵션이 없으면 이전 `SIMA_CLI_INSTALL_CODEX_EXTENSION` 설정이 설치를 요청하지 않는 한 `-y`와 `--noninteractive`는 선택적 확장을 건너뜁니다. `--all-extensions`는 `--minimal`과 함께 사용할 수 없으며 Edgematic Studio 또는 Model Compiler 선택을 변경하지 않습니다.
 
 ## 브라우저 VS Code 확장 버전
 

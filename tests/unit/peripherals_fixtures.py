@@ -9,6 +9,9 @@ tests/unit/snapshots/sentinel/ and are used only by the contract tests.
 NV12_ONLY = "Neat's CameraInput outputs NV12 only."
 NO_USB_OVERLAY = "USB cameras have no camera overlay on this board."
 IMX477_OVERLAY = "modalix-som-waveshare-ARDU-IMX477-1CAM.dtbo"
+MJPEG_ONLY = "Neat's USB camera input reads MJPEG only."
+# Sentinel's `identity.camera_name` for a UVC camera: the name Neat's UsbCameraInputOptions::camera_name takes.
+USB_CAMERA_NAME = "/base/pci@7000000000-3.1:1.0-1a2b:3c4d"
 
 
 def mode(fmt, width, height, available=None, reason=None, **extra):
@@ -51,7 +54,9 @@ def mipi_camera(sizing="fixed", modes=None, **overrides):
 
 
 def usb_camera(modes=None, **overrides):
-    """A UVC webcam. Sentinel nests its frame intervals per probed size; a bare interval list is also read."""
+    """A UVC webcam as a pre-USB-verdict Sentinel reports it: every mode Unsupported for want of a camera
+    overlay, and no `identity.camera_name` or `identity.driver`. Sentinel nests its frame intervals per
+    probed size; a bare interval list is also read."""
     if modes is None:
         modes = [
             mode("MJPG", 1920, 1080, available=False, reason=NO_USB_OVERLAY,

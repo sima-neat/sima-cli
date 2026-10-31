@@ -17,11 +17,13 @@ sima-cli sdk setup [OPTIONS]
 | `--noninteractive, --non-interactive, -n` | Run in non-interactive mode (auto-select defaults). |
 | `-y, --yes` | Accept setup defaults; install Model Compiler from a local ZIP if available, otherwise online. |
 | `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>'. |
+| `--code-server-without-password` | Disable code-server password authentication and bind editor ports to 127.0.0.1 for an authenticated gateway. Requires container recreation. |
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
 | `--all-extensions` | Install Codex and Claude VS Code extensions without prompting. Neat is installed automatically. SDK_SKIP_CODING_AGENT_INSTALL overrides this option. |
-| `--edgematic-studio, --studio` | Install the Edgematic Studio extension and publish its port. Off by default. |
+| `--edgematic-studio, --studio` | Install the Edgematic Studio extension and publish its port. This is the default; the option is kept for compatibility. |
+| `--no-edgematic-studio, --no-studio` | Skip the Edgematic Studio extension and do not publish its port. |
 | `--edgematic-studio-port, --studio-port` | Publish the Edgematic Studio port without installing it, for a manual install later. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
@@ -41,6 +43,15 @@ Usage: sima-cli sdk setup [OPTIONS]
 
   Initialize SDK environment and select components to start.
 
+  Set CODE_SERVER_WITHOUT_PASSWORD=1 or pass --code-server-without-password
+  for code-server behind an authenticated gateway with trusted HTTPS.
+  Passwordless HTTP and HTTPS editor ports bind to 127.0.0.1 only; the gateway
+  must reach them through the Docker host loopback interface. The option only
+  applies when code-server is detected in the SDK image; OpenVSCode
+  authentication remains unchanged. Existing code-server containers must be
+  recreated. Keep password authentication for direct remote HTTPS access to
+  retain the login page certificate-help flow.
+
 Options:
   -n, --noninteractive, --non-interactive
                                   Run in non-interactive mode (auto-select
@@ -50,6 +61,10 @@ Options:
                                   otherwise online.
   --devkit TEXT                   Configure DevKit integration for setup. Use
                                   '--devkit <IP>'.
+  --code-server-without-password  Disable code-server password authentication
+                                  and bind editor ports to 127.0.0.1 for an
+                                  authenticated gateway. Requires container
+                                  recreation.
   --no-insight                    Start Neat SDK without Insight
                                   UI/video/WebRTC port mappings.
   --insight-video-channels INTEGER RANGE
@@ -64,7 +79,11 @@ Options:
                                   automatically. SDK_SKIP_CODING_AGENT_INSTALL
                                   overrides this option.
   --edgematic-studio, --studio    Install the Edgematic Studio extension and
-                                  publish its port. Off by default.
+                                  publish its port. This is the default; the
+                                  option is kept for compatibility.
+  --no-edgematic-studio, --no-studio
+                                  Skip the Edgematic Studio extension and do
+                                  not publish its port.
   --edgematic-studio-port, --studio-port
                                   Publish the Edgematic Studio port without
                                   installing it, for a manual install later.

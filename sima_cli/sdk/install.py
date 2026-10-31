@@ -47,6 +47,9 @@ from sima_cli.sdk.utils import (
     prompt_image_selection,
     filter_images_by_selector,
     confirm_to_remove_exiting_container,
+    _link_agent_sessions,
+    _rescue_agent_sessions,
+    _container_session_owners,
     sanitize_container_name,
     ensure_simasdkbridge_network,
     resolve_edgematic_studio_choice,
@@ -1167,6 +1170,7 @@ def setup_and_start(
     no_model_sdk: bool = False,
     edgematic_studio: bool = False,
     edgematic_studio_port: bool = False,
+    no_edgematic_studio: bool = False,
     minimal: bool = False,
     workspace: Optional[str] = None,
     persistent_network_profile: bool = False,
@@ -1174,6 +1178,7 @@ def setup_and_start(
     all_extensions: bool = False,
     no_container_registry: bool = False,
     container_registry_port: Optional[int] = None,
+    code_server_without_password: bool = False,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -1317,16 +1322,39 @@ def setup_and_start(
     if minimal and any(is_neat_sdk_image(img) for img in selected_images):
         click.echo("ℹ️  Skipping Insight setup because --minimal was specified.")
 
-    # Asked once, on the first Neat container that is actually created.
+    # Resolved once, on the first Neat container that is actually created.
     studio_choice = None
 
     for img in selected_images:
         container_build = img in container_build_images
         container_name = sanitize_container_name(img)
         print_section(f"🔄 CONTAINER START SEQUENCE for {container_name}")
+        before_remove = None
+        if is_neat_sdk_image(img):
+            session_owner = detect_current_user()[0] if check_os() in ["linux", "macos"] else "docker"
+            # --minimal and older ARM64 setups configure no extensions folder, but a container
+            # being replaced may still hold sessions; they go to the default host store, where a
+            # later container that mounts it picks them up.
+            rescue_dir = sdk_extensions_dir or str(Path.home() / "sima-sdk-extensions")
+
+            def before_remove(name, owner=session_owner, store=rescue_dir):
+                # Recreating the container must not take its agent sessions with it. A running
+                # agent could still append a turn after its folder was copied, so the container is
+                # stopped first; if the user then keeps it, the reuse path below starts it again.
+                if is_container_running(name):
+                    click.echo(f"ℹ️  Stopping '{name}' so its agent sessions are copied complete.")
+                    stopped = subprocess.run(["docker", "stop", name], check=False)
+                    if getattr(stopped, "returncode", 0) != 0:
+                        click.echo(f"⚠️  Could not stop '{name}'; turns written during the copy may be missing.")
+                # A list, not a generator: one user's failure must not skip the others.
+                saved = [_rescue_agent_sessions(name, user, store)
+                         for user in _container_session_owners(name, owner)]
+                return all(saved)
+
         existing_container = confirm_to_remove_exiting_container(
             container_name,
             yes_to_all=(yes_to_all or noninteractive),
+            before_remove=before_remove,
         )
 
         if existing_container == None:
@@ -1348,6 +1376,7 @@ def setup_and_start(
                         install_requested=edgematic_studio,
                         port_only=edgematic_studio_port,
                         interactive=not (noninteractive or yes_to_all),
+                        skip_requested=no_edgematic_studio,
                     )
                 install_studio, publish_studio_port = studio_choice
 
@@ -1371,10 +1400,24 @@ def setup_and_start(
                 minimal=minimal,
                 all_extensions=all_extensions,
                 container_build=container_build,
+                code_server_without_password=code_server_without_password,
             )
         else:
-            if (edgematic_studio or edgematic_studio_port) and is_neat_sdk_image(img):
-                option = "--edgematic-studio" if edgematic_studio else "--edgematic-studio-port"
+            if code_server_without_password and is_neat_sdk_image(img):
+                from sima_cli.sdk.utils import _existing_container_has_code_server
+
+                if _existing_container_has_code_server(existing_container):
+                    raise RuntimeError(
+                        "Cannot apply --code-server-without-password to an existing Neat SDK "
+                        "container. Remove and recreate the container when prompted to change "
+                        "its authentication environment."
+                    )
+            if (edgematic_studio or edgematic_studio_port or no_edgematic_studio) and is_neat_sdk_image(img):
+                option = (
+                    "--no-edgematic-studio" if no_edgematic_studio
+                    else "--edgematic-studio" if edgematic_studio
+                    else "--edgematic-studio-port"
+                )
                 click.echo(
                     f"⚠️  {option} has no effect on the existing container "
                     f"'{existing_container}': Docker port mappings are fixed at create time. "
@@ -1420,6 +1463,8 @@ def setup_and_start(
             if not minimal and is_neat_sdk_image(img):
                 if check_os() not in ["linux", "macos"]:
                     login_name, user_uid, user_gid = "docker", 900, 900
+                # A reused container never went through configure_container, so link it here.
+                _link_agent_sessions(existing_container, login_name, user_uid, user_gid)
                 ensure_codex_vscode_extension_installed(
                     existing_container, login_name, all_extensions=all_extensions,
                     allow_prompt=False, uid=user_uid, gid=user_gid,

@@ -100,3 +100,16 @@ before installation or backup. The inventory records package selections, image
 identity, paths, ownership, and permissions, but no file contents, dpkg database,
 APT caches, or complete upper layer. It is recovery information, not an automatic
 restore archive. The same workflow applies through `--ip` on a remote DevKit.
+
+### Reset without updating firmware
+
+Use `sima-cli update --reset-overlay` to discard the current eLxr 3.0+ overlay
+without downloading a bundle or switching slots. Add `--dryrun` to preview,
+`--reboot` to reboot after cleanup, or `--ip ADDRESS` for a remote board.
+Confirmation is required unless `-y` is given. Reboot promptly after a reset.
+
+This removes local packages, software, settings, credentials, and home-directory
+files. Back up needed files first. Other `/data` files remain. The same verified
+metadata inventory is saved under `/data/.overlay-backup`; it does not contain
+file contents. Network and SSH settings can return to image defaults. After
+reboot, reconnect and run `sima-cli update --inspect`.

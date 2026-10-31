@@ -32,7 +32,7 @@ def _staging_option(function):
         "staging",
         is_flag=True,
         default=False,
-        help="Use the staging Model Registry.",
+        help="Use the staging Model Registry unless SIMA_MODELS_REGISTRY_BASE_URL is set.",
     )(function)
 
 
@@ -107,6 +107,7 @@ def _selected_model_detail(
     client: RegistryClient, selected: Dict[str, Any]
 ) -> Dict[str, Any]:
     selected_metadata = selected.get("metadata") or {}
+    fingerprints = selected.get("benchmark_fingerprints") or {}
     component_run_ids = selected_metadata.get("component_run_ids") or {}
     if isinstance(component_run_ids, dict) and component_run_ids:
         components = sorted(
@@ -169,18 +170,30 @@ def _selected_model_detail(
                 for metric in (detail.get("metrics") or {}).get("measurements") or []
             ]
         },
-        "benchmark": next(
-            (detail.get("benchmark") for _, detail in details if detail.get("benchmark")),
-            None,
-        ),
-        "accuracy": next(
-            (detail.get("accuracy") for _, detail in details if detail.get("accuracy")),
-            None,
-        ),
+        "benchmark": client.whole_model_result("performance", fingerprints.get("performance")),
+        "accuracy": client.whole_model_result("accuracy", fingerprints.get("accuracy")),
     }
 
 
-@click.group(name="models", help="Browse and download Model Registry artifacts.", hidden=True)
+@click.group(name="models", hidden=True, help=(
+    "Browse and download Model Registry artifacts from production by default.\n\n"
+    "Uses https://models-registry.neat.sima.ai without AWS credentials. "
+    "This preview command remains hidden from top-level help.\n\n"
+    "SIMA_MODELS_REGISTRY_BASE_URL overrides all CLI endpoint selections, including --stg. "
+    "Otherwise --stg/--staging selects https://models-registry.stg.neat.sima.ai; "
+    "SIMA_MODELS_REGISTRY_PRODUCTION_URL overrides only the production default. "
+    "The Python resolve_base_url helper's explicit override takes precedence over environment variables.\n\n"
+    "Branch listings describe registered runs; listed branches may lack a published catalog. "
+    "Unpublished catalogs report an error; published catalogs with no matching builds return "
+    "an empty models array with --json or a message interactively. "
+    "No fallback to another branch or environment is attempted.\n\n"
+    "Examples (choose a currently published branch and model):\n\n\b\n"
+    "  sima-cli models branches --json\n"
+    "  sima-cli models list --branch BRANCH --json\n"
+    "  sima-cli models download --branch BRANCH --id MODEL --variant VARIANT --output ./models --json\n"
+    "  sima-cli models --stg branches --json\n"
+    "  sima-cli models list --staging --branch develop --json"
+))
 @_staging_option
 @click.pass_context
 def models_group(ctx: click.Context, staging: bool) -> None:
@@ -260,7 +273,7 @@ def list_command(
             echo_json({"branch": branch, "query": query, "models": runs})
             return
         if not runs:
-            click.echo("No completed model builds are available on this branch.")
+            click.echo(f"No completed model builds match branch {branch!r} and the requested query.")
             return
         if not _is_interactive():
             raise ModelRegistryError(

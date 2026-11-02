@@ -71,8 +71,7 @@ def decode_key(value):
         raise CloudExError("--key contains an invalid value")
     if len(profile["allocation_secret"]) < 32:
         raise CloudExError("--key contains an invalid allocation secret")
-    if profile["environment"] not in {"vulcan-staging", "vulcan-production"}:
-        raise CloudExError("CloudEx supports only vulcan-staging or vulcan-production allocation keys")
+    # The environment is a descriptive label; api_url selects the backend.
     return profile
 
 

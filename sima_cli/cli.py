@@ -736,26 +736,6 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
         reused by default. ``--delete-cache`` removes only the managed cache
         entry after the session exits.
 
-    Netboot Networking:
-
-      • On macOS and Ubuntu, the first TFTP request captures the DevKit MAC.
-        Netboot searches for that MAC while waiting for SSH, reports IP
-        changes, and prints the exact ``f <new-ip>`` command. Plain ``f``
-        also uses the current connected address.
-
-      • ``--autoflash`` follows the selected DevKit to its new IP and keeps
-        the existing network-boot, SSH, and transfer-readiness checks before
-        flashing it once. The pre-reboot MAC identifies the selected device.
-
-      • Reconnect checks start after a 60-second boot grace period and time
-        out after another 180 seconds. Manual mode keeps TFTP and the prompt
-        running. Recovery requires a stable MAC and multicast discovery or
-        a neighbor entry for the new IP; host network settings are unchanged.
-
-      • If automatic discovery fails, type ``d`` or find the IP through the
-        serial console, then type ``f <ip>``. Ctrl+C stops background checks
-        while keeping TFTP running in manual mode.
-
     \b
     Examples:
 

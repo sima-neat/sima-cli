@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sima_cli.discover import identity
+from sima_cli.discover import discover, identity
 from sima_cli.update import netboot
 
 MAC = '68:e1:54:01:02:03'
@@ -79,10 +79,10 @@ def test_multicast_uses_source_and_ignores_bad_messages():
         return result
 
     sock.recvfrom.side_effect = receive
-    with patch.object(identity, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10'), ('en1', '198.51.100.10')]), \
-            patch.object(identity.socket, 'socket', return_value=sock), \
-            patch.object(identity.select, 'select', return_value=([sock], [], [])):
-        assert identity.query_multicast(iface='en0', cancel_event=cancel) == [record(NEW)]
+    with patch.object(discover, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10'), ('en1', '198.51.100.10')]), \
+            patch.object(discover.socket, 'socket', return_value=sock), \
+            patch.object(discover.select, 'select', return_value=([sock], [], [])):
+        assert discover.query_multicast(iface='en0', cancel_event=cancel) == [record(NEW)]
     sock.bind.assert_called_once_with(('192.0.2.10', 60000))
     sock.sendto.assert_called_once_with(b'DISCOVER', ('239.255.42.1', 50000))
     sock.close.assert_called_once()
@@ -91,9 +91,9 @@ def test_multicast_uses_source_and_ignores_bad_messages():
 def test_multicast_closes_socket_when_bind_fails():
     sock = MagicMock()
     sock.bind.side_effect = OSError('busy')
-    with patch.object(identity, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
-            patch.object(identity.socket, 'socket', return_value=sock):
-        assert identity.query_multicast() == []
+    with patch.object(discover, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
+            patch.object(discover.socket, 'socket', return_value=sock):
+        assert discover.query_multicast() == []
     sock.close.assert_called_once()
 
 
@@ -188,9 +188,9 @@ def test_multicast_cancellation_and_deadline_do_not_send(cancelled, timeout):
     cancel = threading.Event()
     if cancelled:
         cancel.set()
-    with patch.object(identity, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
-            patch.object(identity.socket, 'socket') as socket_factory:
-        assert identity.query_multicast(cancel_event=cancel, timeout=timeout) == []
+    with patch.object(discover, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
+            patch.object(discover.socket, 'socket') as socket_factory:
+        assert discover.query_multicast(cancel_event=cancel, timeout=timeout) == []
     socket_factory.assert_not_called()
 
 
@@ -285,3 +285,47 @@ def test_verified_new_ip_merges_provisional_tftp_record():
     assert list(target.clients) == [OLD]
     assert target.get_client_info()[0][0] == NEW
     assert provisional['superseded'] is True
+
+
+def test_manual_discovery_delegates_to_shared_query_and_keeps_display_fields(capsys):
+    response = dict(ip=NEW, mac=None, iface='en0', model='fixture')
+    with patch.object(discover, 'query_multicast', return_value=[response, dict(response, iface='en1')]) as query:
+        devices = discover.discover_multicast()
+    query.assert_called_once_with(require_mac=False)
+    assert devices == [dict(response, mac='-', **{'from': NEW})]
+    assert 'Discovering nearby' in capsys.readouterr().out
+
+
+def test_shared_query_preserves_wildcard_bind_fallback(capsys):
+    cancel = threading.Event()
+    sock = MagicMock()
+    sock.bind.side_effect = [OSError('interface bind unavailable'), None]
+
+    def receive(_size):
+        cancel.set()
+        return b'{"mac":"68:e1:54:01:02:03"}', (NEW, 50000)
+
+    sock.recvfrom.side_effect = receive
+    with patch.object(discover, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
+            patch.object(discover.socket, 'socket', return_value=sock), \
+            patch.object(discover.select, 'select', return_value=([sock], [], [])):
+        assert discover.query_multicast(cancel_event=cancel) == [record(NEW)]
+    assert [call.args[0] for call in sock.bind.call_args_list] == [('192.0.2.10', 60000), ('0.0.0.0', 60000)]
+    sock.close.assert_called_once()
+    assert capsys.readouterr().out == ''
+
+
+def test_manual_query_can_return_devices_without_a_mac():
+    cancel = threading.Event()
+    sock = MagicMock()
+
+    def receive(_size):
+        cancel.set()
+        return b'{"model":"fixture"}', (NEW, 50000)
+
+    sock.recvfrom.side_effect = receive
+    with patch.object(discover, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
+            patch.object(discover.socket, 'socket', return_value=sock), \
+            patch.object(discover.select, 'select', return_value=([sock], [], [])):
+        devices = discover.query_multicast(cancel_event=cancel, require_mac=False)
+    assert devices == [dict(ip=NEW, mac=None, iface='en0', model='fixture')]

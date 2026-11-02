@@ -7,7 +7,8 @@ from sima_cli.update.updater import (
 from sima_cli.utils.net import get_local_ip_candidates
 from sima_cli.update.remote import DEFAULT_USER, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session, get_remote_board_info
 from sima_cli.utils.env import get_environment_type
-from sima_cli.discover.identity import identity_for_ip, query_multicast, read_neighbors, valid_mac
+from sima_cli.discover.identity import identity_for_ip, read_neighbors, valid_mac
+from sima_cli.discover.discover import query_multicast
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional

@@ -1,10 +1,11 @@
 import psutil
 import socket
 
-def get_local_ip_candidates():
+def get_local_ip_candidates(*, include_link_local=False):
     """
     Return a list of IPv4 addresses on physical interfaces,
-    excluding VPN, loopback, and link-local interfaces.
+    excluding VPN and loopback interfaces. Link-local addresses are excluded
+    unless requested for directly connected netboot devices.
     """
     vpn_prefixes = ("tun", "tap", "utun", "tailscale", "wg", "docker")  # WireGuard, Tailscale, etc.
     ip_list = []
@@ -19,7 +20,7 @@ def get_local_ip_candidates():
                 ip = addr.address
 
                 # Skip loopback and link-local
-                if ip.startswith("127.") or ip.startswith("169.254."):
+                if ip.startswith("127.") or (not include_link_local and ip.startswith("169.254.")):
                     continue
 
                 ip_list.append((iface_name, ip))

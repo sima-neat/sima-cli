@@ -5,11 +5,13 @@ from sima_cli.update.updater import (
     resolve_image_reference,
 )
 from sima_cli.utils.net import get_local_ip_candidates
-from sima_cli.update.remote import wait_for_ssh, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session, get_remote_board_info
+from sima_cli.update.remote import DEFAULT_USER, copy_file_to_remote_board, DEFAULT_PASSWORD, run_remote_command, init_ssh_session, get_remote_board_info
 from sima_cli.utils.env import get_environment_type
+from sima_cli.discover.identity import identity_for_ip, query_multicast, read_neighbors, valid_mac
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+import paramiko
 import hashlib
 import ipaddress
 import inspect
@@ -800,85 +802,153 @@ def flash_emmc(
 
 
 class ClientManager:
-    """Manages TFTP client state and monitoring."""
-    def __init__(self):
-        self.clients = {}
+    """Keep stable TFTP records while their current network address changes."""
+    BOOT_GRACE = 60
+    CONNECT_TIMEOUT = 180
+    POLL_INTERVAL = 3
+
+    def __init__(self, configuration=None):
+        self.clients = {}  # keyed by original TFTP address; current_ip may change
         self.lock = threading.Lock()
+        self.discovery_lock = threading.Lock()
         self.shutdown_event = threading.Event()
         self.monitor_threads = []
+        self.configuration = configuration
+        self.seed_ip = configuration.devkit if configuration is not None else None
 
     def add_client(self, ip, filename):
-        """Add a new client with initial state."""
+        # Identity lookup runs in the monitor, never on the TFTP receive thread.
         with self.lock:
-            if ip not in self.clients:
-                start_time = time.time()
-                self.clients[ip] = {
-                    'state': 'SSH check stopped' if self.shutdown_event.is_set() else 'Booting',
-                    'filename': filename,
-                    'timestamp': start_time,
-                    'board_info': None
-                }
-                click.echo(f"📥 New client connected: {ip}")
-                if filename:
-                    click.echo(f"📄 Client {ip} requested file: {filename}")
-                if self.shutdown_event.is_set():
-                    return
-                # Start monitoring thread
-                thread = threading.Thread(
-                    target=self.monitor_client,
-                    args=(ip, start_time),
-                    daemon=True
-                )
-                self.monitor_threads.append(thread)
-                thread.start()
+            if any(ip == key or ip == info.get('current_ip') for key, info in self.clients.items()):
+                return
+            start_time = time.time()
+            self.clients[ip] = {
+                'state': 'SSH check stopped' if self.shutdown_event.is_set() else 'Booting',
+                'filename': filename, 'timestamp': start_time, 'board_info': None,
+                'original_ip': ip, 'current_ip': ip, 'mac': None, 'iface': None,
+                'ip_history': [ip], 'flash_claimed': False,
+            }
+            click.echo(f"📥 New client connected: {ip}")
+            if self.shutdown_event.is_set():
+                return
+            thread = threading.Thread(target=self.monitor_client, args=(ip, start_time), daemon=True)
+            self.monitor_threads.append(thread)
+            thread.start()
+
+    def _capture_identity(self, ip):
+        identity = identity_for_ip(ip)
+        if self.configuration is not None and ip == self.seed_ip:
+            expected = valid_mac(self.configuration.hardware_address)
+            if expected:
+                # The authenticated pre-reboot probe is stronger than a stale ARP entry.
+                identity = dict(ip=ip, mac=expected,
+                                iface=identity['iface'] if identity and identity['mac'] == expected else None)
+        with self.lock:
+            info = self.clients.get(ip)
+            if info is None:
+                return False
+            if identity:
+                for key, other in list(self.clients.items()):
+                    if key != ip and other.get('mac') == identity['mac']:
+                        # Preserve one identity even if the host sees it on two interfaces.
+                        del self.clients[ip]
+                        return False
+                info.update(mac=identity['mac'], iface=identity['iface'])
+        return True
+
+    def _candidates(self, info, timeout):
+        if not info.get('mac'):
+            return [info.get('current_ip', info['original_ip'])]
+        # One query at a time: responders use the fixed discovery reply port.
+        if not self.discovery_lock.acquire(blocking=False):
+            return []
+        try:
+            discovered = query_multicast(iface=info.get('iface'), timeout=timeout,
+                                         cancel_event=self.shutdown_event)
+            neighbors = read_neighbors()
+        finally:
+            self.discovery_lock.release()
+        matches = [r['ip'] for r in discovered + neighbors
+                   if r['mac'] == info['mac'] and (not info.get('iface') or r['iface'] == info['iface'])]
+        # Probe the last address too, but verify its MAC through authenticated SSH.
+        return list(dict.fromkeys(matches + [info.get('current_ip', info['original_ip'])]))
 
     def monitor_client(self, ip, start_time):
-        """
-        Monitor client connectivity by waiting for SSH availability on the target IP.
-        Uses `wait_for_ssh()` instead of retrieving board info.
-        Retries until success or shutdown_event is set.
-        """
         try:
-            # Wait up to 1 minute after the start before first attempt
-            if self.shutdown_event.wait(timeout=max(0, 60 - (time.time() - start_time))):
+            if not self._capture_identity(ip):
                 return
-
-            while not self.shutdown_event.is_set():
-                click.echo(f"🔍 Checking SSH availability for {ip}...")
-                try:
-                    if not wait_for_ssh(ip, timeout=120, cancel_event=self.shutdown_event):
-                        if not self.shutdown_event.is_set():
-                            with self.lock:
-                                self.clients[ip]['state'] = 'SSH unavailable'
-                            _print_ip_recovery_help()
-                        if self.shutdown_event.wait(timeout=10):
-                            break
+            with self.lock:
+                info = self.clients.get(ip)
+                if info is None:
+                    return
+                info.setdefault('original_ip', ip)
+                info.setdefault('current_ip', ip)
+                info.setdefault('ip_history', [ip])
+            if not info.get('mac'):
+                click.echo(f"⚠️  Could not capture MAC for {ip}; automatic IP recovery and autoflash are unavailable. Use f <ip> if needed.")
+            if self.shutdown_event.wait(max(0, self.BOOT_GRACE - (time.time() - start_time))):
+                return
+            deadline = time.monotonic() + self.CONNECT_TIMEOUT
+            while (not self.shutdown_event.is_set() and not info.get('superseded')
+                   and time.monotonic() < deadline):
+                candidates = self._candidates(info, min(1, max(0, deadline - time.monotonic())))
+                for candidate in candidates:
+                    if self.shutdown_event.is_set():
+                        return
+                    if time.monotonic() >= deadline:
+                        break
+                    if not _ssh_matches_device(candidate, info.get('mac')):
                         continue
                     with self.lock:
-                        if self.shutdown_event.is_set():
-                            break
-                        self.clients[ip]['state'] = 'Connected'
-                        self.clients[ip]['board_info'] = "SSH available"
-                    click.echo(f"✅ SSH is available on {ip}")
-                    break
-
-                except Exception as e:
-                    log.info(f"SSH not yet available for {ip}, retrying in 10s: {e}")
-
-                # Wait before retrying
-                if self.shutdown_event.wait(timeout=10):
-                    break
-
-        except Exception as e:
-            log.error(f"Unexpected error while monitoring {ip}: {e}")
+                        if self.shutdown_event.is_set() or info.get('superseded'):
+                            return
+                        # Never merge two distinct identities onto one current IP.
+                        if any(other is not info and other.get('current_ip') == candidate
+                               and other.get('mac') not in (None, info.get('mac')) for other in self.clients.values()):
+                            continue
+                        # A second TFTP request may arrive before its MAC is cached.
+                        # The authenticated identity above resolves that provisional record.
+                        if info.get('mac'):
+                            for key, other in list(self.clients.items()):
+                                if (other is not info and other.get('current_ip') == candidate
+                                        and not other.get('mac')):
+                                    other['superseded'] = True
+                                    del self.clients[key]
+                        old_ip = info['current_ip']
+                        info['current_ip'] = candidate
+                        if candidate not in info['ip_history']:
+                            info['ip_history'].append(candidate)
+                        info.update(state='Connected', board_info='SSH available')
+                    if candidate != old_ip:
+                        click.echo(f"\n📡 DevKit {info['mac']} changed IP: {old_ip} → {candidate}")
+                    click.echo(f"\n✅ SSH is available on {candidate}")
+                    if (self.configuration is not None and info.get('mac')
+                            and valid_mac(self.configuration.hardware_address) == info['mac']):
+                        self.configuration.devkit = candidate
+                    click.echo(f"Type 'f {candidate}' at netboot> to flash this DevKit (autoflash continues automatically when enabled).")
+                    return
+                if self.shutdown_event.wait(min(self.POLL_INTERVAL, max(0, deadline - time.monotonic()))):
+                    return
+            if not self.shutdown_event.is_set() and not info.get('superseded'):
+                with self.lock:
+                    info['state'] = 'SSH unavailable'
+                click.echo(f"\n❌ Timed out waiting for DevKit originally at {ip}.")
+                _print_ip_recovery_help()
+        except Exception as exc:
+            with self.lock:
+                if ip in self.clients and not self.shutdown_event.is_set():
+                    self.clients[ip]['state'] = 'SSH unavailable'
+            log.warning("Netboot monitoring failed for %s: %s", ip, exc)
+            if not self.shutdown_event.is_set():
+                _print_ip_recovery_help()
 
     def get_client_info(self):
-        """Return sorted client information for display."""
         with self.lock:
-            return sorted(self.clients.items(), key=lambda x: x[0])
+            return sorted(((info.get('current_ip', ip), dict(info))
+                           for ip, info in self.clients.items()), key=lambda item: item[0])
 
     def stop_monitoring(self):
-        """Stop automatic SSH checks while leaving the TFTP server running."""
+        """Stop SSH/discovery checks while leaving the TFTP server running."""
         self.shutdown_event.set()
         with self.lock:
             threads = list(self.monitor_threads)
@@ -889,8 +959,30 @@ class ClientManager:
             thread.join()
 
     def shutdown(self):
-        """Signal monitoring threads to exit."""
         self.stop_monitoring()
+
+
+def _ssh_matches_device(ip, mac):
+    """Authenticate SSH and, when known, verify the device's Ethernet identity."""
+    ssh = None
+    try:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ip, username=DEFAULT_USER, password=DEFAULT_PASSWORD,
+                    timeout=2, banner_timeout=2, auth_timeout=2,
+                    allow_agent=False, look_for_keys=False)
+        if mac is None:
+            return True
+        _, stdout, _ = ssh.exec_command('cat /sys/class/net/*/address', timeout=2)
+        # Bound output as well as execution; these are tiny sysfs files.
+        addresses = stdout.read(4096).decode('ascii', errors='ignore').splitlines()
+        return mac in {valid_mac(address.strip()) for address in addresses}
+    except Exception:
+        return False
+    finally:
+        if ssh is not None:
+            ssh.close()
+
 
 class InteractiveTftpServer(TftpServer):
     """Custom TFTP server with client logging and monitoring."""
@@ -1122,7 +1214,7 @@ def _warn_unflashed_netboot(configuration):
 def run_cli(client_manager, configuration=None):
     """Run the interactive CLI for netboot commands."""
     click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'd' to discover devices, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
-    click.echo("Press Ctrl+C at the netboot prompt to stop SSH reboot checks if the board's IP changed.")
+    click.echo("IP recovery runs automatically. Press Ctrl+C to stop background SSH/discovery checks.")
     while True:
         try:
             try:
@@ -1250,14 +1342,34 @@ def _wait_for_flash_readiness(ip, cancel_event, deadline, attempts=8, retry_dela
                                f'Last failure: {last_error}')
 
 
+class NetbootDiscoveryTimeout(click.ClickException):
+    """Discovery expired before any automatic flash was started."""
+
+
 def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
     """Flash only the confirmed device, once, after its network boot is ready."""
     click.echo(f'Waiting for SSH on {selected_ip}; flashing will start automatically.')
     deadline = time.monotonic() + timeout
+    original_ip = selected_ip
     while not client_manager.shutdown_event.is_set():
-        connected = any(ip == selected_ip and info.get('state') == 'Connected'
-                        for ip, info in client_manager.get_client_info())
+        records = client_manager.get_client_info()
+        expected = valid_mac(configuration.hardware_address) if configuration is not None else None
+        targets = [(ip, info) for ip, info in records
+                   if info.get('original_ip', ip) == original_ip
+                   or (expected and info.get('mac') == expected)]
+        connected_targets = [(ip, info) for ip, info in targets if info.get('state') == 'Connected']
+        connected = len(connected_targets) == 1
         if connected:
+            selected_ip = connected_targets[0][0]
+        if connected:
+            if configuration is not None and not valid_mac(configuration.hardware_address):
+                raise click.ClickException('Cannot verify the selected DevKit MAC; no automatic flash was started.')
+            with client_manager.lock:
+                info = next((info for original, info in client_manager.clients.items()
+                             if info.get('current_ip', original) == selected_ip), None)
+                if info is None or info.get('flash_claimed'):
+                    return False
+                info['flash_claimed'] = True
             if not _wait_for_flash_readiness(selected_ip, client_manager.shutdown_event,
                                              deadline=min(deadline, time.monotonic() + 180)):
                 return False
@@ -1274,8 +1386,9 @@ def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
                 fg='green',
             )
             return True
-        if time.monotonic() >= deadline:
-            raise click.ClickException(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')
+        unavailable = any(info.get('state') == 'SSH unavailable' for _, info in targets)
+        if unavailable or time.monotonic() >= deadline:
+            raise NetbootDiscoveryTimeout(f'Timed out waiting for network boot on {selected_ip}; no automatic flash was started.')
         client_manager.shutdown_event.wait(0.5)
 
 
@@ -1380,11 +1493,11 @@ def setup_netboot(
     configuration = NetbootConfiguration(selected_devkit) if selected_devkit else None
     try:
         click.echo(f"🚀 Starting TFTP server in: {extract_dir}")
-        ip_candidates = get_local_ip_candidates()
+        ip_candidates = get_local_ip_candidates(include_link_local=True)
         if server_ip and not any(ip == server_ip for _, ip in ip_candidates):
             ip_candidates.append(('route to selected DevKit', server_ip))
 
-        client_manager = ClientManager()
+        client_manager = ClientManager(configuration=configuration)
 
         server = InteractiveTftpServer(tftproot=extract_dir, client_manager=client_manager)
         startup_errors = []
@@ -1427,8 +1540,14 @@ def setup_netboot(
                 if autoflash:
                     click.echo('Automatic flashing is disabled because device setup was not confirmed.')
             elif autoflash:
-                auto_flash(client_manager, selected_devkit, configuration=configuration)
-                return
+                try:
+                    auto_flash(client_manager, selected_devkit, configuration=configuration)
+                except NetbootDiscoveryTimeout as exc:
+                    click.secho(exc.format_message(), fg='yellow')
+                    click.echo('Automatic flashing stopped. TFTP is still running; manual recovery is available at netboot>.')
+                    _print_ip_recovery_help()
+                else:
+                    return
         else:
             message = Text('No DevKit was discovered. This program is still serving the netboot images.\n\n'
                            'Configure the DevKit manually through its serial console to boot from the network, '

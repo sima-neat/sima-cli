@@ -1068,8 +1068,6 @@ def resolve_edgematic_studio_choice(
 
     Returns (install, publish_port).
     """
-    from sima_cli.sdk.neat import EDGEMATIC_STUDIO_CONTAINER_PORT
-
     if skip_requested:
         print("ℹ️  Skipping Edgematic Studio (--no-edgematic-studio).")
         return False, False
@@ -1098,20 +1096,14 @@ def resolve_edgematic_studio_choice(
 
     console.print(
         Panel(
-            "[yellow]Edgematic Studio is an optional SDK extension.[/yellow]\n\n"
-            "It is a browser-based development environment for building and running AI "
-            "applications. It includes an editor, an AI coding agent, and DevKit tools.\n\n"
-            "Setup installs Studio in the SDK extensions directory on your host. "
-            "The container uses this directory at /sdk-extensions. The installer also "
-            "downloads a coding agent CLI and its skills.\n\n"
-            "Studio is a preview. Documentation and support are still in progress.\n\n"
-            "Choose Yes to install now, or No to skip. -y accepts automatically. "
-            "Use --no-edgematic-studio to skip installation and its port mapping, "
-            "even with -y.\n\n"
-            f"Setup reserves a host port for Studio's HTTP service (container port "
-            f"{EDGEMATIC_STUDIO_CONTAINER_PORT}). If you skip installation here, the port "
-            "stays mapped so you can install Studio later.\n\n"
-            "To install later, run this in the SDK container terminal:\n"
+            "Edgematic Studio is a browser-based development environment for AI "
+            "applications, with an editor, AI coding agent, and DevKit tools.\n\n"
+            "It installs in your host's SDK extensions directory, mounted in the "
+            "container at /sdk-extensions.\n\n"
+            "Studio is in preview. Documentation and support are still in progress.\n\n"
+            "Choose Yes to install or No to skip. -y accepts automatically.\n\n"
+            "Its HTTP port stays mapped if you skip installation. To install later, "
+            "run this in the SDK container terminal:\n"
             f"sima-cli {shlex.join(extension_install_args)}",
             title="Edgematic Studio Extension (optional)",
             width=88,

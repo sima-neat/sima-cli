@@ -92,3 +92,13 @@ neat --json
 ```
 
 如果瀏覽器無法開啟 Insight，請確認 `mainUI` 主機的連接埠是否可從主機瀏覽器存取，以及 SDK 容器是否由 `sima-cli sdk setup` 啟動。
+
+## Insight 檢視器 URL 路由
+
+建立或重新建立已啟用 Insight 的 SDK 容器時，SDK 設定程序會將 `direct` 寫入從主機掛載的 `insight-config/url-routing` 檔案。這會取代先前的路由宣告，包括 `proxy`。不需要命令列參數。Insight 會使用瀏覽器請求的主機與已發布的 `videoUI` 連接埠來建立檢視器 URL，而不會將本機啟動提示視為共用 Proxy 來源。
+
+SDK 設定程序不會變更 `launch-url` 或 `browser-ice-address`。CloudEx DevKit 配對與瀏覽器 URL 路由是分開的。`--no-insight` 與 `--minimal` 不會寫入路由宣告。重複使用現有容器時，不會執行這個建立時的初始化程序。
+
+託管 ALB／共用入口的佈建程序必須在 **SDK 設定完成後**套用路由覆寫：將公開 URL 寫入 `launch-url`，並將 `proxy` 寫入 `url-routing`，然後重新啟動 Insight 並驗證 `/api/health` 與 `/api/viewer-url`。重新建立 SDK 容器會將路由重設為 `direct`，因此託管佈建步驟每次都必須重新套用 `proxy`。此整合由託管團隊負責。CloudEx 傳輸與 ALB/nginx 規則需另外設定。
+
+如果舊版本機容器傳回使用 Insight 後端連接埠的檢視器 URL，並出現 404，請將 `direct` 寫入 `/home/docker/.insight-config/url-routing`，然後在該容器內執行 `insight-admin restart`。請勿將此本機修復方式套用至託管 ALB／Proxy 環境。

@@ -92,3 +92,13 @@ neat --json
 ```
 
 ブラウザでInsightを開けない場合は、ホストブラウザから`mainUI`のホストポートにアクセスできること、およびSDKコンテナが`sima-cli sdk setup`によって起動されたことを確認してください。
+
+## Insight ビューアー URL のルーティング
+
+Insight が有効な SDK コンテナを作成または再作成すると、SDK セットアップはホストからマウントされた `insight-config/url-routing` ファイルに `direct` を書き込みます。これにより、`proxy` を含む以前のルーティング宣言が置き換えられます。コマンドラインパラメーターは不要です。Insight はローカル起動ヒントを共有プロキシのオリジンとして扱う代わりに、ブラウザーのリクエストホストと公開された `videoUI` ポートからビューアー URL を構築します。
+
+SDK セットアップは `launch-url` や `browser-ice-address` を変更しません。CloudEx DevKit のペアリングはブラウザー URL のルーティングとは別です。`--no-insight` と `--minimal` はルーティング宣言を書き込みません。既存のコンテナを再利用する場合、この作成時の初期化は実行されません。
+
+ホスト型 ALB/共有イングレスのプロビジョニングでは、**SDK セットアップの後**にルーティングの上書きを適用する必要があります。公開 URL を `launch-url` に、`proxy` を `url-routing` に書き込み、Insight を再起動して `/api/health` と `/api/viewer-url` を確認してください。SDK コンテナを再作成するとルーティングは `direct` にリセットされるため、ホスティングのプロビジョニング手順で毎回 `proxy` を再適用する必要があります。この統合はホスティングチームが担当します。CloudEx の転送と ALB/nginx のルールは別途構成します。
+
+古いローカルコンテナが Insight のバックエンドポートのビューアー URL を返して 404 になる場合は、`/home/docker/.insight-config/url-routing` に `direct` を書き込み、そのコンテナ内で `insight-admin restart` を実行してください。このローカル修復をホスト型 ALB/プロキシ環境には適用しないでください。

@@ -92,3 +92,13 @@ neat --json
 ```
 
 브라우저에서 Insight를 열 수 없는 경우, 호스트 브라우저에서 `mainUI` 호스트 포트에 접근할 수 있는지 확인하고, SDK 컨테이너가 `sima-cli sdk setup`에 의해 시작되었는지 확인하십시오.
+
+## Insight 뷰어 URL 라우팅
+
+Insight가 활성화된 SDK 컨테이너를 생성하거나 다시 생성할 때 SDK 설정은 호스트에 마운트된 `insight-config/url-routing` 파일에 `direct`를 기록합니다. 이 값은 `proxy`를 포함한 이전 라우팅 선언을 대체합니다. 명령줄 매개변수는 필요하지 않습니다. Insight는 로컬 실행 힌트를 공유 프록시 원본으로 처리하는 대신 브라우저 요청 호스트와 게시된 `videoUI` 포트를 사용하여 뷰어 URL을 구성합니다.
+
+SDK 설정은 `launch-url` 또는 `browser-ice-address`를 변경하지 않습니다. CloudEx DevKit 페어링은 브라우저 URL 라우팅과 별개입니다. `--no-insight` 및 `--minimal`은 라우팅 선언을 기록하지 않습니다. 기존 컨테이너를 재사용할 때는 이 생성 시 초기화를 실행하지 않습니다.
+
+호스팅된 ALB/공유 인그레스 프로비저닝은 **SDK 설정 후**에 라우팅 재정의를 적용해야 합니다. 공개 URL을 `launch-url`에, `proxy`를 `url-routing`에 기록한 다음 Insight를 다시 시작하고 `/api/health` 및 `/api/viewer-url`을 확인하십시오. SDK 컨테이너를 다시 생성하면 라우팅이 `direct`로 초기화되므로 호스팅 프로비저닝 단계는 매번 `proxy`를 다시 적용해야 합니다. 이 통합은 호스팅 팀이 담당합니다. CloudEx 전송과 ALB/nginx 규칙은 별도로 구성됩니다.
+
+이전 로컬 컨테이너가 Insight 백엔드 포트의 뷰어 URL을 반환하여 404 오류가 발생하는 경우 `/home/docker/.insight-config/url-routing`에 `direct`를 기록하고 해당 컨테이너 안에서 `insight-admin restart`를 실행하십시오. 이 로컬 복구 방법을 호스팅된 ALB/프록시 환경에 적용하지 마십시오.

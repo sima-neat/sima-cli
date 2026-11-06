@@ -42,6 +42,7 @@ def select_browser_extensions(auto_install: bool, allow_prompt: bool) -> List[st
             "Web UI: search for Codex or Claude and choose Install.\n\n"
             "The SiMa Neat extension is installed automatically.",
             title="Codex and Claude Extensions (optional)",
+            width=88,
             border_style="green",
             style="green",
             expand=False,

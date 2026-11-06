@@ -1098,19 +1098,20 @@ def resolve_edgematic_studio_choice(
 
     console.print(
         Panel(
-            "[yellow]This SDK can install Edgematic Studio as an optional extension.[/yellow]\n\n"
-            "Edgematic Studio is a browser-based development environment for building "
-            "and running AI applications with an AI agent, an editor, and DevKit tooling "
-            "in one place.\n"
-            "It will be installed on your host in the SDK extensions directory "
-            "mounted into this container at /sdk-extensions.\n"
-            "The download is small, but it also fetches a coding-agent CLI and its skills, "
-            f"and setup publishes its HTTP port ({EDGEMATIC_STUDIO_CONTAINER_PORT}) on this host.\n"
-            "It is a preview: its documentation and support are still in progress, so it is "
-            "installed after confirmation; -y accepts automatically. "
-            "Use --no-edgematic-studio to skip it, including with -y.\n\n"
-            "Setup has reserved its HTTP port so you can install it later. Answering no "
-            "skips installation. To install later, run this in the SDK container shell:\n"
+            "[yellow]Edgematic Studio is an optional SDK extension.[/yellow]\n\n"
+            "It is a browser-based development environment for building and running AI "
+            "applications. It includes an editor, an AI coding agent, and DevKit tools.\n\n"
+            "Setup installs Studio in the SDK extensions directory on your host. "
+            "The container uses this directory at /sdk-extensions. The installer also "
+            "downloads a coding agent CLI and its skills.\n\n"
+            "Studio is a preview. Documentation and support are still in progress.\n\n"
+            "Choose Yes to install now, or No to skip. -y accepts automatically. "
+            "Use --no-edgematic-studio to skip installation and its port mapping, "
+            "even with -y.\n\n"
+            f"Setup reserves a host port for Studio's HTTP service (container port "
+            f"{EDGEMATIC_STUDIO_CONTAINER_PORT}). If you skip installation here, the port "
+            "stays mapped so you can install Studio later.\n\n"
+            "To install later, run this in the SDK container terminal:\n"
             f"sima-cli {shlex.join(extension_install_args)}",
             title="Edgematic Studio Extension (optional)",
             width=88,

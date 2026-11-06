@@ -748,13 +748,9 @@ def _write_port_map(config_dir: Path, port_map: Dict) -> Path:
     return path
 
 
-def _write_insight_url_routing(config_dir: Path, routing: Optional[str]) -> None:
-    """Only an explicit setup override may change Insight's routing contract."""
-    if routing is None:
-        return
-    if routing not in {"direct", "proxy"}:
-        raise RuntimeError("Insight URL routing must be 'direct' or 'proxy'.")
-    (config_dir / "url-routing").write_text(routing + "\n", encoding="utf-8")
+def _write_insight_url_routing(config_dir: Path) -> None:
+    """SDK setup starts in direct mode; hosted provisioning applies proxy later."""
+    (config_dir / "url-routing").write_text("direct\n", encoding="utf-8")
 
 
 def _generate_code_ui_token() -> str:
@@ -869,7 +865,6 @@ def prepare_neat_container_run(
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
     publish_edgematic_studio_port: bool = False,
     code_server_without_password: bool = False,
-    insight_url_routing: Optional[str] = None,
 ) -> NeatRunConfig:
     no_insight = no_insight or minimal
     container_dir = Path(workspace) / f".{container_name}"
@@ -910,7 +905,7 @@ def prepare_neat_container_run(
         if isinstance(code_ui_https, dict):
             code_ui_url = f"https://localhost:{int(code_ui_https['host'])}"
     port_map_path = _write_port_map(config_dir, port_map)
-    _write_insight_url_routing(config_dir, insight_url_routing)
+    _write_insight_url_routing(config_dir)
     return NeatRunConfig(
         port_map=port_map,
         port_args=port_args,

@@ -348,12 +348,6 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     help="Start Neat SDK without Insight UI/video/WebRTC port mappings.",
 )
 @click.option(
-    "--insight-url-routing",
-    type=click.Choice(["direct", "proxy"]),
-    default=None,
-    help="Override Insight URL routing for newly created SDK containers. Use direct for local access; proxy for a shared ingress. Omit to preserve existing routing behavior.",
-)
-@click.option(
     "--insight-video-channels",
     type=click.IntRange(1, MAX_INSIGHT_VIDEO_CHANNELS),
     default=DEFAULT_INSIGHT_VIDEO_CHANNELS,
@@ -436,7 +430,6 @@ def setup(
     code_server_without_password,
     no_insight,
     insight_video_channels,
-    insight_url_routing,
     no_model_sdk,
     edgematic_studio,
     no_edgematic_studio,
@@ -483,7 +476,6 @@ def setup(
             code_server_without_password=code_server_without_password,
             no_insight=no_insight,
             insight_video_channels=insight_video_channels,
-            insight_url_routing=insight_url_routing,
             no_model_sdk=no_model_sdk,
             edgematic_studio=edgematic_studio,
             no_edgematic_studio=no_edgematic_studio,

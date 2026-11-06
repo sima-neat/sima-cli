@@ -96,31 +96,26 @@ If the browser cannot open Insight, verify that the `mainUI` host port is reacha
 
 ## Insight viewer URL routing
 
-SDK setup leaves Insight routing unchanged by default, including on fresh
-configurations. This preserves local SDK, CloudEx, and hosted ALB/proxy behavior.
-A missing `url-routing` file retains Insight's existing fallback: a configured
-`launch-url` supplies the proxy origin; otherwise request host and service ports
-are used. No hostname or port-number heuristic selects a routing mode.
+When creating or recreating an SDK container with Insight enabled, SDK setup
+writes `direct` to the host-mounted `insight-config/url-routing` file. This
+replaces any previous routing declaration, including `proxy`. No command-line
+parameter is needed. Insight builds viewer URLs from the browser request host
+and the published `videoUI` port instead of treating a local launch hint as a
+shared proxy origin.
 
-When creating or recreating a local SDK container, explicitly select direct
-routing if its local launch hint would otherwise send the viewer to the backend
-port and return a 404:
+SDK setup does not change `launch-url` or `browser-ice-address`. CloudEx DevKit
+pairing remains separate from browser URL routing. `--no-insight` and `--minimal`
+do not write a routing declaration. Reusing an existing container does not run
+this creation-time initialization.
 
-```bash
-sima-cli sdk setup --insight-url-routing direct
-```
+Hosted ALB/shared-ingress provisioning must apply its routing override **after
+SDK setup**: write the public URL to `launch-url` and `proxy` to `url-routing`, then
+restart Insight and verify `/api/health` and `/api/viewer-url`. Recreating the SDK
+container resets routing to `direct`, so the hosted provisioning step must
+reapply `proxy` each time. The hosting team owns that integration. CloudEx
+transport and ALB/nginx rules are configured separately.
 
-This writes `direct` to the host-mounted `insight-config/url-routing` file before
-the container starts. Viewer URLs use the browser request host and the published
-`videoUI` port. The option requires a newly created container; choosing to reuse
-an existing one is rejected. To repair an existing local container in place,
-write `direct` to `/home/docker/.insight-config/url-routing` and run
-`insight-admin restart` inside that container. Verify `/api/health` and
-`/api/viewer-url` after restarting.
-
-Hosted ALB/shared-ingress configurations remain the hosting team's responsibility.
-Do not opt into direct routing there. The explicit `proxy` choice is also
-available when provisioning a shared ingress; omitting the option preserves any
-existing routing file and the legacy missing-file behavior. CloudEx DevKit
-pairing does not change URL routing, launch URLs, or browser ICE configuration.
-No Arthas change or deployment is required by this CLI fix.
+For an older local container that returns a viewer URL on Insight's backend
+port and gets a 404, write `direct` to `/home/docker/.insight-config/url-routing`
+and run `insight-admin restart` inside that container. Do not apply this local
+repair to a hosted ALB/proxy environment.

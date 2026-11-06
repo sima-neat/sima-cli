@@ -2241,7 +2241,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertTrue(token_cache_path.exists())
             self.assertEqual(token_cache_path.stat().st_mode & 0o777, 0o600)
             self.assertIn("insight-config", config.config_host_dir)
-            self.assertFalse((Path(config.config_host_dir) / "url-routing").exists())
+            self.assertEqual((Path(config.config_host_dir) / "url-routing").read_text(), "direct\n")
             self.assertIn("sdk-cert", config.cert_host_dir)
             self.assertEqual(config.port_map["schema"], "sima.neat.port-map.v1")
             self.assertEqual(config.port_map["insightVideoChannels"], 12)
@@ -3317,14 +3317,6 @@ table ip6 nm-shared-enx6c1ff720d573 {
     def test_setup_forwards_all_extensions_to_new_container(self):
         start_container = self._run_setup_for_studio(noninteractive=True, all_extensions=True)
         self.assertTrue(start_container.call_args.kwargs["all_extensions"])
-
-    def test_setup_forwards_explicit_insight_routing_to_new_container(self):
-        start_container = self._run_setup_for_studio(insight_url_routing="direct")
-        self.assertEqual(start_container.call_args.kwargs["insight_url_routing"], "direct")
-
-    def test_setup_rejects_routing_override_when_reusing_container(self):
-        with self.assertRaisesRegex(RuntimeError, "requires recreating"):
-            self._run_setup_on_an_existing_studio_container(insight_url_routing="direct")
 
     def test_setup_installs_and_publishes_edgematic_studio_when_requested(self):
         start_container = self._run_setup_for_studio(

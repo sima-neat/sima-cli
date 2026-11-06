@@ -494,11 +494,11 @@ class TestSdkImageDetection(unittest.TestCase):
             self.assertEqual(extensions_dir, str((Path(tmpdir) / "sima-sdk-extensions").resolve()))
             self.assertTrue(Path(extensions_dir).is_dir())
 
-    def test_setup_sdk_extensions_without_model_compiler_skips_disk_check(self):
+    def test_setup_sdk_extensions_without_model_compiler_shows_available_space(self):
         with TemporaryDirectory() as tmpdir:
             with patch("sima_cli.sdk.install.platform.machine", return_value="x86_64"), \
                  patch("sima_cli.sdk.install.Path.home", return_value=Path(tmpdir)), \
-                 patch("sima_cli.sdk.install.shutil.disk_usage", side_effect=AssertionError("should not check disk")), \
+                 patch("sima_cli.sdk.install.shutil.disk_usage", return_value=Mock(free=30 * 1024 ** 3)), \
                  patch("builtins.input", side_effect=AssertionError("should not prompt")):
                 extensions_dir = _setup_sdk_extensions(
                     ["ghcr.io/sima-neat/sdk:latest"],

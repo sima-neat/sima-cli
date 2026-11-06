@@ -920,18 +920,37 @@ def _setup_sdk_extensions(
         return ""
 
     default_extensions_dir = Path.home() / "sima-sdk-extensions"
-    if for_model_compiler:
-        home_usage = shutil.disk_usage(Path.home())
-        click.echo(
-            "ℹ️  Model Compiler extension may require about "
-            f"{MODEL_SDK_EXTENSION_REQUIRED_GB} GB of additional disk space. "
-            f"Available under {Path.home()}: {_format_gb(home_usage.free)}."
+    home_usage = shutil.disk_usage(Path.home())
+    space_note = (
+        f"Model Compiler may need about {MODEL_SDK_EXTENSION_REQUIRED_GB} GB of "
+        "additional space. Allow extra space for Studio and other extensions."
+        if for_model_compiler else
+        "The space needed depends on the extensions you install. Studio also "
+        "downloads a coding agent CLI and its skills."
+    )
+    Console().print(
+        Panel(
+            "Confirm the SDK extension install location on your host machine.\n\n"
+            "Model Compiler and Edgematic Studio use this directory if you choose "
+            "to install them. The SDK container accesses the same files at "
+            "/sdk-extensions.\n\n"
+            f"Default host directory: {default_extensions_dir}\n"
+            f"Free space on this filesystem: {_format_gb(home_usage.free)}\n\n"
+            f"{space_note}\n\n"
+            "Press Enter to use the default directory, or enter another host "
+            "directory with enough free space. -y or --noninteractive uses the default.",
+            title="SDK Extension Install Location",
+            width=88,
+            border_style="green",
+            style="green",
+            expand=False,
         )
-        if home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
-            click.secho(
-                "⚠️  The default home filesystem may not have enough free space for the Model Compiler extension.",
-                fg="yellow",
-            )
+    )
+    if for_model_compiler and home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
+        click.secho(
+            "⚠️  The default home filesystem may not have enough free space for the Model Compiler extension.",
+            fg="yellow",
+        )
 
     if noninteractive or yes_to_all:
         extensions_dir = default_extensions_dir

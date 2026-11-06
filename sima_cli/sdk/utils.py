@@ -2697,6 +2697,7 @@ def start_docker_container(
     all_extensions=False,
     container_build=False,
     code_server_without_password=False,
+    insight_url_routing=None,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -2866,6 +2867,7 @@ def start_docker_container(
                 noninteractive=noninteractive,
                 no_insight=no_insight,
                 insight_video_channels=insight_video_channels,
+                insight_url_routing=insight_url_routing,
                 minimal=minimal,
                 reserved_ports=reserved_ports,
                 publish_edgematic_studio_port=publish_edgematic_studio_port,

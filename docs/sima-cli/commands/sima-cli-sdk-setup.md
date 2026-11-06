@@ -19,6 +19,7 @@ sima-cli sdk setup [OPTIONS]
 | `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>'. |
 | `--code-server-without-password` | Disable code-server password authentication and bind editor ports to 127.0.0.1 for an authenticated gateway. Requires container recreation. |
 | `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
+| `--insight-url-routing` | Override Insight URL routing for newly created SDK containers. Use direct for local access; proxy for a shared ingress. Omit to preserve existing routing behavior. |
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
 | `--all-extensions` | Install Codex and Claude VS Code extensions without prompting. Neat is installed automatically. SDK_SKIP_CODING_AGENT_INSTALL overrides this option. |
@@ -67,6 +68,11 @@ Options:
                                   recreation.
   --no-insight                    Start Neat SDK without Insight
                                   UI/video/WebRTC port mappings.
+  --insight-url-routing [direct|proxy]
+                                  Override Insight URL routing for newly
+                                  created SDK containers. Use direct for local
+                                  access; proxy for a shared ingress. Omit to
+                                  preserve existing routing behavior.
   --insight-video-channels INTEGER RANGE
                                   Number of Insight video channels to
                                   configure (four exposed ports per channel).

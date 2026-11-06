@@ -1179,6 +1179,7 @@ def setup_and_start(
     no_container_registry: bool = False,
     container_registry_port: Optional[int] = None,
     code_server_without_password: bool = False,
+    insight_url_routing: Optional[str] = None,
 ):
     """Main entry for SDK setup and container start."""
 
@@ -1188,6 +1189,12 @@ def setup_and_start(
         raise RuntimeError(
             f"--insight-video-channels must be between 1 and {MAX_INSIGHT_VIDEO_CHANNELS}."
         )
+
+    if insight_url_routing is not None:
+        if insight_url_routing not in {"direct", "proxy"}:
+            raise RuntimeError("Insight URL routing must be 'direct' or 'proxy'.")
+        if no_insight or minimal:
+            raise RuntimeError("--insight-url-routing cannot be combined with --no-insight or --minimal.")
 
     if all_extensions and minimal:
         raise RuntimeError("--all-extensions cannot be combined with --minimal.")
@@ -1325,6 +1332,9 @@ def setup_and_start(
     # Resolved once, on the first Neat container that is actually created.
     studio_choice = None
 
+    if insight_url_routing is not None and any(not is_neat_sdk_image(img) for img in selected_images):
+        raise RuntimeError("--insight-url-routing requires Neat SDK images.")
+
     for img in selected_images:
         container_build = img in container_build_images
         container_name = sanitize_container_name(img)
@@ -1356,6 +1366,9 @@ def setup_and_start(
             yes_to_all=(yes_to_all or noninteractive),
             before_remove=before_remove,
         )
+
+        if insight_url_routing is not None and existing_container is not None:
+            raise RuntimeError("--insight-url-routing requires recreating the SDK container.")
 
         if existing_container == None:
             # Get image configuration
@@ -1394,6 +1407,7 @@ def setup_and_start(
                 yes_to_all=yes_to_all,
                 no_insight=skip_insight,
                 insight_video_channels=insight_video_channels,
+                insight_url_routing=insight_url_routing,
                 no_model_sdk=skip_model_sdk,
                 install_edgematic_studio=install_studio,
                 publish_edgematic_studio_port=publish_studio_port,

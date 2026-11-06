@@ -748,19 +748,13 @@ def _write_port_map(config_dir: Path, port_map: Dict) -> Path:
     return path
 
 
-def _initialize_insight_url_routing(config_dir: Path) -> None:
-    """Declare direct routing for fresh local SDKs; preserve hosted configuration."""
-    # A pre-existing launch URL without a routing declaration belongs to the
-    # legacy shared-proxy contract. Do not migrate it by guessing from its host
-    # or port. Hosted provisioners explicitly write proxy after local setup.
-    if (config_dir / "launch-url").exists():
+def _write_insight_url_routing(config_dir: Path, routing: Optional[str]) -> None:
+    """Only an explicit setup override may change Insight's routing contract."""
+    if routing is None:
         return
-    try:
-        with (config_dir / "url-routing").open("x", encoding="utf-8") as handle:
-            handle.write("direct\n")
-    except FileExistsError:
-        # Preserve explicit direct/proxy mode, including after hosted setup.
-        pass
+    if routing not in {"direct", "proxy"}:
+        raise RuntimeError("Insight URL routing must be 'direct' or 'proxy'.")
+    (config_dir / "url-routing").write_text(routing + "\n", encoding="utf-8")
 
 
 def _generate_code_ui_token() -> str:
@@ -875,6 +869,7 @@ def prepare_neat_container_run(
     insight_video_channels: int = DEFAULT_INSIGHT_VIDEO_CHANNELS,
     publish_edgematic_studio_port: bool = False,
     code_server_without_password: bool = False,
+    insight_url_routing: Optional[str] = None,
 ) -> NeatRunConfig:
     no_insight = no_insight or minimal
     container_dir = Path(workspace) / f".{container_name}"
@@ -915,7 +910,7 @@ def prepare_neat_container_run(
         if isinstance(code_ui_https, dict):
             code_ui_url = f"https://localhost:{int(code_ui_https['host'])}"
     port_map_path = _write_port_map(config_dir, port_map)
-    _initialize_insight_url_routing(config_dir)
+    _write_insight_url_routing(config_dir, insight_url_routing)
     return NeatRunConfig(
         port_map=port_map,
         port_args=port_args,

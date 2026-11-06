@@ -1113,6 +1113,7 @@ def resolve_edgematic_studio_choice(
             "skips installation. To install later, run this in the SDK container shell:\n"
             f"sima-cli {shlex.join(extension_install_args)}",
             title="Edgematic Studio Extension (optional)",
+            width=88,
             border_style="green",
             style="green",
             expand=False,

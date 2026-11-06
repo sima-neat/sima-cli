@@ -2241,6 +2241,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             self.assertTrue(token_cache_path.exists())
             self.assertEqual(token_cache_path.stat().st_mode & 0o777, 0o600)
             self.assertIn("insight-config", config.config_host_dir)
+            self.assertEqual((Path(config.config_host_dir) / "url-routing").read_text(), "direct\n")
             self.assertIn("sdk-cert", config.cert_host_dir)
             self.assertEqual(config.port_map["schema"], "sima.neat.port-map.v1")
             self.assertEqual(config.port_map["insightVideoChannels"], 12)

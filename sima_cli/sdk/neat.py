@@ -748,6 +748,21 @@ def _write_port_map(config_dir: Path, port_map: Dict) -> Path:
     return path
 
 
+def _initialize_insight_url_routing(config_dir: Path) -> None:
+    """Declare direct routing for fresh local SDKs; preserve hosted configuration."""
+    # A pre-existing launch URL without a routing declaration belongs to the
+    # legacy shared-proxy contract. Do not migrate it by guessing from its host
+    # or port. Hosted provisioners explicitly write proxy after local setup.
+    if (config_dir / "launch-url").exists():
+        return
+    try:
+        with (config_dir / "url-routing").open("x", encoding="utf-8") as handle:
+            handle.write("direct\n")
+    except FileExistsError:
+        # Preserve explicit direct/proxy mode, including after hosted setup.
+        pass
+
+
 def _generate_code_ui_token() -> str:
     return secrets.token_urlsafe(CODE_UI_SECRET_BYTES)
 
@@ -900,6 +915,7 @@ def prepare_neat_container_run(
         if isinstance(code_ui_https, dict):
             code_ui_url = f"https://localhost:{int(code_ui_https['host'])}"
     port_map_path = _write_port_map(config_dir, port_map)
+    _initialize_insight_url_routing(config_dir)
     return NeatRunConfig(
         port_map=port_map,
         port_args=port_args,

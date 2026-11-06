@@ -92,3 +92,24 @@ neat --json
 ```
 
 If the browser cannot open Insight, verify that the `mainUI` host port is reachable from the host browser and that the SDK container was started by `sima-cli sdk setup`.
+
+
+## Insight viewer URL routing
+
+New local SDK containers declare `direct` routing in the host-mounted
+`insight-config/url-routing` file. Insight builds viewer URLs from the browser
+request host and the published `videoUI` port. CloudEx device pairing does not
+change this setting: the DevKit transport and browser URL routing are independent.
+
+Hosted environments behind an ALB or reverse proxy must explicitly write `proxy`
+with their public `launch-url` before restarting Insight. The proxy must route the
+viewer, WHIP, and MJPEG paths to their respective services. SDK setup preserves
+an existing routing file. It also preserves the legacy proxy default when a
+`launch-url` already exists without a routing file; it does not infer routing
+from hostnames or port numbers.
+
+For an older local SDK that returns a viewer URL on Insight's backend port and
+gets a 404, write `direct` to `/home/docker/.insight-config/url-routing` in that
+container's mounted config directory, then run `insight-admin restart` inside
+the container. This migration is for direct local access. Do not apply it to an
+ALB/proxy environment. Verify `/api/health` and `/api/viewer-url` after restarting.

@@ -92,3 +92,30 @@ neat --json
 ```
 
 If the browser cannot open Insight, verify that the `mainUI` host port is reachable from the host browser and that the SDK container was started by `sima-cli sdk setup`.
+
+
+## Insight viewer URL routing
+
+When creating or recreating an SDK container with Insight enabled, SDK setup
+writes `direct` to the host-mounted `insight-config/url-routing` file. This
+replaces any previous routing declaration, including `proxy`. No command-line
+parameter is needed. Insight builds viewer URLs from the browser request host
+and the published `videoUI` port instead of treating a local launch hint as a
+shared proxy origin.
+
+SDK setup does not change `launch-url` or `browser-ice-address`. CloudEx DevKit
+pairing remains separate from browser URL routing. `--no-insight` and `--minimal`
+do not write a routing declaration. Reusing an existing container does not run
+this creation-time initialization.
+
+Hosted ALB/shared-ingress provisioning must apply its routing override **after
+SDK setup**: write the public URL to `launch-url` and `proxy` to `url-routing`, then
+restart Insight and verify `/api/health` and `/api/viewer-url`. Recreating the SDK
+container resets routing to `direct`, so the hosted provisioning step must
+reapply `proxy` each time. The hosting team owns that integration. CloudEx
+transport and ALB/nginx rules are configured separately.
+
+For an older local container that returns a viewer URL on Insight's backend
+port and gets a 404, write `direct` to `/home/docker/.insight-config/url-routing`
+and run `insight-admin restart` inside that container. Do not apply this local
+repair to a hosted ALB/proxy environment.

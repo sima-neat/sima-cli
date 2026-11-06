@@ -52,7 +52,7 @@ from sima_cli.sdk.utils import (
     _container_session_owners,
     sanitize_container_name,
     ensure_simasdkbridge_network,
-    resolve_edgematic_studio_choice,
+    _edgematic_studio_arch,
     ensure_codex_vscode_extension_installed,
     start_docker_container,
     bootstrap_devkit_container,
@@ -920,18 +920,37 @@ def _setup_sdk_extensions(
         return ""
 
     default_extensions_dir = Path.home() / "sima-sdk-extensions"
-    if for_model_compiler:
-        home_usage = shutil.disk_usage(Path.home())
-        click.echo(
-            "ℹ️  Model Compiler extension may require about "
-            f"{MODEL_SDK_EXTENSION_REQUIRED_GB} GB of additional disk space. "
-            f"Available under {Path.home()}: {_format_gb(home_usage.free)}."
+    home_usage = shutil.disk_usage(Path.home())
+    space_note = (
+        f"Model Compiler may need about {MODEL_SDK_EXTENSION_REQUIRED_GB} GB of "
+        "additional space. Allow extra space for Studio and other extensions."
+        if for_model_compiler else
+        "The space needed depends on the extensions you install. Studio also "
+        "downloads a coding agent CLI and its skills."
+    )
+    Console().print(
+        Panel(
+            "Confirm the SDK extension install location on your host machine.\n\n"
+            "Model Compiler and Edgematic Studio use this directory if you choose "
+            "to install them. The SDK container accesses the same files at "
+            "/sdk-extensions.\n\n"
+            f"Default host directory: {default_extensions_dir}\n"
+            f"Free space on this filesystem: {_format_gb(home_usage.free)}\n\n"
+            f"{space_note}\n\n"
+            "Press Enter to use the default directory, or enter another host "
+            "directory with enough free space. -y or --noninteractive uses the default.",
+            title="SDK Extension Install Location",
+            width=88,
+            border_style="green",
+            style="green",
+            expand=False,
         )
-        if home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
-            click.secho(
-                "⚠️  The default home filesystem may not have enough free space for the Model Compiler extension.",
-                fg="yellow",
-            )
+    )
+    if for_model_compiler and home_usage.free < MODEL_SDK_EXTENSION_REQUIRED_GB * 1024 ** 3:
+        click.secho(
+            "⚠️  The default home filesystem may not have enough free space for the Model Compiler extension.",
+            fg="yellow",
+        )
 
     if noninteractive or yes_to_all:
         extensions_dir = default_extensions_dir
@@ -1322,9 +1341,6 @@ def setup_and_start(
     if minimal and any(is_neat_sdk_image(img) for img in selected_images):
         click.echo("ℹ️  Skipping Insight setup because --minimal was specified.")
 
-    # Resolved once, on the first Neat container that is actually created.
-    studio_choice = None
-
     for img in selected_images:
         container_build = img in container_build_images
         container_name = sanitize_container_name(img)
@@ -1368,17 +1384,19 @@ def setup_and_start(
             if config["port_mapping_required"]:
                 create_config_json(file_path="config.json", selected_images=selected_images, port=port)
 
-            if skip_insight or not is_neat_sdk_image(img):
-                install_studio, publish_studio_port = False, False
-            else:
-                if studio_choice is None:
-                    studio_choice = resolve_edgematic_studio_choice(
-                        install_requested=edgematic_studio,
-                        port_only=edgematic_studio_port,
-                        interactive=not (noninteractive or yes_to_all),
-                        skip_requested=no_edgematic_studio,
-                    )
-                install_studio, publish_studio_port = studio_choice
+            # Docker port mappings must be reserved before launch. The Studio
+            # confirmation itself runs after the other extensions are configured.
+            studio_supported = (
+                is_neat_sdk_image(img) and not skip_insight and not no_edgematic_studio
+                and bool(_edgematic_studio_arch())
+            )
+            install_studio = studio_supported and edgematic_studio
+            prompt_studio = studio_supported and not (
+                edgematic_studio or edgematic_studio_port
+            ) and (yes_to_all or not noninteractive)
+            publish_studio_port = studio_supported and (
+                install_studio or prompt_studio or edgematic_studio_port
+            )
 
             start_docker_container(
                 uid=uid,
@@ -1396,6 +1414,7 @@ def setup_and_start(
                 insight_video_channels=insight_video_channels,
                 no_model_sdk=skip_model_sdk,
                 install_edgematic_studio=install_studio,
+                prompt_edgematic_studio=prompt_studio,
                 publish_edgematic_studio_port=publish_studio_port,
                 minimal=minimal,
                 all_extensions=all_extensions,

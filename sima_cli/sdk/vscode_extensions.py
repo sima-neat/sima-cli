@@ -9,6 +9,7 @@ from typing import Dict, List, Mapping, Optional
 
 from InquirerPy import inquirer
 from rich.console import Console
+from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 
@@ -32,7 +33,21 @@ def select_browser_extensions(auto_install: bool, allow_prompt: bool) -> List[st
     """Choose optional extensions without prompting in automation mode."""
     if not auto_install and not allow_prompt:
         return []
-    print("Codex Extension and Claude Extension provide optional AI coding assistance.")
+    Console().print(
+        Panel(
+            "Codex and Claude provide optional AI coding assistance in the "
+            "code-server Web UI.\n\n"
+            "You can skip this step by leaving both extensions unchecked. "
+            "Install them later from the Extensions view in the code-server "
+            "Web UI: search for Codex or Claude and choose Install.\n\n"
+            "The SiMa Neat extension is installed automatically.",
+            title="Codex and Claude Extensions (optional)",
+            width=88,
+            border_style="green",
+            style="green",
+            expand=False,
+        )
+    )
     if auto_install:
         return [choice["value"] for choice in EXTENSION_CHOICES]
     return inquirer.checkbox(

@@ -518,3 +518,42 @@ def test_initial_ssh_failure_skips_remote_changes(error, capsys):
     output = capsys.readouterr().out
     assert '192.0.2.1 over SSH' in output
     assert 'no boot settings were changed' in output
+
+
+@pytest.mark.parametrize('discovery_timeout', [True, False])
+def test_only_pre_flash_discovery_timeout_returns_to_manual_prompt(tmp_path, discovery_timeout):
+    (tmp_path / 'netboot.scr.uimg').write_bytes(b'boot script')
+    assets = netboot.NetbootAssets(str(tmp_path), ['root.img.gz'], None, str(tmp_path))
+    server = MagicMock()
+    server.is_running.wait.return_value = True
+    failure = (netboot.NetbootDiscoveryTimeout('Discovery timed out') if discovery_timeout
+               else click.ClickException('Automatic eMMC flash failed'))
+
+    def manual_prompt(*args, **kwargs):
+        # Recovery must keep the server and monitor manager alive until the user quits.
+        server.stop.assert_not_called()
+        manager.return_value.shutdown.assert_not_called()
+
+    with patch.object(netboot, 'get_environment_type', return_value=('host', 'mac')), \
+            patch.object(netboot, '_prepare_netboot_assets', return_value=assets), \
+            patch.object(netboot, '_acquire_cache_lease'), \
+            patch.object(netboot, '_release_cache_lease'), \
+            patch.object(netboot, 'get_local_ip_candidates', return_value=[('en0', '192.0.2.10')]), \
+            patch.object(netboot, 'InteractiveTftpServer', return_value=server), \
+            patch.object(netboot, 'ClientManager') as manager, \
+            patch.object(netboot.threading, 'Thread') as thread, \
+            patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
+            patch.object(device, 'server_address', return_value='192.0.2.10'), \
+            patch.object(device, 'configure_and_reboot', return_value=True), \
+            patch.object(netboot, 'auto_flash', side_effect=failure), \
+            patch.object(netboot, 'run_cli', side_effect=manual_prompt) as prompt:
+        thread.return_value.is_alive.return_value = False
+        if discovery_timeout:
+            netboot.setup_netboot('3.0', 'modalix', autoflash=True)
+            prompt.assert_called_once()
+        else:
+            with pytest.raises(click.ClickException, match='eMMC flash failed'):
+                netboot.setup_netboot('3.0', 'modalix', autoflash=True)
+            prompt.assert_not_called()
+    server.stop.assert_called_once_with(now=True)
+    manager.return_value.shutdown.assert_called_once()

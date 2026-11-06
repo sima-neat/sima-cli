@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import socket
+import ipaddress
+import select
+import threading
 import platform
 import subprocess
 import json
@@ -10,6 +13,8 @@ import psutil
 from typing import List, Dict
 from rich.console import Console
 from rich.table import Table
+from sima_cli.utils.net import get_local_ip_candidates
+from sima_cli.discover.identity import valid_mac
 from sima_cli.update.remote import get_remote_board_info
 from sima_cli.discover.linuxll import suggest_and_switch_to_linklocal
 from sima_cli.utils.pcie import get_sima_pcie_devices, maybe_run_pcie_throughput_test
@@ -92,74 +97,75 @@ def get_sima_devices_from_arp():
 # ─────────────────────────────────────────────────────────────
 # Multicast Discovery
 # ─────────────────────────────────────────────────────────────
-def discover_multicast():
-    """Cross-platform multicast discovery over all physical interfaces (no netifaces)."""
-    console.print("[cyan]📡 Discovering nearby SiMa.ai DevKits via multicast...[/cyan]")
+def query_multicast(*, iface=None, timeout=TIMEOUT, cancel_event=None, require_mac=True):
+    """Query local interfaces within one deadline, without SSH or UI effects.
 
-    # 1️⃣ Collect IPv4 interfaces
-    iface_candidates = []
-    if_stats = psutil.net_if_stats()
-
-    for iface, addrs in psutil.net_if_addrs().items():
-        # Skip interfaces that are down or missing stats info
-        stats = if_stats.get(iface)
-        if not stats or not stats.isup:
-            continue
-
-        for addr in addrs:
-            if addr.family == socket.AF_INET and not addr.address.startswith("127."):
-                name = iface.lower()
-                if name.startswith(("en", "eth", "lan", "ethernet")):
-                    iface_candidates.append((iface, addr.address))
-
-    if not iface_candidates:
-        console.print("[yellow]⚠️  No active physical interfaces found.[/yellow]")
-        return []
-
-    responses, seen_ips = [], set()
-
-    # 2️⃣ Send multicast probe on each candidate interface
-    for iface, iface_ip in iface_candidates:
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.settimeout(TIMEOUT)
-
+    Keep source port 60000 for compatibility with existing discovery responders.
+    The datagram source is authoritative for the candidate IP, not JSON's IP.
+    """
+    cancel = cancel_event if cancel_event is not None else threading.Event()
+    deadline = time.monotonic() + timeout
+    sockets = {}
+    records = {}
+    try:
+        for name, address in get_local_ip_candidates(include_link_local=True):
+            if cancel.is_set() or time.monotonic() >= deadline:
+                break
+            if iface and name != iface:
+                continue
+            sock = None
             try:
-                sock.bind((iface_ip, SRC_PORT))
-            except OSError:
-                # Some systems require binding to 0.0.0.0 for multicast
-                sock.bind(("0.0.0.0", SRC_PORT))
-
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface_ip))
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
-
-            console.print(f"📤 Sending DISCOVER from [bold]{iface}[/bold] ({iface_ip})")
-            sock.sendto(DISCOVERY_MSG, (MCAST_GRP, MCAST_PORT))
-
-            start = time.time()
-            while time.time() - start < TIMEOUT:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try:
-                    data, addr = sock.recvfrom(2048)
-                    msg = json.loads(data.decode(errors="ignore"))
-                    ip = addr[0]
-                    if ip not in seen_ips:
-                        msg["from"] = ip
-                        msg["iface"] = iface
-                        responses.append(msg)
-                        seen_ips.add(ip)
-                except socket.timeout:
-                    break
-                except Exception:
-                    break
-
+                    sock.bind((address, SRC_PORT))
+                except OSError:
+                    # Preserve the existing discovery fallback for hosts that
+                    # cannot bind the reply port to a particular interface IP.
+                    sock.bind(('0.0.0.0', SRC_PORT))
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(address))
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+                sock.setblocking(False)
+                sock.sendto(DISCOVERY_MSG, (MCAST_GRP, MCAST_PORT))
+                sockets[sock] = name
+            except OSError:
+                if sock is not None:
+                    sock.close()
+        while sockets and not cancel.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select(list(sockets), [], [], min(0.1, remaining))
+            for sock in ready:
+                try:
+                    data, source = sock.recvfrom(2048)
+                    message = json.loads(data.decode('utf-8'))
+                    if not isinstance(message, dict):
+                        continue
+                    mac = valid_mac(message.get('mac'))
+                    ip = str(ipaddress.IPv4Address(source[0]))
+                    if mac or not require_mac:
+                        record = dict(message, ip=ip, mac=mac, iface=sockets[sock])
+                        records[(ip, mac, sockets[sock])] = record
+                except (OSError, ValueError, UnicodeError):
+                    continue
+    finally:
+        for sock in sockets:
             sock.close()
-        except Exception as e:
-            console.print(f"[red]❌ Error on {iface}: {e}[/red]")
-            continue
+    return list(records.values())
 
-    return responses
+
+def discover_multicast():
+    """Interactive presentation of the shared multicast query results."""
+    console.print("[cyan]📡 Discovering nearby SiMa.ai DevKits via multicast...[/cyan]")
+    # Keep the public response shape and one result per IP, including replies
+    # without a MAC. Background callers can retain individual interface records.
+    responses = {}
+    for record in query_multicast(require_mac=False):
+        responses.setdefault(record['ip'], dict(record, mac=record.get('mac') or '-',
+                                               **{'from': record['ip']}))
+    return list(responses.values())
 
 # ─────────────────────────────────────────────────────────────
 # Reusable Table Renderer

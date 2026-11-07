@@ -190,22 +190,31 @@ atomic publication continue to protect downloaded artifacts.
 
 ### CloudEx browser login and allocation
 
-CloudEx uses NeatOps SSO separately from the Developer Portal login. After the
-NeatOps CLI configuration is deployed:
+CloudEx separates external Arthas access from internal Vulcan access. Without
+`-i`, `cloudex login` uses the Developer Portal, and `cloudex logout` clears only
+Developer Portal credentials. External CloudEx device operations report that
+Arthas support is not available yet; they never use Vulcan credentials or sessions.
+
+Use `sima-cli -i cloudex ...` (or `sima-cli cloudex -i ...`) for internal Vulcan
+production. `SIMA_CLI_INTERNAL=1` also selects internal access. Internal commands
+that need NeatOps automatically open browser login if you are signed out or your
+saved login has expired, then continue the original command. Valid credentials
+are refreshed silently. Permission failures and service outages do not start a
+new login. `cloudex login` is also available explicitly. Examples:
 
 ```bash
-sima-cli cloudex login
-sima-cli cloudex devices
-sima-cli cloudex request --duration 4h
+sima-cli -i cloudex login
+sima-cli -i cloudex devices
+sima-cli -i cloudex request --duration 4h
 # Or choose a specific available device:
-# sima-cli cloudex request --device DEVICE_ID --cluster APPLIANCE_ID --duration 1h
-sima-cli cloudex connect --allocation ALLOCATION_ID
-sima-cli cloudex release ALLOCATION_ID
-sima-cli cloudex logout
+# sima-cli -i cloudex request --device DEVICE_ID --cluster APPLIANCE_ID --duration 1h
+sima-cli -i cloudex connect --allocation ALLOCATION_ID
+sima-cli -i cloudex release ALLOCATION_ID
+sima-cli -i cloudex logout
 ```
 
-Use `--environment staging` on each command to use staging; credentials are
-stored separately. Login opens the browser on the same computer as the CLI and
+Use `-i` together with `--environment staging` to select Vulcan staging.
+Production and staging credentials are stored separately. Login opens the browser on the same computer as the CLI and
 waits up to three minutes for the loopback callback on `127.0.0.1:47182`.
 Authentication uses authorization code with PKCE and the dashboard's active
 Cognito app client and SSO provider. The CLI stores tokens in a mode-0600 file

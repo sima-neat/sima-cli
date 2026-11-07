@@ -29,7 +29,7 @@ def _session(session_id, device):
 
 def invoke_main(arguments, **kwargs):
     with patch("sima_cli.cli._initialize_main_context"):
-        return CliRunner().invoke(main, arguments, **kwargs)
+        return CliRunner().invoke(main, ["-i"] + arguments, **kwargs)
 
 
 def test_cloudex_is_hidden_from_root_help_but_directly_available():

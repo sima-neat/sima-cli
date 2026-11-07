@@ -496,15 +496,20 @@ def devices_command(environment):
     """Show NeatOps device availability and your allocation IDs."""
     try:
         inventory = NeatOps(environment).call("GET", "/devkits")
-        table = Table("Device", "ID", "Appliance", "Availability", "Your allocation", "Lease state")
+        table = Table("Device type", "Firmware version", "ID", "Allocation ID", "State")
         allocations = {(a["cluster_id"], a["target_id"]): a for a in inventory.get("allocations", [])}
+        visible_devices = set()
         for d in inventory.get("devices", []):
-            a = allocations.get((d["cluster_id"], d["id"]), {})
-            table.add_row(d["name"], d["id"], d["cluster_id"], "Available" if d["available"] else d.get("reason", "Unavailable"), a.get("session_id", "—"), a.get("status", "—"))
-        console.print(table)
+            device_key = (d["cluster_id"], d["id"])
+            visible_devices.add(device_key)
+            a = d.get("allocation") or allocations.get(device_key, {})
+            table.add_row(d.get("type") or "Unknown", d.get("firmware") or "Unknown", d["id"],
+                          a.get("session_id") or "—", "Available" if d["available"] else "Not available")
         # Allocations can survive an appliance disappearing from inventory.
         for a in inventory.get("allocations", []):
-            console.print("Allocation {}: {} / {} ({})".format(a["session_id"], a["cluster_id"], a["target_id"], a["status"]), markup=False)
+            if (a["cluster_id"], a["target_id"]) not in visible_devices:
+                table.add_row("Unknown", "Unknown", a["target_id"], a["session_id"], "Not available")
+        console.print(table)
     except CloudExError as exc:
         raise click.ClickException(str(exc)) from exc
 

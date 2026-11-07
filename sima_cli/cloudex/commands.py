@@ -534,8 +534,10 @@ def request_command(device, cluster, duration, environment, verbose):
         if device and len(candidates) > 1:
             raise CloudExError("Device name or ID is ambiguous; specify --cluster")
         if not device:
+            table = Table("#", "Device type", "Software version", "ID")
             for index, d in enumerate(candidates, 1):
-                console.print("{}. {} ({}) · {} · {}".format(index, d["name"], d["id"], d["cluster_id"], d.get("firmware") or "unknown firmware"), markup=False)
+                table.add_row(str(index), d.get("type") or "Unknown", d.get("firmware") or "Unknown", d["id"])
+            console.print(table)
             choice = click.prompt("Choose a device", type=click.IntRange(1, len(candidates)))
             selected = candidates[choice - 1]
         else:

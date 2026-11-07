@@ -309,3 +309,50 @@ def test_root_cloudex_login_bypasses_developer_portal_initialization(monkeypatch
     assert result.exit_code == 0, result.output
     initialize.assert_not_called()
     login.assert_called_once()
+
+
+@pytest.mark.parametrize("cleanup_error", ["tunnel API unavailable", "remote tunnel cleanup is still pending"])
+@pytest.mark.parametrize("lease_release_fails", [False, True])
+def test_release_attempts_lease_delete_after_cleanup_failure(
+    command_api, monkeypatch, tmp_path, cleanup_error, lease_release_fails
+):
+    from sima_cli.cloudex.client import SessionStore
+
+    store = SessionStore(tmp_path)
+    session = {"session_id": "b" * 32, "allocation_id": AID, "target": "10.252.1.2"}
+    store.write(session)
+    monkeypatch.setattr(commands, "_store", lambda: store)
+    monkeypatch.setattr(commands, "disconnect_session", Mock(side_effect=CloudExError(cleanup_error)))
+    if lease_release_fails:
+        command_api.call.side_effect = CloudExError("NeatOps unavailable")
+
+    result = CliRunner().invoke(commands.cloudex_group, ["release", AID, "--environment", "staging"])
+
+    assert result.exit_code != 0
+    command_api.call.assert_called_once_with("DELETE", "/devkits/allocations/" + AID)
+    assert cleanup_error in result.output
+    assert "Local retry state retained" in result.output
+    assert "cloudex disconnect" in result.output
+    assert store.list() == [session]
+    if lease_release_fails:
+        assert "Lease release failed: NeatOps unavailable" in result.output
+        assert "Lease released;" not in result.output
+    else:
+        assert "Lease released;" in result.output
+
+
+def test_release_continues_other_tunnel_cleanup_after_one_failure(command_api, monkeypatch):
+    sessions = [{"allocation_id": AID, "session_id": "b" * 32},
+                {"allocation_id": AID, "session_id": "c" * 32}]
+    store = Mock()
+    store.list.return_value = sessions
+    monkeypatch.setattr(commands, "_store", lambda: store)
+    disconnect = Mock(side_effect=[CloudExError("offline"), "disconnected"])
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+
+    result = CliRunner().invoke(commands.cloudex_group, ["release", AID])
+
+    assert result.exit_code != 0
+    assert disconnect.call_count == 2
+    assert [call.args[0] for call in disconnect.call_args_list] == sessions
+    command_api.call.assert_called_once_with("DELETE", "/devkits/allocations/" + AID)

@@ -564,11 +564,21 @@ def release_command(allocation_id, environment):
     try:
         allocation_id = _allocation_id(allocation_id)
         store = _store()
+        failures = []
         for session in store.list():
             if session.get("allocation_id") == allocation_id:
-                with StageProgress("Disconnecting CloudEx") as progress:
-                    disconnect_session(session, store, progress)
-        NeatOps(environment).call("DELETE", "/devkits/allocations/" + allocation_id)
-        console.print("Lease released; device availability returns after cleanup is confirmed.")
+                try:
+                    with StageProgress("Disconnecting CloudEx") as progress:
+                        disconnect_session(session, store, progress)
+                except CloudExError as exc:
+                    failures.append("Tunnel cleanup failed: {}. Local retry state retained; retry cloudex disconnect.".format(exc))
+        try:
+            NeatOps(environment).call("DELETE", "/devkits/allocations/" + allocation_id)
+        except CloudExError as exc:
+            failures.append("Lease release failed: {}".format(exc))
+        else:
+            console.print("Lease released; device availability returns after cleanup is confirmed.")
+        if failures:
+            raise CloudExError("; ".join(failures))
     except CloudExError as exc:
         raise click.ClickException(str(exc)) from exc

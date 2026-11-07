@@ -356,3 +356,110 @@ def test_release_continues_other_tunnel_cleanup_after_one_failure(command_api, m
     assert disconnect.call_count == 2
     assert [call.args[0] for call in disconnect.call_args_list] == sessions
     command_api.call.assert_called_once_with("DELETE", "/devkits/allocations/" + AID)
+
+
+@pytest.fixture
+def auto_login(api):
+    callback = Mock(side_effect=lambda client: client._save(tokens(access_token="new-access")))
+    api.on_login_required = callback
+    return callback
+
+
+@pytest.mark.parametrize("session_state", ["missing", "expired", "refresh-rejected", "policy-changed", "malformed"])
+def test_api_automatically_signs_in_and_continues_original_request(api, auto_login, monkeypatch, session_state):
+    if session_state in {"expired", "refresh-rejected"}:
+        api._save(tokens(expires_in=1, refresh_token=None if session_state == "expired" else "old-refresh"))
+    elif session_state == "policy-changed":
+        api._save(tokens())
+        api.config["auth"]["clientId"] = "updated-sso-client"
+    elif session_state == "malformed":
+        api.path.write_text("{broken-json")
+        api.path.chmod(0o600)
+    def request(method, url, **kwargs):
+        if url.endswith("/oauth2/token"):
+            return 400, {"error": "invalid_grant"}
+        return 200, {"session_id": AID}
+    request_mock = Mock(side_effect=request)
+    monkeypatch.setattr(neatops, "_json_request", request_mock)
+    data = {"request_id": AID, "target_id": "device-id"}
+
+    assert api.call("POST", "/devkits/allocations", data) == {"session_id": AID}
+
+    auto_login.assert_called_once_with(api)
+    api_requests = [call for call in request_mock.call_args_list if call.args[1].endswith("/devkits/allocations")]
+    assert len(api_requests) == 1
+    assert api_requests[0].kwargs["json"] == data
+    assert api_requests[0].kwargs["headers"] == {"Authorization": "Bearer new-access"}
+
+
+def test_valid_session_does_not_start_browser_login(api, auto_login, monkeypatch):
+    api._save(tokens())
+    monkeypatch.setattr(neatops, "_json_request", Mock(return_value=(200, {"devices": []})))
+    assert api.call("GET", "/devkits") == {"devices": []}
+    auto_login.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [403, 409, 500])
+def test_permissions_and_service_errors_do_not_start_login_or_retry(api, auto_login, monkeypatch, status):
+    api._save(tokens())
+    request = Mock(return_value=(status, {}))
+    monkeypatch.setattr(neatops, "_json_request", request)
+    with pytest.raises(CloudExError):
+        api.call("POST", "/devkits/allocations", {"request_id": AID})
+    auto_login.assert_not_called()
+    assert request.call_count == 1
+
+
+def test_refresh_service_failure_does_not_start_login(api, auto_login, monkeypatch):
+    api._save(tokens(expires_in=1))
+    monkeypatch.setattr(neatops, "_json_request", Mock(return_value=(503, {})))
+    with pytest.raises(CloudExError):
+        api.call("GET", "/devkits")
+    auto_login.assert_not_called()
+
+
+def test_authorizer_401_retries_same_request_once_after_browser_login(api, auto_login, monkeypatch):
+    api._save(tokens())
+    request = Mock(side_effect=[(401, {}), (200, {"session_id": AID})])
+    monkeypatch.setattr(neatops, "_json_request", request)
+    data = {"request_id": AID}
+    assert api.call("POST", "/devkits/allocations", data) == {"session_id": AID}
+    auto_login.assert_called_once_with(api)
+    assert request.call_count == 2
+    assert [call.kwargs["json"] for call in request.call_args_list] == [data, data]
+    assert request.call_args.kwargs["headers"] == {"Authorization": "Bearer new-access"}
+
+
+def test_rejected_new_login_does_not_loop(api, auto_login, monkeypatch):
+    request = Mock(return_value=(401, {}))
+    monkeypatch.setattr(neatops, "_json_request", request)
+    with pytest.raises(CloudExError, match="access denied"):
+        api.call("GET", "/devkits")
+    auto_login.assert_called_once_with(api)
+    assert request.call_count == 1
+
+
+def test_cancelled_automatic_login_does_not_send_allocation_request(api, auto_login, monkeypatch):
+    auto_login.side_effect = CloudExError("NeatOps sign-in was cancelled or rejected")
+    request = Mock()
+    monkeypatch.setattr(neatops, "_json_request", request)
+    with pytest.raises(CloudExError, match="cancelled"):
+        api.call("POST", "/devkits/allocations", {"request_id": AID})
+    request.assert_not_called()
+    auto_login.assert_called_once_with(api)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
+def test_insecure_credentials_do_not_trigger_automatic_login(api, auto_login):
+    api._save(tokens())
+    api.path.chmod(0o644)
+    with pytest.raises(CloudExError, match="0600"):
+        api.call("GET", "/devkits")
+    auto_login.assert_not_called()
+
+
+def test_command_api_enables_automatic_browser_login(monkeypatch):
+    factory = Mock()
+    monkeypatch.setattr(commands, "NeatOps", factory)
+    assert commands._neatops_api("staging") == factory.return_value
+    factory.assert_called_once_with("staging", on_login_required=commands._neatops_login)

@@ -190,8 +190,12 @@ atomic publication continue to protect downloaded artifacts.
 
 ### CloudEx browser login and allocation
 
-CloudEx uses NeatOps SSO separately from the Developer Portal login. After the
-NeatOps CLI configuration is deployed:
+CloudEx uses NeatOps SSO separately from the Developer Portal login. Commands
+that need NeatOps automatically open browser login if you are signed out or your
+saved login has expired, then continue the original command. Valid credentials
+are refreshed silently. Permission failures and service outages do not start a
+new login. `cloudex login` is also available explicitly. After the NeatOps CLI
+configuration is deployed:
 
 ```bash
 sima-cli cloudex login

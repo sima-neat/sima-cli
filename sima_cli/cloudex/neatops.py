@@ -80,12 +80,18 @@ class LoginCallback(BaseHTTPRequestHandler):
         self.wfile.write(b"Return to sima-cli to finish signing in." if valid else b"Invalid sign-in response.")
 
 
+class LoginRequired(CloudExError):
+    """Saved credentials cannot authorize a request without browser sign-in."""
+
+
 class NeatOps:
-    def __init__(self, environment="production", root=None):
+    def __init__(self, environment="production", root=None, on_login_required=None):
         self.environment = environment
         self.dashboard = DASHBOARDS[environment]
         self.path = Path(root or DEFAULT_ROOT) / ("neatops-" + environment + ".json")
         self.config = None
+        self.on_login_required = on_login_required
+        self._login_attempted = False
 
     def configuration(self):
         if self.config is None:
@@ -129,6 +135,8 @@ class NeatOps:
         auth = self.configuration()["auth"]
         status, tokens = _json_request("POST", auth["domain"].rstrip("/") + "/oauth2/token",
                                        data={"client_id": auth["clientId"], **parameters})
+        if status == 400 and parameters.get("grant_type") == "refresh_token" and tokens.get("error") == "invalid_grant":
+            raise LoginRequired("NeatOps sign-in expired; run sima-cli cloudex login again")
         if status != 200:
             raise CloudExError("NeatOps sign-in expired or was rejected; run sima-cli cloudex login again")
         return tokens
@@ -180,7 +188,9 @@ class NeatOps:
                     raise CloudExError("NeatOps credential file must have mode 0600")
                 session = json.load(stream)
             return session
-        except (OSError, ValueError, KeyError, TypeError):
+        except (FileNotFoundError, ValueError, KeyError, TypeError):
+            raise LoginRequired("Sign in first with sima-cli cloudex login --environment " + self.environment) from None
+        except OSError:
             raise CloudExError("Sign in first with sima-cli cloudex login --environment " + self.environment) from None
 
     def access_token(self):
@@ -193,9 +203,9 @@ class NeatOps:
                 return session["access_token"]
             refresh = session.get("refresh_token")
         except (ValueError, KeyError, TypeError):
-            raise CloudExError("Sign-in policy changed; run sima-cli cloudex login again") from None
+            raise LoginRequired("Sign-in policy changed; run sima-cli cloudex login again") from None
         if not refresh:
-            raise CloudExError("NeatOps sign-in expired; run sima-cli cloudex login again")
+            raise LoginRequired("NeatOps sign-in expired; run sima-cli cloudex login again")
         tokens = self._exchange({"grant_type": "refresh_token", "refresh_token": refresh})
         tokens.setdefault("refresh_token", refresh)
         return self._save(tokens)
@@ -212,10 +222,30 @@ class NeatOps:
                     raise CloudExError("NeatOps token revocation failed; retry logout")
             self.path.unlink()
 
+    def _authenticate(self):
+        if self.on_login_required is None or self._login_attempted:
+            raise LoginRequired("Sign in again with sima-cli cloudex login --environment " + self.environment)
+        self._login_attempted = True
+        self.on_login_required(self)
+        return self.access_token()
+
     def call(self, method, path, data=None):
         config = self.configuration()
-        status, payload = _json_request(method, config["apiBase"] + path,
-                                       headers={"Authorization": "Bearer " + self.access_token()}, json=data)
+        try:
+            token = self.access_token()
+        except LoginRequired:
+            token = self._authenticate()
+
+        def request(access_token):
+            return _json_request(method, config["apiBase"] + path,
+                                 headers={"Authorization": "Bearer " + access_token}, json=data)
+
+        status, payload = request(token)
+        # A 401 from the authorizer has no side effects, so retry the same
+        # request once after sign-in. Permission failures and outages do not
+        # trigger login or replay allocation requests.
+        if status == 401 and self.on_login_required is not None and not self._login_attempted:
+            status, payload = request(self._authenticate())
         if status in {401, 403}:
             raise CloudExError("NeatOps access denied; sign in again or check your device permissions")
         if not 200 <= status < 300:

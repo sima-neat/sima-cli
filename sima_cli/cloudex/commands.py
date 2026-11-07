@@ -241,7 +241,7 @@ def connect_command(key_file, key_stdin, allocation, environment, transport, att
         raise click.UsageError("Use either --key-file or --key-stdin, not both; --allocation must be used alone.")
     try:
         if allocation:
-            profile = _allocation_profile(NeatOps(environment), _allocation_id(allocation))
+            profile = _allocation_profile(_neatops_api(environment), _allocation_id(allocation))
             _connect_profile(profile, verbose=verbose, attempts=attempts, transport=transport)
             return
         if key_file:
@@ -469,6 +469,10 @@ def _neatops_login(api):
     console.print("[green]Signed in to NeatOps ({})[/green]".format(api.environment))
 
 
+def _neatops_api(environment):
+    return NeatOps(environment, on_login_required=_neatops_login)
+
+
 @cloudex_group.command("login")
 @click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True)
 def login_command(environment):
@@ -495,7 +499,7 @@ def logout_command(environment):
 def devices_command(environment):
     """Show NeatOps device availability and your allocation IDs."""
     try:
-        inventory = NeatOps(environment).call("GET", "/devkits")
+        inventory = _neatops_api(environment).call("GET", "/devkits")
         table = Table("Device type", "Firmware version", "ID", "Allocation ID", "State")
         allocations = {(a["cluster_id"], a["target_id"]): a for a in inventory.get("allocations", [])}
         visible_devices = set()
@@ -524,7 +528,7 @@ def request_command(device, cluster, duration, environment, verbose):
     """Request a NeatOps device, wait for preparation, and connect automatically."""
     allocation_id = None
     try:
-        api = NeatOps(environment)
+        api = _neatops_api(environment)
         entitlement = api.call("GET", "/users/me/entitlement")["entitlement"]
         if DURATIONS[duration] > entitlement["max_lease_duration_seconds"]:
             raise CloudExError("Requested duration exceeds your NeatOps lease limit; choose a shorter duration")
@@ -578,7 +582,7 @@ def release_command(allocation_id, environment):
                 except CloudExError as exc:
                     failures.append("Tunnel cleanup failed: {}. Local retry state retained; retry cloudex disconnect.".format(exc))
         try:
-            NeatOps(environment).call("DELETE", "/devkits/allocations/" + allocation_id)
+            _neatops_api(environment).call("DELETE", "/devkits/allocations/" + allocation_id)
         except CloudExError as exc:
             failures.append("Lease release failed: {}".format(exc))
         else:

@@ -53,10 +53,10 @@
         "install_args": [
           "install",
           "-v",
-          "{sdk_version}",
+          "{legacy_sdk_version}",
           "tools/model-compiler/{arch}"
         ],
-        "bundle_sdk_version": "{sdk_version}"
+        "bundle_sdk_version": "{legacy_sdk_version}"
       }
     ]
   }

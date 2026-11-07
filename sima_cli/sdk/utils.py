@@ -1039,7 +1039,11 @@ def _model_sdk_extension_install_args(base_version: str, arch: str = None) -> Li
     if not arch_rule or not version_matches(base_version, arch_rule["sdk_versions"]):
         return []
     release = _model_sdk_extension_release(base_version, mapping)
-    return [arg.format(arch=arch, sdk_version=base_version) for arg in release.get("install_args", [])]
+    return [arg.format(
+        arch=arch,
+        sdk_version=base_version,
+        legacy_sdk_version=".".join(base_version.split(".")[:3]),
+    ) for arg in release.get("install_args", [])]
 
 
 def _edgematic_studio_arch() -> str:
@@ -1343,6 +1347,7 @@ def ensure_model_sdk_extension_installed(
     )
     expected_version = _model_sdk_extension_release(base_version)["bundle_sdk_version"].format(
         sdk_version=base_version,
+        legacy_sdk_version=".".join(base_version.split(".")[:3]),
     )
     local_archive = discover_archive(arch, expected_version)
     unattended = noninteractive or auto_install or not sys.stdin.isatty()

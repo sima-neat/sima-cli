@@ -10,7 +10,7 @@ from sima_cli.sdk.utils import (
 )
 
 
-@pytest.mark.parametrize("version", ["2.0", "2.0.0", "2.1.3", "3.0.0.0", "3.0.0.1"])
+@pytest.mark.parametrize("version", ["2.0", "2.0.0", "2.1.2.3", "2.1.3", "3.0.0.0", "3.0.0.1"])
 @pytest.mark.parametrize("suffix", ["", "_Palette_SDK_neat_main_780365a"])
 def test_sdk_release_retains_complete_version(version, suffix):
     release = "SDK Release\nSDK Version = {}{}\nBuild Date = 2026-11-06\n".format(version, suffix)
@@ -38,12 +38,12 @@ def test_compiler_release_pins_and_historical_fallback(machine, arch, sdk_versio
         ]
 
 
-@pytest.mark.parametrize("sdk_version", ["2.0.0", "2.1.0", "2.1.1", "2.1.2"])
+@pytest.mark.parametrize("sdk_version", ["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.2.3"])
 @pytest.mark.parametrize("machine,arch", [("x86_64", "amd64"), ("aarch64", "arm64")])
 def test_legacy_compiler_versions_and_architecture_support(sdk_version, machine, arch):
     with patch("sima_cli.sdk.utils.platform.machine", return_value=machine):
         expected = [] if arch == "arm64" and sdk_version in {"2.0.0", "2.1.0"} else [
-            "install", "-v", sdk_version, "tools/model-compiler/{}".format(arch),
+            "install", "-v", ".".join(sdk_version.split(".")[:3]), "tools/model-compiler/{}".format(arch),
         ]
         assert _model_sdk_extension_install_args(sdk_version) == expected
 

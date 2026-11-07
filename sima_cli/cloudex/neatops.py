@@ -136,9 +136,9 @@ class NeatOps:
         status, tokens = _json_request("POST", auth["domain"].rstrip("/") + "/oauth2/token",
                                        data={"client_id": auth["clientId"], **parameters})
         if status == 400 and parameters.get("grant_type") == "refresh_token" and tokens.get("error") == "invalid_grant":
-            raise LoginRequired("NeatOps sign-in expired; run sima-cli cloudex login again")
+            raise LoginRequired("NeatOps sign-in expired; run sima-cli -i cloudex login again")
         if status != 200:
-            raise CloudExError("NeatOps sign-in expired or was rejected; run sima-cli cloudex login again")
+            raise CloudExError("NeatOps sign-in expired or was rejected; run sima-cli -i cloudex login again")
         return tokens
 
     def login(self, announce, timeout=180):
@@ -170,7 +170,7 @@ class NeatOps:
                 server.handle_request()
             result = server.oauth_result
         if result is None:
-            raise CloudExError("NeatOps sign-in timed out; run sima-cli cloudex login again")
+            raise CloudExError("NeatOps sign-in timed out; run sima-cli -i cloudex login again")
         if result.get("error"):
             raise CloudExError("NeatOps sign-in was cancelled or rejected")
         self._save(self._exchange({"grant_type": "authorization_code", "code": result["code"],
@@ -189,9 +189,9 @@ class NeatOps:
                 session = json.load(stream)
             return session
         except (FileNotFoundError, ValueError, KeyError, TypeError):
-            raise LoginRequired("Sign in first with sima-cli cloudex login --environment " + self.environment) from None
+            raise LoginRequired("Sign in first with sima-cli -i cloudex login --environment " + self.environment) from None
         except OSError:
-            raise CloudExError("Sign in first with sima-cli cloudex login --environment " + self.environment) from None
+            raise CloudExError("Sign in first with sima-cli -i cloudex login --environment " + self.environment) from None
 
     def access_token(self):
         auth = self.configuration()["auth"]
@@ -203,9 +203,9 @@ class NeatOps:
                 return session["access_token"]
             refresh = session.get("refresh_token")
         except (ValueError, KeyError, TypeError):
-            raise LoginRequired("Sign-in policy changed; run sima-cli cloudex login again") from None
+            raise LoginRequired("Sign-in policy changed; run sima-cli -i cloudex login again") from None
         if not refresh:
-            raise LoginRequired("NeatOps sign-in expired; run sima-cli cloudex login again")
+            raise LoginRequired("NeatOps sign-in expired; run sima-cli -i cloudex login again")
         tokens = self._exchange({"grant_type": "refresh_token", "refresh_token": refresh})
         tokens.setdefault("refresh_token", refresh)
         return self._save(tokens)
@@ -224,7 +224,7 @@ class NeatOps:
 
     def _authenticate(self):
         if self.on_login_required is None or self._login_attempted:
-            raise LoginRequired("Sign in again with sima-cli cloudex login --environment " + self.environment)
+            raise LoginRequired("Sign in again with sima-cli -i cloudex login --environment " + self.environment)
         self._login_attempted = True
         self.on_login_required(self)
         return self.access_token()

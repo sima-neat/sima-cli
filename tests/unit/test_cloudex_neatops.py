@@ -6,6 +6,7 @@ import threading
 from unittest.mock import Mock
 from urllib.parse import parse_qs, urlsplit
 
+import click
 import pytest
 import requests
 from click.testing import CliRunner
@@ -178,7 +179,7 @@ def test_request_selects_device_allocates_then_connects(command_api, monkeypatch
     connect = Mock()
     monkeypatch.setattr(commands, "_allocation_profile", profile)
     monkeypatch.setattr(commands, "_connect_profile", connect)
-    result = CliRunner().invoke(commands.cloudex_group, ["request", "--duration", "4h", "--environment", "staging"], input="1\n")
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "request", "--duration", "4h", "--environment", "staging"], input="1\n")
     assert result.exit_code == 0, result.output
     command_api.call.assert_any_call("POST", "/devkits/allocations", {"request_id": AID,
         "cluster_id": "appliance-id", "target_id": "device-id", "duration_seconds": 14400})
@@ -188,7 +189,7 @@ def test_request_selects_device_allocates_then_connects(command_api, monkeypatch
 
 
 def test_request_rejects_duration_before_allocating(command_api):
-    result = CliRunner().invoke(commands.cloudex_group, ["request", "--duration", "7d"])
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "request", "--duration", "7d"])
     assert result.exit_code != 0
     assert "lease limit" in result.output
     assert command_api.call.call_count == 1
@@ -198,7 +199,7 @@ def test_failed_connection_displays_resume_and_release(command_api, monkeypatch)
     monkeypatch.setattr(commands.uuid, "uuid4", lambda: Mock(hex=AID))
     monkeypatch.setattr(commands, "_allocation_profile", lambda *a: PROFILE)
     monkeypatch.setattr(commands, "_connect_profile", Mock(side_effect=CloudExError("Tunnel failed")))
-    result = CliRunner().invoke(commands.cloudex_group, ["request", "--device", "device-id", "--environment", "staging"])
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "request", "--device", "device-id", "--environment", "staging"])
     assert result.exit_code != 0
     assert "cloudex connect --allocation " + AID in result.output
     assert "cloudex release " + AID in result.output
@@ -228,7 +229,7 @@ def test_connect_allocation_skips_manual_key_prompt(command_api, monkeypatch):
     monkeypatch.setattr(commands, "_allocation_profile", Mock(return_value=PROFILE))
     connect = Mock()
     monkeypatch.setattr(commands, "_connect_profile", connect)
-    result = CliRunner().invoke(commands.cloudex_group, ["connect", "--allocation", AID])
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "connect", "--allocation", AID])
     assert result.exit_code == 0, result.output
     connect.assert_called_once_with(PROFILE, verbose=False, attempts=3, transport="auto")
 
@@ -240,7 +241,7 @@ def test_release_disconnects_only_matching_local_allocation(command_api, monkeyp
     monkeypatch.setattr(commands, "_store", lambda: store)
     disconnect = Mock()
     monkeypatch.setattr(commands, "disconnect_session", disconnect)
-    result = CliRunner().invoke(commands.cloudex_group, ["release", AID])
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release", AID])
     assert result.exit_code == 0, result.output
     assert disconnect.call_count == 1
     assert disconnect.call_args.args[0] == sessions[0]
@@ -269,7 +270,7 @@ def test_no_available_devices_never_allocates(command_api):
     command_api.call.side_effect = [
         {"entitlement": {"max_active_leases": 1, "max_lease_duration_seconds": 3600}},
         {"devices": [{**DEVICE, "available": False}], "allocations": []}]
-    result = CliRunner().invoke(commands.cloudex_group, ["request", "--device", "device-id"])
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "request", "--device", "device-id"])
     assert result.exit_code != 0
     assert "No matching devices" in result.output
     assert command_api.call.call_count == 2
@@ -283,7 +284,7 @@ def test_ambiguous_request_failure_is_not_retried(command_api, monkeypatch):
         return call(method, path, data)
     command_api.call.side_effect = fail_request
     monkeypatch.setattr(commands.uuid, "uuid4", lambda: Mock(hex=AID))
-    result = CliRunner().invoke(commands.cloudex_group, ["request", "--device", "device-id"])
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "request", "--device", "device-id"])
     assert result.exit_code != 0
     assert AID in result.output
     assert sum(c.args[0] == "POST" for c in command_api.call.call_args_list) == 1
@@ -293,7 +294,7 @@ def test_existing_lease_limit_does_not_request_another_device(command_api):
     command_api.call.side_effect = [
         {"entitlement": {"max_active_leases": 1, "max_lease_duration_seconds": 3600}},
         {"devices": [DEVICE], "allocations": [{"session_id": AID}]}]
-    result = CliRunner().invoke(commands.cloudex_group, ["request", "--device", "device-id"])
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "request", "--device", "device-id"])
     assert result.exit_code != 0
     assert "lease limit is reached" in result.output
     assert command_api.call.call_count == 2
@@ -326,7 +327,7 @@ def test_release_attempts_lease_delete_after_cleanup_failure(
     if lease_release_fails:
         command_api.call.side_effect = CloudExError("NeatOps unavailable")
 
-    result = CliRunner().invoke(commands.cloudex_group, ["release", AID, "--environment", "staging"])
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release", AID, "--environment", "staging"])
 
     assert result.exit_code != 0
     command_api.call.assert_called_once_with("DELETE", "/devkits/allocations/" + AID)
@@ -350,7 +351,7 @@ def test_release_continues_other_tunnel_cleanup_after_one_failure(command_api, m
     disconnect = Mock(side_effect=[CloudExError("offline"), "disconnected"])
     monkeypatch.setattr(commands, "disconnect_session", disconnect)
 
-    result = CliRunner().invoke(commands.cloudex_group, ["release", AID])
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release", AID])
 
     assert result.exit_code != 0
     assert disconnect.call_count == 2
@@ -461,5 +462,123 @@ def test_insecure_credentials_do_not_trigger_automatic_login(api, auto_login):
 def test_command_api_enables_automatic_browser_login(monkeypatch):
     factory = Mock()
     monkeypatch.setattr(commands, "NeatOps", factory)
-    assert commands._neatops_api("staging") == factory.return_value
+    with click.Context(commands.cloudex_group, obj={"internal": True}):
+        assert commands._neatops_api("staging") == factory.return_value
     factory.assert_called_once_with("staging", on_login_required=commands._neatops_login)
+
+
+@pytest.mark.parametrize("arguments", [
+    ["request"], ["devices"], ["connect", "--allocation", AID],
+    ["connect", "--key-stdin"], ["update"], ["list"], ["disconnect"], ["release", AID],
+    ["request", "--environment", "production"], ["devices", "--environment", "staging"],
+])
+def test_external_cloudex_operations_never_touch_vulcan(monkeypatch, arguments):
+    api = Mock(side_effect=AssertionError("External command reached Vulcan"))
+    store = Mock(side_effect=AssertionError("External command accessed internal sessions"))
+    authorize = Mock(side_effect=AssertionError("External command requested administrator access"))
+    monkeypatch.setattr(commands, "NeatOps", api)
+    monkeypatch.setattr(commands, "_store", store)
+    monkeypatch.setattr(commands, "_authorize_supported_host", authorize)
+    result = CliRunner().invoke(commands.cloudex_group, arguments, env={"SIMA_CLI_INTERNAL": "0"})
+    assert result.exit_code != 0
+    assert "CloudEx is not available on Arthas yet" in result.output
+    api.assert_not_called()
+    store.assert_not_called()
+    authorize.assert_not_called()
+
+
+def test_external_cloudex_login_uses_developer_portal_only(monkeypatch):
+    portal_login = Mock(return_value=object())
+    vulcan_login = Mock()
+    monkeypatch.setattr("sima_cli.auth.devportal.login_external", portal_login)
+    monkeypatch.setattr(commands, "NeatOps", vulcan_login)
+    result = CliRunner().invoke(commands.cloudex_group, ["login"], env={"SIMA_CLI_INTERNAL": "0"})
+    assert result.exit_code == 0, result.output
+    portal_login.assert_called_once_with(loginDocker=False)
+    vulcan_login.assert_not_called()
+    assert "Developer Portal" in result.output
+
+
+def test_external_cloudex_logout_preserves_vulcan_credentials(monkeypatch):
+    clear_portal = Mock()
+    vulcan_api = Mock()
+    monkeypatch.setattr("sima_cli.auth.auth0.clear_external_login_state", clear_portal)
+    monkeypatch.setattr(commands, "NeatOps", vulcan_api)
+    result = CliRunner().invoke(commands.cloudex_group, ["logout"], env={"SIMA_CLI_INTERNAL": "0"})
+    assert result.exit_code == 0, result.output
+    clear_portal.assert_called_once_with()
+    vulcan_api.assert_not_called()
+
+
+@pytest.mark.parametrize("arguments,environment", [
+    (["-i", "cloudex", "login"], {"SIMA_CLI_INTERNAL": "0"}),
+    (["cloudex", "-i", "login"], {"SIMA_CLI_INTERNAL": "0"}),
+    (["cloudex", "login"], {"SIMA_CLI_INTERNAL": "1"}),
+])
+def test_internal_cloudex_login_selects_vulcan_production(monkeypatch, arguments, environment):
+    from sima_cli.cli import main
+    factory = Mock()
+    portal_login = Mock()
+    login = Mock()
+    monkeypatch.setattr(commands, "NeatOps", factory)
+    monkeypatch.setattr(commands, "_neatops_login", login)
+    monkeypatch.setattr("sima_cli.auth.devportal.login_external", portal_login)
+    result = CliRunner().invoke(main, arguments, env=environment)
+    assert result.exit_code == 0, result.output
+    factory.assert_called_once_with("production")
+    login.assert_called_once_with(factory.return_value)
+    portal_login.assert_not_called()
+
+
+def test_internal_staging_is_explicit_and_separate(monkeypatch):
+    factory = Mock()
+    monkeypatch.setattr(commands, "NeatOps", factory)
+    monkeypatch.setattr(commands, "_neatops_login", Mock())
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "login", "--environment", "staging"])
+    assert result.exit_code == 0, result.output
+    factory.assert_called_once_with("staging")
+
+
+def test_external_cloudex_help_remains_available():
+    result = CliRunner().invoke(commands.cloudex_group, ["request", "--help"], env={"SIMA_CLI_INTERNAL": "0"})
+    assert result.exit_code == 0, result.output
+    assert "--duration" in result.output
+
+
+def test_external_login_cannot_select_internal_staging(monkeypatch):
+    factory = Mock()
+    portal_login = Mock()
+    monkeypatch.setattr(commands, "NeatOps", factory)
+    monkeypatch.setattr("sima_cli.auth.devportal.login_external", portal_login)
+    result = CliRunner().invoke(commands.cloudex_group, ["login", "--environment", "staging"], env={"SIMA_CLI_INTERNAL": "0"})
+    assert result.exit_code != 0
+    assert "requires -i" in result.output
+    factory.assert_not_called()
+    portal_login.assert_not_called()
+
+
+def test_internal_logout_preserves_developer_portal_credentials(monkeypatch):
+    factory = Mock()
+    clear_portal = Mock()
+    monkeypatch.setattr(commands, "NeatOps", factory)
+    monkeypatch.setattr("sima_cli.auth.auth0.clear_external_login_state", clear_portal)
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "logout"])
+    assert result.exit_code == 0, result.output
+    factory.assert_called_once_with("production")
+    factory.return_value.logout.assert_called_once_with()
+    clear_portal.assert_not_called()
+
+
+def test_root_external_login_uses_portal_without_internal_initialization(monkeypatch):
+    import sima_cli.cli as cli
+    initialize = Mock(side_effect=AssertionError("Unexpected root initialization"))
+    portal_login = Mock(return_value=object())
+    vulcan_api = Mock()
+    monkeypatch.setattr(cli, "_initialize_main_context", initialize)
+    monkeypatch.setattr("sima_cli.auth.devportal.login_external", portal_login)
+    monkeypatch.setattr(commands, "NeatOps", vulcan_api)
+    result = CliRunner().invoke(cli.main, ["cloudex", "login"], env={"SIMA_CLI_INTERNAL": "0"})
+    assert result.exit_code == 0, result.output
+    initialize.assert_not_called()
+    portal_login.assert_called_once_with(loginDocker=False)
+    vulcan_api.assert_not_called()

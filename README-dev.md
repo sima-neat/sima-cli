@@ -187,3 +187,38 @@ errors and TLS certificate errors fail immediately.
 These retries do not replay an interrupted response body or change the separate
 parallel-download path. Existing partial-file validators, resume checks, and
 atomic publication continue to protect downloaded artifacts.
+
+### CloudEx browser login and allocation
+
+CloudEx uses NeatOps SSO separately from the Developer Portal login. After the
+NeatOps CLI configuration is deployed:
+
+```bash
+sima-cli cloudex login
+sima-cli cloudex devices
+sima-cli cloudex request --duration 4h
+# Or choose a specific available device:
+# sima-cli cloudex request --device DEVICE_ID --cluster APPLIANCE_ID --duration 1h
+sima-cli cloudex connect --allocation ALLOCATION_ID
+sima-cli cloudex release ALLOCATION_ID
+sima-cli cloudex logout
+```
+
+Use `--environment staging` on each command to use staging; credentials are
+stored separately. Login opens the browser on the same computer as the CLI and
+waits up to three minutes for the loopback callback on `127.0.0.1:47182`.
+Authentication uses authorization code with PKCE and the dashboard's active
+Cognito app client and SSO provider. The CLI stores tokens in a mode-0600 file
+under `~/.sima-cli/cloudex/`, refreshes them when needed, and never prints them.
+
+Request checks your lease limits, offers available devices, reserves the chosen
+device, waits up to three minutes for preparation, and connects through the
+existing CloudEx forwarder. If preparation or connection fails, the allocation
+ID is printed for inspection, reconnection, or release. A failed or ambiguous
+request is never automatically retried with a new allocation ID. Disconnecting
+a tunnel and logging out retain the device lease; `release` ends it and starts
+server-side cleanup. Existing allocation-key connection commands still work.
+
+The paired Vulcan change publishes `/cli-config.json` and registers the exact
+loopback callback on both dashboard OAuth clients. Deploy that change before
+using CLI login; no credential or mutable client ID must be copied into the CLI.

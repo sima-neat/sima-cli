@@ -204,7 +204,10 @@ def main(ctx, internal, yes):
             Text("Pre-release software may be unstable. Use at your own risk.", style="yellow"),
             title="Pre-release software", border_style="yellow", width=72,
         ))
-    if ctx.meta.get('update_inspect'):
+    # CloudEx authenticates with NeatOps and must work without Artifactory or
+    # Developer Portal setup, including when SIMA_CLI_INTERNAL is inherited.
+    if ctx.meta.get('update_inspect') or ctx.invoked_subcommand == 'cloudex':
+        _configure_stdio_errors()
         ctx.ensure_object(dict)
         ctx.obj.update(internal=internal, yes=yes)
         return

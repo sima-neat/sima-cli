@@ -601,7 +601,7 @@ jobs:
           # A nonzero exit is the expected native-Windows contract. Capture it
           # without letting PowerShell promote native stderr into a step error.
           $ErrorActionPreference = "Continue"
-          $output = (& "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" cloudex update 2>&1 | Out-String)
+          $output = (& "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" -i cloudex update 2>&1 | Out-String)
           $exitCode = $LASTEXITCODE
           $ErrorActionPreference = "Stop"
           if ($exitCode -eq 0) {

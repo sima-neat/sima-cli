@@ -122,7 +122,7 @@ PY
 )"
 
 set +e
-CONNECT_OUTPUT="$(printf '%s\n' "${PAIRING_CODE}" | "${SIMA_CLI}" cloudex connect --key-stdin 2>&1)"
+CONNECT_OUTPUT="$(printf '%s\n' "${PAIRING_CODE}" | "${SIMA_CLI}" -i cloudex connect --key-stdin 2>&1)"
 CONNECT_STATUS=$?
 set -e
 if [[ "${CONNECT_STATUS}" -eq 0 ]]; then
@@ -156,7 +156,7 @@ chmod 0755 "${INSTALLED_BINARY}"
 test "$("${SIMA_CLOUDEX_FORWARDER}" --version)" = "stale-forwarder"
 
 set +e
-UPDATE_OUTPUT="$("${SIMA_CLI}" cloudex update 2>&1)"
+UPDATE_OUTPUT="$("${SIMA_CLI}" -i cloudex update 2>&1)"
 UPDATE_STATUS=$?
 set -e
 if [[ "${UPDATE_STATUS}" -ne 0 ]]; then

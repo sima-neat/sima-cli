@@ -52,6 +52,37 @@ sima-cli/
 
 ---
 
+### SDK release mapping
+
+`sima_cli/sdk/releases.json` is the source-controlled SDK-to-Model-Compiler
+mapping bundled in both source and wheel distributions. `schema_version` versions
+the file format; the resolver currently supports version 1.
+
+The `model_compiler.releases` list uses **first-match order**. Add explicit SDK
+release entries before the historical fallback rules. Each entry specifies
+`sdk_versions` (an exact version or comma-separated comparison constraints) and
+`install_args` (CLI arguments with optional `{sdk_version}`, `{legacy_sdk_version}`,
+and `{arch}` placeholders). `{legacy_sdk_version}` retains the first three numeric
+components for older compiler releases.
+`bundle_sdk_version` specifies the SDK version declared by compatible offline ZIPs
+(the 2.1.3.1 online artifact retains the 2.1.3 bundle version).
+SDK versions retain every numeric component from `/etc/sdk-release`.
+
+SDK 3.0.0 and 3.0.0.0 select Model Compiler 3.0.0; SDK 3.0.0.1 selects
+Model Compiler 3.0.0.1 through `neat install`. Version comparisons treat
+trailing zero components as equivalent, so `==3.0.0.0` also matches 3.0.0.
+Other SDKs at or above 2.1.3 retain the historical compiler 2.1.3.1 pin; SDKs below 2.1.3
+use their first three version components through the legacy installer and for
+offline ZIP compatibility (for example, SDK 2.1.2.3 uses compiler/bundle version
+2.1.2). Unlisted future releases
+also follow that historical fallback until an explicit mapping is added.
+Architecture aliases and SDK constraints live in `model_compiler.architectures`:
+AMD64 retains legacy support, while ARM64 requires SDK 2.1.1 or later.
+Package metadata compatibility checks still apply during installation.
+
+Run `python -m pytest tests/unit/test_sdk_release_mapping.py tests/unit/test_sdk_image_detection.py`
+after updating the mapping.
+
 ### 🏗 Build Instructions
 
 #### 1. Install dev dependencies

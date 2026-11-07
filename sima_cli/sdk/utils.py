@@ -16,10 +16,12 @@ import shlex
 import platform
 import shutil
 import tempfile
+import importlib.resources as pkg_resources
 from collections import defaultdict
 from contextlib import ExitStack
 from rich.console import Console
 from rich.panel import Panel
+from sima_cli.install.compatibility import version_matches
 
 from sima_cli.sdk.docker_staging import docker_cp_staging_dir as _docker_cp_staging_dir
 from sima_cli.sdk.model_compiler import discover_archive, normalize_arch, select_source, stage_archive
@@ -964,7 +966,7 @@ def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: 
 
 
 def _extract_sdk_base_version(sdk_release: str) -> str:
-    match = re.search(r"^SDK Version\s*=\s*([0-9]+(?:\.[0-9]+){1,2})", sdk_release, re.MULTILINE)
+    match = re.search(r"^SDK Version\s*=\s*([0-9]+(?:\.[0-9]+)+)", sdk_release, re.MULTILINE)
     return match.group(1) if match else ""
 
 
@@ -996,45 +998,48 @@ def _is_arm64_platform() -> bool:
     return machine in {"aarch64", "arm64"}
 
 
-def _version_at_least(version: str, minimum: str) -> bool:
-    def parts(value: str) -> List[int]:
-        match = re.match(r"^\s*(\d+(?:\.\d+)*)", value or "")
-        if not match:
-            return []
-        return [int(part) for part in match.group(1).split(".")]
-
-    current_parts = parts(version)
-    minimum_parts = parts(minimum)
-    if not current_parts or not minimum_parts:
-        return False
-
-    length = max(len(current_parts), len(minimum_parts))
-    current_parts.extend([0] * (length - len(current_parts)))
-    minimum_parts.extend([0] * (length - len(minimum_parts)))
-    return current_parts >= minimum_parts
+def _load_sdk_release_mapping() -> Dict:
+    if hasattr(pkg_resources, "files"):
+        resource = pkg_resources.files("sima_cli.sdk").joinpath("releases.json")
+        with resource.open("r", encoding="utf-8") as handle:
+            mapping = json.load(handle)
+    else:
+        # Python 3.8 does not provide files().
+        with pkg_resources.open_text("sima_cli.sdk", "releases.json", encoding="utf-8") as handle:
+            mapping = json.load(handle)
+    if mapping["schema_version"] != 1:
+        raise ValueError("Unsupported SDK release mapping schema version")
+    return mapping
 
 
-def _model_sdk_extension_arch(base_version: str) -> str:
-    if _is_x86_platform():
-        return "amd64"
-    if _is_arm64_platform() and _version_at_least(base_version, "2.1.1"):
-        return "arm64"
+def _model_sdk_extension_arch(base_version: str, mapping: Dict = None) -> str:
+    if mapping is None:
+        mapping = _load_sdk_release_mapping()
+    machine = platform.machine().lower()
+    for arch, rule in mapping["model_compiler"]["architectures"].items():
+        if machine in rule["machines"] and version_matches(base_version, rule["sdk_versions"]):
+            return arch
     return ""
 
 
+def _model_sdk_extension_release(base_version: str, mapping: Dict = None) -> Dict:
+    if mapping is None:
+        mapping = _load_sdk_release_mapping()
+    # First match wins: explicit release pins precede historical fallback rules.
+    for release in mapping["model_compiler"]["releases"]:
+        if version_matches(base_version, release["sdk_versions"]):
+            return release
+    return {}
+
+
 def _model_sdk_extension_install_args(base_version: str, arch: str = None) -> List[str]:
-    arch = _model_sdk_extension_arch(base_version) if arch is None else arch
-    if arch == "arm64" and not _version_at_least(base_version, "2.1.1"):
+    mapping = _load_sdk_release_mapping()
+    arch = _model_sdk_extension_arch(base_version, mapping) if arch is None else arch
+    arch_rule = mapping["model_compiler"]["architectures"].get(arch)
+    if not arch_rule or not version_matches(base_version, arch_rule["sdk_versions"]):
         return []
-    if not arch:
-        return []
-    if base_version == "3.0.0":
-        return ["neat", "install", f"model-compiler/{arch}@v3.0.0"]
-    if _version_at_least(base_version, "2.1.3"):
-        # Model Compiler 2.1.3+ is published through Vulcan. Install the
-        # released artifact compatible with this SDK generation.
-        return ["neat", "install", f"model-compiler/{arch}@v2.1.3.1"]
-    return ["install", "-v", base_version, f"tools/model-compiler/{arch}"]
+    release = _model_sdk_extension_release(base_version, mapping)
+    return [arg.format(arch=arch, sdk_version=base_version) for arg in release.get("install_args", [])]
 
 
 def _edgematic_studio_arch() -> str:
@@ -1336,9 +1341,8 @@ def ensure_model_sdk_extension_installed(
             expand=False,
         )
     )
-    expected_version = (
-        "2.1.3" if base_version != "3.0.0" and _version_at_least(base_version, "2.1.3")
-        else base_version
+    expected_version = _model_sdk_extension_release(base_version)["bundle_sdk_version"].format(
+        sdk_version=base_version,
     )
     local_archive = discover_archive(arch, expected_version)
     unattended = noninteractive or auto_install or not sys.stdin.isatty()

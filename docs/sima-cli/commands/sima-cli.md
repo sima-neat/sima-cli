@@ -24,6 +24,7 @@ None.
 
 - [`sima-cli appzoo`](./sima-cli-appzoo.md): Access sample apps from the App Zoo.
 - [`sima-cli bootimg`](./sima-cli-bootimg.md): Prepare a bootable image for the SiMa DevKit.
+- [`sima-cli cloudex`](./sima-cli-cloudex.md): Connect to allocated DevKits through CloudEx.
 - [`sima-cli device`](./sima-cli-device.md): Discover nearby SiMa.ai devices on the local network.
 - [`sima-cli download`](./sima-cli-download.md): Download a file or a whole folder from a given URL.
 - [`sima-cli install`](./sima-cli-install.md): Install SiMa packages.

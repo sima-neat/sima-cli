@@ -92,6 +92,7 @@ pip install sima-cli
 | --- | --- |
 | [`sima-cli appzoo`](commands/sima-cli-appzoo.md) | Access sample apps from the App Zoo. |
 | [`sima-cli bootimg`](commands/sima-cli-bootimg.md) | Prepare a bootable image for the SiMa DevKit. |
+| [`sima-cli cloudex`](commands/sima-cli-cloudex.md) | Connect to allocated DevKits through CloudEx. |
 | [`sima-cli device`](commands/sima-cli-device.md) | Discover nearby SiMa.ai devices on the local network. |
 | [`sima-cli download`](commands/sima-cli-download.md) | Download a file or a whole folder from a given URL. |
 | [`sima-cli install`](commands/sima-cli-install.md) | Install SiMa packages. |
@@ -117,6 +118,7 @@ pip install sima-cli
 - [`sima-cli`](commands/sima-cli.md)
 - [`sima-cli appzoo`](commands/sima-cli-appzoo.md)
 - [`sima-cli bootimg`](commands/sima-cli-bootimg.md)
+- [`sima-cli cloudex`](commands/sima-cli-cloudex.md)
 - [`sima-cli device`](commands/sima-cli-device.md)
 - [`sima-cli download`](commands/sima-cli-download.md)
 - [`sima-cli install`](commands/sima-cli-install.md)
@@ -140,6 +142,15 @@ pip install sima-cli
 - [`sima-cli appzoo describe`](commands/sima-cli-appzoo-describe.md)
 - [`sima-cli appzoo get`](commands/sima-cli-appzoo-get.md)
 - [`sima-cli appzoo list`](commands/sima-cli-appzoo-list.md)
+- [`sima-cli cloudex connect`](commands/sima-cli-cloudex-connect.md)
+- [`sima-cli cloudex devices`](commands/sima-cli-cloudex-devices.md)
+- [`sima-cli cloudex disconnect`](commands/sima-cli-cloudex-disconnect.md)
+- [`sima-cli cloudex list`](commands/sima-cli-cloudex-list.md)
+- [`sima-cli cloudex login`](commands/sima-cli-cloudex-login.md)
+- [`sima-cli cloudex logout`](commands/sima-cli-cloudex-logout.md)
+- [`sima-cli cloudex release`](commands/sima-cli-cloudex-release.md)
+- [`sima-cli cloudex request`](commands/sima-cli-cloudex-request.md)
+- [`sima-cli cloudex update`](commands/sima-cli-cloudex-update.md)
 - [`sima-cli device discover`](commands/sima-cli-device-discover.md)
 - [`sima-cli mla meminfo`](commands/sima-cli-mla-meminfo.md)
 - [`sima-cli models branches`](commands/sima-cli-models-branches.md)

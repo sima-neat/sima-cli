@@ -1,6 +1,9 @@
 """Hidden, experimental CloudEx command group."""
 
+import base64
+import json
 import os
+import uuid
 import stat
 import sys
 import time
@@ -25,6 +28,7 @@ from .client import (
     run_benchmark,
 )
 from .installer import DEFAULT_BRANCH, install_forwarder
+from .neatops import NeatOps
 
 
 console = Console()
@@ -222,6 +226,8 @@ def cloudex_group():
     is_flag=True,
     help="Read the allocation key from standard input for automation.",
 )
+@click.option("--allocation", help="Connect to your NeatOps allocation ID without copying a key.")
+@click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True)
 @click.option("--transport", type=click.Choice(["auto", "p2p", "turn"]), default="auto", hidden=True)
 @click.option("--attempts", type=click.IntRange(1, 5), default=3, hidden=True)
 @click.option(
@@ -229,11 +235,15 @@ def cloudex_group():
     is_flag=True,
     help="Print each sanitized connection stage for troubleshooting.",
 )
-def connect_command(key_file, key_stdin, transport, attempts, verbose):
+def connect_command(key_file, key_stdin, allocation, environment, transport, attempts, verbose):
     """Connect to an allocated DevKit using a securely supplied key."""
-    if key_file and key_stdin:
-        raise click.UsageError("Use either --key-file or --key-stdin, not both.")
+    if sum(bool(value) for value in (key_file, key_stdin, allocation)) > 1:
+        raise click.UsageError("Use either --key-file or --key-stdin, not both; --allocation must be used alone.")
     try:
+        if allocation:
+            profile = _allocation_profile(NeatOps(environment), _allocation_id(allocation))
+            _connect_profile(profile, verbose=verbose, attempts=attempts, transport=transport)
+            return
         if key_file:
             key = _read_key_file(key_file)
         elif key_stdin:
@@ -243,16 +253,7 @@ def connect_command(key_file, key_stdin, transport, attempts, verbose):
         else:
             key = click.prompt("CloudEx allocation key", hide_input=True).strip()
         profile = decode_key(key)
-        console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
-        _authorize_supported_host()
-        with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:
-            session = connect(profile, _store(), progress, attempts=attempts, transport=transport)
-            progress.success("Connected to {}".format(session["device"]))
-        path = session.get("ice_path", "unknown")
-        path_text = "direct" if path == "direct" else "relayed" if path == "relay" else path
-        console.print("  [dim]Session[/dim]  {}".format(_short(session["session_id"])))
-        console.print("  [dim]Path[/dim]     {}".format(path_text))
-        console.print("  [dim]SSH[/dim]      [bold]ssh sima@{}[/bold]".format(session["target"]))
+        _connect_profile(profile, verbose=verbose, attempts=attempts, transport=transport)
     except CloudExError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -420,3 +421,152 @@ def list_command(benchmark, duration):
 
 def register_cloudex_commands(main):
     main.add_command(cloudex_group)
+
+
+def _connect_profile(profile, verbose=False, attempts=3, transport="auto"):
+    console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
+    _authorize_supported_host()
+    with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:
+        session = connect(profile, _store(), progress, attempts=attempts, transport=transport)
+        progress.success("Connected to {}".format(session["device"]))
+    path = session.get("ice_path", "unknown")
+    path_text = "direct" if path == "direct" else "relayed" if path == "relay" else path
+    console.print("  [dim]Session[/dim]  {}".format(_short(session["session_id"])))
+    console.print("  [dim]Path[/dim]     {}".format(path_text))
+    console.print("  [dim]SSH[/dim]      [bold]ssh sima@{}[/bold]".format(session["target"]))
+
+
+DURATIONS = {"1h": 3600, "4h": 14400, "8h": 28800, "1d": 86400, "7d": 604800, "4w": 2419200}
+
+
+def _allocation_id(value):
+    if len(value) != 32 or any(c not in "0123456789abcdef" for c in value):
+        raise CloudExError("Use the full 32-character allocation ID from cloudex devices")
+    return value
+
+
+def _allocation_profile(api, allocation_id, timeout=180):
+    deadline = time.monotonic() + timeout
+    with StageProgress("Waiting for device preparation") as progress:
+        while True:
+            inventory = api.call("GET", "/devkits")
+            allocation = next((a for a in inventory.get("allocations", []) if a["session_id"] == allocation_id), None)
+            if not allocation or allocation.get("status") in {"released", "releasing", "expired", "failed"}:
+                raise CloudExError("Allocation is unavailable; check cloudex devices")
+            if allocation.get("status") in {"ready", "active"}:
+                profile = api.call("POST", "/devkits/allocations/" + allocation_id + "/profile", {})
+                # Reuse the same strict profile validation as manually supplied keys.
+                profile = decode_key(base64.b64encode(json.dumps(profile).encode()).decode())
+                progress.success("Device is ready")
+                return profile
+            if time.monotonic() >= deadline:
+                raise CloudExError("Device preparation timed out. Allocation {} is retained; retry with cloudex connect --allocation {} or release it".format(allocation_id, allocation_id))
+            time.sleep(2)
+
+
+def _neatops_login(api):
+    api.login(lambda url: console.print("Open this URL in a browser on this computer:\n" + url, markup=False, soft_wrap=True))
+    console.print("[green]Signed in to NeatOps ({})[/green]".format(api.environment))
+
+
+@cloudex_group.command("login")
+@click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True)
+def login_command(environment):
+    """Sign in to NeatOps in your browser on this computer."""
+    try:
+        _neatops_login(NeatOps(environment))
+    except CloudExError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@cloudex_group.command("logout")
+@click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True)
+def logout_command(environment):
+    """Revoke and remove this CLI's NeatOps credentials; keep device leases."""
+    try:
+        NeatOps(environment).logout()
+        console.print("Signed out of NeatOps. Existing device leases are unchanged.")
+    except CloudExError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@cloudex_group.command("devices")
+@click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True)
+def devices_command(environment):
+    """Show NeatOps device availability and your allocation IDs."""
+    try:
+        inventory = NeatOps(environment).call("GET", "/devkits")
+        table = Table("Device", "ID", "Appliance", "Availability", "Your allocation", "Lease state")
+        allocations = {(a["cluster_id"], a["target_id"]): a for a in inventory.get("allocations", [])}
+        for d in inventory.get("devices", []):
+            a = allocations.get((d["cluster_id"], d["id"]), {})
+            table.add_row(d["name"], d["id"], d["cluster_id"], "Available" if d["available"] else d.get("reason", "Unavailable"), a.get("session_id", "—"), a.get("status", "—"))
+        console.print(table)
+        # Allocations can survive an appliance disappearing from inventory.
+        for a in inventory.get("allocations", []):
+            console.print("Allocation {}: {} / {} ({})".format(a["session_id"], a["cluster_id"], a["target_id"], a["status"]), markup=False)
+    except CloudExError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@cloudex_group.command("request")
+@click.option("--device", help="Device ID or exact name; otherwise choose interactively.")
+@click.option("--cluster", help="Appliance ID, to disambiguate devices.")
+@click.option("--duration", type=click.Choice(list(DURATIONS)), default="1h", show_default=True)
+@click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True)
+@click.option("--verbose", is_flag=True, help="Print sanitized connection stages.")
+def request_command(device, cluster, duration, environment, verbose):
+    """Request a NeatOps device, wait for preparation, and connect automatically."""
+    allocation_id = None
+    try:
+        api = NeatOps(environment)
+        entitlement = api.call("GET", "/users/me/entitlement")["entitlement"]
+        if DURATIONS[duration] > entitlement["max_lease_duration_seconds"]:
+            raise CloudExError("Requested duration exceeds your NeatOps lease limit; choose a shorter duration")
+        inventory = api.call("GET", "/devkits")
+        if len(inventory.get("allocations", [])) >= entitlement["max_active_leases"]:
+            raise CloudExError("Your device lease limit is reached; connect to an existing allocation or release one")
+        candidates = [d for d in inventory.get("devices", []) if d.get("available")
+                      and (not cluster or d["cluster_id"] == cluster)
+                      and (not device or device in {d["id"], d["name"]})]
+        if not candidates:
+            raise CloudExError("No matching devices are available; check cloudex devices")
+        if device and len(candidates) > 1:
+            raise CloudExError("Device name or ID is ambiguous; specify --cluster")
+        if not device:
+            for index, d in enumerate(candidates, 1):
+                console.print("{}. {} ({}) · {} · {}".format(index, d["name"], d["id"], d["cluster_id"], d.get("firmware") or "unknown firmware"), markup=False)
+            choice = click.prompt("Choose a device", type=click.IntRange(1, len(candidates)))
+            selected = candidates[choice - 1]
+        else:
+            selected = candidates[0]
+        # Get local administrator authorization before reserving scarce hardware.
+        _authorize_supported_host()
+        allocation_id = uuid.uuid4().hex
+        console.print("Allocation {} · {} · {}".format(allocation_id, selected["name"], duration), markup=False)
+        api.call("POST", "/devkits/allocations", {"request_id": allocation_id,
+                 "cluster_id": selected["cluster_id"], "target_id": selected["id"], "duration_seconds": DURATIONS[duration]})
+        profile = _allocation_profile(api, allocation_id)
+        _connect_profile(profile, verbose=verbose)
+    except CloudExError as exc:
+        if allocation_id:
+            console.print("Inspect: sima-cli cloudex devices --environment {}\nResume: sima-cli cloudex connect --allocation {} --environment {}\nRelease: sima-cli cloudex release {} --environment {}".format(environment, allocation_id, environment, allocation_id, environment), markup=False, soft_wrap=True)
+        raise click.ClickException(str(exc)) from exc
+
+
+@cloudex_group.command("release")
+@click.argument("allocation_id")
+@click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True)
+def release_command(allocation_id, environment):
+    """Release your NeatOps lease and disconnect its local CloudEx sessions."""
+    try:
+        allocation_id = _allocation_id(allocation_id)
+        store = _store()
+        for session in store.list():
+            if session.get("allocation_id") == allocation_id:
+                with StageProgress("Disconnecting CloudEx") as progress:
+                    disconnect_session(session, store, progress)
+        NeatOps(environment).call("DELETE", "/devkits/allocations/" + allocation_id)
+        console.print("Lease released; device availability returns after cleanup is confirmed.")
+    except CloudExError as exc:
+        raise click.ClickException(str(exc)) from exc

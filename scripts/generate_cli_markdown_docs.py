@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "docs" / "sima-cli"
 README_PATH = ROOT / "README.md"
 # Preview commands may have reference pages while remaining hidden in CLI help.
-DOCUMENTED_HIDDEN_COMMANDS = {("sima-cli", "models")}
+DOCUMENTED_HIDDEN_COMMANDS = {("sima-cli", "models"), ("sima-cli", "cloudex")}
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

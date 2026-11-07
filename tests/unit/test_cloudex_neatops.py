@@ -297,3 +297,15 @@ def test_existing_lease_limit_does_not_request_another_device(command_api):
     assert result.exit_code != 0
     assert "lease limit is reached" in result.output
     assert command_api.call.call_count == 2
+
+
+def test_root_cloudex_login_bypasses_developer_portal_initialization(monkeypatch):
+    import sima_cli.cli as cli
+    initialize = Mock(side_effect=AssertionError("Unexpected portal initialization"))
+    monkeypatch.setattr(cli, "_initialize_main_context", initialize)
+    login = Mock()
+    monkeypatch.setattr(commands, "_neatops_login", login)
+    result = CliRunner().invoke(cli.main, ["cloudex", "login"], env={"SIMA_CLI_INTERNAL": "1"})
+    assert result.exit_code == 0, result.output
+    initialize.assert_not_called()
+    login.assert_called_once()

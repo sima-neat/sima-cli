@@ -67,7 +67,8 @@ def test_failed_ssh_wait_does_not_mark_connected():
     def wait(*args,**kwargs):
         manager.shutdown_event.set()
         return False
-    with patch.object(netboot, 'wait_for_ssh', side_effect=wait):
+    with patch.object(netboot, 'identity_for_ip', return_value=None), \
+            patch.object(netboot, '_ssh_matches_device', side_effect=wait):
         manager.monitor_client('192.0.2.2',0)
     assert manager.clients['192.0.2.2']['state']=='Booting'
 

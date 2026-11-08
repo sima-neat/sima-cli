@@ -748,6 +748,11 @@ def _write_port_map(config_dir: Path, port_map: Dict) -> Path:
     return path
 
 
+def _write_insight_url_routing(config_dir: Path) -> None:
+    """SDK setup starts in direct mode; hosted provisioning applies proxy later."""
+    (config_dir / "url-routing").write_text("direct\n", encoding="utf-8")
+
+
 def _generate_code_ui_token() -> str:
     return secrets.token_urlsafe(CODE_UI_SECRET_BYTES)
 
@@ -900,6 +905,7 @@ def prepare_neat_container_run(
         if isinstance(code_ui_https, dict):
             code_ui_url = f"https://localhost:{int(code_ui_https['host'])}"
     port_map_path = _write_port_map(config_dir, port_map)
+    _write_insight_url_routing(config_dir)
     return NeatRunConfig(
         port_map=port_map,
         port_args=port_args,

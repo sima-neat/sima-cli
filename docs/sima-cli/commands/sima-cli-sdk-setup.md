@@ -22,7 +22,7 @@ sima-cli sdk setup [OPTIONS]
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
 | `--all-extensions` | Install Codex and Claude VS Code extensions without prompting. Neat is installed automatically. SDK_SKIP_CODING_AGENT_INSTALL overrides this option. |
-| `--edgematic-studio, --studio` | Install the Edgematic Studio extension and publish its port. This is the default; the option is kept for compatibility. |
+| `--edgematic-studio, --studio` | Install the Edgematic Studio extension and publish its port. Otherwise prompts after the other extensions; -y accepts. |
 | `--no-edgematic-studio, --no-studio` | Skip the Edgematic Studio extension and do not publish its port. |
 | `--edgematic-studio-port, --studio-port` | Publish the Edgematic Studio port without installing it, for a manual install later. |
 | `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
@@ -42,6 +42,12 @@ None.
 Usage: sima-cli sdk setup [OPTIONS]
 
   Initialize SDK environment and select components to start.
+
+  Model Compiler retains its local/online/skip installation menu. The
+  Codex/Claude extension selection follows, then Edgematic Studio
+  confirmation. -y accepts Studio installation automatically. Its HTTP port is
+  reserved before launch for installation now or later; --no-studio skips the
+  mapping.
 
   Set CODE_SERVER_WITHOUT_PASSWORD=1 or pass --code-server-without-password
   for code-server behind an authenticated gateway with trusted HTTPS.
@@ -79,8 +85,8 @@ Options:
                                   automatically. SDK_SKIP_CODING_AGENT_INSTALL
                                   overrides this option.
   --edgematic-studio, --studio    Install the Edgematic Studio extension and
-                                  publish its port. This is the default; the
-                                  option is kept for compatibility.
+                                  publish its port. Otherwise prompts after
+                                  the other extensions; -y accepts.
   --no-edgematic-studio, --no-studio
                                   Skip the Edgematic Studio extension and do
                                   not publish its port.

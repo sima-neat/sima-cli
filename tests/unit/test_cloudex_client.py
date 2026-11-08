@@ -41,7 +41,10 @@ def session_record(session_id="b" * 32):
     }
 
 
-@pytest.mark.parametrize("environment", ["vulcan-staging", "vulcan-production"])
+@pytest.mark.parametrize("environment", [
+    "vulcan-staging", "vulcan-production", "arthas-staging", "arthas-production",
+    "custom-environment",
+])
 def test_decode_key_accepts_exact_allocation_contract(environment):
     profile = allocation_profile(environment)
     encoded = base64.b64encode(json.dumps(profile).encode()).decode()
@@ -49,12 +52,12 @@ def test_decode_key_accepts_exact_allocation_contract(environment):
     assert client.decode_key(encoded) == profile
 
 
-@pytest.mark.parametrize("environment", ["vulcan-development", "production", "staging"])
-def test_decode_key_rejects_unsupported_environment(environment):
+@pytest.mark.parametrize("environment", ["", None, 123, [], {}])
+def test_decode_key_rejects_invalid_environment(environment):
     profile = allocation_profile(environment)
     encoded = base64.b64encode(json.dumps(profile).encode()).decode()
 
-    with pytest.raises(client.CloudExError, match="vulcan-staging"):
+    with pytest.raises(client.CloudExError, match="invalid value"):
         client.decode_key(encoded)
 
 
@@ -124,7 +127,10 @@ def test_forwarder_override_is_authoritative(tmp_path, monkeypatch):
     client.shutil.which.assert_not_called()
 
 
-@pytest.mark.parametrize("environment", ["vulcan-staging", "vulcan-production"])
+@pytest.mark.parametrize("environment", [
+    "vulcan-staging", "vulcan-production", "arthas-staging", "arthas-production",
+    "custom-environment",
+])
 @pytest.mark.parametrize("restored", [False, True])
 def test_api_signs_allocation_scoped_request(monkeypatch, environment, restored):
     response = Mock(ok=True)
@@ -132,7 +138,8 @@ def test_api_signs_allocation_scoped_request(monkeypatch, environment, restored)
     request = Mock(return_value=response)
     monkeypatch.setattr(client.requests, "request", request)
     profile = allocation_profile(environment)
-    profile["api_url"] = "https://{}.example.test".format(environment)
+    # Routing must use api_url, independently of the descriptive environment.
+    profile["api_url"] = "https://independent-backend.example.test"
     encoded = base64.b64encode(json.dumps(profile).encode()).decode()
     decoded = client.decode_key(encoded)
     if restored:

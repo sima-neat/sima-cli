@@ -264,9 +264,10 @@ def test_checklist_labels_and_empty_selection(capsys):
     choices = checkbox.call_args.kwargs["choices"]
     assert [choice["name"] for choice in choices] == ["Codex Extension", "Claude Extension"]
     assert not any(choice.get("enabled", False) for choice in choices)
-    assert capsys.readouterr().out.strip() == (
-        "Codex Extension and Claude Extension provide optional AI coding assistance."
-    )
+    output = " ".join(capsys.readouterr().out.replace("│", " ").split())
+    assert "Codex and Claude Extensions (optional)" in output
+    assert "skip this step by leaving both extensions unchecked" in output
+    assert "Install them later from the Extensions view in the code-server Web UI" in output
 
 
 @pytest.mark.parametrize("allow_prompt", [False, True])

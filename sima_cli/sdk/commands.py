@@ -371,7 +371,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
     "--studio",
     "edgematic_studio",
     is_flag=True,
-    help="Install the Edgematic Studio extension and publish its port. This is the default; the option is kept for compatibility.",
+    help="Install the Edgematic Studio extension and publish its port. Otherwise prompts after the other extensions; -y accepts.",
 )
 @click.option(
     "--no-edgematic-studio",
@@ -443,6 +443,11 @@ def setup(
     all_extensions,
 ):
     """Initialize SDK environment and select components to start.
+
+    Model Compiler retains its local/online/skip installation menu. The
+    Codex/Claude extension selection follows, then Edgematic Studio confirmation.
+    -y accepts Studio installation automatically. Its HTTP port is reserved
+    before launch for installation now or later; --no-studio skips the mapping.
 
     Set CODE_SERVER_WITHOUT_PASSWORD=1 or pass --code-server-without-password
     for code-server behind an authenticated gateway with trusted HTTPS.

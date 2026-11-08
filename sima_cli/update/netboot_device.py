@@ -104,7 +104,10 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
         message.append('These boot settings persist across reboots. No DHCP is required.\nKeep this host and TFTP server running.\n'
                        'If netboot fails, the DevKit retries and reboots; restoring local boot may require serial access.\n'
                        + ('Automatic flashing is enabled.' if autoflash else 'Netboot preparation itself does not write the eMMC image.'), style='bold yellow')
-        Console().print(Panel(message, title='Reboot DevKit into network boot', border_style='yellow'))
+        Console().print(Panel(
+            message, title='Reboot DevKit into network boot',
+            border_style='yellow', width=100, expand=False,
+        ))
         if not click.confirm('Set up network boot, automatically flash this DevKit, and reboot it from eMMC?' if autoflash
                              else 'Set up network boot and reboot this DevKit?', default=False):
             return False
@@ -127,11 +130,20 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
             configuration.netboot_configured = True
         # A delayed systemd job acknowledges scheduling before SSH disconnects.
         _checked(ssh, 'sudo systemd-run --on-active=3s /sbin/reboot')
+        next_step = (
+            'With --autoflash enabled, the DevKit will be automatically flashed when it '
+            'comes online from netboot and passes the readiness checks.'
+            if autoflash else
+            f'Once you see "✅ SSH is available on {devkit}", type "f" to flash the device.'
+        )
         click.secho(
             f'Reboot scheduled for {devkit}. Keep this program running to serve images through TFTP. '
-            'You may connect to the device through its serial port to monitor netboot progress, but this is optional. '
-            + (f'Once you see "✅ SSH is available on {devkit}", flashing will start automatically.' if autoflash
-             else f'Once you see "✅ SSH is available on {devkit}", type "f" to flash the device.'),
+            'You may connect to the device through its serial port to monitor netboot progress, but this is optional.\n\n'
+            + next_step + '\n\n'
+            'In rare cases, the DevKit may receive a new IP during netboot. '
+            'sima-cli will attempt to rediscover it automatically. If that fails, '
+            'type "d" at the netboot> prompt to discover devices, then use "f <ip>" '
+            'to flash the DevKit if it is found.',
             fg='green',
         )
         return True

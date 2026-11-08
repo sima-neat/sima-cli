@@ -52,6 +52,37 @@ sima-cli/
 
 ---
 
+### SDK release mapping
+
+`sima_cli/sdk/releases.json` is the source-controlled SDK-to-Model-Compiler
+mapping bundled in both source and wheel distributions. `schema_version` versions
+the file format; the resolver currently supports version 1.
+
+The `model_compiler.releases` list uses **first-match order**. Add explicit SDK
+release entries before the historical fallback rules. Each entry specifies
+`sdk_versions` (an exact version or comma-separated comparison constraints) and
+`install_args` (CLI arguments with optional `{sdk_version}`, `{legacy_sdk_version}`,
+and `{arch}` placeholders). `{legacy_sdk_version}` retains the first three numeric
+components for older compiler releases.
+`bundle_sdk_version` specifies the SDK version declared by compatible offline ZIPs
+(the 2.1.3.1 online artifact retains the 2.1.3 bundle version).
+SDK versions retain every numeric component from `/etc/sdk-release`.
+
+SDK 3.0.0 and 3.0.0.0 select Model Compiler 3.0.0; SDK 3.0.0.1 selects
+Model Compiler 3.0.0.1 through `neat install`. Version comparisons treat
+trailing zero components as equivalent, so `==3.0.0.0` also matches 3.0.0.
+Other SDKs at or above 2.1.3 retain the historical compiler 2.1.3.1 pin; SDKs below 2.1.3
+use their first three version components through the legacy installer and for
+offline ZIP compatibility (for example, SDK 2.1.2.3 uses compiler/bundle version
+2.1.2). Unlisted future releases
+also follow that historical fallback until an explicit mapping is added.
+Architecture aliases and SDK constraints live in `model_compiler.architectures`:
+AMD64 retains legacy support, while ARM64 requires SDK 2.1.1 or later.
+Package metadata compatibility checks still apply during installation.
+
+Run `python -m pytest tests/unit/test_sdk_release_mapping.py tests/unit/test_sdk_image_detection.py`
+after updating the mapping.
+
 ### 🏗 Build Instructions
 
 #### 1. Install dev dependencies
@@ -156,3 +187,47 @@ errors and TLS certificate errors fail immediately.
 These retries do not replay an interrupted response body or change the separate
 parallel-download path. Existing partial-file validators, resume checks, and
 atomic publication continue to protect downloaded artifacts.
+
+### CloudEx browser login and allocation
+
+CloudEx separates external Arthas access from internal Vulcan access. Without
+`-i`, `cloudex login` uses the Developer Portal, and `cloudex logout` clears only
+Developer Portal credentials. External CloudEx device operations report that
+Arthas support is not available yet; they never use Vulcan credentials or sessions.
+
+Use `sima-cli -i cloudex ...` (or `sima-cli cloudex -i ...`) for internal Vulcan
+production. `SIMA_CLI_INTERNAL=1` also selects internal access. Internal commands
+that need NeatOps automatically open browser login if you are signed out or your
+saved login has expired, then continue the original command. Valid credentials
+are refreshed silently. Permission failures and service outages do not start a
+new login. `cloudex login` is also available explicitly. Examples:
+
+```bash
+sima-cli -i cloudex login
+sima-cli -i cloudex devices
+sima-cli -i cloudex request --duration 4h
+# Or choose a specific available device:
+# sima-cli -i cloudex request --device DEVICE_ID --cluster APPLIANCE_ID --duration 1h
+sima-cli -i cloudex connect --allocation ALLOCATION_ID
+sima-cli -i cloudex release ALLOCATION_ID
+sima-cli -i cloudex logout
+```
+
+Use `-i` together with `--environment staging` to select Vulcan staging.
+Production and staging credentials are stored separately. Login opens the browser on the same computer as the CLI and
+waits up to three minutes for the loopback callback on `127.0.0.1:47182`.
+Authentication uses authorization code with PKCE and the dashboard's active
+Cognito app client and SSO provider. The CLI stores tokens in a mode-0600 file
+under `~/.sima-cli/cloudex/`, refreshes them when needed, and never prints them.
+
+Request checks your lease limits, offers available devices, reserves the chosen
+device, waits up to three minutes for preparation, and connects through the
+existing CloudEx forwarder. If preparation or connection fails, the allocation
+ID is printed for inspection, reconnection, or release. A failed or ambiguous
+request is never automatically retried with a new allocation ID. Disconnecting
+a tunnel and logging out retain the device lease; `release` ends it and starts
+server-side cleanup. Existing allocation-key connection commands still work.
+
+The paired Vulcan change publishes `/cli-config.json` and registers the exact
+loopback callback on both dashboard OAuth clients. Deploy that change before
+using CLI login; no credential or mutable client ID must be copied into the CLI.

@@ -81,11 +81,12 @@ def test_spinner_is_cleaned_up_on_interrupt():
 @pytest.mark.parametrize('online', [True, False])
 def test_monitor_only_marks_success_connected(online, capsys):
     manager = netboot.ClientManager()
+    manager.CONNECT_TIMEOUT = 0.02
+    manager.POLL_INTERVAL = 0
     manager.clients['192.168.2.3'] = {'state': 'Booting', 'board_info': None}
-    with patch.object(netboot, 'wait_for_ssh', return_value=online) as wait, \
-            patch.object(manager.shutdown_event, 'wait', side_effect=[False, True]):
+    with patch.object(netboot, 'identity_for_ip', return_value=None), \
+            patch.object(netboot, '_ssh_matches_device', return_value=online):
         manager.monitor_client('192.168.2.3', time.time() - 61)
-    wait.assert_called_once_with('192.168.2.3', timeout=120, cancel_event=manager.shutdown_event)
     assert manager.clients['192.168.2.3']['state'] == ('Connected' if online else 'SSH unavailable')
     if not online:
         output = capsys.readouterr().out

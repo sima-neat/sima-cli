@@ -12,7 +12,7 @@ sima-cli [OPTIONS] COMMAND [ARGS]...
 
 | Name | Description |
 | --- | --- |
-| `-i, --internal` | Use internal Artifactory resources, Authorized Sima employees only |
+| `-i, --internal` | Use internal SiMa services, authorized SiMa employees only |
 | `-y, --yes` | Assume yes for confirmation prompts. |
 | `--version` | Show the version and exit. |
 
@@ -51,12 +51,11 @@ Usage: sima-cli [OPTIONS] COMMAND [ARGS]...
 
   sima-cli – SiMa Developer Portal CLI Tool
 
-  Global Options:   --internal  Use internal Artifactory resources (can also
-  be set via env variable SIMA_CLI_INTERNAL=1)
+  Global Options:   --internal  Use internal SiMa services (can also be set
+  via env variable SIMA_CLI_INTERNAL=1)
 
 Options:
-  -i, --internal  Use internal Artifactory resources, Authorized Sima
-                  employees only
+  -i, --internal  Use internal SiMa services, authorized SiMa employees only
   -y, --yes       Assume yes for confirmation prompts.
   --version       Show the version and exit.
   --help          Show this message and exit.

@@ -16,10 +16,12 @@ import shlex
 import platform
 import shutil
 import tempfile
+import importlib.resources as pkg_resources
 from collections import defaultdict
 from contextlib import ExitStack
 from rich.console import Console
 from rich.panel import Panel
+from sima_cli.install.compatibility import version_matches
 
 from sima_cli.sdk.docker_staging import docker_cp_staging_dir as _docker_cp_staging_dir
 from sima_cli.sdk.model_compiler import discover_archive, normalize_arch, select_source, stage_archive
@@ -964,7 +966,7 @@ def _copy_sima_cli_auth_cache_to_container(sdk_container_name: str, login_name: 
 
 
 def _extract_sdk_base_version(sdk_release: str) -> str:
-    match = re.search(r"^SDK Version\s*=\s*([0-9]+(?:\.[0-9]+){1,2})", sdk_release, re.MULTILINE)
+    match = re.search(r"^SDK Version\s*=\s*([0-9]+(?:\.[0-9]+)+)", sdk_release, re.MULTILINE)
     return match.group(1) if match else ""
 
 
@@ -996,45 +998,52 @@ def _is_arm64_platform() -> bool:
     return machine in {"aarch64", "arm64"}
 
 
-def _version_at_least(version: str, minimum: str) -> bool:
-    def parts(value: str) -> List[int]:
-        match = re.match(r"^\s*(\d+(?:\.\d+)*)", value or "")
-        if not match:
-            return []
-        return [int(part) for part in match.group(1).split(".")]
-
-    current_parts = parts(version)
-    minimum_parts = parts(minimum)
-    if not current_parts or not minimum_parts:
-        return False
-
-    length = max(len(current_parts), len(minimum_parts))
-    current_parts.extend([0] * (length - len(current_parts)))
-    minimum_parts.extend([0] * (length - len(minimum_parts)))
-    return current_parts >= minimum_parts
+def _load_sdk_release_mapping() -> Dict:
+    if hasattr(pkg_resources, "files"):
+        resource = pkg_resources.files("sima_cli.sdk").joinpath("releases.json")
+        with resource.open("r", encoding="utf-8") as handle:
+            mapping = json.load(handle)
+    else:
+        # Python 3.8 does not provide files().
+        with pkg_resources.open_text("sima_cli.sdk", "releases.json", encoding="utf-8") as handle:
+            mapping = json.load(handle)
+    if mapping["schema_version"] != 1:
+        raise ValueError("Unsupported SDK release mapping schema version")
+    return mapping
 
 
-def _model_sdk_extension_arch(base_version: str) -> str:
-    if _is_x86_platform():
-        return "amd64"
-    if _is_arm64_platform() and _version_at_least(base_version, "2.1.1"):
-        return "arm64"
+def _model_sdk_extension_arch(base_version: str, mapping: Dict = None) -> str:
+    if mapping is None:
+        mapping = _load_sdk_release_mapping()
+    machine = platform.machine().lower()
+    for arch, rule in mapping["model_compiler"]["architectures"].items():
+        if machine in rule["machines"] and version_matches(base_version, rule["sdk_versions"]):
+            return arch
     return ""
 
 
+def _model_sdk_extension_release(base_version: str, mapping: Dict = None) -> Dict:
+    if mapping is None:
+        mapping = _load_sdk_release_mapping()
+    # First match wins: explicit release pins precede historical fallback rules.
+    for release in mapping["model_compiler"]["releases"]:
+        if version_matches(base_version, release["sdk_versions"]):
+            return release
+    return {}
+
+
 def _model_sdk_extension_install_args(base_version: str, arch: str = None) -> List[str]:
-    arch = _model_sdk_extension_arch(base_version) if arch is None else arch
-    if arch == "arm64" and not _version_at_least(base_version, "2.1.1"):
+    mapping = _load_sdk_release_mapping()
+    arch = _model_sdk_extension_arch(base_version, mapping) if arch is None else arch
+    arch_rule = mapping["model_compiler"]["architectures"].get(arch)
+    if not arch_rule or not version_matches(base_version, arch_rule["sdk_versions"]):
         return []
-    if not arch:
-        return []
-    if base_version == "3.0.0":
-        return ["neat", "install", f"model-compiler/{arch}@v3.0.0"]
-    if _version_at_least(base_version, "2.1.3"):
-        # Model Compiler 2.1.3+ is published through Vulcan. Install the
-        # released artifact compatible with this SDK generation.
-        return ["neat", "install", f"model-compiler/{arch}@v2.1.3.1"]
-    return ["install", "-v", base_version, f"tools/model-compiler/{arch}"]
+    release = _model_sdk_extension_release(base_version, mapping)
+    return [arg.format(
+        arch=arch,
+        sdk_version=base_version,
+        legacy_sdk_version=".".join(base_version.split(".")[:3]),
+    ) for arg in release.get("install_args", [])]
 
 
 def _edgematic_studio_arch() -> str:
@@ -1058,18 +1067,18 @@ def resolve_edgematic_studio_choice(
     port_only: bool = False,
     interactive: bool = True,
     skip_requested: bool = False,
+    auto_install: bool = False,
 ) -> Tuple[bool, bool]:
     """
     Decide whether setup installs Edgematic Studio and publishes its port.
 
-    Studio is installed and published by default, without a prompt, like the
-    browser VS Code. --no-edgematic-studio turns both off, and
-    --edgematic-studio-port keeps only the port. The interactive argument is
-    retained for caller compatibility and does not change the choice.
+    Setup reserves the HTTP port before container creation, then asks about
+    installation after Model Compiler and the browser editor extensions.
 
     Returns (install, publish_port).
     """
     if skip_requested:
+        print("ℹ️  Skipping Edgematic Studio (--no-edgematic-studio).")
         return False, False
 
     extension_install_args = _edgematic_studio_install_args()
@@ -1086,7 +1095,40 @@ def resolve_edgematic_studio_choice(
         )
         return False, True
 
-    return True, True
+    if not (interactive or auto_install or install_requested):
+        print(
+            "ℹ️  Edgematic Studio is opt-in and will not be installed. Pass "
+            "--edgematic-studio to install it, or --edgematic-studio-port to publish "
+            "its port for a manual install."
+        )
+        return False, False
+
+    console.print(
+        Panel(
+            "Edgematic Studio is a browser-based development environment for AI "
+            "applications, with an editor, AI coding agent, and DevKit tools.\n\n"
+            "It installs in your host's SDK extensions directory, mounted in the "
+            "container at /sdk-extensions.\n\n"
+            "Studio is in preview. Documentation and support are still in progress.\n\n"
+            "Choose Yes to install or No to skip. -y accepts automatically.\n\n"
+            "Its HTTP port stays mapped if you skip installation. To install later, "
+            "run this in the SDK container terminal:\n"
+            f"sima-cli {shlex.join(extension_install_args)}",
+            title="Edgematic Studio Extension (optional)",
+            width=88,
+            border_style="green",
+            style="green",
+            expand=False,
+        )
+    )
+    if auto_install or install_requested:
+        print("ℹ️  Auto-installing Edgematic Studio extension.")
+        return True, True
+    if yes_no_prompt("Install the Edgematic Studio extension now?", default_yes=False):
+        return True, True
+    print("ℹ️  Skipping Edgematic Studio installation; its HTTP port remains reserved.")
+    print(f"   Install later from the SDK container shell: sima-cli {shlex.join(extension_install_args)}")
+    return False, False
 
 
 def ensure_edgematic_studio_installed(
@@ -1303,9 +1345,9 @@ def ensure_model_sdk_extension_installed(
             expand=False,
         )
     )
-    expected_version = (
-        "2.1.3" if base_version != "3.0.0" and _version_at_least(base_version, "2.1.3")
-        else base_version
+    expected_version = _model_sdk_extension_release(base_version)["bundle_sdk_version"].format(
+        sdk_version=base_version,
+        legacy_sdk_version=".".join(base_version.split(".")[:3]),
     )
     local_archive = discover_archive(arch, expected_version)
     unattended = noninteractive or auto_install or not sys.stdin.isatty()
@@ -2451,6 +2493,7 @@ def configure_container(
     minimal=False,
     user_and_workspace_only=False,
     all_extensions=False,
+    prompt_edgematic_studio=False,
 ) -> bool:
     """
     Configure container user mappings and permissions:
@@ -2564,6 +2607,13 @@ def configure_container(
             allow_prompt=not (noninteractive or yes_to_all),
             uid=uid,
             gid=gid,
+        )
+
+    if not minimal and (prompt_edgematic_studio or install_edgematic_studio):
+        install_edgematic_studio, _ = resolve_edgematic_studio_choice(
+            install_requested=install_edgematic_studio,
+            interactive=not (noninteractive or yes_to_all),
+            auto_install=yes_to_all,
         )
 
     if install_edgematic_studio:
@@ -2697,6 +2747,7 @@ def start_docker_container(
     all_extensions=False,
     container_build=False,
     code_server_without_password=False,
+    prompt_edgematic_studio=False,
 ):
     """
     Start a Docker container using an image pulled from either JFrog or AWS ECR.
@@ -2712,6 +2763,7 @@ def start_docker_container(
     if no_insight:
         # Studio drives the Insight APIs.
         install_edgematic_studio = False
+        prompt_edgematic_studio = False
         publish_edgematic_studio_port = False
     container_name = sanitize_container_name(image)
     hostname = sanitize_container_hostname(container_name)
@@ -2928,6 +2980,7 @@ def start_docker_container(
         yes_to_all=yes_to_all,
         no_model_sdk=no_model_sdk,
         install_edgematic_studio=install_edgematic_studio,
+        prompt_edgematic_studio=prompt_edgematic_studio,
         minimal=minimal,
         user_and_workspace_only=ros2_sdk_image,
         all_extensions=all_extensions,

@@ -169,11 +169,44 @@ def validate_metadata(data: dict):
             if not isinstance(install["script"], str):
                 raise MetadataValidationError("'installation.script' must be a string")
         elif install_type == "windows-msi":
-            msi = install.get("msi")
-            if not isinstance(msi, str) or not msi.strip().lower().endswith(".msi"):
-                raise MetadataValidationError("'installation.msi' must name an MSI resource")
-            if msi not in data["resources"]:
-                raise MetadataValidationError("'installation.msi' must be listed in 'resources'")
+            native_packages = install.get("native-packages")
+            if native_packages is None:
+                msi = install.get("msi")
+                if not isinstance(msi, str) or not msi.strip().lower().endswith(".msi"):
+                    raise MetadataValidationError("'installation.msi' must name an MSI resource")
+                if msi not in data["resources"]:
+                    raise MetadataValidationError("'installation.msi' must be listed in 'resources'")
+            else:
+                if "msi" in install:
+                    raise MetadataValidationError(
+                        "Use either 'installation.msi' or 'installation.native-packages', not both"
+                    )
+                if not isinstance(native_packages, list) or not native_packages:
+                    raise MetadataValidationError(
+                        "'installation.native-packages' must be a non-empty list"
+                    )
+                owners = set()
+                for index, package in enumerate(native_packages):
+                    prefix = f"'installation.native-packages[{index}]'"
+                    if not isinstance(package, dict):
+                        raise MetadataValidationError(f"{prefix} must be an object")
+                    for field in ("owner", "msi", "version"):
+                        value = package.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            raise MetadataValidationError(
+                                f"{prefix}.{field} must be a non-empty string"
+                            )
+                    if package["owner"] in owners:
+                        raise MetadataValidationError(
+                            "'installation.native-packages' contains a duplicate owner"
+                        )
+                    owners.add(package["owner"])
+                    if not package["msi"].lower().endswith(".msi"):
+                        raise MetadataValidationError(f"{prefix}.msi must name an MSI resource")
+                    if package["msi"] not in data["resources"]:
+                        raise MetadataValidationError(
+                            f"{prefix}.msi must be listed in 'resources'"
+                        )
             python_package = install.get("python")
             if python_package is not None:
                 if not isinstance(python_package, dict):

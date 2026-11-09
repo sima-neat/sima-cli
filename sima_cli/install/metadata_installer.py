@@ -34,6 +34,7 @@ from sima_cli.install.metadata_info import print_metadata_summary, parse_size_st
 from sima_cli.utils.container_registries import install_from_cr
 from sima_cli.install.registry import PackageRegistry
 from sima_cli.install.windows_package import (
+    WindowsNativeInstallError,
     WindowsPackageRestartRequired,
     WindowsPythonInstallError,
     install_windows_package,
@@ -1641,11 +1642,16 @@ def install_from_metadata(
                                 "restart-required",
                             )
                             raise
-                        except WindowsPythonInstallError:
+                        except (WindowsNativeInstallError, WindowsPythonInstallError) as error:
+                            state = (
+                                "partial-native-failed"
+                                if isinstance(error, WindowsNativeInstallError)
+                                else "partial-python-failed"
+                            )
                             registry.update_state(
                                 metadata.get("name"),
                                 metadata.get("version"),
-                                "partial-python-failed",
+                                state,
                             )
                             raise
 

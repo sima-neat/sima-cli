@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import click
 
@@ -19,6 +19,10 @@ class WindowsPackageRestartRequired(click.ClickException):
 
 class WindowsPythonInstallError(click.ClickException):
     """The MSI succeeded, but the requested Python installation failed."""
+
+
+class WindowsNativeInstallError(click.ClickException):
+    """One MSI failed after an earlier package may have installed."""
 
 
 def _is_windows() -> bool:
@@ -159,40 +163,79 @@ def _install_python_wheel(
     return "installed"
 
 
+def _native_packages(installation: Dict) -> List[Dict[str, str]]:
+    packages = installation.get("native-packages")
+    if packages is not None:
+        return packages
+    return [{"owner": "native", "msi": installation["msi"], "version": "unspecified"}]
+
+
+def _safe_log_label(owner: str) -> str:
+    label = "".join(character if character.isalnum() else "-" for character in owner.lower())
+    return label.strip("-") or "package"
+
+
+def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str, str]]:
+    installed = []
+    root = Path(install_dir).resolve()
+    packages = _native_packages(metadata["installation"])
+    for index, package in enumerate(packages, start=1):
+        owner = package["owner"]
+        msi = _declared_resource(metadata, install_dir, package["msi"])
+        log_path = root / f"sima-cli-msi-install-{index:02d}-{_safe_log_label(owner)}.log"
+        command = [
+            "msiexec.exe",
+            "/i",
+            str(msi),
+            "/passive",
+            "/norestart",
+            "/L*v",
+            str(log_path),
+        ]
+        click.echo(
+            f"Installing {owner} native package {index}/{len(packages)}: {msi.name}"
+        )
+        result = _run(command)
+        if result.returncode in {MSI_RESTART_INITIATED, MSI_RESTART_REQUIRED}:
+            raise WindowsPackageRestartRequired(
+                f"Windows Installer completed {owner} with restart code {result.returncode}. "
+                "Restart Windows, then rerun the command to continue the coordinated installation. "
+                f"Installer log: {log_path}"
+            )
+        if result.returncode != 0:
+            installed_owners = ", ".join(item["owner"] for item in installed) or "none"
+            raise WindowsNativeInstallError(
+                f"Windows Installer failed for {owner} with exit code {result.returncode}. "
+                f"Packages completed earlier in this run: {installed_owners}. "
+                "The release remains incomplete; correct the failure and rerun the same command. "
+                f"Installer log: {log_path}"
+            )
+        installed.append(
+            {
+                "owner": owner,
+                "version": package["version"],
+                "msi": str(msi),
+                "log": str(log_path),
+            }
+        )
+        click.echo(f"{owner} native package installed successfully.")
+    return installed
+
+
 def install_windows_package(
     metadata: Dict,
     install_dir: str,
     python_executable: Optional[str] = None,
-) -> Dict[str, str]:
-    """Install the metadata's MSI, then its optional wheel in the selected Python."""
+) -> Dict[str, Any]:
+    """Install the ordered native package cohort, then its optional Python wheel."""
     if not _is_windows():
         raise click.ClickException("The windows-msi installation type can only run on Windows.")
 
-    installation = metadata["installation"]
-    msi = _declared_resource(metadata, install_dir, installation["msi"])
-    log_path = Path(install_dir).resolve() / "sima-cli-msi-install.log"
-    command = [
-        "msiexec.exe",
-        "/i",
-        str(msi),
-        "/passive",
-        "/norestart",
-        "/L*v",
-        str(log_path),
-    ]
-    click.echo(f"Installing native package with Windows Installer: {msi.name}")
-    result = _run(command)
-    if result.returncode in {MSI_RESTART_INITIATED, MSI_RESTART_REQUIRED}:
-        raise WindowsPackageRestartRequired(
-            f"Windows Installer completed with restart code {result.returncode}. "
-            "Restart Windows, then rerun the command to continue with Python installation. "
-            f"Installer log: {log_path}"
-        )
-    if result.returncode != 0:
-        raise click.ClickException(
-            f"Windows Installer failed with exit code {result.returncode}. Installer log: {log_path}"
-        )
-
-    click.echo("Native MSI installation completed successfully.")
+    installed = _install_native_packages(metadata, install_dir)
+    click.echo("Coordinated native installation completed successfully.")
     python_status = _install_python_wheel(metadata, install_dir, python_executable)
-    return {"native": "installed", "python": python_status, "msi_log": str(log_path)}
+    return {
+        "native": "installed",
+        "native_packages": installed,
+        "python": python_status,
+    }

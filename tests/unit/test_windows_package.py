@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from sima_cli.cli import main
 from sima_cli.install.metadata_validator import MetadataValidationError, validate_metadata
 from sima_cli.install.windows_package import (
+    WindowsNativeInstallError,
     WindowsPackageRestartRequired,
     WindowsPythonInstallError,
     install_windows_package,
@@ -27,6 +28,8 @@ class WindowsPackageTests(unittest.TestCase):
         self.msi = self.root / "sima-pcie-host-0.6.1-win64.msi"
         self.wheel = self.root / "pyneatpcie-0.6.1-cp314-cp314-win_amd64.whl"
         self.msi.write_bytes(b"msi fixture")
+        self.scheduler_msi = self.root / "simaai-scheduler-pcie-host-0.6.1-win64.msi"
+        self.scheduler_msi.write_bytes(b"scheduler msi fixture")
         self.wheel.write_bytes(b"wheel fixture")
         self.python = self.root / "python.exe"
         self.python.write_bytes(b"python fixture")
@@ -71,6 +74,49 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(command[:3], ["msiexec.exe", "/i", str(self.msi)])
         self.assertIn("/norestart", command)
         self.assertIn("/L*v", command)
+
+    def test_coordinated_native_packages_install_in_manifest_order(self):
+        self.metadata["resources"].insert(0, self.scheduler_msi.name)
+        self.metadata["installation"].pop("msi")
+        self.metadata["installation"]["native-packages"] = [
+            {
+                "owner": "scheduler",
+                "msi": self.scheduler_msi.name,
+                "version": "0.6.1",
+            },
+            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
+        ]
+
+        self.assertTrue(validate_metadata(self.metadata))
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ) as run:
+            result = install_windows_package(self.metadata, str(self.root))
+
+        self.assertEqual(
+            [package["owner"] for package in result["native_packages"]],
+            ["scheduler", "core"],
+        )
+        self.assertEqual(run.call_args_list[0].args[0][2], str(self.scheduler_msi))
+        self.assertEqual(run.call_args_list[1].args[0][2], str(self.msi))
+
+    def test_coordinated_native_failure_reports_completed_packages(self):
+        self.metadata["resources"].insert(0, self.scheduler_msi.name)
+        self.metadata["installation"].pop("msi")
+        self.metadata["installation"]["native-packages"] = [
+            {
+                "owner": "scheduler",
+                "msi": self.scheduler_msi.name,
+                "version": "0.6.1",
+            },
+            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
+        ]
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=[completed(), completed(returncode=1603)],
+        ):
+            with self.assertRaisesRegex(WindowsNativeInstallError, "scheduler"):
+                install_windows_package(self.metadata, str(self.root))
 
     def test_matching_python_package_is_verified_without_reinstall(self):
         responses = [completed(), completed(stdout="0.6.1\n"), completed()]

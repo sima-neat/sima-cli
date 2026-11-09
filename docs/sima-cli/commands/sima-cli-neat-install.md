@@ -24,6 +24,7 @@ sima-cli neat install [OPTIONS] TARGET
 | `-f, --force` | Force installation even if compatibility checks fail. Sets FORCE_INSTALL=1 for the installation script. |
 | `--json` | Print resolved metadata URL and exit. |
 | `--download-only` | Download metadata resources without running installation. |
+| `--python-executable` | For packages that include an optional wheel, install it into this Python environment. |
 
 ## Arguments
 
@@ -62,5 +63,28 @@ Options:
   --json                          Print resolved metadata URL and exit.
   --download-only                 Download metadata resources without running
                                   installation.
+  --python-executable FILE        Install an optional wheel into this customer
+                                  Python environment.
   --help                          Show this message and exit.
 ```
+
+## Windows PCIe host package
+
+The Windows PCIe host package uses Windows Installer for native files. Python
+support is optional and is installed with pip only when an application Python
+environment is selected explicitly:
+
+```powershell
+sima-cli neat install core/pciehost/windows/amd64@3.0 `
+  --python-executable .\.venv\Scripts\python.exe
+```
+
+Omit `--python-executable` for a native-only installation. Repeating the same
+command repairs or upgrades the native package and verifies a matching
+`pyneatpcie` installation without reinstalling it. If the MSI succeeds but pip
+fails, the native installation remains installed and the command can be retried
+with the same Python environment.
+
+Windows removes the native package through Installed apps or `msiexec`. Remove
+the Python package separately from the selected environment with
+`python -m pip uninstall pyneatpcie`.

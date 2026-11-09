@@ -74,6 +74,7 @@ def install_vulcan_package(
     json_output=False,
     command_name="sima-cli neat install",
     download_only=False,
+    python_executable=None,
 ):
     resolved_environment = normalize_environment(environment) or "production"
     _ensure_available_environment(resolved_environment)
@@ -116,6 +117,8 @@ def install_vulcan_package(
         force=force,
         command_name=command_name,
     )
+    if python_executable is not None:
+        install_kwargs["python_executable"] = python_executable
     if download_only:
         install_kwargs["download_only"] = True
     return install_from_metadata(**install_kwargs)
@@ -283,8 +286,26 @@ def artifacts(ctx, repo, ref, environment, environment_flag, base_url, output, a
 )
 @click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
 @click.option("--download-only", is_flag=True, help="Download metadata resources without running installation.")
+@click.option(
+    "--python-executable",
+    "python_executable",
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=str),
+    help="Install an optional wheel into this customer Python environment.",
+)
 @click.pass_context
-def install(ctx, target, environment, environment_flag, base_url, install_dir, package_type, force, json_output, download_only):
+def install(
+    ctx,
+    target,
+    environment,
+    environment_flag,
+    base_url,
+    install_dir,
+    package_type,
+    force,
+    json_output,
+    download_only,
+    python_executable,
+):
     """Install a Neat artifact package from TARGET.
 
     TARGET supports REPO, REPO/folder, REPO@branch, REPO/folder@branch:spec,
@@ -306,6 +327,7 @@ def install(ctx, target, environment, environment_flag, base_url, install_dir, p
         json_output=json_output,
         command_name=f"sima-cli {group_name} install",
         download_only=download_only,
+        python_executable=python_executable,
     )
 
 

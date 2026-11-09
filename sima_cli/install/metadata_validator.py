@@ -160,10 +160,40 @@ def validate_metadata(data: dict):
     # Validate installation (optional)
     if "installation" in data:
         install = data["installation"]
-        if "script" not in install:
-            raise MetadataValidationError("Missing 'script' in 'installation'")
-        if not isinstance(install["script"], str):
-            raise MetadataValidationError("'installation.script' must be a string")
+        if not isinstance(install, dict):
+            raise MetadataValidationError("'installation' must be an object")
+        install_type = install.get("type", "script")
+        if install_type == "script":
+            if "script" not in install:
+                raise MetadataValidationError("Missing 'script' in 'installation'")
+            if not isinstance(install["script"], str):
+                raise MetadataValidationError("'installation.script' must be a string")
+        elif install_type == "windows-msi":
+            msi = install.get("msi")
+            if not isinstance(msi, str) or not msi.strip().lower().endswith(".msi"):
+                raise MetadataValidationError("'installation.msi' must name an MSI resource")
+            if msi not in data["resources"]:
+                raise MetadataValidationError("'installation.msi' must be listed in 'resources'")
+            python_package = install.get("python")
+            if python_package is not None:
+                if not isinstance(python_package, dict):
+                    raise MetadataValidationError("'installation.python' must be an object")
+                for field in ("wheel", "distribution", "version", "import"):
+                    value = python_package.get(field)
+                    if not isinstance(value, str) or not value.strip():
+                        raise MetadataValidationError(
+                            f"'installation.python.{field}' must be a non-empty string"
+                        )
+                if not python_package["wheel"].lower().endswith(".whl"):
+                    raise MetadataValidationError(
+                        "'installation.python.wheel' must name a wheel resource"
+                    )
+                if python_package["wheel"] not in data["resources"]:
+                    raise MetadataValidationError(
+                        "'installation.python.wheel' must be listed in 'resources'"
+                    )
+        else:
+            raise MetadataValidationError(f"Unsupported installation type: '{install_type}'")
 
     # Validate size (optional)
     if "size" in data:

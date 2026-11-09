@@ -33,6 +33,11 @@ from sima_cli.install.compatibility import current_host_arch, normalize_host_arc
 from sima_cli.install.metadata_info import print_metadata_summary, parse_size_string_to_bytes
 from sima_cli.utils.container_registries import install_from_cr
 from sima_cli.install.registry import PackageRegistry
+from sima_cli.install.windows_package import (
+    WindowsPackageRestartRequired,
+    WindowsPythonInstallError,
+    install_windows_package,
+)
 
 console = Console()
 registry = PackageRegistry()
@@ -1578,6 +1583,7 @@ def install_from_metadata(
     force: bool = False,
     command_name: str = "sima-cli install",
     download_only: bool = False,
+    python_executable: str = None,
 ):
     _ensure_install_dir_writable(install_dir, command_name=command_name)
 
@@ -1613,7 +1619,35 @@ def install_from_metadata(
                         _combine_multipart_files(install_dir, local_paths=local_paths)
                         _extract_archives_in_folder(install_dir, local_paths)
                         _mark_install_script_executable(metadata, install_dir)
-                        _run_installation_script(metadata=metadata, extract_path=install_dir, force=force)
+                        install_type = metadata.get("installation", {}).get("type", "script")
+                        try:
+                            if install_type == "windows-msi":
+                                result = install_windows_package(
+                                    metadata=metadata,
+                                    install_dir=install_dir,
+                                    python_executable=python_executable,
+                                )
+                                registry.update_state(
+                                    metadata.get("name"), metadata.get("version"), "installed"
+                                )
+                                _print_post_install_message(metadata=metadata)
+                                return result
+                            _run_installation_script(
+                                metadata=metadata, extract_path=install_dir, force=force)
+                        except WindowsPackageRestartRequired:
+                            registry.update_state(
+                                metadata.get("name"),
+                                metadata.get("version"),
+                                "restart-required",
+                            )
+                            raise
+                        except WindowsPythonInstallError:
+                            registry.update_state(
+                                metadata.get("name"),
+                                metadata.get("version"),
+                                "partial-python-failed",
+                            )
+                            raise
 
     except MetadataAccessForbidden:
         raise

@@ -413,6 +413,11 @@ jobs:
           python -m pip install .
           sima-cli --version
 
+      - name: Exercise declarative MSI installation on native Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python tests/e2e/windows_msi_install.py
+
       - name: Test repo installer script
         if: runner.os != 'Windows'
         run: |

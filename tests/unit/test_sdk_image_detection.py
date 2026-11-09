@@ -4532,7 +4532,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertFalse(run_command.call_args.kwargs["fatal"])
         activate.assert_not_called()
         output = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
-        self.assertIn("continuing setup without it", output)
+        self.assertIn("Edgematic Studio installation failed", output)
         self.assertIn("sima-cli neat install edgematic-studio/amd64@main", output)
 
     def test_configure_container_installs_edgematic_studio_only_when_told_to(self):
@@ -4585,10 +4585,9 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.utils.ensure_codex_vscode_extension_installed"):
             from sima_cli.sdk.utils import configure_container
 
-            # The summary must not advertise a URL nothing serves.
-            self.assertFalse(
+            # A selected extension failure must prevent setup's final success.
+            with self.assertRaisesRegex(RuntimeError, "selected EdgeMatic Studio installation failed"):
                 configure_container("container", noninteractive=True, install_edgematic_studio=True)
-            )
 
     def test_edgematic_studio_skips_playbooks_the_caller_already_installed(self):
         def install_script(**kwargs):
@@ -4720,7 +4719,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         calls = []
 
         def record(name):
-            return lambda *a, **k: calls.append(name)
+            return lambda *a, **k: (calls.append(name), True)[1]
 
         with patch("sima_cli.sdk.utils.check_os", return_value="windows"), \
              patch("sima_cli.sdk.utils.run_command"), \
@@ -4890,7 +4889,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         manifest_missing = Mock(returncode=44)
         install_result = Mock(returncode=0, stdout="installed\n", stderr="")
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:3.0.0"), \
-             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, manifest_missing, install_result]) as run:
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[server_available, manifest_missing, manifest_missing, install_result]) as run:
             ensure_codex_vscode_extension_installed(
                 "container", "docker", auto_install=True, uid=1000, gid=1000,
             )

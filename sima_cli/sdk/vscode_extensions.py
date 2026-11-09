@@ -76,6 +76,56 @@ def extension_install_progress(labels: List[str], console: Console):
         yield
 
 
+SDK_COMPONENTS = "/usr/local/bin/sdk-components"
+
+
+def resolve_sdk_components(container: str, login_name: str) -> Optional[Dict]:
+    """Query the SDK as the mapped user; only a legacy SDK permits fallback."""
+    probe = (
+        "import os, pathlib, sys\n"
+        "resolver = pathlib.Path(sys.argv[1])\n"
+        "if not resolver.exists():\n"
+        "    managed = pathlib.Path('/usr/local/lib/sima-sdk/components.js').exists() or pathlib.Path('/usr/local/share/sima-sdk/components.json').exists()\n"
+        "    sys.exit(45 if managed else 44)\n"
+        "os.execv(str(resolver), [str(resolver), 'resolve', '--json'])\n"
+    )
+    result = subprocess.run(
+        ["docker", "exec", "-u", login_name, "-e", f"HOME=/home/{login_name}",
+         container, "python3", "-c", probe, SDK_COMPONENTS],
+        capture_output=True, text=True, check=False, timeout=60,
+    )
+    if result.returncode == 44:
+        return None
+    if result.returncode == 45:
+        raise ValueError("This SDK enforces component qualification but lacks sdk-components. "
+                         "Update the SDK image to use qualified extension setup.")
+    try:
+        resolved = json.loads(result.stdout)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("SDK component resolver returned invalid JSON: " + result.stderr.strip()) from exc
+    if result.returncode != 0 or not isinstance(resolved, dict) or resolved.get("available") is not True:
+        error = resolved.get("error", "SDK component resolution failed") if isinstance(resolved, dict) else "Invalid SDK component resolution"
+        raise ValueError(str(error))
+    if type(resolved.get("schema_version")) is not int or resolved["schema_version"] != 1:
+        raise ValueError("Unsupported SDK component resolver schema")
+    versions = resolved.get("extensions")
+    if (resolved.get("status") not in ("qualified", "candidate")
+            or not isinstance(versions, dict)
+            or any(not isinstance(versions.get(key), str) or not _VERSION.fullmatch(versions[key])
+                   for key in DEFAULT_EXTENSION_VERSIONS)):
+        raise ValueError("Invalid SDK component resolver versions or qualification status")
+    print(f"ℹ️  SDK component cohort {resolved.get('cohort', 'unknown')}: "
+          f"{resolved['status']} ({resolved.get('source', 'unknown')}).")
+    return resolved
+
+
+def sdk_component_install_command(extensions_dir: str, target: str) -> str:
+    # The SDK rechecks policy at installation and verifies the installed version
+    # and persistent pin. Do not retry deterministic qualification failures.
+    return shlex.join([SDK_COMPONENTS, "install", "--json", "--extension", target,
+                       "--extensions-dir", extensions_dir])
+
+
 def load_extension_versions(container: str) -> Dict[str, str]:
     """Use SDK pins when present; only a missing file permits fallback pins."""
     script = (

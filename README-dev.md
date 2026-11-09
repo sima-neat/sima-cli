@@ -231,3 +231,29 @@ server-side cleanup. Existing allocation-key connection commands still work.
 The paired Vulcan change publishes `/cli-config.json` and registers the exact
 loopback callback on both dashboard OAuth clients. Deploy that change before
 using CLI login; no credential or mutable client ID must be copied into the CLI.
+
+### SDK-managed editor components
+
+For code-server SDKs, setup detects `/usr/local/bin/sdk-components` and queries
+`sdk-components resolve --json` inside the container as the mapped user. Schema 1
+returns the SDK release, cohort, qualification status, source, architecture,
+editor engine versions, and exact managed extension versions. Setup displays
+these pins and delegates each selected agent to `sdk-components install --json
+--extension ID@VERSION --extensions-dir /absolute/path`. The SDK rechecks the
+catalog at installation and verifies artifact identity/checksum, installed version,
+and persistent update pin. sima-cli does not edit pins for these managed agents.
+
+Deploy an SDK image containing the interface before adopting this CLI path.
+An SDK with the qualification catalog/wrapper but without the interface produces
+an upgrade message; it never falls back to CLI compatibility pins. SDKs without
+qualification support retain the older extension-manifest/compatibility behavior.
+An unavailable, incompatible, revoked, malformed, or unsupported resolver response
+is an error, including during offline setup when no compatible cached data exists.
+Only explicit SDK candidate-test settings permit candidate installation through
+the shell interface; setup does not enable them or the panel's fallback policy.
+
+Resolution and installation failures stop setup with a nonzero exit status and
+retain the SDK container for repair. Installer stdout/stderr is preserved, and
+setup does not print its final success message. Selected Studio installation
+failures also stop setup. Qualification failures are not retried by sima-cli;
+legacy installers retain their existing transient retry behavior.

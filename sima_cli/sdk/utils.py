@@ -36,6 +36,8 @@ from sima_cli.sdk.vscode_extensions import (
     extension_install_command,
     extension_install_progress,
     load_extension_versions,
+    resolve_sdk_components,
+    sdk_component_install_command,
     pin_extensions_command,
     resolve_extension_target,
     select_browser_extensions,
@@ -1209,7 +1211,7 @@ def ensure_edgematic_studio_installed(
         ],
         fatal=False,
     ):
-        print("⚠️  Edgematic Studio installation failed; continuing setup without it.")
+        print("⚠️  Edgematic Studio installation failed.")
         print(f"   Install it later from the SDK container shell with: sima-cli {shlex.join(extension_install_args)}")
         return False
     print("✅ Edgematic Studio extension installed.")
@@ -1475,6 +1477,7 @@ def ensure_codex_vscode_extension_installed(
     selected_names = [] if skip_agents else select_browser_extensions(auto_install or all_extensions, allow_prompt)
 
     extensions = []
+    sdk_components = None
     try:
         requested_extensions = [
             ("codex", "Codex", CODEX_EXTENSION_ID_ENV, CODEX_EXTENSION_DEFAULT_ID),
@@ -1486,26 +1489,33 @@ def ensure_codex_vscode_extension_installed(
             for name, label, env, default in requested_extensions
             if name in selected_names
         ]
+        managed_selected = any(target.split("@", 1)[0] in
+                               (CODEX_EXTENSION_DEFAULT_ID, CLAUDE_EXTENSION_DEFAULT_ID)
+                               for _, _, target in selected)
+        if backend == "code-server" and managed_selected:
+            sdk_components = resolve_sdk_components(sdk_container_name, login_name)
         latest_targets = (
             {CODEX_EXTENSION_DEFAULT_ID, CODEX_EXTENSION_DEFAULT_ID + "@latest"}
-            if backend == "code-server" else set()
+            if backend == "code-server" and sdk_components is None else set()
         )
-        versions = (
-            load_extension_versions(sdk_container_name)
-            if any(target and target not in latest_targets for _, _, target in selected) else {}
-        )
+        versions = (sdk_components["extensions"] if sdk_components is not None else
+                    load_extension_versions(sdk_container_name)
+                    if any(target and target not in latest_targets for _, _, target in selected) else {})
         for label, env, target in selected:
             if target:
                 if target in latest_targets:
                     extensions.append((label, CODEX_EXTENSION_DEFAULT_ID))
                 else:
-                    extensions.append((label, resolve_extension_target(target, versions)))
+                    resolved_target = resolve_extension_target(target, versions)
+                    extension_id, version = resolved_target.split("@", 1)
+                    if sdk_components is not None and extension_id in versions and version != versions[extension_id]:
+                        raise ValueError(f"SDK requires {extension_id}@{versions[extension_id]}; "
+                                         f"requested {resolved_target} is not qualified")
+                    extensions.append((label, resolved_target))
             else:
                 print(f"ℹ️  {env} is empty; skipping {label} extension install.")
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
-        print(f"⚠️  Could not resolve browser VS Code extension pins: {exc}")
-        print("Skipping coding agent extensions; continuing Neat extension setup.")
-        extensions = []
+        raise RuntimeError(f"SDK setup could not resolve selected browser extensions: {exc}") from exc
 
     home_directory = f"/home/{login_name}"
     if backend == "code-server":
@@ -1558,10 +1568,13 @@ def ensure_codex_vscode_extension_installed(
     legacy_cleanup_steps = []
     for label, extension_target in extensions:
         extension_id = extension_target.split("@", 1)[0]
-        install_steps.append(extension_install_command(
-            server_bin, extensions_dir, label, extension_target,
-            accept_server_license=backend == "openvscode",
-        ))
+        if sdk_components is not None and extension_id in sdk_components["extensions"]:
+            install_steps.append(sdk_component_install_command(extensions_dir, extension_target))
+        else:
+            install_steps.append(extension_install_command(
+                server_bin, extensions_dir, label, extension_target,
+                accept_server_license=backend == "openvscode",
+            ))
         if backend == "openvscode":
             legacy_cleanup_steps.append(
                 f"find {shlex.quote(OPENVSCODE_LEGACY_EXTENSIONS_DIR)} -maxdepth 1 -type d "
@@ -1570,7 +1583,8 @@ def ensure_codex_vscode_extension_installed(
 
     install_steps.append(pin_extensions_command(
         extensions_dir,
-        dict(target.split("@", 1) if "@" in target else (target, None) for _, target in extensions),
+        dict(target.split("@", 1) if "@" in target else (target, None) for _, target in extensions
+             if sdk_components is None or target.split("@", 1)[0] not in sdk_components["extensions"]),
     ))
 
     user_extension_script = (
@@ -1643,9 +1657,12 @@ def ensure_codex_vscode_extension_installed(
     if result.stderr:
         print(result.stderr.strip())
     if result.returncode != 0:
-        print(f"⚠️  Browser VS Code extension installation failed (exit {result.returncode}); "
-              "later extensions may not have been installed. Continuing SDK setup.")
-        return
+        selected_labels = ", ".join(["Neat"] + [label for label, _ in extensions])
+        raise RuntimeError(
+            f"SDK setup incomplete: browser extension installation failed (exit {result.returncode}). "
+            f"Requested: {selected_labels}. Later extensions may not have been installed. "
+            "See installer output above; the SDK container is retained for repair."
+        )
 
     print("✅ Browser VS Code extensions are ready.")
 
@@ -2624,6 +2641,9 @@ def configure_container(
             gid=gid,
             neat_playbooks_installed=not minimal,
         )
+        if not edgematic_studio_installed:
+            raise RuntimeError("SDK setup incomplete: selected EdgeMatic Studio installation failed. "
+                               "See installer output above; the SDK container is retained for repair.")
     else:
         edgematic_studio_installed = False
 

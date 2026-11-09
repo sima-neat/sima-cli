@@ -84,14 +84,13 @@ def test_invalid_or_floating_override_is_rejected(target):
         resolve_extension_target(target, DEFAULT_EXTENSION_VERSIONS)
 
 
-def test_bad_manifest_skips_install_and_reports_error(capsys):
+def test_bad_manifest_stops_setup_and_reports_error():
     with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
          patch("sima_cli.sdk.utils.subprocess.run", return_value=Mock(returncode=0, stdout="openvscode")) as run, \
          patch("sima_cli.sdk.utils.load_extension_versions", side_effect=ValueError("bad schema")):
-        ensure_codex_vscode_extension_installed("sdk", "user", auto_install=True)
-    assert run.call_count == 2
-    assert "sima-install-neat-extension" in run.call_args.args[0][-1]
-    assert "bad schema" in capsys.readouterr().out
+        with pytest.raises(RuntimeError, match="could not resolve.*bad schema"):
+            ensure_codex_vscode_extension_installed("sdk", "user", auto_install=True)
+    assert run.call_count == 1
 
 
 def test_both_opted_out_skip_manifest_and_ai_install():
@@ -361,11 +360,12 @@ def test_failed_install_preserves_stdout_and_stderr(capsys):
                 Mock(returncode=0, stdout="openvscode"),
              Mock(returncode=1, stdout="actionable installer error", stderr="download progress"),
          ]):
-        ensure_codex_vscode_extension_installed("sdk", "user")
+        with pytest.raises(RuntimeError, match="SDK setup incomplete.*Requested: Neat"):
+            ensure_codex_vscode_extension_installed("sdk", "user")
     output = capsys.readouterr().out
     assert "actionable installer error" in output
     assert "download progress" in output
-    assert "later extensions may not have been installed" in output
+    assert "Browser VS Code extensions are ready" not in output
     assert "✅ Selected" not in output
 
 
@@ -389,11 +389,12 @@ def test_skip_coding_agents_overrides_all_and_still_seeds_neat(monkeypatch, valu
 
 
 @pytest.mark.parametrize('target', ['openai.chatgpt', 'openai.chatgpt@latest', 'openai.chatgpt@27.1.2'])
-def test_code_server_codex_latest_default_and_exact_override(monkeypatch, target):
+def test_legacy_code_server_codex_latest_default_and_exact_override(monkeypatch, target):
     monkeypatch.setenv('SDK_SKIP_CODING_AGENT_INSTALL', '0')
     monkeypatch.setenv('SIMA_CLI_CODEX_EXTENSION_ID', target)
     with patch('sima_cli.sdk.utils._get_container_image_ref', return_value='ghcr.io/sima-neat/sdk:3.0.0'), \
          patch('sima_cli.sdk.utils._container_code_ui_backend', return_value='code-server'), \
+         patch('sima_cli.sdk.utils.resolve_sdk_components', return_value=None), \
          patch('sima_cli.sdk.utils.select_browser_extensions', return_value=['codex']), \
          patch('sima_cli.sdk.utils.load_extension_versions', return_value=DEFAULT_EXTENSION_VERSIONS) as load, \
          patch('sima_cli.sdk.utils.subprocess.run', return_value=Mock(returncode=0, stdout='', stderr='')) as run:

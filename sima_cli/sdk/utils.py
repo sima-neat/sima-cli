@@ -38,6 +38,7 @@ from sima_cli.sdk.vscode_extensions import (
     load_extension_versions,
     resolve_sdk_components,
     sdk_component_install_command,
+    sdk_wrapper_target,
     pin_extensions_command,
     resolve_extension_target,
     select_browser_extensions,
@@ -1503,7 +1504,10 @@ def ensure_codex_vscode_extension_installed(
                     if any(target and target not in latest_targets for _, _, target in selected) else {})
         for label, env, target in selected:
             if target:
-                if target in latest_targets:
+                if (sdk_components is not None and sdk_components.get("interface") == "code-server"
+                        and target.split("@", 1)[0] in (CODEX_EXTENSION_DEFAULT_ID, CLAUDE_EXTENSION_DEFAULT_ID)):
+                    extensions.append((label, sdk_wrapper_target(target)))
+                elif target in latest_targets:
                     extensions.append((label, CODEX_EXTENSION_DEFAULT_ID))
                 else:
                     resolved_target = resolve_extension_target(target, versions)
@@ -1568,8 +1572,9 @@ def ensure_codex_vscode_extension_installed(
     legacy_cleanup_steps = []
     for label, extension_target in extensions:
         extension_id = extension_target.split("@", 1)[0]
-        if sdk_components is not None and extension_id in sdk_components["extensions"]:
-            install_steps.append(sdk_component_install_command(extensions_dir, extension_target))
+        if sdk_components is not None and extension_id in (CODEX_EXTENSION_DEFAULT_ID, CLAUDE_EXTENSION_DEFAULT_ID):
+            install_steps.append(sdk_component_install_command(
+                extensions_dir, extension_target, sdk_components.get("interface", "sdk-components")))
         else:
             install_steps.append(extension_install_command(
                 server_bin, extensions_dir, label, extension_target,
@@ -1584,7 +1589,8 @@ def ensure_codex_vscode_extension_installed(
     install_steps.append(pin_extensions_command(
         extensions_dir,
         dict(target.split("@", 1) if "@" in target else (target, None) for _, target in extensions
-             if sdk_components is None or target.split("@", 1)[0] not in sdk_components["extensions"]),
+             if sdk_components is None or target.split("@", 1)[0] not in
+             (CODEX_EXTENSION_DEFAULT_ID, CLAUDE_EXTENSION_DEFAULT_ID)),
     ))
 
     user_extension_script = (
@@ -1631,7 +1637,8 @@ def ensure_codex_vscode_extension_installed(
     print("ℹ️  Installing browser VS Code extensions:")
     print("   - SiMa Neat: bundled SDK copy (download fallback for older images)")
     for label, extension_id in extensions:
-        suffix = " (latest available release)" if "@" not in extension_id else ""
+        suffix = (" (SDK-selected qualified version)" if sdk_components is not None else
+                  " (latest available release)") if "@" not in extension_id else ""
         print(f"   - {label}: {extension_id}{suffix}")
     progress_labels = ["Neat"] + [label for label, _ in extensions]
     with extension_install_progress(progress_labels, console):

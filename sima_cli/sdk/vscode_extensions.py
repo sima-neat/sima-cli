@@ -82,12 +82,14 @@ SDK_COMPONENTS = "/usr/local/bin/sdk-components"
 def resolve_sdk_components(container: str, login_name: str) -> Optional[Dict]:
     """Query the SDK as the mapped user; only a legacy SDK permits fallback."""
     probe = (
-        "import os, pathlib, sys\n"
+        "import pathlib, subprocess, sys\n"
         "resolver = pathlib.Path(sys.argv[1])\n"
         "if not resolver.exists():\n"
+        "    wrapper = all(pathlib.Path(p).is_file() for p in ('/usr/local/bin/sdk-code-server-cli.js', '/opt/code-server/bin/code-server', '/opt/code-server/bin/code-server-upstream'))\n"
         "    managed = pathlib.Path('/usr/local/lib/sima-sdk/components.js').exists() or pathlib.Path('/usr/local/share/sima-sdk/components.json').exists()\n"
-        "    sys.exit(45 if managed else 44)\n"
-        "os.execv(str(resolver), [str(resolver), 'resolve', '--json'])\n"
+        "    sys.exit(45 if wrapper else 46 if managed else 44)\n"
+        "result = subprocess.run([str(resolver), 'resolve', '--json'], check=False)\n"
+        "sys.exit(0 if result.returncode == 0 else 1)\n"
     )
     result = subprocess.run(
         ["docker", "exec", "-u", login_name, "-e", f"HOME=/home/{login_name}",
@@ -97,8 +99,11 @@ def resolve_sdk_components(container: str, login_name: str) -> Optional[Dict]:
     if result.returncode == 44:
         return None
     if result.returncode == 45:
-        raise ValueError("This SDK enforces component qualification but lacks sdk-components. "
-                         "Update the SDK image to use qualified extension setup.")
+        print("ℹ️  Using the SDK code-server wrapper to select qualified extension versions.")
+        return {"interface": "code-server", "extensions": {}}
+    if result.returncode == 46:
+        raise ValueError("SDK component qualification files are present but its installer wrapper is missing. "
+                         "Repair the SDK installation before installing managed extensions.")
     try:
         resolved = json.loads(result.stdout)
     except (ValueError, TypeError) as exc:
@@ -119,11 +124,42 @@ def resolve_sdk_components(container: str, login_name: str) -> Optional[Dict]:
     return resolved
 
 
-def sdk_component_install_command(extensions_dir: str, target: str) -> str:
-    # The SDK rechecks policy at installation and verifies the installed version
-    # and persistent pin. Do not retry deterministic qualification failures.
-    return shlex.join([SDK_COMPONENTS, "install", "--json", "--extension", target,
-                       "--extensions-dir", extensions_dir])
+def sdk_wrapper_target(target: str) -> str:
+    """Leave managed version selection to the shipped SDK wrapper."""
+    extension_id, separator, version = target.strip().partition("@")
+    if extension_id not in DEFAULT_EXTENSION_VERSIONS:
+        raise ValueError(f"Not an SDK-managed extension: {extension_id!r}")
+    if separator and version != "latest" and not _VERSION.fullmatch(version):
+        raise ValueError(f"Use a bare managed ID or exact version for {target!r}")
+    # A floating request selects the SDK's approved version, never the gallery's.
+    return extension_id if not separator or version == "latest" else target.strip()
+
+
+def sdk_component_install_command(extensions_dir: str, target: str, interface: str = "sdk-components") -> str:
+    # Both interfaces enforce SDK policy at installation. Do not skip a matching
+    # installed version (its pin may need repair), or retry policy rejections.
+    if interface == "sdk-components":
+        return shlex.join([SDK_COMPONENTS, "install", "--json", "--extension", target,
+                           "--extensions-dir", extensions_dir])
+    verify = (
+        "import json, pathlib, re, sys\n"
+        "directory, target = sys.argv[1:]\n"
+        "extension_id, _, expected = target.partition('@')\n"
+        "entries = json.loads((pathlib.Path(directory) / 'extensions.json').read_text())\n"
+        "matches = [entry for entry in entries if entry.get('identifier', {}).get('id', '').lower() == extension_id]\n"
+        "if len(matches) != 1:\n"
+        "    sys.exit('SDK-managed extension is missing or ambiguous: ' + extension_id)\n"
+        "entry = matches[0]\n"
+        "version = entry.get('version', '')\n"
+        "if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?', version) or (expected and version != expected):\n"
+        "    sys.exit('SDK-managed extension version verification failed: ' + target)\n"
+        "if entry.get('metadata', {}).get('pinned') is not True:\n"
+        "    sys.exit('SDK-managed extension is not pinned: ' + extension_id)\n"
+        "print('Installed SDK-managed extension: ' + extension_id + '@' + version)\n"
+    )
+    return (shlex.join(["/opt/code-server/bin/code-server", "--extensions-dir", extensions_dir,
+                        "--install-extension", target, "--force"]) + "; " +
+            shlex.join(["python3", "-c", verify, extensions_dir, target]))
 
 
 def load_extension_versions(container: str) -> Dict[str, str]:

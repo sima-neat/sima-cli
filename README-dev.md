@@ -243,14 +243,23 @@ these pins and delegates each selected agent to `sdk-components install --json
 catalog at installation and verifies artifact identity/checksum, installed version,
 and persistent update pin. sima-cli does not edit pins for these managed agents.
 
-Deploy an SDK image containing the interface before adopting this CLI path.
-An SDK with the qualification catalog/wrapper but without the interface produces
-an upgrade message; it never falls back to CLI compatibility pins. SDKs without
-qualification support retain the older extension-manifest/compatibility behavior.
-An unavailable, incompatible, revoked, malformed, or unsupported resolver response
-is an error, including during offline setup when no compatible cached data exists.
-Only explicit SDK candidate-test settings permit candidate installation through
-the shell interface; setup does not enable them or the panel's fallback policy.
+Existing qualification-aware SDK images do not need this new interface. If it
+is absent, setup detects the shipped code-server wrapper and passes bare managed
+IDs to it. Exact user overrides are passed through for the SDK to approve or
+reject; `@latest` selects the SDK-approved version, not the gallery's latest.
+The wrapper owns catalog selection and artifact verification. Setup then reads
+the editor profile to verify the installed version and persistent pin and reports
+the installed version. It does not skip an existing install or overwrite SDK pins.
+Exact qualified versions are shown before installation only when the structured
+resolver is available; shipped wrappers report the resolved version afterward.
+
+Neither managed path uses CLI compatibility pins. SDKs without qualification
+support retain the older extension-manifest/compatibility behavior. Missing
+wrapper files in a qualification-aware image, or an unavailable, incompatible,
+revoked, malformed, or unsupported resolver response are errors, including during
+offline setup when no compatible cached data exists. Only explicit SDK
+candidate-test settings permit candidate installation through the shell
+interface; setup does not enable them or the panel's fallback policy.
 
 Resolution and installation failures stop setup with a nonzero exit status and
 retain the SDK container for repair. Installer stdout/stderr is preserved, and

@@ -118,6 +118,32 @@ class WindowsPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(WindowsNativeInstallError, "scheduler"):
                 install_windows_package(self.metadata, str(self.root))
 
+    def test_policy_rejected_msi_reports_policy_without_bypass_guidance(self):
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", return_value=completed(returncode=1625)
+        ):
+            with self.assertRaises(WindowsNativeInstallError) as raised:
+                install_windows_package(self.metadata, str(self.root))
+
+        message = str(raised.exception)
+        self.assertIn("system policy", message)
+        self.assertIn("approved package", message)
+        self.assertNotIn("disable", message.lower())
+
+    def test_msiexec_permission_denial_is_reported_with_log_location(self):
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=PermissionError("access denied"),
+        ):
+            with self.assertRaises(WindowsNativeInstallError) as raised:
+                install_windows_package(self.metadata, str(self.root))
+
+        message = str(raised.exception)
+        self.assertIn("Could not start Windows Installer", message)
+        self.assertIn("permissions", message)
+        self.assertIn("sima-cli-msi-install-01-native.log", message)
+        self.assertIn("do not disable security controls", message)
+
     def test_matching_python_package_is_verified_without_reinstall(self):
         responses = [completed(), completed(stdout="0.6.1\n"), completed()]
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(

@@ -11,6 +11,7 @@ import click
 
 MSI_RESTART_INITIATED = 1641
 MSI_RESTART_REQUIRED = 3010
+MSI_INSTALL_REJECTED_BY_POLICY = 1625
 
 
 class WindowsPackageRestartRequired(click.ClickException):
@@ -195,7 +196,14 @@ def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str,
         click.echo(
             f"Installing {owner} native package {index}/{len(packages)}: {msi.name}"
         )
-        result = _run(command)
+        try:
+            result = _run(command)
+        except OSError as error:
+            raise WindowsNativeInstallError(
+                f"Could not start Windows Installer for {owner}: {error}. "
+                "Check the current account's permissions and Windows application-control policy; "
+                f"do not disable security controls. Intended installer log: {log_path}"
+            ) from error
         if result.returncode in {MSI_RESTART_INITIATED, MSI_RESTART_REQUIRED}:
             raise WindowsPackageRestartRequired(
                 f"Windows Installer completed {owner} with restart code {result.returncode}. "
@@ -204,8 +212,15 @@ def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str,
             )
         if result.returncode != 0:
             installed_owners = ", ".join(item["owner"] for item in installed) or "none"
+            policy_detail = (
+                " Windows Installer rejected this package under system policy; "
+                "use an approved package or ask the Windows administrator to review the policy."
+                if result.returncode == MSI_INSTALL_REJECTED_BY_POLICY
+                else ""
+            )
             raise WindowsNativeInstallError(
                 f"Windows Installer failed for {owner} with exit code {result.returncode}. "
+                f"{policy_detail}"
                 f"Packages completed earlier in this run: {installed_owners}. "
                 "The release remains incomplete; correct the failure and rerun the same command. "
                 f"Installer log: {log_path}"

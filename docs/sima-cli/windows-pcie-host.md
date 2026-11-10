@@ -22,6 +22,11 @@ Repeating the command repairs or upgrades the native package set. A matching,
 working Python package is verified and left in place. If a native package or pip
 step fails, correct the reported problem and run the same command again; the
 installer reports any native packages that completed before the failure.
+Windows Installer error `1625` means the package was rejected by the host's
+application-control policy. Use an approved signed release or ask the Windows
+administrator to review that policy; do not disable Windows security controls.
+If Windows Installer cannot be started, `sima-cli` reports the attempted package,
+permissions guidance, and the intended installer-log location.
 
 Remove Scheduler and Core through Windows Installed apps or `msiexec`. Remove
 the Python package separately from its application environment:

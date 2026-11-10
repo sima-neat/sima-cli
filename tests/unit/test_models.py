@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -76,6 +77,40 @@ PERFORMANCE_REPORT = {
     },
     "telemetry": {"status": "ok"},
     "components": {"model": {"execution_plan": {}, "layer_stats": []}},
+}
+COMPONENT_PERFORMANCE_REPORT = {
+    "schema": "sima.model-report",
+    "schema_version": 1,
+    "stage": "performance",
+    "scope": "components",
+    "runtime": {"pyneat": PYNEAT, "build": {}},
+    # Deliberately opposite the expected display order.
+    "components": {
+        "text_encoder": {
+            "workload": "One prompt padded to 77 tokens",
+            "metrics": {
+                "throughput_fps": 643.9, "latency_avg_ms": 2.76,
+                "avg_power_watts": 9.1, "energy_per_inference_joules": 0.0141,
+                "mla_memory_peak_mib": 35,
+            },
+            "telemetry": {"status": "ok", "power_som_watts": {"mean": 9.1}},
+            "execution_plan": {"name": "text_encoder"},
+            "mla_layer_stats": {"status": "ok", "layers": []},
+            "mla_stage_stats": {"status": "ok", "stages": []},
+        },
+        "image_encoder": {
+            "workload": "Image preprocessing, encoder and tensor conversions",
+            "metrics": {
+                "throughput_fps": 230.5, "latency_avg_ms": 6.37,
+                "avg_power_watts": 11.3, "energy_per_inference_joules": 0.049,
+                "mla_memory_peak_mib": 120,
+            },
+            "telemetry": {"status": "ok", "power_som_watts": {"mean": 11.3}},
+            "execution_plan": {"name": "image_encoder"},
+            "mla_layer_stats": {"status": "ok", "layers": []},
+            "mla_stage_stats": {"status": "ok", "stages": []},
+        },
+    },
 }
 ACCURACY_REPORT = {
     "schema": "sima.model-report",
@@ -716,6 +751,118 @@ def test_model_card_reads_whole_model_reports():
     }]
 
 
+def test_model_card_reads_explicit_model_scope_with_composed_components():
+    report = {**PERFORMANCE_REPORT, "scope": "model", "components": {
+        "backbone": {"execution_plan": {}},
+        "decoder": {"execution_plan": {}},
+    }}
+    benchmark = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    assert benchmark == model_card(_detail(_test_result("performance", PERFORMANCE_REPORT)))["benchmark"]
+    assert "components" not in benchmark
+
+
+def test_model_card_preserves_independent_component_results_and_evidence():
+    card = model_card(_detail(
+        _test_result("performance", COMPONENT_PERFORMANCE_REPORT, status="failed"),
+        _test_result("accuracy", ACCURACY_REPORT),
+    ))
+    benchmark = card["benchmark"]
+    assert benchmark["status"] == "failed"
+    assert benchmark["pyneat_version"] == PYNEAT
+    assert benchmark["scope"] == "components"
+    assert benchmark["measurements"] == {}
+    assert benchmark["workload"] is None
+    assert [c["id"] for c in benchmark["components"]] == ["image_encoder", "text_encoder"]
+    for component in benchmark["components"]:
+        original = COMPONENT_PERFORMANCE_REPORT["components"][component["id"]]
+        assert component["measurements"] == original["metrics"]
+        assert component["workload"] == original["workload"]
+        for key in ("telemetry", "execution_plan", "mla_layer_stats", "mla_stage_stats"):
+            assert component[key] == original[key]
+    assert card["accuracy"] == model_card(_detail(accuracy=_test_result("accuracy", ACCURACY_REPORT)))["accuracy"]
+
+
+def test_component_results_support_arbitrary_ids_and_stable_order():
+    report = deepcopy(COMPONENT_PERFORMANCE_REPORT)
+    report["components"] = {
+        "z_audio_decoder": report["components"]["text_encoder"],
+        "a_feature_extractor": report["components"]["image_encoder"],
+    }
+    first = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    report["components"] = dict(reversed(list(report["components"].items())))
+    second = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    assert first == second
+    assert [c["id"] for c in first["components"]] == ["a_feature_extractor", "z_audio_decoder"]
+
+
+@pytest.mark.parametrize("components", [
+    None, [], {}, {"image_encoder": None}, {"image_encoder": []},
+    {"image_encoder": {}}, {"bad id": {"metrics": {}, "workload": "work"}},
+    {"encoder": {"metrics": [], "workload": "work"}},
+    {"encoder": {"metrics": {"throughput_fps": True}, "workload": "work"}},
+    {"encoder": {"metrics": {"throughput_fps": "fast"}, "workload": "work"}},
+    {"encoder": {"metrics": {}, "workload": None}},
+    {"encoder": {"metrics": {}, "workload": " "}},
+    {"encoder": {"metrics": {}, "workload": "work", "telemetry": []}},
+    {"encoder": {"metrics": {}, "workload": "work", "execution_plan": []}},
+])
+def test_model_card_rejects_malformed_component_maps(components):
+    report = {**COMPONENT_PERFORMANCE_REPORT, "components": components}
+    benchmark = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    assert benchmark["status"] == "unsupported format"
+    assert benchmark["measurements"] == {}
+    assert not benchmark.get("components")
+
+
+@pytest.mark.parametrize("scope", [None, "unknown", "", [], {}])
+def test_model_card_rejects_invalid_scope_even_with_top_level_metrics(scope):
+    report = {**PERFORMANCE_REPORT, "scope": scope}
+    assert model_card(_detail(_test_result("performance", report)))["benchmark"]["status"] == "unsupported format"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("schema_version", None), ("schema_version", 99), ("schema_version", "1"),
+    ("schema_version", True), ("stage", "accuracy"), ("runtime", []),
+    ("runtime", {}), ("runtime", {"pyneat": []}),
+    ("runtime", {"pyneat": PYNEAT, "build": []}),
+    ("runtime", "bad runtime"), ("metrics", {}), ("workload", "aggregate"),
+    ("telemetry", {}),
+])
+def test_model_card_rejects_unsupported_component_reports(field, value):
+    report = {**COMPONENT_PERFORMANCE_REPORT, field: value}
+    benchmark = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    assert benchmark["status"] == "unsupported format"
+    assert benchmark["measurements"] == {}
+
+
+def test_model_card_rejects_missing_component_report_version():
+    report = {key: value for key, value in COMPONENT_PERFORMANCE_REPORT.items() if key != "schema_version"}
+    assert model_card(_detail(_test_result("performance", report)))["benchmark"]["status"] == "unsupported format"
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_component_benchmark_rendering_labels_each_workload_and_measurement(monkeypatch, width):
+    output = StringIO()
+    monkeypatch.setattr(rendering, "_console", lambda: Console(file=output, width=width, color_system=None))
+    card = model_card(_detail(_test_result("performance", COMPONENT_PERFORMANCE_REPORT)))
+    render_model_card(card)
+    rendered = output.getvalue()
+    image = rendered.index("Image encoder (image_encoder)")
+    text = rendered.index("Text encoder (text_encoder)")
+    assert image < text
+    for component_id, start, end in (("image_encoder", image, text), ("text_encoder", text, len(rendered))):
+        section = rendered[start:end]
+        original = COMPONENT_PERFORMANCE_REPORT["components"][component_id]
+        # Rich wraps workloads at terminal width; compare words rather than border characters.
+        assert all(word in section for word in original["workload"].split())
+        for metric, value in original["metrics"].items():
+            assert metric in section
+            assert str(value) in section
+    assert "Independent component benchmarks" in rendered
+    assert "unsupported format" not in rendered
+    assert "874.4" not in rendered  # No sum of independently measured throughputs.
+
+
 @pytest.mark.parametrize("report", [
     {**PERFORMANCE_REPORT, "schema_version": 2},
     {**PERFORMANCE_REPORT, "schema": "sima.benchmark"},
@@ -1012,7 +1159,8 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
     fake_client.download.assert_not_called()
 
 
-def test_interactive_package_selection_loads_whole_model_results_for_its_profile():
+@pytest.mark.parametrize("report", [PERFORMANCE_REPORT, COMPONENT_PERFORMANCE_REPORT])
+def test_interactive_package_selection_loads_whole_model_results_for_its_profile(report):
     package = _run(run_id="package-run", variant_id="modalix_int8")
     package["run_type"] = "model_package"
     package["metadata"].update(
@@ -1034,7 +1182,7 @@ def test_interactive_package_selection_loads_whole_model_results_for_its_profile
         "metrics": {"measurements": []},
     }
     fake_client.whole_model_result.side_effect = lambda stage, fingerprint: (
-        _test_result("performance", PERFORMANCE_REPORT) if fingerprint else None
+        _test_result("performance", report) if fingerprint else None
     )
     fake_client.taxonomy.return_value = None
 
@@ -1049,6 +1197,11 @@ def test_interactive_package_selection_loads_whole_model_results_for_its_profile
 
     assert result.exit_code == 0, result.output
     assert "latency_avg_ms" in result.output
+    if report.get("scope") == "components":
+        assert "Image encoder" in result.output
+        assert "Text encoder" in result.output
+        assert "230.5" in result.output
+        assert "643.9" in result.output
     assert "not measured" in result.output
     assert [call.args for call in fake_client.whole_model_result.call_args_list] == [
         ("performance", FINGERPRINT),

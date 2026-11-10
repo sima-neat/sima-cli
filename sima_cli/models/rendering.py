@@ -210,15 +210,56 @@ def _github_model_folder_url(run: Dict[str, Any], model_id: Any) -> Optional[str
 
 
 def _model_report(result: Optional[Dict[str, Any]], stage: str, section: str) -> Tuple[str, Dict[str, Any]]:
-    """Return the status of a whole-model test result and its report, or an empty report when unusable."""
+    """Return a supported test report, or an empty report when unusable."""
+    if result is None:
+        return "not measured", {}
+    if not isinstance(result, dict):
+        return "unsupported format", {}
     if not result:
         return "not measured", {}
     report = result.get("summary")
     if (not isinstance(report, dict) or report.get("schema") != "sima.model-report"
+            or type(report.get("schema_version")) is not int
             or report.get("schema_version") != 1 or report.get("stage") != stage
-            or not isinstance(report.get(section), dict)):
+            or not isinstance(report.get("runtime"), dict)):
+        return "unsupported format", {}
+    runtime = report["runtime"]
+    if (not isinstance(runtime.get("pyneat"), str) or not runtime["pyneat"].strip()
+            or ("build" in runtime and not isinstance(runtime["build"], dict))):
+        return "unsupported format", {}
+    if stage == "performance":
+        scope = report.get("scope", "model")
+        if scope not in ("model", "components"):
+            return "unsupported format", {}
+        if scope == "components":
+            section = "components"
+            if (any(key in report for key in ("metrics", "workload", "telemetry"))
+                    or not _component_reports_supported(report.get(section))):
+                return "unsupported format", {}
+    if not isinstance(report.get(section), dict):
         return "unsupported format", {}
     return str(result.get("status") or "available"), report
+
+
+def _component_reports_supported(components: Any) -> bool:
+    """Validate the fields consumed by the component card before rendering any of it."""
+    if not isinstance(components, dict) or not components:
+        return False
+    for name, component in components.items():
+        if (not isinstance(name, str)
+                or re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", name) is None
+                or not isinstance(component, dict)
+                or not isinstance(component.get("metrics"), dict)
+                or not isinstance(component.get("workload"), str)
+                or not component["workload"].strip()):
+            return False
+        if any(not isinstance(key, str) or not isinstance(value, (int, float))
+               or isinstance(value, bool) for key, value in component["metrics"].items()):
+            return False
+        if any(key in component and not isinstance(component[key], dict)
+               for key in ("telemetry", "execution_plan", "mla_layer_stats", "mla_stage_stats")):
+            return False
+    return True
 
 
 def _numeric_values(values: Any) -> Dict[str, Any]:
@@ -231,12 +272,26 @@ def _numeric_values(values: Any) -> Dict[str, Any]:
 
 def _benchmark_summary(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     status, report = _model_report(result, "performance", "metrics")
-    return {
+    summary = {
         "status": status,
         "workload": report.get("workload"),
         "pyneat_version": (report.get("runtime") or {}).get("pyneat"),
         "measurements": _numeric_values(report.get("metrics")),
     }
+    if report.get("scope") == "components":
+        summary["scope"] = "components"
+        summary["components"] = [
+            {
+                "id": component_id,
+                "workload": component["workload"],
+                "measurements": _numeric_values(component["metrics"]),
+                **{key: component[key] for key in (
+                    "telemetry", "execution_plan", "mla_layer_stats", "mla_stage_stats"
+                ) if key in component},
+            }
+            for component_id, component in sorted(report["components"].items())
+        ]
+    return summary
 
 
 def _accuracy_summary(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -323,7 +378,9 @@ def _format_value(value: Any) -> str:
 
 
 def _console() -> Console:
-    return Console(file=click.get_text_stream("stdout"), highlight=False)
+    console = Console(file=click.get_text_stream("stdout"), highlight=False)
+    console.width = min(console.width, 120)
+    return console
 
 
 def _value_text(value: Any, style: str = "") -> Text:
@@ -514,14 +571,32 @@ def render_model_card(card: Dict[str, Any]) -> None:
     benchmark = card["benchmark"]
     benchmark_parts = [_metadata_grid([
         ["Status", _status_text(benchmark.get("status"))],
-        ["Workload", benchmark.get("workload")],
+        *([["Workload", benchmark.get("workload")]] if benchmark.get("scope") != "components" else []),
         ["PyNeat version", benchmark.get("pyneat_version")],
     ])]
-    measurement_table = _result_table("Measurement", "Value")
-    for name, value in benchmark["measurements"].items():
-        measurement_table.add_row(name, _format_measurement(value))
-    if measurement_table.row_count:
-        benchmark_parts.extend([Text(""), measurement_table])
+    if benchmark.get("scope") == "components":
+        benchmark_parts.append(Text("Independent component benchmarks", style="dim"))
+        for component in benchmark["components"]:
+            label = component["id"].replace("_", " ").capitalize()
+            benchmark_parts.append(Panel(
+                Group(
+                    _metadata_grid([["Workload", component["workload"]]]),
+                    Text(""),
+                    _benchmark_table(component["measurements"]),
+                ),
+                title=Text(f"{label} ({component['id']})"),
+                title_align="left",
+                border_style="blue",
+            ))
+    elif benchmark["measurements"]:
+        benchmark_parts.extend([Text(""), _benchmark_table(benchmark["measurements"])])
     console.print(
         Panel(Group(*benchmark_parts), title="Benchmark", title_align="left", border_style="blue")
     )
+
+
+def _benchmark_table(measurements: Dict[str, Any]) -> Table:
+    table = _result_table("Measurement", "Value")
+    for name, value in measurements.items():
+        table.add_row(name, _format_measurement(value))
+    return table

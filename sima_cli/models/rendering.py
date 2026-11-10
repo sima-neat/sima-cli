@@ -378,7 +378,9 @@ def _format_value(value: Any) -> str:
 
 
 def _console() -> Console:
-    return Console(file=click.get_text_stream("stdout"), highlight=False)
+    console = Console(file=click.get_text_stream("stdout"), highlight=False)
+    console.width = min(console.width, 120)
+    return console
 
 
 def _value_text(value: Any, style: str = "") -> Text:

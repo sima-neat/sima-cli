@@ -124,6 +124,7 @@ def test_autoflash_still_expires_when_transfer_progress_stops():
 
     def wait(_seconds):
         now[0] += 2
+        assert now[0] <= 20, 'Autoflash did not expire after progress stopped'
         if now[0] <= 6:
             manager.record_transfer_progress(IP)
         return False
@@ -149,6 +150,7 @@ def test_other_client_progress_cannot_extend_selected_device_deadline():
 
     def wait(_seconds):
         now[0] += 4
+        assert now[0] <= 20, 'Another client kept the selected device alive'
         manager.record_transfer_progress(other_ip)
         return False
 
@@ -159,6 +161,38 @@ def test_other_client_progress_cannot_extend_selected_device_deadline():
             netboot.auto_flash(manager, IP, timeout=5)
 
     assert now[0] == 8
+    flash.assert_not_called()
+
+
+@pytest.mark.parametrize('ambiguous_current_address', [False, True])
+def test_reassigned_or_ambiguous_addresses_cannot_extend_device_deadline(ambiguous_current_address):
+    manager = transfer_manager()
+    current_ip = '192.0.2.22'
+    manager.clients[IP]['current_ip'] = current_ip
+    sender = IP  # The original address was reassigned to an unrelated client.
+    if ambiguous_current_address:
+        other_ip = '192.0.2.99'
+        manager.clients[other_ip] = {
+            'state': 'Booting', 'original_ip': other_ip, 'current_ip': current_ip,
+            'last_transfer_progress': 0,
+        }
+        sender = current_ip  # Two provisional records claim the same address.
+    now = [0]
+
+    def wait(_seconds):
+        now[0] += 4
+        assert now[0] <= 20, 'A reused or ambiguous address kept the device alive'
+        manager.record_transfer_progress(sender)
+        return False
+
+    with patch.object(netboot.time, 'monotonic', side_effect=lambda: now[0]), \
+            patch.object(manager.shutdown_event, 'wait', side_effect=wait), \
+            patch.object(netboot, 'flash_emmc') as flash:
+        with pytest.raises(netboot.NetbootDiscoveryTimeout):
+            netboot.auto_flash(manager, IP, timeout=5)
+
+    assert now[0] == 8
+    assert manager.clients[IP]['last_transfer_progress'] == 0
     flash.assert_not_called()
 
 

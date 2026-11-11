@@ -840,10 +840,12 @@ class ClientManager:
     def record_transfer_progress(self, ip):
         """Record forward progress, excluding duplicate or ignored TFTP packets."""
         with self.lock:
-            for original, info in self.clients.items():
-                if ip in (original, info.get('current_ip')):
-                    info['last_transfer_progress'] = time.monotonic()
-                    return
+            # Historical TFTP addresses can be reassigned after DHCP changes.
+            # Only the unique current owner may receive this progress update.
+            matches = [info for original, info in self.clients.items()
+                       if info.get('current_ip', original) == ip]
+            if len(matches) == 1:
+                matches[0]['last_transfer_progress'] = time.monotonic()
 
     def _capture_identity(self, ip):
         identity = identity_for_ip(ip)

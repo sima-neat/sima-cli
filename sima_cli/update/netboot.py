@@ -828,6 +828,7 @@ class ClientManager:
                 'filename': filename, 'timestamp': start_time, 'board_info': None,
                 'original_ip': ip, 'current_ip': ip, 'mac': None, 'iface': None,
                 'ip_history': [ip], 'flash_claimed': False,
+                'last_transfer_progress': None,
             }
             click.echo(f"📥 New client connected: {ip}")
             if self.shutdown_event.is_set():
@@ -835,6 +836,14 @@ class ClientManager:
             thread = threading.Thread(target=self.monitor_client, args=(ip, start_time), daemon=True)
             self.monitor_threads.append(thread)
             thread.start()
+
+    def record_transfer_progress(self, ip):
+        """Record forward progress, excluding duplicate or ignored TFTP packets."""
+        with self.lock:
+            for original, info in self.clients.items():
+                if ip in (original, info.get('current_ip')):
+                    info['last_transfer_progress'] = time.monotonic()
+                    return
 
     def _capture_identity(self, ip):
         identity = identity_for_ip(ip)
@@ -890,8 +899,16 @@ class ClientManager:
             if self.shutdown_event.wait(max(0, self.BOOT_GRACE - (time.time() - start_time))):
                 return
             deadline = time.monotonic() + self.CONNECT_TIMEOUT
-            while (not self.shutdown_event.is_set() and not info.get('superseded')
-                   and time.monotonic() < deadline):
+            while not self.shutdown_event.is_set() and not info.get('superseded'):
+                # A large initramfs can take longer than the SSH budget to
+                # download. Give Linux its boot window after the last TFTP
+                # progress, while still expiring a stalled/finished transfer.
+                with self.lock:
+                    progress = info.get('last_transfer_progress')
+                if progress is not None:
+                    deadline = max(deadline, progress + self.BOOT_GRACE + self.CONNECT_TIMEOUT)
+                if time.monotonic() >= deadline:
+                    break
                 candidates = self._candidates(info, min(1, max(0, deadline - time.monotonic())))
                 for candidate in candidates:
                     if self.shutdown_event.is_set():
@@ -1107,7 +1124,18 @@ class InteractiveTftpServer(TftpServer):
                             log.debug("Matched input to session key %s" % key)
                             self.sessions[key].timeout_expectACK = False
                             try:
-                                self.sessions[key].cycle()
+                                session = self.sessions[key]
+                                previous_block = session.next_block
+                                previous_bytes = session.metrics.bytes
+                                session.cycle()
+                                # tftpy also accepts duplicate ACKs and ignores
+                                # unsupported packets. Only a new block, more
+                                # data, or a successful final ACK proves progress.
+                                # Compare block inequality to allow 16-bit wrap.
+                                if (session.next_block != previous_block
+                                        or session.metrics.bytes > previous_bytes
+                                        or session.state is None):
+                                    self.client_manager.record_transfer_progress(session.host)
                                 if self.sessions[key].state is None:
                                     log.info("Successful transfer.")
                                     deletion_list.append(key)
@@ -1358,6 +1386,13 @@ def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
         targets = [(ip, info) for ip, info in records
                    if info.get('original_ip', ip) == original_ip
                    or (expected and info.get('mac') == expected)]
+        # The overall autoflash limit must also allow a healthy, slow TFTP
+        # download to finish. No traffic still expires at the original limit.
+        for _, info in targets:
+            progress = info.get('last_transfer_progress')
+            if progress is not None:
+                deadline = max(deadline, progress + client_manager.BOOT_GRACE
+                               + client_manager.CONNECT_TIMEOUT)
         connected_targets = [(ip, info) for ip, info in targets if info.get('state') == 'Connected']
         connected = len(connected_targets) == 1
         if connected:

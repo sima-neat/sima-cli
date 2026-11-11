@@ -62,6 +62,15 @@ Keep the host and TFTP server running. The settings persist until changed, so a
 failed network boot can retry and reboot. By default, wait for SSH and type `f`
 at the `netboot>` prompt to flash. With `--autoflash`, flashing starts once the
 selected device is reachable and confirmed to be running the network image.
+Forward TFTP progress extends the SSH and autoflash deadlines so a slow
+recovery-image download can finish. Duplicate or ignored packets do not extend
+the wait. Once progress stops, the device still has a bounded window to become
+reachable over SSH.
+
+Running the requested version from the network does not mean eMMC has been
+updated. Wait for the flash-completion message and reboot, then check the build
+version and root filesystem again. Exiting before flashing starts leaves the
+previous eMMC image and the saved network-boot settings in place.
 
 ```bash
 sima-cli -i bootimg -v 1247 --netboot -f --devkit 192.168.2.2

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path, PureWindowsPath
@@ -85,26 +86,84 @@ def _check_windows_service(name: str) -> bool:
     return result.returncode == 0 and result.stdout.strip().lower() == "running"
 
 
+def _windows_product_version(name: str) -> Optional[str]:
+    script = r"""
+$paths = @(
+  'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+  'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)
+$matches = @(Get-ItemProperty $paths -ErrorAction SilentlyContinue |
+  Where-Object { $_.DisplayName -eq $env:SIMA_CLI_PREREQ_PRODUCT })
+if ($matches.Count -ne 1 -or -not $matches[0].DisplayVersion) { exit 3 }
+[Console]::Out.Write([string]$matches[0].DisplayVersion)
+"""
+    environment = os.environ.copy()
+    environment["SIMA_CLI_PREREQ_PRODUCT"] = name
+    try:
+        result = _run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+    except OSError:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _check_command_version(prerequisite: Dict) -> tuple[bool, Optional[str]]:
+    command = next(
+        (path for path in (_path_from_spec(item) for item in prerequisite["candidates"])
+         if path is not None and path.is_file()),
+        None,
+    )
+    if command is None:
+        return False, None
+    try:
+        result = _run(
+            [str(command), *prerequisite["arguments"]],
+            text=True,
+            capture_output=True,
+        )
+    except OSError:
+        return False, None
+    if result.returncode != 0:
+        return False, None
+    match = re.search(prerequisite["version-pattern"], result.stdout)
+    actual = match.group(1) if match else None
+    return actual == prerequisite["version"], actual
+
+
 def _check_prerequisites(metadata: Dict) -> List[Dict[str, str]]:
     prerequisites = metadata["installation"].get("prerequisites", [])
     failures = []
     for prerequisite in prerequisites:
         kind = prerequisite["type"]
+        actual = None
         if kind == "executable":
             passed = shutil.which(prerequisite["value"]) is not None
         elif kind == "windows-service":
             passed = _check_windows_service(prerequisite["value"])
+        elif kind == "windows-product":
+            actual = _windows_product_version(prerequisite["value"])
+            passed = actual == prerequisite["version"]
+        elif kind == "command-version":
+            passed, actual = _check_command_version(prerequisite)
         else:
             passed = any(
                 path is not None and path.is_file()
                 for path in (_path_from_spec(candidate) for candidate in prerequisite["candidates"])
             )
         if not passed:
-            failures.append(prerequisite)
+            failures.append((prerequisite, actual))
 
     if failures:
         details = "\n".join(
-            f"- {item['name']}: {item['guidance']}" for item in failures
+            f"- {item['name']}: "
+            + (f"found {actual or 'no version'}, expected {item['version']}. "
+               if "version" in item else "")
+            + item["guidance"]
+            for item, actual in failures
         )
         raise WindowsPrerequisiteError(
             "Windows host prerequisites are not ready; no MSI was started:\n" + details

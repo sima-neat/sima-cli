@@ -247,6 +247,96 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(result["native"], "installed")
         self.assertEqual(run.call_count, 1)
 
+    def test_exact_platform_and_gstreamer_versions_are_checked_before_msi(self):
+        gst_inspect = self.root / "gstreamer" / "bin" / "gst-inspect-1.0.exe"
+        gst_inspect.parent.mkdir(parents=True)
+        gst_inspect.write_bytes(b"fixture")
+        self.metadata["installation"]["prerequisites"] = [
+            {
+                "name": "SiMa Platform Windows package",
+                "type": "windows-product",
+                "value": "SiMa.ai Windows Host Package",
+                "version": "3.0.0.2",
+                "guidance": "Install the supported Platform package.",
+            },
+            {
+                "name": "GStreamer 1.28.6",
+                "type": "command-version",
+                "candidates": [{
+                    "environment": "TEST_GSTREAMER",
+                    "relative": "bin\\gst-inspect-1.0.exe",
+                }],
+                "arguments": ["--version"],
+                "version": "1.28.6",
+                "version-pattern": (
+                    r"(?m)^gst-inspect-1\.0 version ([0-9]+(?:\.[0-9]+){2})$"
+                ),
+                "guidance": "Install the supported GStreamer package.",
+            },
+        ]
+        self.assertTrue(validate_metadata(self.metadata))
+        with patch.dict(os.environ, {"TEST_GSTREAMER": str(gst_inspect.parent.parent)}), patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._windows_product_version",
+            return_value="3.0.0.2",
+        ), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=[
+                completed(stdout="gst-inspect-1.0 version 1.28.6\n"),
+                completed(),
+            ],
+        ) as run:
+            result = install_windows_package(self.metadata, str(self.root))
+        self.assertEqual(result["native"], "installed")
+        self.assertEqual(run.call_count, 2)
+
+    def test_wrong_platform_version_blocks_before_msi(self):
+        self.metadata["installation"]["prerequisites"] = [{
+            "name": "SiMa Platform Windows package",
+            "type": "windows-product",
+            "value": "SiMa.ai Windows Host Package",
+            "version": "3.0.0.2",
+            "guidance": "Install the supported Platform package.",
+        }]
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._windows_product_version",
+            return_value="2.1.3.0",
+        ), patch("sima_cli.install.windows_package._run") as run:
+            with self.assertRaisesRegex(
+                WindowsPrerequisiteError, "found 2.1.3.0, expected 3.0.0.2"
+            ):
+                install_windows_package(self.metadata, str(self.root))
+        run.assert_not_called()
+
+    def test_wrong_gstreamer_version_blocks_before_msi(self):
+        gst_inspect = self.root / "gstreamer" / "bin" / "gst-inspect-1.0.exe"
+        gst_inspect.parent.mkdir(parents=True)
+        gst_inspect.write_bytes(b"fixture")
+        self.metadata["installation"]["prerequisites"] = [{
+            "name": "GStreamer 1.28.6",
+            "type": "command-version",
+            "candidates": [{
+                "environment": "TEST_GSTREAMER",
+                "relative": "bin\\gst-inspect-1.0.exe",
+            }],
+            "arguments": ["--version"],
+            "version": "1.28.6",
+            "version-pattern": r"version ([0-9]+(?:\.[0-9]+){2})",
+            "guidance": "Install the supported GStreamer package.",
+        }]
+        with patch.dict(os.environ, {"TEST_GSTREAMER": str(gst_inspect.parent.parent)}), patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(stdout="gst-inspect-1.0 version 1.26.0\n"),
+        ) as run:
+            with self.assertRaisesRegex(
+                WindowsPrerequisiteError, "found 1.26.0, expected 1.28.6"
+            ):
+                install_windows_package(self.metadata, str(self.root))
+        self.assertEqual(run.call_count, 1)
+
     def test_declared_native_verification_runs_after_msi(self):
         install_root = self.root / "installed"
         doctor = install_root / "bin" / "sima-pcie-host-doctor.cmd"

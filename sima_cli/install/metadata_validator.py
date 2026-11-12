@@ -59,6 +59,58 @@ def _validate_windows_prerequisites(value):
                 raise MetadataValidationError(
                     f"'{prefix}.value' must be a safe executable or service name"
                 )
+        elif kind == "windows-product":
+            target = prerequisite.get("value")
+            version = prerequisite.get("version")
+            if (not isinstance(target, str) or not target.strip()
+                    or len(target) > 128
+                    or not re.fullmatch(r"[A-Za-z0-9 .()_-]+", target)):
+                raise MetadataValidationError(
+                    f"'{prefix}.value' must be a safe Windows product name"
+                )
+            if (not isinstance(version, str)
+                    or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}", version)):
+                raise MetadataValidationError(
+                    f"'{prefix}.version' must be an exact numeric product version"
+                )
+        elif kind == "command-version":
+            candidates = prerequisite.get("candidates")
+            arguments = prerequisite.get("arguments")
+            version = prerequisite.get("version")
+            pattern = prerequisite.get("version-pattern")
+            if not isinstance(candidates, list) or not candidates:
+                raise MetadataValidationError(f"'{prefix}.candidates' must be a non-empty list")
+            for candidate_index, candidate in enumerate(candidates):
+                _validate_windows_path_spec(
+                    candidate, f"{prefix}.candidates[{candidate_index}]"
+                )
+            if (not isinstance(arguments, list)
+                    or not arguments
+                    or any(not isinstance(argument, str)
+                           or not re.fullmatch(r"[A-Za-z0-9_.=:/-]+", argument)
+                           for argument in arguments)):
+                raise MetadataValidationError(
+                    f"'{prefix}.arguments' must contain safe command arguments"
+                )
+            if (not isinstance(version, str)
+                    or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", version)):
+                raise MetadataValidationError(
+                    f"'{prefix}.version' must be an exact major.minor.patch version"
+                )
+            if not isinstance(pattern, str) or len(pattern) > 200:
+                raise MetadataValidationError(
+                    f"'{prefix}.version-pattern' must be a bounded pattern with one capture"
+                )
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                raise MetadataValidationError(
+                    f"'{prefix}.version-pattern' is invalid: {exc}"
+                ) from exc
+            if compiled.groups != 1:
+                raise MetadataValidationError(
+                    f"'{prefix}.version-pattern' must contain exactly one capture group"
+                )
         elif kind == "file":
             candidates = prerequisite.get("candidates")
             if not isinstance(candidates, list) or not candidates:
@@ -69,7 +121,8 @@ def _validate_windows_prerequisites(value):
                 )
         else:
             raise MetadataValidationError(
-                f"'{prefix}.type' must be one of: executable, file, windows-service"
+                f"'{prefix}.type' must be one of: command-version, executable, file, "
+                "windows-product, windows-service"
             )
 
 def _validate_sha256_field(value, field_name: str):

@@ -11,17 +11,16 @@ driver, host libraries, and `SiMaMlaDaemon` service; Neat does not replace or
 update them.
 
 ```powershell
-sima-cli neat install core/pciehost/windows/amd64@3.0 `
-  --python-executable .\.venv\Scripts\python.exe
+sima-cli neat install core/pciehost/windows/amd64@3.0
 ```
 
 Before starting either MSI, `sima-cli` checks the Windows OpenSSH tools, the
-running Platform service, GStreamer, and—when requested—the selected Python
-version, architecture, and pip. It stops without changing the native install if
-a prerequisite is missing. `--python-executable` is optional. When supplied,
-`sima-cli` asks that exact application environment to install the matching
-`pyneatpcie` wheel with pip, then checks the installed version and import. Omit
-the option for a C++-only or native-only installation.
+running Platform service, GStreamer, and a compatible Python version,
+architecture, and pip. It stops without changing the native install if a
+prerequisite is missing. By default, `sima-cli` creates or reuses
+`%USERPROFILE%\pyneatpcie`, installs the matching `pyneatpcie` wheel there, and
+checks its version and import. Use `--python-executable <path>` to select a
+different application environment or `--native-only` for a C++-only install.
 
 After Windows Installer completes, the CLI runs the installed host doctor and
 syncs the package-matched `neat-pcie-application-builder` skill into the current
@@ -52,8 +51,8 @@ If Windows Installer cannot be started, `sima-cli` reports the attempted package
 permissions guidance, and the intended installer-log location.
 
 Remove Scheduler and Core through Windows Installed apps or `msiexec`. Remove
-the Python package separately from its application environment:
+the Python package separately from the managed environment:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip uninstall pyneatpcie
+& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall pyneatpcie
 ```

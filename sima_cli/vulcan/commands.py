@@ -75,7 +75,10 @@ def install_vulcan_package(
     command_name="sima-cli neat install",
     download_only=False,
     python_executable=None,
+    native_only=False,
 ):
+    if native_only and python_executable:
+        raise click.ClickException("--native-only cannot be combined with --python-executable.")
     resolved_environment = normalize_environment(environment) or "production"
     _ensure_available_environment(resolved_environment)
 
@@ -119,6 +122,8 @@ def install_vulcan_package(
     )
     if python_executable is not None:
         install_kwargs["python_executable"] = python_executable
+    if native_only:
+        install_kwargs["native_only"] = True
     if download_only:
         install_kwargs["download_only"] = True
     return install_from_metadata(**install_kwargs)
@@ -290,7 +295,12 @@ def artifacts(ctx, repo, ref, environment, environment_flag, base_url, output, a
     "--python-executable",
     "python_executable",
     type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=str),
-    help="Install an optional wheel into this customer Python environment.",
+    help="Install the wheel into this Python environment instead of the managed user environment.",
+)
+@click.option(
+    "--native-only",
+    is_flag=True,
+    help="Install only the native packages; do not create a managed Python environment or install the wheel.",
 )
 @click.pass_context
 def install(
@@ -305,6 +315,7 @@ def install(
     json_output,
     download_only,
     python_executable,
+    native_only,
 ):
     """Install a Neat artifact package from TARGET.
 
@@ -328,6 +339,7 @@ def install(
         command_name=f"sima-cli {group_name} install",
         download_only=download_only,
         python_executable=python_executable,
+        native_only=native_only,
     )
 
 

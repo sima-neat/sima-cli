@@ -5,8 +5,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path, PureWindowsPath
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import click
 
@@ -132,7 +133,7 @@ if ($matches.Count -ne 1 -or -not $matches[0].DriverVersion) { exit 3 }
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def _check_command_version(prerequisite: Dict) -> tuple[bool, Optional[str]]:
+def _check_command_version(prerequisite: Dict) -> Tuple[bool, Optional[str]]:
     command = next(
         (path for path in (_path_from_spec(item) for item in prerequisite["candidates"])
          if path is not None and path.is_file()),
@@ -206,6 +207,53 @@ def _normalize_python_arch(value: str) -> str:
     return normalized
 
 
+def _python_compatibility_script() -> str:
+    return (
+        "import json, platform, sys; import pip; "
+        "print(json.dumps({'version': f'{sys.version_info.major}.{sys.version_info.minor}', "
+        "'arch': platform.machine()}))"
+    )
+
+
+def _inspect_python(command: List[str]) -> Tuple[Optional[Dict[str, str]], str]:
+    try:
+        result = _run(
+            [*command, "-c", _python_compatibility_script()],
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, str(error)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        return None, detail
+    try:
+        facts = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None, "invalid compatibility information"
+    if not isinstance(facts, dict):
+        return None, "invalid compatibility information"
+    return facts, ""
+
+
+def _python_compatibility_error(python_package: Dict, facts: Dict[str, str]) -> Optional[str]:
+    required_version = python_package.get("requires-python")
+    if required_version and facts.get("version") != required_version:
+        return (
+            f"Python {facts.get('version') or 'unknown'} was found; this package requires "
+            f"Python {required_version}."
+        )
+    required_arch = python_package.get("arch")
+    actual_arch = _normalize_python_arch(str(facts.get("arch", "")))
+    if required_arch and actual_arch != _normalize_python_arch(required_arch):
+        return (
+            f"Python architecture {actual_arch or 'unknown'} was found; this package requires "
+            f"{required_arch}."
+        )
+    return None
+
+
 def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
     python_package = metadata["installation"].get("python")
     if not python_package or not python_executable:
@@ -215,48 +263,118 @@ def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
         raise WindowsPrerequisiteError(
             f"Selected Python executable does not exist; no MSI was started: '{executable}'."
         )
-    script = (
-        "import json, platform, sys; import pip; "
-        "print(json.dumps({'version': f'{sys.version_info.major}.{sys.version_info.minor}', "
-        "'arch': platform.machine()}))"
-    )
-    try:
-        result = _run([str(executable), "-c", script], text=True, capture_output=True)
-    except OSError as error:
-        raise WindowsPrerequisiteError(
-            f"Selected Python environment could not be started; no MSI was started: {error}"
-        ) from error
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+    facts, detail = _inspect_python([str(executable)])
+    if facts is None:
         raise WindowsPrerequisiteError(
             f"Selected Python environment cannot run pip; no MSI was started: {detail}"
         )
-    try:
-        facts = json.loads(result.stdout)
-    except (json.JSONDecodeError, TypeError) as error:
-        raise WindowsPrerequisiteError(
-            "Selected Python environment returned invalid compatibility information; "
-            "no MSI was started."
-        ) from error
-    if not isinstance(facts, dict):
-        raise WindowsPrerequisiteError(
-            "Selected Python environment returned invalid compatibility information; "
-            "no MSI was started."
-        )
-    required_version = python_package.get("requires-python")
-    if required_version and facts.get("version") != required_version:
-        raise WindowsPrerequisiteError(
-            f"Selected Python is {facts.get('version') or 'unknown'}; this package requires "
-            f"Python {required_version}. No MSI was started."
-        )
-    required_arch = python_package.get("arch")
+    compatibility_error = _python_compatibility_error(python_package, facts)
+    if compatibility_error:
+        raise WindowsPrerequisiteError(f"{compatibility_error} No MSI was started.")
     actual_arch = _normalize_python_arch(str(facts.get("arch", "")))
-    if required_arch and actual_arch != _normalize_python_arch(required_arch):
-        raise WindowsPrerequisiteError(
-            f"Selected Python architecture is {actual_arch or 'unknown'}; this package requires "
-            f"{required_arch}. No MSI was started."
-        )
     click.echo(f"Selected Python environment verified: {facts['version']} {actual_arch}.")
+
+
+def _python_bootstrap_candidates(required_version: Optional[str]) -> List[List[str]]:
+    candidates: List[List[str]] = []
+    launcher = shutil.which("py.exe") or shutil.which("py")
+    if launcher and required_version:
+        candidates.append([launcher, f"-{required_version}"])
+
+    executable_names = []
+    if required_version:
+        compact = required_version.replace(".", "")
+        executable_names.extend([f"python{required_version}.exe", f"python{compact}.exe"])
+    executable_names.append("python.exe")
+    for name in executable_names:
+        executable = shutil.which(name)
+        if executable:
+            candidates.append([executable])
+
+    candidates.append([sys.executable])
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data and required_version:
+        compact = required_version.replace(".", "")
+        candidates.extend([
+            [str(Path(local_app_data) / "Programs" / "Python" / f"Python{compact}" / "python.exe")],
+            [str(Path(local_app_data) / "Python" / f"pythoncore-{required_version}-64" / "python.exe")],
+        ])
+
+    unique = []
+    seen = set()
+    for command in candidates:
+        key = tuple(part.lower() for part in command)
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(command) == 1 and not Path(command[0]).is_file():
+            continue
+        unique.append(command)
+    return unique
+
+
+def _managed_python_executable(metadata: Dict) -> str:
+    python_package = metadata["installation"]["python"]
+    distribution = python_package["distribution"]
+    environment = Path.home() / distribution
+    executable = environment / "Scripts" / "python.exe"
+    if executable.is_file():
+        _preflight_python(metadata, str(executable))
+        click.echo(f"Using managed Python environment: {environment}")
+        return str(executable)
+    if environment.exists():
+        raise WindowsPrerequisiteError(
+            f"Managed Python path exists but is not a valid environment: '{environment}'. "
+            "Move or remove it, use --python-executable <path>, or use --native-only. "
+            "No MSI was started."
+        )
+
+    required_version = python_package.get("requires-python")
+    selected = None
+    for command in _python_bootstrap_candidates(required_version):
+        facts, _ = _inspect_python(command)
+        if facts is not None and _python_compatibility_error(python_package, facts) is None:
+            selected = command
+            break
+    if selected is None:
+        required_arch = python_package.get("arch", "the required architecture")
+        raise WindowsPrerequisiteError(
+            f"A compatible Python {required_version or ''} {required_arch} installation is required "
+            f"to create '{environment}'. Install Python, use --python-executable <path>, or use "
+            "--native-only. No MSI was started."
+        )
+
+    click.echo(f"Creating managed Python environment: {environment}")
+    result = _run(
+        [*selected, "-m", "venv", str(environment)],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        raise WindowsPrerequisiteError(
+            f"Could not create managed Python environment '{environment}': {detail}. "
+            "No MSI was started."
+        )
+    _preflight_python(metadata, str(executable))
+    return str(executable)
+
+
+def _prepare_python_executable(
+    metadata: Dict,
+    python_executable: Optional[str],
+    native_only: bool,
+) -> Optional[str]:
+    python_package = metadata["installation"].get("python")
+    if not python_package:
+        return None
+    if native_only:
+        click.echo("Native-only installation requested; pyneatpcie will not be installed.")
+        return None
+    if python_executable:
+        _preflight_python(metadata, python_executable)
+        return python_executable
+    return _managed_python_executable(metadata)
 
 
 def _python_distribution_version(python_executable: str, distribution: str) -> Optional[str]:
@@ -313,10 +431,6 @@ def _install_python_wheel(
     if not python_package:
         return "not-present"
     if not python_executable:
-        click.echo(
-            "Python support was not requested; native installation is complete. "
-            "Re-run with --python-executable <path> to install the wheel into an application environment."
-        )
         return "not-requested"
 
     executable = Path(python_executable).expanduser()
@@ -509,22 +623,26 @@ def install_windows_package(
     metadata: Dict,
     install_dir: str,
     python_executable: Optional[str] = None,
+    native_only: bool = False,
 ) -> Dict[str, Any]:
-    """Install the ordered native package cohort, then its optional Python wheel."""
+    """Install the ordered native package cohort and its Python wheel."""
     if not _is_windows():
         raise click.ClickException("The windows-msi installation type can only run on Windows.")
+    if native_only and python_executable:
+        raise click.ClickException("--native-only cannot be combined with --python-executable.")
 
     _check_prerequisites(metadata)
-    _preflight_python(metadata, python_executable)
+    selected_python = _prepare_python_executable(metadata, python_executable, native_only)
     installed = _install_native_packages(metadata, install_dir)
     click.echo("Coordinated native installation completed successfully.")
     verification = _verify_native_installation(metadata)
     skills = _install_customer_skills(metadata)
-    python_status = _install_python_wheel(metadata, install_dir, python_executable)
+    python_status = _install_python_wheel(metadata, install_dir, selected_python)
     return {
         "native": "installed",
         "native_packages": installed,
         "verification": verification,
         "skills": skills,
         "python": python_status,
+        "python_executable": selected_python,
     }

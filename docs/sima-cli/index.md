@@ -85,6 +85,7 @@ pip install sima-cli
 | [Neat SDK Networking Setup](sdk-networking/index.md) | The Neat SDK, also known as the Neat Development Environment, runs inside a Docker container. `sima-cli sdk setup` creates the container, prepares the host workspace mount, starts Insight when enabled, and publishes the container ports that the host browser and a DevKit use during development. |
 | [Roll Back SDK Network Changes](sdk-networking/rollback.md) | Use rollback when you want to inspect or undo Linux host networking changes made by SDK setup or network repair. |
 | [Troubleshoot SDK Networking](sdk-networking/troubleshooting.md) | Use the network doctor when the SDK container, Insight UI, DevKit SSH, RTSP, WebRTC video, or workspace sync does not behave as expected. |
+| [Install Neat PCIe Host on Windows](windows-pcie-host.md) | Install the Windows PCIe host release with one `sima-cli` command. The release manifest identifies the matching Scheduler and Core MSI packages, their install order, versions, and checksums. `sima-cli` downloads and verifies the complete set before passing each native package to Windows Installer. |
 
 ## Top-Level Commands
 
@@ -92,7 +93,7 @@ pip install sima-cli
 | --- | --- |
 | [`sima-cli appzoo`](commands/sima-cli-appzoo.md) | Access sample apps from the App Zoo. |
 | [`sima-cli bootimg`](commands/sima-cli-bootimg.md) | Prepare a bootable image for the SiMa DevKit. |
-| [`sima-cli device`](commands/sima-cli-device.md) | Discover nearby SiMa.ai devices on the local network. |
+| [`sima-cli device`](commands/sima-cli-device.md) | Discover and manage device(s) for MPK deployment and app lifecycle management purposes, compatible with both PCIe and Ethernet deployment models. Host side only. |
 | [`sima-cli download`](commands/sima-cli-download.md) | Download a file or a whole folder from a given URL. |
 | [`sima-cli install`](commands/sima-cli-install.md) | Install SiMa packages. |
 | [`sima-cli login`](commands/sima-cli-login.md) | Authenticate with the SiMa Developer Portal. |

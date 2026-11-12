@@ -1586,6 +1586,7 @@ def install_from_metadata(
     command_name: str = "sima-cli install",
     download_only: bool = False,
     python_executable: str = None,
+    native_only: bool = False,
 ):
     _ensure_install_dir_writable(install_dir, command_name=command_name)
 
@@ -1628,6 +1629,7 @@ def install_from_metadata(
                                     metadata=metadata,
                                     install_dir=install_dir,
                                     python_executable=python_executable,
+                                    native_only=native_only,
                                 )
                                 registry.update_state(
                                     metadata.get("name"), metadata.get("version"), "installed"

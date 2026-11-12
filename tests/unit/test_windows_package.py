@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import click
 from click.testing import CliRunner
 
 from sima_cli.cli import main
@@ -14,6 +15,7 @@ from sima_cli.install.windows_package import (
     WindowsPackageRestartRequired,
     WindowsPrerequisiteError,
     WindowsPythonInstallError,
+    _managed_python_executable,
     _windows_pnp_driver_version,
     install_windows_package,
 )
@@ -106,7 +108,9 @@ class WindowsPackageTests(unittest.TestCase):
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run:
-            result = install_windows_package(self.metadata, str(self.root))
+            result = install_windows_package(
+                self.metadata, str(self.root), native_only=True
+            )
 
         self.assertEqual(result["python"], "not-requested")
         self.assertEqual(run.call_count, 1)
@@ -132,7 +136,9 @@ class WindowsPackageTests(unittest.TestCase):
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run:
-            result = install_windows_package(self.metadata, str(self.root))
+            result = install_windows_package(
+                self.metadata, str(self.root), native_only=True
+            )
 
         self.assertEqual(
             [package["owner"] for package in result["native_packages"]],
@@ -158,14 +164,18 @@ class WindowsPackageTests(unittest.TestCase):
             side_effect=[completed(), completed(returncode=1603)],
         ):
             with self.assertRaisesRegex(WindowsNativeInstallError, "scheduler"):
-                install_windows_package(self.metadata, str(self.root))
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
 
     def test_policy_rejected_msi_reports_policy_without_bypass_guidance(self):
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
             "sima_cli.install.windows_package._run", return_value=completed(returncode=1625)
         ):
             with self.assertRaises(WindowsNativeInstallError) as raised:
-                install_windows_package(self.metadata, str(self.root))
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
 
         message = str(raised.exception)
         self.assertIn("system policy", message)
@@ -258,7 +268,9 @@ class WindowsPackageTests(unittest.TestCase):
         ), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run:
-            result = install_windows_package(self.metadata, str(self.root))
+            result = install_windows_package(
+                self.metadata, str(self.root), native_only=True
+            )
         self.assertEqual(result["native"], "installed")
         self.assertEqual(run.call_count, 1)
 
@@ -302,7 +314,9 @@ class WindowsPackageTests(unittest.TestCase):
                 completed(),
             ],
         ) as run:
-            result = install_windows_package(self.metadata, str(self.root))
+            result = install_windows_package(
+                self.metadata, str(self.root), native_only=True
+            )
         self.assertEqual(result["native"], "installed")
         self.assertEqual(run.call_count, 2)
 
@@ -372,7 +386,9 @@ class WindowsPackageTests(unittest.TestCase):
             "sima_cli.install.windows_package._run",
             side_effect=[completed(), completed(stdout="doctor pass\n")],
         ) as run:
-            result = install_windows_package(self.metadata, str(self.root))
+            result = install_windows_package(
+                self.metadata, str(self.root), native_only=True
+            )
         self.assertEqual(result["verification"]["status"], "passed")
         self.assertEqual(run.call_args_list[1].args[0][:3], ["cmd.exe", "/d", "/c"])
 
@@ -389,7 +405,9 @@ class WindowsPackageTests(unittest.TestCase):
             side_effect=[completed(), completed(returncode=12, stderr="plugin failed")],
         ):
             with self.assertRaisesRegex(WindowsNativeInstallError, "installation was kept"):
-                install_windows_package(self.metadata, str(self.root))
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
 
     def test_native_verification_launch_failure_reports_retained_install(self):
         doctor = self.root / "doctor.cmd"
@@ -404,7 +422,9 @@ class WindowsPackageTests(unittest.TestCase):
             side_effect=[completed(), OSError("blocked")],
         ):
             with self.assertRaisesRegex(WindowsNativeInstallError, "installation was kept"):
-                install_windows_package(self.metadata, str(self.root))
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
 
     def test_installed_customer_skill_is_synced_after_native_verification(self):
         skill = self.root / "installed" / "skill"
@@ -424,7 +444,9 @@ class WindowsPackageTests(unittest.TestCase):
             manager_type.return_value.install.return_value = [
                 "neat-pcie-application-builder"
             ]
-            result = install_windows_package(self.metadata, str(self.root))
+            result = install_windows_package(
+                self.metadata, str(self.root), native_only=True
+            )
 
         manager_type.return_value.install.assert_called_once_with(str(skill), force=True)
         self.assertEqual(result["skills"], ["neat-pcie-application-builder"])
@@ -437,7 +459,9 @@ class WindowsPackageTests(unittest.TestCase):
             "sima_cli.install.windows_package._is_windows", return_value=True
         ), patch("sima_cli.install.windows_package._run", return_value=completed()):
             with self.assertRaisesRegex(WindowsNativeInstallError, "customer skill is missing"):
-                install_windows_package(self.metadata, str(self.root))
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
 
     def test_customer_skill_registry_failure_reports_retained_native_install(self):
         skill = self.root / "installed" / "skill"
@@ -454,7 +478,9 @@ class WindowsPackageTests(unittest.TestCase):
             side_effect=OSError("registry unavailable"),
         ):
             with self.assertRaisesRegex(WindowsNativeInstallError, "registry could not be opened"):
-                install_windows_package(self.metadata, str(self.root))
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
 
     def test_msiexec_permission_denial_is_reported_with_log_location(self):
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
@@ -462,13 +488,103 @@ class WindowsPackageTests(unittest.TestCase):
             side_effect=PermissionError("access denied"),
         ):
             with self.assertRaises(WindowsNativeInstallError) as raised:
-                install_windows_package(self.metadata, str(self.root))
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
 
         message = str(raised.exception)
         self.assertIn("Could not start Windows Installer", message)
         self.assertIn("permissions", message)
         self.assertIn("sima-cli-msi-install-01-native.log", message)
         self.assertIn("do not disable security controls", message)
+
+    def test_default_install_uses_managed_python_environment(self):
+        responses = [
+            completed(),
+            completed(returncode=3),
+            completed(),
+            completed(stdout="0.6.1\n"),
+            completed(),
+        ]
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._managed_python_executable",
+            return_value=str(self.python),
+        ) as managed, patch(
+            "sima_cli.install.windows_package._run", side_effect=responses
+        ) as run:
+            result = install_windows_package(self.metadata, str(self.root))
+
+        managed.assert_called_once_with(self.metadata)
+        self.assertEqual(result["python"], "installed")
+        self.assertEqual(result["python_executable"], str(self.python))
+        self.assertEqual(
+            run.call_args_list[2].args[0],
+            [str(self.python), "-m", "pip", "install", "--upgrade", str(self.wheel)],
+        )
+
+    def test_managed_python_environment_is_created_with_compatible_bootstrap(self):
+        home = self.root / "home"
+        environment = home / "pyneatpcie"
+        managed_python = environment / "Scripts" / "python.exe"
+
+        def invoke(command, **_kwargs):
+            if command[-3:-1] == ["-m", "venv"]:
+                managed_python.parent.mkdir(parents=True)
+                managed_python.write_bytes(b"managed python fixture")
+                return completed()
+            return python_facts()
+
+        with patch("sima_cli.install.windows_package.Path.home", return_value=home), patch(
+            "sima_cli.install.windows_package._python_bootstrap_candidates",
+            return_value=[[str(self.python)]],
+        ), patch("sima_cli.install.windows_package._run", side_effect=invoke) as run:
+            result = _managed_python_executable(self.metadata)
+
+        self.assertEqual(result, str(managed_python))
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [str(self.python), "-m", "venv", str(environment)],
+        )
+
+    def test_existing_managed_python_environment_is_reused(self):
+        home = self.root / "home"
+        managed_python = home / "pyneatpcie" / "Scripts" / "python.exe"
+        managed_python.parent.mkdir(parents=True)
+        managed_python.write_bytes(b"managed python fixture")
+
+        with patch("sima_cli.install.windows_package.Path.home", return_value=home), patch(
+            "sima_cli.install.windows_package._run", return_value=python_facts()
+        ) as run:
+            result = _managed_python_executable(self.metadata)
+
+        self.assertEqual(result, str(managed_python))
+        self.assertEqual(run.call_count, 1)
+
+    def test_default_install_blocks_before_msi_without_compatible_python(self):
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._python_bootstrap_candidates", return_value=[]
+        ), patch("sima_cli.install.windows_package._run") as run:
+            with self.assertRaisesRegex(WindowsPrerequisiteError, "compatible Python 3.14"):
+                install_windows_package(self.metadata, str(self.root))
+
+        run.assert_not_called()
+
+    def test_native_only_rejects_python_override(self):
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run"
+        ) as run:
+            with self.assertRaisesRegex(
+                click.ClickException,
+                "--native-only cannot be combined with --python-executable",
+            ):
+                install_windows_package(
+                    self.metadata,
+                    str(self.root),
+                    python_executable=str(self.python),
+                    native_only=True,
+                )
+
+        run.assert_not_called()
 
     def test_matching_python_package_is_verified_without_reinstall(self):
         responses = [python_facts(), completed(), completed(stdout="0.6.1\n"), completed()]
@@ -579,7 +695,7 @@ class WindowsPackageTests(unittest.TestCase):
                 )
         self.assertEqual(run.call_count, 2)
 
-    def test_cli_exposes_customer_python_environment_option(self):
+    def test_cli_exposes_managed_python_and_native_only_options(self):
         runner = CliRunner()
         result = runner.invoke(
             main,
@@ -588,8 +704,8 @@ class WindowsPackageTests(unittest.TestCase):
         )
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("--python-executable", result.output)
-        self.assertIn("customer", result.output)
-        self.assertIn("Python environment", result.output)
+        self.assertIn("managed user environment", result.output)
+        self.assertIn("--native-only", result.output)
 
     def test_vulcan_install_forwards_selected_python_only_when_requested(self):
         resolved = type(
@@ -617,6 +733,33 @@ class WindowsPackageTests(unittest.TestCase):
             )
 
         self.assertEqual(install.call_args.kwargs["python_executable"], str(self.python))
+
+    def test_vulcan_install_forwards_native_only(self):
+        resolved = type(
+            "Result",
+            (),
+            {
+                "environment": "dev",
+                "base_url": "https://example.invalid",
+                "repository": "core",
+                "package_path": "pciehost/windows/amd64",
+                "ref": "3.0",
+                "ref_key": "3.0",
+                "requested_spec": "latest",
+                "resolved_spec": "a" * 40,
+                "metadata_url": "https://example.invalid/metadata.json",
+            },
+        )()
+        with patch(
+            "sima_cli.vulcan.commands.resolve_install_metadata_url", return_value=resolved
+        ), patch("sima_cli.vulcan.commands.install_from_metadata") as install:
+            install_vulcan_package(
+                target="core/pciehost/windows/amd64@3.0",
+                environment="dev",
+                native_only=True,
+            )
+
+        self.assertTrue(install.call_args.kwargs["native_only"])
 
 
 if __name__ == "__main__":

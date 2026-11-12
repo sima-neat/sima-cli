@@ -59,19 +59,19 @@ def _validate_windows_prerequisites(value):
                 raise MetadataValidationError(
                     f"'{prefix}.value' must be a safe executable or service name"
                 )
-        elif kind == "windows-product":
+        elif kind in {"windows-pnp-driver", "windows-product"}:
             target = prerequisite.get("value")
             version = prerequisite.get("version")
             if (not isinstance(target, str) or not target.strip()
                     or len(target) > 128
                     or not re.fullmatch(r"[A-Za-z0-9 .()_-]+", target)):
                 raise MetadataValidationError(
-                    f"'{prefix}.value' must be a safe Windows product name"
+                    f"'{prefix}.value' must be a safe Windows product or device name"
                 )
             if (not isinstance(version, str)
                     or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}", version)):
                 raise MetadataValidationError(
-                    f"'{prefix}.version' must be an exact numeric product version"
+                    f"'{prefix}.version' must be an exact numeric Windows version"
                 )
         elif kind == "command-version":
             candidates = prerequisite.get("candidates")
@@ -122,7 +122,7 @@ def _validate_windows_prerequisites(value):
         else:
             raise MetadataValidationError(
                 f"'{prefix}.type' must be one of: command-version, executable, file, "
-                "windows-product, windows-service"
+                "windows-pnp-driver, windows-product, windows-service"
             )
 
 def _validate_sha256_field(value, field_name: str):

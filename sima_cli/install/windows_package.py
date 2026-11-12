@@ -111,6 +111,27 @@ if ($matches.Count -ne 1 -or -not $matches[0].DisplayVersion) { exit 3 }
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _windows_pnp_driver_version(device_name: str) -> Optional[str]:
+    script = r"""
+$matches = @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+  Where-Object { $_.DeviceName -eq $env:SIMA_CLI_PREREQ_DEVICE })
+if ($matches.Count -ne 1 -or -not $matches[0].DriverVersion) { exit 3 }
+[Console]::Out.Write([string]$matches[0].DriverVersion)
+"""
+    environment = os.environ.copy()
+    environment["SIMA_CLI_PREREQ_DEVICE"] = device_name
+    try:
+        result = _run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+    except OSError:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
 def _check_command_version(prerequisite: Dict) -> tuple[bool, Optional[str]]:
     command = next(
         (path for path in (_path_from_spec(item) for item in prerequisite["candidates"])
@@ -146,6 +167,9 @@ def _check_prerequisites(metadata: Dict) -> List[Dict[str, str]]:
             passed = _check_windows_service(prerequisite["value"])
         elif kind == "windows-product":
             actual = _windows_product_version(prerequisite["value"])
+            passed = actual == prerequisite["version"]
+        elif kind == "windows-pnp-driver":
+            actual = _windows_pnp_driver_version(prerequisite["value"])
             passed = actual == prerequisite["version"]
         elif kind == "command-version":
             passed, actual = _check_command_version(prerequisite)

@@ -14,6 +14,7 @@ from sima_cli.install.windows_package import (
     WindowsPackageRestartRequired,
     WindowsPrerequisiteError,
     WindowsPythonInstallError,
+    _windows_pnp_driver_version,
     install_windows_package,
 )
 from sima_cli.vulcan.commands import install_vulcan_package
@@ -68,6 +69,20 @@ class WindowsPackageTests(unittest.TestCase):
 
     def test_metadata_accepts_declarative_msi_and_wheel(self):
         self.assertTrue(validate_metadata(self.metadata))
+
+    def test_driver_version_query_passes_device_name_through_environment(self):
+        with patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(stdout="3.0.0.2"),
+        ) as run:
+            self.assertEqual(
+                _windows_pnp_driver_version("SiMa.ai MLA Device"), "3.0.0.2")
+
+        self.assertEqual(
+            run.call_args.kwargs["env"]["SIMA_CLI_PREREQ_DEVICE"],
+            "SiMa.ai MLA Device",
+        )
+        self.assertNotIn("SiMa.ai MLA Device", run.call_args.args[0])
 
     def test_metadata_rejects_msi_not_in_resources(self):
         self.metadata["resources"].remove(self.msi.name)
@@ -253,9 +268,9 @@ class WindowsPackageTests(unittest.TestCase):
         gst_inspect.write_bytes(b"fixture")
         self.metadata["installation"]["prerequisites"] = [
             {
-                "name": "SiMa Platform Windows package",
-                "type": "windows-product",
-                "value": "SiMa.ai Windows Host Package",
+                "name": "SiMa Platform MLA driver",
+                "type": "windows-pnp-driver",
+                "value": "SiMa.ai MLA Device",
                 "version": "3.0.0.2",
                 "guidance": "Install the supported Platform package.",
             },
@@ -278,7 +293,7 @@ class WindowsPackageTests(unittest.TestCase):
         with patch.dict(os.environ, {"TEST_GSTREAMER": str(gst_inspect.parent.parent)}), patch(
             "sima_cli.install.windows_package._is_windows", return_value=True
         ), patch(
-            "sima_cli.install.windows_package._windows_product_version",
+            "sima_cli.install.windows_package._windows_pnp_driver_version",
             return_value="3.0.0.2",
         ), patch(
             "sima_cli.install.windows_package._run",
@@ -293,14 +308,14 @@ class WindowsPackageTests(unittest.TestCase):
 
     def test_wrong_platform_version_blocks_before_msi(self):
         self.metadata["installation"]["prerequisites"] = [{
-            "name": "SiMa Platform Windows package",
-            "type": "windows-product",
-            "value": "SiMa.ai Windows Host Package",
+            "name": "SiMa Platform MLA driver",
+            "type": "windows-pnp-driver",
+            "value": "SiMa.ai MLA Device",
             "version": "3.0.0.2",
             "guidance": "Install the supported Platform package.",
         }]
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
-            "sima_cli.install.windows_package._windows_product_version",
+            "sima_cli.install.windows_package._windows_pnp_driver_version",
             return_value="2.1.3.0",
         ), patch("sima_cli.install.windows_package._run") as run:
             with self.assertRaisesRegex(

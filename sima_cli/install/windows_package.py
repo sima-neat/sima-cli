@@ -2,11 +2,14 @@
 
 import json
 import os
+import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional
 
 import click
+
+from sima_cli.playbooks.manager import SkillError, SkillManager
 
 
 MSI_RESTART_INITIATED = 1641
@@ -24,6 +27,10 @@ class WindowsPythonInstallError(click.ClickException):
 
 class WindowsNativeInstallError(click.ClickException):
     """One MSI failed after an earlier package may have installed."""
+
+
+class WindowsPrerequisiteError(click.ClickException):
+    """The host is not ready for the requested Windows package transaction."""
 
 
 def _is_windows() -> bool:
@@ -53,6 +60,120 @@ def _declared_resource(metadata: Dict, install_dir: str, resource: str) -> Path:
 
 def _run(command, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, **kwargs)
+
+
+def _path_from_spec(spec: Dict[str, str]) -> Optional[Path]:
+    root = os.environ.get(spec["environment"])
+    if not root:
+        return None
+    return Path(root).joinpath(*PureWindowsPath(spec["relative"]).parts)
+
+
+def _check_windows_service(name: str) -> bool:
+    command = [
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        f"(Get-Service -Name '{name}' -ErrorAction Stop).Status.ToString()",
+    ]
+    try:
+        result = _run(command, text=True, capture_output=True)
+    except OSError:
+        return False
+    return result.returncode == 0 and result.stdout.strip().lower() == "running"
+
+
+def _check_prerequisites(metadata: Dict) -> List[Dict[str, str]]:
+    prerequisites = metadata["installation"].get("prerequisites", [])
+    failures = []
+    for prerequisite in prerequisites:
+        kind = prerequisite["type"]
+        if kind == "executable":
+            passed = shutil.which(prerequisite["value"]) is not None
+        elif kind == "windows-service":
+            passed = _check_windows_service(prerequisite["value"])
+        else:
+            passed = any(
+                path is not None and path.is_file()
+                for path in (_path_from_spec(candidate) for candidate in prerequisite["candidates"])
+            )
+        if not passed:
+            failures.append(prerequisite)
+
+    if failures:
+        details = "\n".join(
+            f"- {item['name']}: {item['guidance']}" for item in failures
+        )
+        raise WindowsPrerequisiteError(
+            "Windows host prerequisites are not ready; no MSI was started:\n" + details
+        )
+    if prerequisites:
+        click.echo("Windows host prerequisites verified.")
+    return prerequisites
+
+
+def _normalize_python_arch(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized in {"amd64", "x86_64"}:
+        return "amd64"
+    if normalized in {"arm64", "aarch64"}:
+        return "arm64"
+    return normalized
+
+
+def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
+    python_package = metadata["installation"].get("python")
+    if not python_package or not python_executable:
+        return
+    executable = Path(python_executable).expanduser()
+    if not executable.is_file():
+        raise WindowsPrerequisiteError(
+            f"Selected Python executable does not exist; no MSI was started: '{executable}'."
+        )
+    script = (
+        "import json, platform, sys; import pip; "
+        "print(json.dumps({'version': f'{sys.version_info.major}.{sys.version_info.minor}', "
+        "'arch': platform.machine()}))"
+    )
+    try:
+        result = _run([str(executable), "-c", script], text=True, capture_output=True)
+    except OSError as error:
+        raise WindowsPrerequisiteError(
+            f"Selected Python environment could not be started; no MSI was started: {error}"
+        ) from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        raise WindowsPrerequisiteError(
+            f"Selected Python environment cannot run pip; no MSI was started: {detail}"
+        )
+    try:
+        facts = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise WindowsPrerequisiteError(
+            "Selected Python environment returned invalid compatibility information; "
+            "no MSI was started."
+        ) from error
+    if not isinstance(facts, dict):
+        raise WindowsPrerequisiteError(
+            "Selected Python environment returned invalid compatibility information; "
+            "no MSI was started."
+        )
+    required_version = python_package.get("requires-python")
+    if required_version and facts.get("version") != required_version:
+        raise WindowsPrerequisiteError(
+            f"Selected Python is {facts.get('version') or 'unknown'}; this package requires "
+            f"Python {required_version}. No MSI was started."
+        )
+    required_arch = python_package.get("arch")
+    actual_arch = _normalize_python_arch(str(facts.get("arch", "")))
+    if required_arch and actual_arch != _normalize_python_arch(required_arch):
+        raise WindowsPrerequisiteError(
+            f"Selected Python architecture is {actual_arch or 'unknown'}; this package requires "
+            f"{required_arch}. No MSI was started."
+        )
+    click.echo(f"Selected Python environment verified: {facts['version']} {actual_arch}.")
 
 
 def _python_distribution_version(python_executable: str, distribution: str) -> Optional[str]:
@@ -237,6 +358,70 @@ def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str,
     return installed
 
 
+def _verify_native_installation(metadata: Dict) -> Dict[str, str]:
+    verification = metadata["installation"].get("verification")
+    if not verification:
+        return {"status": "not-requested"}
+    command = _path_from_spec(verification["command"])
+    if command is None or not command.is_file():
+        raise WindowsNativeInstallError(
+            "Native MSI installation completed, but its declared verification command is missing. "
+            "The native installation was kept."
+        )
+    invocation = [str(command)]
+    if command.suffix.lower() in {".bat", ".cmd"}:
+        invocation = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(command)]
+    try:
+        result = _run(invocation, text=True, capture_output=True)
+    except OSError as error:
+        raise WindowsNativeInstallError(
+            "Native MSI installation completed, but its verification command could not be "
+            f"started: {error}. The native installation was kept."
+        ) from error
+    if result.stdout.strip():
+        click.echo(result.stdout.strip())
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        raise WindowsNativeInstallError(
+            "Native MSI installation completed, but installed-runtime verification failed: "
+            f"{detail}. The native installation was kept; correct the prerequisite and rerun "
+            "the same command."
+        )
+    click.echo("Installed native runtime verified.")
+    return {"status": "passed", "command": str(command)}
+
+
+def _install_customer_skills(metadata: Dict) -> List[str]:
+    skill_specs = metadata["installation"].get("skills", [])
+    if not skill_specs:
+        return []
+    try:
+        manager = SkillManager()
+    except (OSError, SkillError) as error:
+        raise WindowsNativeInstallError(
+            "Native MSI installation completed, but the customer skill registry could not be "
+            f"opened: {error}. The native installation was kept."
+        ) from error
+    installed = []
+    for spec in skill_specs:
+        source = _path_from_spec(spec)
+        if source is None or not source.is_dir():
+            raise WindowsNativeInstallError(
+                "Native MSI installation completed, but an installed customer skill is missing. "
+                "The native installation was kept."
+            )
+        try:
+            installed.extend(manager.install(str(source), force=True))
+        except (OSError, SkillError) as error:
+            raise WindowsNativeInstallError(
+                "Native MSI installation completed, but customer skill installation failed: "
+                f"{error}. The native installation was kept."
+            ) from error
+    if installed:
+        click.echo("Installed customer skills: " + ", ".join(installed))
+    return installed
+
+
 def install_windows_package(
     metadata: Dict,
     install_dir: str,
@@ -246,11 +431,17 @@ def install_windows_package(
     if not _is_windows():
         raise click.ClickException("The windows-msi installation type can only run on Windows.")
 
+    _check_prerequisites(metadata)
+    _preflight_python(metadata, python_executable)
     installed = _install_native_packages(metadata, install_dir)
     click.echo("Coordinated native installation completed successfully.")
+    verification = _verify_native_installation(metadata)
+    skills = _install_customer_skills(metadata)
     python_status = _install_python_wheel(metadata, install_dir, python_executable)
     return {
         "native": "installed",
         "native_packages": installed,
+        "verification": verification,
+        "skills": skills,
         "python": python_status,
     }

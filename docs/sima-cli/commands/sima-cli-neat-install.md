@@ -85,6 +85,15 @@ command repairs or upgrades the native package and verifies a matching
 fails, the native installation remains installed and the command can be retried
 with the same Python environment.
 
+Before invoking Windows Installer, the CLI checks manifest-declared OpenSSH,
+Platform service, GStreamer, and selected-Python prerequisites. After the native
+packages install, it runs the declared host verification command and installs
+the package-matched customer skills. Provision card SSH once after installation:
+
+```powershell
+& "C:\Program Files\SimaPCIeHost\bin\pcie-setup.cmd"
+```
+
 Windows removes the native package through Installed apps or `msiexec`. Remove
 the Python package separately from the selected environment with
 `python -m pip uninstall pyneatpcie`.

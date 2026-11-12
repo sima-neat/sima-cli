@@ -1,7 +1,7 @@
 import re
 import sys
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from sima_cli.install.compatibility import (
     VALID_OS,
@@ -15,6 +15,62 @@ class MetadataValidationError(Exception):
     pass
 
 VALID_DEVKIT_SW = {"yocto", "elxr"}
+
+
+def _validate_windows_path_spec(value, field_name: str):
+    if not isinstance(value, dict):
+        raise MetadataValidationError(f"'{field_name}' must be an object")
+    environment = value.get("environment")
+    relative = value.get("relative")
+    if not isinstance(environment, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", environment):
+        raise MetadataValidationError(
+            f"'{field_name}.environment' must be a valid environment variable name"
+        )
+    if not isinstance(relative, str) or not relative.strip():
+        raise MetadataValidationError(f"'{field_name}.relative' must be a non-empty string")
+    path = PureWindowsPath(relative)
+    if path.is_absolute() or path.drive or any(part in {"", ".", ".."} for part in path.parts):
+        raise MetadataValidationError(
+            f"'{field_name}.relative' must be a safe relative Windows path"
+        )
+
+
+def _validate_windows_prerequisites(value):
+    if not isinstance(value, list) or not value:
+        raise MetadataValidationError("'installation.prerequisites' must be a non-empty list")
+    names = set()
+    for index, prerequisite in enumerate(value):
+        prefix = f"installation.prerequisites[{index}]"
+        if not isinstance(prerequisite, dict):
+            raise MetadataValidationError(f"'{prefix}' must be an object")
+        name = prerequisite.get("name")
+        kind = prerequisite.get("type")
+        guidance = prerequisite.get("guidance")
+        if not isinstance(name, str) or not name.strip():
+            raise MetadataValidationError(f"'{prefix}.name' must be a non-empty string")
+        if name in names:
+            raise MetadataValidationError("'installation.prerequisites' contains a duplicate name")
+        names.add(name)
+        if not isinstance(guidance, str) or not guidance.strip():
+            raise MetadataValidationError(f"'{prefix}.guidance' must be a non-empty string")
+        if kind in {"executable", "windows-service"}:
+            target = prerequisite.get("value")
+            if not isinstance(target, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", target):
+                raise MetadataValidationError(
+                    f"'{prefix}.value' must be a safe executable or service name"
+                )
+        elif kind == "file":
+            candidates = prerequisite.get("candidates")
+            if not isinstance(candidates, list) or not candidates:
+                raise MetadataValidationError(f"'{prefix}.candidates' must be a non-empty list")
+            for candidate_index, candidate in enumerate(candidates):
+                _validate_windows_path_spec(
+                    candidate, f"{prefix}.candidates[{candidate_index}]"
+                )
+        else:
+            raise MetadataValidationError(
+                f"'{prefix}.type' must be one of: executable, file, windows-service"
+            )
 
 def _validate_sha256_field(value, field_name: str):
     if not isinstance(value, str):
@@ -169,6 +225,21 @@ def validate_metadata(data: dict):
             if not isinstance(install["script"], str):
                 raise MetadataValidationError("'installation.script' must be a string")
         elif install_type == "windows-msi":
+            checksum_map = data.get("resources-checksum")
+            if not isinstance(checksum_map, dict):
+                raise MetadataValidationError(
+                    "Windows MSI metadata requires 'resources-checksum' for every resource"
+                )
+            missing_checksums = [
+                resource for resource in data["resources"] if resource not in checksum_map
+            ]
+            extra_checksums = [
+                resource for resource in checksum_map if resource not in data["resources"]
+            ]
+            if missing_checksums or extra_checksums:
+                raise MetadataValidationError(
+                    "Windows MSI 'resources-checksum' keys must exactly match 'resources'"
+                )
             native_packages = install.get("native-packages")
             if native_packages is None:
                 msi = install.get("msi")
@@ -225,6 +296,38 @@ def validate_metadata(data: dict):
                     raise MetadataValidationError(
                         "'installation.python.wheel' must be listed in 'resources'"
                     )
+                requires_python = python_package.get("requires-python")
+                if requires_python is not None and (
+                    not isinstance(requires_python, str)
+                    or not re.fullmatch(r"[0-9]+\.[0-9]+", requires_python)
+                ):
+                    raise MetadataValidationError(
+                        "'installation.python.requires-python' must be a major.minor version"
+                    )
+                python_arch = python_package.get("arch")
+                if python_arch is not None:
+                    try:
+                        normalize_host_arch(python_arch)
+                    except ValueError as exc:
+                        raise MetadataValidationError(
+                            f"Invalid 'installation.python.arch': {exc}"
+                        )
+            prerequisites = install.get("prerequisites")
+            if prerequisites is not None:
+                _validate_windows_prerequisites(prerequisites)
+            verification = install.get("verification")
+            if verification is not None:
+                if not isinstance(verification, dict):
+                    raise MetadataValidationError("'installation.verification' must be an object")
+                _validate_windows_path_spec(
+                    verification.get("command"), "installation.verification.command"
+                )
+            skills = install.get("skills")
+            if skills is not None:
+                if not isinstance(skills, list) or not skills:
+                    raise MetadataValidationError("'installation.skills' must be a non-empty list")
+                for index, skill in enumerate(skills):
+                    _validate_windows_path_spec(skill, f"installation.skills[{index}]")
         else:
             raise MetadataValidationError(f"Unsupported installation type: '{install_type}'")
 

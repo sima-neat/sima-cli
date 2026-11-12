@@ -36,6 +36,7 @@ from sima_cli.install.registry import PackageRegistry
 from sima_cli.install.windows_package import (
     WindowsNativeInstallError,
     WindowsPackageRestartRequired,
+    WindowsPrerequisiteError,
     WindowsPythonInstallError,
     install_windows_package,
 )
@@ -1640,6 +1641,13 @@ def install_from_metadata(
                                 metadata.get("name"),
                                 metadata.get("version"),
                                 "restart-required",
+                            )
+                            raise
+                        except WindowsPrerequisiteError:
+                            registry.update_state(
+                                metadata.get("name"),
+                                metadata.get("version"),
+                                "prerequisite-failed",
                             )
                             raise
                         except (WindowsNativeInstallError, WindowsPythonInstallError) as error:

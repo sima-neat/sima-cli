@@ -630,9 +630,9 @@ def _same_netboot_device(configuration, candidate_ip):
             ssh.close()
 
 
-def _offer_reboot_into_emmc(selected_ip):
+def _offer_reboot_into_emmc(selected_ip, *, auto_confirm_reboot=False):
     """Offer to reboot into the environment written by the flashed image."""
-    if not click.confirm(
+    if not auto_confirm_reboot and not click.confirm(
         "Reboot the DevKit now and boot from the flashed eMMC image?",
         default=True,
     ):
@@ -681,6 +681,7 @@ def flash_emmc(
     manual_reboot=True,
     offer_reboot=False,
     transfer_attempts=1,
+    auto_confirm_reboot=False,
 ):
     """Flash eMMC on a selected client device."""
     if not emmc_image_paths:
@@ -786,7 +787,7 @@ def flash_emmc(
 
         if offer_reboot:
             click.echo("✅ Flash completed.")
-            _offer_reboot_into_emmc(selected_ip)
+            _offer_reboot_into_emmc(selected_ip, auto_confirm_reboot=auto_confirm_reboot)
         elif manual_reboot:
             click.echo("✅ Flash completed. Please reboot the board to boot from eMMC.")
         else:
@@ -1212,7 +1213,7 @@ def _warn_unflashed_netboot(configuration):
     )
 
 
-def run_cli(client_manager, configuration=None):
+def run_cli(client_manager, configuration=None, *, auto_confirm_reboot=False):
     """Run the interactive CLI for netboot commands."""
     click.echo("\n🛠  Type 'c' to see connected IPs and board info, 'd' to discover devices, 'f [ip]' to flash eMMC, or 'q' to quit.\n")
     click.echo("IP recovery runs automatically. Press Ctrl+C to stop background SSH/discovery checks.")
@@ -1266,6 +1267,7 @@ def run_cli(client_manager, configuration=None):
                     troot_image_path=troot_image_path,
                     configuration=configuration,
                     offer_reboot=True,
+                    auto_confirm_reboot=auto_confirm_reboot,
                 )
             elif command == "":
                 continue
@@ -1405,6 +1407,7 @@ def setup_netboot(
     devkit: str = None,
     images: Optional[str] = None,
     delete_cache: bool = False,
+    auto_confirm_reboot: bool = False,
 ):
     """
     Download and serve a bootable image for network boot over TFTP with client monitoring.
@@ -1419,6 +1422,7 @@ def setup_netboot(
         swtype (str): The software type, either yocto or elxr.
         images (str): Optional read-only directory containing local netboot source artifacts.
         delete_cache (bool): Delete the managed cache entry after the netboot session exits.
+        auto_confirm_reboot (bool): Reboot from eMMC after a manual flash without prompting.
 
     Raises:
         RuntimeError: If the download or TFTP setup fails.
@@ -1557,7 +1561,7 @@ def setup_netboot(
             if autoflash:
                 message.append('\n\nAutomatic flashing is disabled because no DevKit was selected.', style='bold yellow')
             console.print(Panel(message, title='Manual netboot setup', border_style='yellow'))
-        run_cli(client_manager, configuration=configuration)
+        run_cli(client_manager, configuration=configuration, auto_confirm_reboot=auto_confirm_reboot)
 
     except OSError as e:
         if tftp_ready:

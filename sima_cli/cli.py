@@ -693,9 +693,10 @@ def show_mla_memory_usage(ctx):
 @click.option("--devkit", "--devkit-ip", "devkit_ip", required=False, help="DevKit IP for remote netboot; discover and select a DevKit when omitted.")
 @click.option("-r", "--rootfs", required=False, help="Custom root fs folders (internal use only)")
 @click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Network boot the selected DevKit, then automatically flash its internal storage once SSH is ready.")
+@click.option("-y", "--yes", is_flag=True, help="Reboot from eMMC after a successful NetBoot flash without prompting.")
 @click.pass_context
 def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_ip,
-                autoflash, fwtype, rootfs, recovery=False, force=False):
+                autoflash, fwtype, rootfs, recovery=False, force=False, yes=False):
     """
     Prepare a bootable image for the SiMa DevKit.
 
@@ -773,6 +774,12 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
     """
 
     uses_netboot = netboot or autoflash
+    if uses_netboot and sys.platform == "win32":
+        raise click.ClickException(
+            "NetBoot requires WSL 2 on Windows. Open a WSL 2 distro, install "
+            "sima-cli inside it, and rerun the command there. Use mirrored "
+            "networking so the DevKit can reach the TFTP server."
+        )
     if images and not uses_netboot:
         raise click.UsageError("--images requires --netboot or --autoflash.")
     if delete_cache and not uses_netboot:
@@ -795,7 +802,6 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
             raise click.UsageError("--recovery requires --boardtype modalix and --fwtype elxr.")
 
     from sima_cli.update.bootimg import write_image
-    from sima_cli.update.netboot import setup_netboot
     internal = ctx.obj.get("internal", False)
     if internal and ctx.meta.get('daily_netboot') and (boardtype != 'modalix' or fwtype != 'elxr'):
         if not internal_resource_exists() or not ctx.obj.get('internal_reachable', True):
@@ -812,7 +818,9 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
     
     try:
         boardtype = boardtype if boardtype != 'mlsoc' else 'davinci'
-        if netboot or autoflash:
+        if uses_netboot:
+            from sima_cli.update.netboot import setup_netboot
+
             netboot_options = {}
             if images:
                 netboot_options["images"] = str(images)
@@ -821,7 +829,8 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
             setup_netboot(
                 version, boardtype, internal, autoflash, flavor='headless',
                 rootfs=rootfs, swtype=fwtype, allow_daily_fallback=force,
-                devkit=devkit_ip, **netboot_options,
+                devkit=devkit_ip, auto_confirm_reboot=yes or ctx.obj.get("yes", False),
+                **netboot_options,
             )
             click.echo("✅ Netboot session ended and the TFTP server is stopped.")
         else:

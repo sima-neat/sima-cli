@@ -32,6 +32,12 @@ def python_facts(version="3.14", arch="AMD64"):
 
 class WindowsPackageTests(unittest.TestCase):
     def setUp(self):
+        self.administrator = patch(
+            "sima_cli.install.windows_package._is_windows_administrator",
+            return_value=True,
+        )
+        self.administrator.start()
+        self.addCleanup(self.administrator.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.msi = self.root / "sima-pcie-host-0.6.1-win64.msi"
@@ -118,6 +124,67 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(command[:3], ["msiexec.exe", "/i", str(self.msi)])
         self.assertIn("/norestart", command)
         self.assertIn("/L*v", command)
+
+    def test_standard_user_elevates_only_the_native_installer(self):
+        with patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._is_windows_administrator",
+            return_value=False,
+        ), patch(
+            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ) as run:
+            result = install_windows_package(
+                self.metadata, str(self.root), native_only=True
+            )
+
+        self.assertEqual(result["native"], "installed")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:4], [
+            "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive"
+        ])
+        self.assertNotIn(str(self.msi), command)
+        arguments = run.call_args.kwargs["env"]["SIMA_CLI_MSI_ARGUMENTS"]
+        self.assertIn(str(self.msi), arguments)
+        self.assertIn("/passive", arguments)
+
+    def test_noninteractive_standard_user_fails_before_starting_installer(self):
+        with patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._is_windows_administrator",
+            return_value=False,
+        ), patch(
+            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=False
+        ), patch("sima_cli.install.windows_package._run") as run:
+            with self.assertRaisesRegex(
+                WindowsNativeInstallError, "interactive PowerShell"
+            ):
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
+
+        run.assert_not_called()
+
+    def test_cancelled_standard_user_elevation_stops_the_transaction(self):
+        with patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._is_windows_administrator",
+            return_value=False,
+        ), patch(
+            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run", return_value=completed(returncode=1223)
+        ):
+            with self.assertRaisesRegex(
+                WindowsNativeInstallError, "administrator approval was cancelled"
+            ):
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
 
     def test_coordinated_native_packages_install_in_manifest_order(self):
         self.metadata["resources"].insert(0, self.scheduler_msi.name)

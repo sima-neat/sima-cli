@@ -1,5 +1,6 @@
 """Install a declarative Windows MSI and optional Python wheel."""
 
+import ctypes
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from sima_cli.playbooks.manager import SkillError, SkillManager
 MSI_RESTART_INITIATED = 1641
 MSI_RESTART_REQUIRED = 3010
 MSI_INSTALL_REJECTED_BY_POLICY = 1625
+WINDOWS_ELEVATION_CANCELLED = 1223
 
 
 class WindowsPackageRestartRequired(click.ClickException):
@@ -62,6 +64,51 @@ def _declared_resource(metadata: Dict, install_dir: str, resource: str) -> Path:
 
 def _run(command, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, **kwargs)
+
+
+def _is_windows_administrator() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+def _run_native_installer(command: List[str], log_path: Path) -> subprocess.CompletedProcess:
+    if _is_windows_administrator():
+        return _run(command)
+    if not sys.stdin.isatty():
+        raise WindowsNativeInstallError(
+            "Installing the machine-wide Windows packages requires administrator approval, "
+            "but this standard-user session is not interactive. Rerun the same command in an "
+            "interactive PowerShell window so Windows can request approval, or ask an "
+            f"administrator to install the native packages. Intended installer log: {log_path}"
+        )
+
+    script = r"""
+$ErrorActionPreference = 'Stop'
+try {
+  $process = Start-Process -FilePath 'msiexec.exe' `
+    -ArgumentList $env:SIMA_CLI_MSI_ARGUMENTS -Verb RunAs -Wait -PassThru
+  exit $process.ExitCode
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1223
+}
+"""
+    environment = os.environ.copy()
+    environment["SIMA_CLI_MSI_ARGUMENTS"] = subprocess.list2cmdline(command[1:])
+    click.echo("Requesting Windows administrator approval for the native package.")
+    return _run(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ],
+        env=environment,
+    )
 
 
 def _path_from_spec(spec: Dict[str, str]) -> Optional[Path]:
@@ -515,7 +562,7 @@ def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str,
             f"Installing {owner} native package {index}/{len(packages)}: {msi.name}"
         )
         try:
-            result = _run(command)
+            result = _run_native_installer(command, log_path)
         except OSError as error:
             raise WindowsNativeInstallError(
                 f"Could not start Windows Installer for {owner}: {error}. "
@@ -527,6 +574,12 @@ def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str,
                 f"Windows Installer completed {owner} with restart code {result.returncode}. "
                 "Restart Windows, then rerun the command to continue the coordinated installation. "
                 f"Installer log: {log_path}"
+            )
+        if result.returncode == WINDOWS_ELEVATION_CANCELLED:
+            raise WindowsNativeInstallError(
+                f"Windows administrator approval was cancelled for {owner}. "
+                "No later native package or Python package was installed. Rerun the same "
+                f"command when approval is available. Intended installer log: {log_path}"
             )
         if result.returncode != 0:
             installed_owners = ", ".join(item["owner"] for item in installed) or "none"

@@ -8,7 +8,11 @@ set before passing each native package to Windows Installer.
 Run the command from PowerShell after installing the supported Platform PCIe
 package and x64 GStreamer MSVC runtime. The Platform package owns the signed
 driver, host libraries, and `SiMaMlaDaemon` service; Neat does not replace or
-update them.
+update them. Windows may request administrator approval for the machine-wide
+Scheduler and Core MSI packages. Only those native installers are elevated;
+the CLI, managed Python environment, and customer skills remain in the current
+user's session and profile. A standard user must run the command from an
+interactive PowerShell window so Windows can present that approval prompt.
 
 ```powershell
 sima-cli neat install core/pciehost/windows/amd64@3.0

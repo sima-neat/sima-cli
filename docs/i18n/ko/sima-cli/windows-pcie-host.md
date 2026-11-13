@@ -8,6 +8,11 @@ Windows PCIe 호스트 릴리스는 `sima-cli` 명령 하나로 설치할 수 �
 지원되는 Platform PCIe 패키지와 x64 GStreamer MSVC 런타임을 설치한 뒤
 PowerShell에서 명령을 실행하세요. 서명된 드라이버, 호스트 라이브러리,
 `SiMaMlaDaemon` 서비스는 Platform 패키지가 관리하며 Neat는 이를 교체하거나 업데이트하지 않습니다.
+컴퓨터 전체에 설치되는 Scheduler 및 Core MSI 패키지에 대해 Windows가 관리자 승인을
+요청할 수 있습니다. 권한이 상승하는 것은 이 네이티브 설치 프로그램뿐입니다. CLI,
+관리형 Python 환경 및 고객 스킬은 현재 사용자의 세션과 프로필에 그대로 유지됩니다.
+표준 사용자는 Windows가 승인 프롬프트를 표시할 수 있도록 대화형 PowerShell 창에서
+명령을 실행해야 합니다.
 
 ```powershell
 sima-cli neat install core/pciehost/windows/amd64@3.0

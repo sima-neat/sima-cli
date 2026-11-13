@@ -7,6 +7,10 @@
 請先安裝支援的 Platform PCIe 套件與 x64 GStreamer MSVC 執行階段，
 再從 PowerShell 執行命令。已簽署的驅動程式、主機程式庫和
 `SiMaMlaDaemon` 服務由 Platform 套件管理；Neat 不會替換或更新它們。
+Windows 可能會要求管理員核准安裝於整台電腦的 Scheduler 與 Core MSI 套件。
+只有這些原生安裝程式會提升權限；CLI、受管理的 Python 環境與客戶技能仍留在
+目前使用者的工作階段與設定檔中。標準使用者必須從互動式 PowerShell 視窗執行
+命令，Windows 才能顯示核准提示。
 
 ```powershell
 sima-cli neat install core/pciehost/windows/amd64@3.0

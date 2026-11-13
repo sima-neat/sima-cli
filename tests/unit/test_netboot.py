@@ -86,7 +86,7 @@ class NetbootFlashTests(unittest.TestCase):
             netboot.emmc_image_paths = ["/images/modalix.img.gz"]
             netboot.troot_image_path = "/images/troot_blob.be"
 
-            netboot.run_cli(FakeClientManager())
+            netboot.run_cli(FakeClientManager(), auto_confirm_reboot=True)
 
             mock_flash.assert_called_once_with(
                 unittest.mock.ANY,
@@ -95,6 +95,7 @@ class NetbootFlashTests(unittest.TestCase):
                 troot_image_path="/images/troot_blob.be",
                 configuration=None,
                 offer_reboot=True,
+                auto_confirm_reboot=True,
             )
         finally:
             netboot.emmc_image_paths = old_emmc

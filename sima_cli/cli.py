@@ -774,6 +774,12 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
     """
 
     uses_netboot = netboot or autoflash
+    if uses_netboot and sys.platform == "win32":
+        raise click.ClickException(
+            "NetBoot requires WSL 2 on Windows. Open a WSL 2 distro, install "
+            "sima-cli inside it, and rerun the command there. Use mirrored "
+            "networking so the DevKit can reach the TFTP server."
+        )
     if images and not uses_netboot:
         raise click.UsageError("--images requires --netboot or --autoflash.")
     if delete_cache and not uses_netboot:
@@ -796,7 +802,6 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
             raise click.UsageError("--recovery requires --boardtype modalix and --fwtype elxr.")
 
     from sima_cli.update.bootimg import write_image
-    from sima_cli.update.netboot import setup_netboot
     internal = ctx.obj.get("internal", False)
     if internal and ctx.meta.get('daily_netboot') and (boardtype != 'modalix' or fwtype != 'elxr'):
         if not internal_resource_exists() or not ctx.obj.get('internal_reachable', True):
@@ -813,7 +818,9 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
     
     try:
         boardtype = boardtype if boardtype != 'mlsoc' else 'davinci'
-        if netboot or autoflash:
+        if uses_netboot:
+            from sima_cli.update.netboot import setup_netboot
+
             netboot_options = {}
             if images:
                 netboot_options["images"] = str(images)

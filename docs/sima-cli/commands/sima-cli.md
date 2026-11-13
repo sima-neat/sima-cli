@@ -24,7 +24,7 @@ None.
 
 - [`sima-cli appzoo`](./sima-cli-appzoo.md): Access sample apps from the App Zoo.
 - [`sima-cli bootimg`](./sima-cli-bootimg.md): Prepare a bootable image for the SiMa DevKit.
-- [`sima-cli device`](./sima-cli-device.md): Discover nearby SiMa.ai devices on the local network.
+- [`sima-cli device`](./sima-cli-device.md): Discover and manage device(s) for MPK deployment and app lifecycle management purposes, compatible with both PCIe and Ethernet deployment models. Host side only.
 - [`sima-cli download`](./sima-cli-download.md): Download a file or a whole folder from a given URL.
 - [`sima-cli install`](./sima-cli-install.md): Install SiMa packages.
 - [`sima-cli login`](./sima-cli-login.md): Authenticate with the SiMa Developer Portal.
@@ -63,7 +63,7 @@ Options:
 Commands:
   appzoo       Access sample apps from the App Zoo.
   bootimg      Prepare a bootable image for the SiMa DevKit.
-  device       Discover nearby SiMa.ai devices on the local network.
+  device       Discover and manage device(s) for MPK deployment and app...
   download     Download a file or a whole folder from a given URL.
   install      Install SiMa packages.
   login        Authenticate with the SiMa Developer Portal.

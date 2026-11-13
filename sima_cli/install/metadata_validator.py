@@ -1,7 +1,7 @@
 import re
 import sys
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from sima_cli.install.compatibility import (
     VALID_OS,
@@ -15,6 +15,115 @@ class MetadataValidationError(Exception):
     pass
 
 VALID_DEVKIT_SW = {"yocto", "elxr"}
+
+
+def _validate_windows_path_spec(value, field_name: str):
+    if not isinstance(value, dict):
+        raise MetadataValidationError(f"'{field_name}' must be an object")
+    environment = value.get("environment")
+    relative = value.get("relative")
+    if not isinstance(environment, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", environment):
+        raise MetadataValidationError(
+            f"'{field_name}.environment' must be a valid environment variable name"
+        )
+    if not isinstance(relative, str) or not relative.strip():
+        raise MetadataValidationError(f"'{field_name}.relative' must be a non-empty string")
+    path = PureWindowsPath(relative)
+    if path.is_absolute() or path.drive or any(part in {"", ".", ".."} for part in path.parts):
+        raise MetadataValidationError(
+            f"'{field_name}.relative' must be a safe relative Windows path"
+        )
+
+
+def _validate_windows_prerequisites(value):
+    if not isinstance(value, list) or not value:
+        raise MetadataValidationError("'installation.prerequisites' must be a non-empty list")
+    names = set()
+    for index, prerequisite in enumerate(value):
+        prefix = f"installation.prerequisites[{index}]"
+        if not isinstance(prerequisite, dict):
+            raise MetadataValidationError(f"'{prefix}' must be an object")
+        name = prerequisite.get("name")
+        kind = prerequisite.get("type")
+        guidance = prerequisite.get("guidance")
+        if not isinstance(name, str) or not name.strip():
+            raise MetadataValidationError(f"'{prefix}.name' must be a non-empty string")
+        if name in names:
+            raise MetadataValidationError("'installation.prerequisites' contains a duplicate name")
+        names.add(name)
+        if not isinstance(guidance, str) or not guidance.strip():
+            raise MetadataValidationError(f"'{prefix}.guidance' must be a non-empty string")
+        if kind in {"executable", "windows-service"}:
+            target = prerequisite.get("value")
+            if not isinstance(target, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", target):
+                raise MetadataValidationError(
+                    f"'{prefix}.value' must be a safe executable or service name"
+                )
+        elif kind in {"windows-pnp-driver", "windows-product"}:
+            target = prerequisite.get("value")
+            version = prerequisite.get("version")
+            if (not isinstance(target, str) or not target.strip()
+                    or len(target) > 128
+                    or not re.fullmatch(r"[A-Za-z0-9 .()_-]+", target)):
+                raise MetadataValidationError(
+                    f"'{prefix}.value' must be a safe Windows product or device name"
+                )
+            if (not isinstance(version, str)
+                    or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}", version)):
+                raise MetadataValidationError(
+                    f"'{prefix}.version' must be an exact numeric Windows version"
+                )
+        elif kind == "command-version":
+            candidates = prerequisite.get("candidates")
+            arguments = prerequisite.get("arguments")
+            version = prerequisite.get("version")
+            pattern = prerequisite.get("version-pattern")
+            if not isinstance(candidates, list) or not candidates:
+                raise MetadataValidationError(f"'{prefix}.candidates' must be a non-empty list")
+            for candidate_index, candidate in enumerate(candidates):
+                _validate_windows_path_spec(
+                    candidate, f"{prefix}.candidates[{candidate_index}]"
+                )
+            if (not isinstance(arguments, list)
+                    or not arguments
+                    or any(not isinstance(argument, str)
+                           or not re.fullmatch(r"[A-Za-z0-9_.=:/-]+", argument)
+                           for argument in arguments)):
+                raise MetadataValidationError(
+                    f"'{prefix}.arguments' must contain safe command arguments"
+                )
+            if (not isinstance(version, str)
+                    or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", version)):
+                raise MetadataValidationError(
+                    f"'{prefix}.version' must be an exact major.minor.patch version"
+                )
+            if not isinstance(pattern, str) or len(pattern) > 200:
+                raise MetadataValidationError(
+                    f"'{prefix}.version-pattern' must be a bounded pattern with one capture"
+                )
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                raise MetadataValidationError(
+                    f"'{prefix}.version-pattern' is invalid: {exc}"
+                ) from exc
+            if compiled.groups != 1:
+                raise MetadataValidationError(
+                    f"'{prefix}.version-pattern' must contain exactly one capture group"
+                )
+        elif kind == "file":
+            candidates = prerequisite.get("candidates")
+            if not isinstance(candidates, list) or not candidates:
+                raise MetadataValidationError(f"'{prefix}.candidates' must be a non-empty list")
+            for candidate_index, candidate in enumerate(candidates):
+                _validate_windows_path_spec(
+                    candidate, f"{prefix}.candidates[{candidate_index}]"
+                )
+        else:
+            raise MetadataValidationError(
+                f"'{prefix}.type' must be one of: command-version, executable, file, "
+                "windows-pnp-driver, windows-product, windows-service"
+            )
 
 def _validate_sha256_field(value, field_name: str):
     if not isinstance(value, str):
@@ -160,10 +269,120 @@ def validate_metadata(data: dict):
     # Validate installation (optional)
     if "installation" in data:
         install = data["installation"]
-        if "script" not in install:
-            raise MetadataValidationError("Missing 'script' in 'installation'")
-        if not isinstance(install["script"], str):
-            raise MetadataValidationError("'installation.script' must be a string")
+        if not isinstance(install, dict):
+            raise MetadataValidationError("'installation' must be an object")
+        install_type = install.get("type", "script")
+        if install_type == "script":
+            if "script" not in install:
+                raise MetadataValidationError("Missing 'script' in 'installation'")
+            if not isinstance(install["script"], str):
+                raise MetadataValidationError("'installation.script' must be a string")
+        elif install_type == "windows-msi":
+            checksum_map = data.get("resources-checksum")
+            if not isinstance(checksum_map, dict):
+                raise MetadataValidationError(
+                    "Windows MSI metadata requires 'resources-checksum' for every resource"
+                )
+            missing_checksums = [
+                resource for resource in data["resources"] if resource not in checksum_map
+            ]
+            extra_checksums = [
+                resource for resource in checksum_map if resource not in data["resources"]
+            ]
+            if missing_checksums or extra_checksums:
+                raise MetadataValidationError(
+                    "Windows MSI 'resources-checksum' keys must exactly match 'resources'"
+                )
+            native_packages = install.get("native-packages")
+            if native_packages is None:
+                msi = install.get("msi")
+                if not isinstance(msi, str) or not msi.strip().lower().endswith(".msi"):
+                    raise MetadataValidationError("'installation.msi' must name an MSI resource")
+                if msi not in data["resources"]:
+                    raise MetadataValidationError("'installation.msi' must be listed in 'resources'")
+            else:
+                if "msi" in install:
+                    raise MetadataValidationError(
+                        "Use either 'installation.msi' or 'installation.native-packages', not both"
+                    )
+                if not isinstance(native_packages, list) or not native_packages:
+                    raise MetadataValidationError(
+                        "'installation.native-packages' must be a non-empty list"
+                    )
+                owners = set()
+                for index, package in enumerate(native_packages):
+                    prefix = f"'installation.native-packages[{index}]'"
+                    if not isinstance(package, dict):
+                        raise MetadataValidationError(f"{prefix} must be an object")
+                    for field in ("owner", "msi", "version"):
+                        value = package.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            raise MetadataValidationError(
+                                f"{prefix}.{field} must be a non-empty string"
+                            )
+                    if package["owner"] in owners:
+                        raise MetadataValidationError(
+                            "'installation.native-packages' contains a duplicate owner"
+                        )
+                    owners.add(package["owner"])
+                    if not package["msi"].lower().endswith(".msi"):
+                        raise MetadataValidationError(f"{prefix}.msi must name an MSI resource")
+                    if package["msi"] not in data["resources"]:
+                        raise MetadataValidationError(
+                            f"{prefix}.msi must be listed in 'resources'"
+                        )
+            python_package = install.get("python")
+            if python_package is not None:
+                if not isinstance(python_package, dict):
+                    raise MetadataValidationError("'installation.python' must be an object")
+                for field in ("wheel", "distribution", "version", "import"):
+                    value = python_package.get(field)
+                    if not isinstance(value, str) or not value.strip():
+                        raise MetadataValidationError(
+                            f"'installation.python.{field}' must be a non-empty string"
+                        )
+                if not python_package["wheel"].lower().endswith(".whl"):
+                    raise MetadataValidationError(
+                        "'installation.python.wheel' must name a wheel resource"
+                    )
+                if python_package["wheel"] not in data["resources"]:
+                    raise MetadataValidationError(
+                        "'installation.python.wheel' must be listed in 'resources'"
+                    )
+                requires_python = python_package.get("requires-python")
+                if requires_python is not None and (
+                    not isinstance(requires_python, str)
+                    or not re.fullmatch(r"[0-9]+\.[0-9]+", requires_python)
+                ):
+                    raise MetadataValidationError(
+                        "'installation.python.requires-python' must be a major.minor version"
+                    )
+                python_arch = python_package.get("arch")
+                if python_arch is not None:
+                    try:
+                        normalize_host_arch(python_arch)
+                    except ValueError as exc:
+                        raise MetadataValidationError(
+                            f"Invalid 'installation.python.arch': {exc}"
+                        )
+            prerequisites = install.get("prerequisites")
+            if prerequisites is not None:
+                _validate_windows_prerequisites(prerequisites)
+            verification = install.get("verification")
+            if verification is not None:
+                if not isinstance(verification, dict):
+                    raise MetadataValidationError("'installation.verification' must be an object")
+                _validate_windows_path_spec(
+                    verification.get("command"), "installation.verification.command"
+                )
+            skills = install.get("skills")
+            if skills is not None:
+                if not isinstance(skills, list) or not skills:
+                    raise MetadataValidationError("'installation.skills' must be a non-empty list")
+                for index, skill in enumerate(skills):
+                    _validate_windows_path_spec(skill, f"installation.skills[{index}]")
+        else:
+            raise MetadataValidationError(f"Unsupported installation type: '{install_type}'")
 
     # Validate size (optional)
     if "size" in data:

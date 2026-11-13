@@ -925,6 +925,16 @@ def _show_neat_install_fallback(component: str) -> None:
     default=False,
     help="Force installation even if compatibility checks fail.",
 )
+@click.option(
+    "--python-executable",
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=str),
+    help="Install the wheel into this Python environment instead of the managed user environment.",
+)
+@click.option(
+    "--native-only",
+    is_flag=True,
+    help="Install only native packages; do not create a managed Python environment or install a wheel.",
+)
 @click.pass_context
 def install_cmd(
     ctx,
@@ -940,6 +950,8 @@ def install_cmd(
     install_dir,
     json_output,
     force,
+    python_executable,
+    native_only,
 ):
     """
     Install SiMa packages.
@@ -974,6 +986,13 @@ def install_cmd(
         sima-cli install samples/llima -v 1.7.0
     """
     internal = ctx.obj.get("internal", False)
+    if native_only and python_executable:
+        raise click.ClickException("--native-only cannot be combined with --python-executable.")
+    python_install_options = {}
+    if python_executable is not None:
+        python_install_options["python_executable"] = python_executable
+    if native_only:
+        python_install_options["native_only"] = True
 
     use_neat_resolver = use_neat or use_vulcan
     if use_neat_resolver:
@@ -992,6 +1011,7 @@ def install_cmd(
             force=force,
             json_output=json_output,
             command_name="sima-cli install",
+            **python_install_options,
         )
         return None
 
@@ -1006,6 +1026,7 @@ def install_cmd(
             install_dir=install_dir,
             force=force,
             command_name="sima-cli install",
+            **python_install_options,
         )
         return None
 
@@ -1022,6 +1043,7 @@ def install_cmd(
             install_dir=install_dir,
             force=force,
             command_name="sima-cli install",
+            **python_install_options,
         )
         return None
     
@@ -1062,6 +1084,7 @@ def install_cmd(
                 install_dir=install_dir,
                 force=force,
                 command_name="sima-cli install",
+                **python_install_options,
             ):
                 click.echo("✅ Installation complete.")
         except MetadataAccessForbidden:
@@ -1076,6 +1099,7 @@ def install_cmd(
                 force=force,
                 json_output=json_output,
                 command_name="sima-cli neat install",
+                **python_install_options,
             )
             return None
         except click.ClickException:

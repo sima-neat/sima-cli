@@ -85,6 +85,7 @@ pip install sima-cli
 | [Neat SDK 網路設定](sdk-networking/index.md) | Neat SDK，也稱為 Neat 開發環境，在 Docker 容器中執行。`sima-cli sdk setup` 會建立容器、準備主機工作區掛載點、在啟用時啟動 Insight，並發布主機瀏覽器和 DevKit 在開發期間使用的容器連接埠。 |
 | [將 SDK 網路變更還原。](sdk-networking/rollback.md) | 當您想要檢查或撤銷 SDK 設定或網路修復所做的 Linux 主機網路變更時，請使用「還原」功能。 |
 | [疑難排解：SDK 網路問題](sdk-networking/troubleshooting.md) | 當 SDK 容器、Insight UI、DevKit SSH、RTSP、WebRTC 視訊或工作區同步未如預期運作時，請使用網路診斷工具。 |
+| [在 Windows 安裝 Neat PCIe Host](windows-pcie-host.md) | 使用一個 `sima-cli` 命令安裝 Windows PCIe 主機版本。發行清單列出配對的 Scheduler 和 Core MSI 套件、順序、版本及檢查碼。`sima-cli` 先下載並驗證整組套件，再將各個原生套件交給 Windows Installer。 |
 
 ## 頂層指令
 
@@ -92,7 +93,7 @@ pip install sima-cli
 | --- | --- |
 | [`sima-cli appzoo`](../../../sima-cli/commands/sima-cli-appzoo.md) | 從 App Zoo 取得範例應用程式。 |
 | [`sima-cli bootimg`](../../../sima-cli/commands/sima-cli-bootimg.md) | 為 SiMa DevKit 準備一個可開機的映像檔。 |
-| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | 在區域網路中搜尋附近的 SiMa.ai 裝置。 |
+| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | 探索並管理用於 MPK 部署和應用程式生命週期管理的裝置，同時支援 PCIe 與 Ethernet 部署方式。僅適用於主機端。 |
 | [`sima-cli download`](../../../sima-cli/commands/sima-cli-download.md) | 從指定的網址下載檔案或整個資料夾。 |
 | [`sima-cli install`](../../../sima-cli/commands/sima-cli-install.md) | 安裝 SiMa 套件。 |
 | [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md) | 透過 SiMa 開發者入口網站進行驗證。 |

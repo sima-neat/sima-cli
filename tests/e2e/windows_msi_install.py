@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import hashlib
+import argparse
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -26,6 +28,10 @@ def sha256(path: Path) -> str:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--work-directory", type=Path,
+                        help="Fresh directory retained for CI diagnostics")
+    args = parser.parse_args()
     if os.name != "nt":
         raise SystemExit("this end-to-end test requires native Windows")
     cmake = shutil.which("cmake.exe")
@@ -43,7 +49,11 @@ def main() -> int:
     upgrade_guid = str(uuid.uuid5(namespace, "sima-cli-msi-e2e-upgrade")).upper()
     product_guid = str(uuid.uuid5(namespace, f"sima-cli-msi-e2e-{run_id}")).upper()
 
-    with tempfile.TemporaryDirectory(prefix="sima-cli-msi-e2e-") as directory:
+    if args.work_directory is not None:
+        args.work_directory.mkdir(parents=True, exist_ok=False)
+    workspace = (nullcontext(args.work_directory) if args.work_directory is not None
+                 else tempfile.TemporaryDirectory(prefix="sima-cli-msi-e2e-"))
+    with workspace as directory:
         root = Path(directory)
         source = root / "source"
         build = root / "build"
@@ -53,7 +63,7 @@ def main() -> int:
         (source / "payload.txt").write_text("sima-cli Windows MSI e2e\n", encoding="utf-8")
         (source / "CMakeLists.txt").write_text(
             f"""cmake_minimum_required(VERSION 3.20)
-project(SimaCliMsiE2E VERSION 1.0.0 LANGUAGES NONE)
+project(SimaCliMsiE2E VERSION 1.0.0 LANGUAGES C)
 install(FILES payload.txt DESTINATION share COMPONENT Runtime)
 set(CPACK_GENERATOR "WIX")
 set(CPACK_PACKAGE_NAME "sima-cli-msi-e2e")
@@ -69,7 +79,7 @@ include(CPack)
 """,
             encoding="utf-8",
         )
-        run([cmake, "-S", source, "-B", build])
+        run([cmake, "-S", source, "-B", build, "-A", "x64"])
         run([cpack, "--config", build / "CPackConfig.cmake", "-G", "WIX", "-B", dist])
         packages = list(dist.glob("*.msi"))
         if len(packages) != 1:
@@ -118,6 +128,11 @@ include(CPack)
                         f"see {uninstall_log}")
         if install_root.exists():
             raise SystemExit(f"disposable MSI left its installation root: {install_root}")
+        (root / "result.json").write_text(json.dumps({
+            "status": "PASS", "msi_sha256": sha256(msi),
+            "product_code": product_guid, "install_root": str(install_root),
+            "first_install": "PASS", "repeat_install": "PASS", "cleanup": "PASS",
+        }, indent=2) + "\n", encoding="utf-8")
 
     print("WINDOWS_MSI_INSTALL_E2E_PASS")
     return 0

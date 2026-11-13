@@ -261,6 +261,48 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  windows-msi:
+    name: Test built CLI wheel with Windows Installer
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: sima-cli-dist
+          path: candidate-dist
+      - name: Install the exact built wheel
+        shell: pwsh
+        env:
+          EXPECTED_CLI_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $wheels = @(Get-ChildItem -LiteralPath candidate-dist -Filter 'sima_cli-*.whl' -File)
+          if ($wheels.Count -ne 1) { throw "Expected exactly one built CLI wheel" }
+          python -m pip install $wheels[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "Candidate CLI installation failed" }
+          python -I -c "import importlib.metadata as m, os; assert m.version('sima-cli') == os.environ['EXPECTED_CLI_VERSION']"
+          if ($LASTEXITCODE -ne 0) { throw "Installed CLI version differs from the build artifact" }
+      - name: Exercise declarative MSI installation on native Windows
+        shell: pwsh
+        run: python -I tests/e2e/windows_msi_install.py --work-directory "$env:RUNNER_TEMP\windows-msi-e2e"
+      - name: Retain MSI build and install diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-msi-e2e
+          path: ${{ runner.temp }}/windows-msi-e2e
+          if-no-files-found: warn
+          retention-days: 7
+
   compatibility-test:
     name: Compatibility Python ${{ matrix.python-version }}
     # Python 3.8/3.9 builds are unavailable on Ubuntu 26.04 (ubuntu-latest).
@@ -347,6 +389,7 @@ jobs:
       - resolve-vulcan-config
       - build
       - compatibility-test
+      - windows-msi
     uses: sima-neat/.github/.github/workflows/vulcan-publish-artifacts.yml@main
     with:
       aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
@@ -412,11 +455,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .
           sima-cli --version
-
-      - name: Exercise declarative MSI installation on native Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: python tests/e2e/windows_msi_install.py
 
       - name: Test repo installer script
         if: runner.os != 'Windows'

@@ -354,7 +354,7 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
     server.is_running.wait.return_value = True
     manager = MagicMock()
 
-    def interact(client_manager, configuration=None):
+    def interact(client_manager, configuration=None, *, auto_confirm_reboot=False):
         assert client_manager is manager
         assert configuration is not None
         server.stop.assert_not_called()

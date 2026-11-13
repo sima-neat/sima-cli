@@ -313,7 +313,8 @@ def test_transfer_progress_survives_tftp_block_number_rollover(tmp_path):
 
 
 @pytest.mark.parametrize('progress_before_identity', [False, True])
-def test_registered_ip_change_preserves_download_progress(progress_before_identity):
+@pytest.mark.parametrize('new_interface', ['eth0', 'eth1'])
+def test_registered_ip_change_preserves_download_progress(progress_before_identity, new_interface):
     manager = netboot.ClientManager()
     manager.BOOT_GRACE = 0
     manager.CONNECT_TIMEOUT = 5
@@ -323,7 +324,7 @@ def test_registered_ip_change_preserves_download_progress(progress_before_identi
     now = [0]
 
     def identity(ip):
-        return dict(ip=ip, mac=mac, iface='eth0')
+        return dict(ip=ip, mac=mac, iface='eth0' if ip == IP else new_interface)
 
     def wait(seconds):
         if not seconds:

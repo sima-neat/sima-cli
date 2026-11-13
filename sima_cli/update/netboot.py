@@ -873,10 +873,7 @@ class ClientManager:
                 for key, other in list(self.clients.items()):
                     if key != ip and other.get('mac') == identity['mac']:
                         # Preserve one identity even if the host sees it on two interfaces.
-                        if (other.get('state') == 'Booting'
-                                and not other.get('flash_claimed')
-                                and (not other.get('iface') or not identity['iface']
-                                     or other['iface'] == identity['iface'])):
+                        if other.get('state') == 'Booting' and not other.get('flash_claimed'):
                             # TFTP can move to the recovery address before SSH
                             # exists. Retain its progress and retry budget too.
                             other['current_ip'] = ip

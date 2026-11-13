@@ -85,6 +85,7 @@ pip install sima-cli
 | [Neat SDK 네트워크 설정](sdk-networking/index.md) | Neat SDK는 Neat 개발 환경이라고도 하며, Docker 컨테이너 내에서 실행됩니다. `sima-cli sdk setup`은 컨테이너를 생성하고, 호스트 작업 공간 마운트를 준비하며, 활성화된 경우 Insight를 시작하고, 호스트 브라우저와 DevKit가 개발 중에 사용하는 컨테이너 포트를 게시합니다. |
 | [SDK 네트워크 변경 사항 되돌리기](sdk-networking/rollback.md) | SDK 설정 또는 네트워크 복구를 통해 이루어진 Linux 호스트 네트워킹 변경 사항을 검사하거나 되돌리려면 롤백을 사용하세요. |
 | [SDK 네트워킹 문제 해결](sdk-networking/troubleshooting.md) | SDK 컨테이너, Insight UI, DevKit SSH, RTSP, WebRTC 비디오 또는 작업 공간 동기화가 예상대로 작동하지 않을 때 네트워크 진단 도구를 사용하십시오. |
+| [Windows에 Neat PCIe Host 설치](windows-pcie-host.md) | `sima-cli` 명령 하나로 Windows PCIe 호스트 릴리스를 설치합니다. 릴리스 매니페스트는 호환되는 Scheduler 및 Core MSI 패키지, 순서, 버전, 체크섬을 지정합니다. `sima-cli`는 전체를 다운로드하고 검증한 뒤 각 네이티브 패키지를 Windows Installer에 전달합니다. |
 
 ## 최상위 명령어
 
@@ -92,7 +93,7 @@ pip install sima-cli
 | --- | --- |
 | [`sima-cli appzoo`](../../../sima-cli/commands/sima-cli-appzoo.md) | App Zoo에서 샘플 앱에 접속하세요. |
 | [`sima-cli bootimg`](../../../sima-cli/commands/sima-cli-bootimg.md) | SiMa DevKit를 부팅할 수 있는 이미지를 준비합니다. |
-| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | 로컬 네트워크에서 주변의 SiMa.ai 장치를 찾아보세요. |
+| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | MPK 배포와 앱 수명 주기 관리를 위한 장치를 검색하고 관리합니다. PCIe 및 Ethernet 배포 방식을 모두 지원하며 호스트 측에서만 사용합니다. |
 | [`sima-cli download`](../../../sima-cli/commands/sima-cli-download.md) | 지정된 URL에서 파일 또는 전체 폴더를 다운로드합니다. |
 | [`sima-cli install`](../../../sima-cli/commands/sima-cli-install.md) | SiMa 패키지를 설치합니다. |
 | [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md) | SiMa 개발자 포털을 통해 인증하세요. |

@@ -85,6 +85,7 @@ pip install sima-cli
 | [Neat SDK Налаштування мережі.](sdk-networking/index.md) | Neat SDK, також відомий як Neat Development Environment, працює всередині контейнера Docker. `sima-cli sdk setup` створює контейнер, готує точку монтування робочого простору хоста, запускає Insight, якщо його активовано, і публікує порти контейнера, які використовуються браузером хоста та DevKit під час розробки. |
 | [Відмініть зміни мережевих налаштувань SDK.](sdk-networking/rollback.md) | Використовуйте функцію відкату, коли потрібно перевірити або скасувати зміни мережевих налаштувань хоста Linux, внесені під час налаштування SDK або відновлення мережі. |
 | [Вирішення проблем із мережею SDK.](sdk-networking/troubleshooting.md) | Використовуйте мережевого лікаря, коли контейнер SDK, Insight інтерфейс користувача, DevKit SSH, RTSP, відео WebRTC або синхронізація робочого простору працюють не так, як очікувалося. |
+| [Установлення Neat PCIe Host у Windows](windows-pcie-host.md) | Установіть випуск хоста Windows PCIe однією командою `sima-cli`. Маніфест визначає узгоджені MSI-пакети Scheduler і Core, порядок, версії та контрольні суми. `sima-cli` завантажує й перевіряє весь комплект, перш ніж передати кожен нативний пакет до Windows Installer. |
 
 ## Команди вищого рівня.
 
@@ -92,7 +93,7 @@ pip install sima-cli
 | --- | --- |
 | [`sima-cli appzoo`](../../../sima-cli/commands/sima-cli-appzoo.md) | Отримайте доступ до прикладів програм із App Zoo. |
 | [`sima-cli bootimg`](../../../sima-cli/commands/sima-cli-bootimg.md) | Підготуйте завантажувальний образ для SiMa DevKit. |
-| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | Знайдіть пристрої, розташовані поблизу, в локальній мережі SiMa.ai. |
+| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | Знаходьте й керуйте пристроями для розгортання MPK і керування життєвим циклом застосунків. Підтримуються розгортання через PCIe та Ethernet. Лише на хості. |
 | [`sima-cli download`](../../../sima-cli/commands/sima-cli-download.md) | Завантажте файл або цілу папку за вказаним URL-адресою. |
 | [`sima-cli install`](../../../sima-cli/commands/sima-cli-install.md) | Встановіть пакети SiMa. |
 | [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md) | Авторизуйтеся на порталі для розробників SiMa. |

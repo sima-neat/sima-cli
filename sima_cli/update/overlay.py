@@ -79,6 +79,15 @@ def collect_overlay():
             try:
                 current = packages('/var/lib/dpkg/status')
                 original = packages(os.path.join(baseline, 'var/lib/dpkg/status'))
+                # Official Palette and Secure Palette share a version and build
+                # number, but install mutually exclusive tRoot packages.
+                flavors = {'troot-modalix:all': 'palette',
+                           'troot-modalix-secure:all': 'securepalette'}
+                report['package_flavors'] = {}
+                for role, inventory in (('image', original), ('metadata', current)):
+                    matching = flavors.keys() & inventory.keys()
+                    if len(matching) == 1:
+                        report['package_flavors'][role] = flavors[matching.pop()]
                 report['packages'] = {
                     'additional': ['%s %s' % (k, current[k]) for k in sorted(current.keys() - original.keys())],
                     'changed': ['%s %s -> %s' % (k, original[k], current[k]) for k in sorted(current.keys() & original.keys()) if current[k] != original[k]],
@@ -222,7 +231,18 @@ def render_overlay(report, state=None, details=False, console=None):
     console.print(Panel(Text(heading), title='System customizations', width=72))
     packages = report.get('packages', {})
     package_builds = report.get('package_builds', {})
-    if package_builds and package_builds['image'] != package_builds['metadata']:
+    package_flavors = report.get('package_flavors', {})
+    image_flavor = package_flavors.get('image')
+    metadata_flavor = package_flavors.get('metadata')
+    flavor_mismatch = image_flavor and metadata_flavor and image_flavor != metadata_flavor
+    if flavor_mismatch:
+        console.print(Panel(
+            Text(f'Running image flavor: {image_flavor}\n'
+                 f'Overlay package flavor: {metadata_flavor}\n\n'
+                 'The retained package database describes a different image flavor. '
+                 'APT and dpkg can report packages whose files are missing.'),
+            title='Package metadata mismatch', style='yellow', border_style='yellow'))
+    elif package_builds and package_builds['image'] != package_builds['metadata']:
         console.print(Panel(
             Text('Image package identity: %s\n'
                  'Overlay package identity: %s\n\n'
@@ -311,15 +331,16 @@ def render_overlay(report, state=None, details=False, console=None):
     if next_slot in ('A', 'B') and next_slot != state.get('running slot'):
         conclusion += ('\nRebooting now will use slot %s (%s) with the current shared overlay.' %
                        (next_slot, next_version))
-    if package_builds and package_builds['image'] == package_builds['metadata']:
+    if not flavor_mismatch and package_builds and package_builds['image'] == package_builds['metadata']:
         update_guidance = (
             'Package metadata matches the running image.\n\n'
-            'Whether it is safe to keep the overlay depends on the build selected for the update.'
+            'Whether it is safe to keep the overlay depends on the image selected for the update.'
         )
-    elif package_builds:
+    elif flavor_mismatch or package_builds:
         update_guidance = (
             'Package metadata does not match the running image.\n\n'
-            'The update will offer to save an inventory and reset the overlay.\n\n'
+            'If the selected image differs from the retained metadata, the update will '
+            'offer to save an inventory and reset the overlay.\n\n'
             'Resetting removes local changes; custom software and settings must be reinstalled.'
         )
     else:

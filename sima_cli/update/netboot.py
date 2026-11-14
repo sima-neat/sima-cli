@@ -808,6 +808,7 @@ class ClientManager:
     BOOT_GRACE = 60
     CONNECT_TIMEOUT = 180
     POLL_INTERVAL = 3
+    MAX_TRANSFER_ATTEMPTS = 3
 
     def __init__(self, configuration=None):
         self.clients = {}  # keyed by original TFTP address; current_ip may change
@@ -829,6 +830,8 @@ class ClientManager:
                 'filename': filename, 'timestamp': start_time, 'board_info': None,
                 'original_ip': ip, 'current_ip': ip, 'mac': None, 'iface': None,
                 'ip_history': [ip], 'flash_claimed': False,
+                'last_transfer_progress': None,
+                'transfer_attempts': {},
             }
             click.echo(f"📥 New client connected: {ip}")
             if self.shutdown_event.is_set():
@@ -836,6 +839,24 @@ class ClientManager:
             thread = threading.Thread(target=self.monitor_client, args=(ip, start_time), daemon=True)
             self.monitor_threads.append(thread)
             thread.start()
+
+    def record_transfer_progress(self, ip, filename, transfer_id):
+        """Record forward progress, excluding duplicate or ignored TFTP packets."""
+        with self.lock:
+            # Historical TFTP addresses can be reassigned after DHCP changes.
+            # Only the unique current owner may receive this progress update.
+            matches = [info for original, info in self.clients.items()
+                       if info.get('current_ip', original) == ip]
+            if len(matches) == 1:
+                info = matches[0]
+                attempts = info.setdefault('transfer_attempts', {}).setdefault(filename, {})
+                # Packet retransmits stay in one session. Reboot loops create
+                # new sessions, which must not renew the boot window forever.
+                if transfer_id not in attempts and len(attempts) >= self.MAX_TRANSFER_ATTEMPTS:
+                    return
+                progress = time.monotonic()
+                attempts[transfer_id] = progress
+                info['last_transfer_progress'] = progress
 
     def _capture_identity(self, ip):
         identity = identity_for_ip(ip)
@@ -853,6 +874,25 @@ class ClientManager:
                 for key, other in list(self.clients.items()):
                     if key != ip and other.get('mac') == identity['mac']:
                         # Preserve one identity even if the host sees it on two interfaces.
+                        if other.get('state') == 'Booting' and not other.get('flash_claimed'):
+                            # TFTP can move to the recovery address before SSH
+                            # exists. Retain its progress and retry budget too.
+                            other['current_ip'] = ip
+                            other['iface'] = identity['iface'] or other.get('iface')
+                            history = other.setdefault('ip_history', [key])
+                            if ip not in history:
+                                history.append(ip)
+                            for filename, attempts in info.get('transfer_attempts', {}).items():
+                                retained = other.setdefault('transfer_attempts', {}).setdefault(filename, {})
+                                for transfer_id, progress in attempts.items():
+                                    if (transfer_id in retained
+                                            or len(retained) < self.MAX_TRANSFER_ATTEMPTS):
+                                        retained[transfer_id] = max(retained.get(transfer_id, progress), progress)
+                                        previous = other.get('last_transfer_progress')
+                                        other['last_transfer_progress'] = (
+                                            progress if previous is None else max(previous, progress)
+                                        )
+                        info['superseded'] = True
                         del self.clients[ip]
                         return False
                 info.update(mac=identity['mac'], iface=identity['iface'])
@@ -891,8 +931,16 @@ class ClientManager:
             if self.shutdown_event.wait(max(0, self.BOOT_GRACE - (time.time() - start_time))):
                 return
             deadline = time.monotonic() + self.CONNECT_TIMEOUT
-            while (not self.shutdown_event.is_set() and not info.get('superseded')
-                   and time.monotonic() < deadline):
+            while not self.shutdown_event.is_set() and not info.get('superseded'):
+                # A large initramfs can take longer than the SSH budget to
+                # download. Give Linux its boot window after the last TFTP
+                # progress, while still expiring a stalled/finished transfer.
+                with self.lock:
+                    progress = info.get('last_transfer_progress')
+                if progress is not None:
+                    deadline = max(deadline, progress + self.BOOT_GRACE + self.CONNECT_TIMEOUT)
+                if time.monotonic() >= deadline:
+                    break
                 candidates = self._candidates(info, min(1, max(0, deadline - time.monotonic())))
                 for candidate in candidates:
                     if self.shutdown_event.is_set():
@@ -1090,8 +1138,16 @@ class InteractiveTftpServer(TftpServer):
                             self.upload_open,
                             retries=retries
                         )
+                        self.sessions[key].progress_id = object()
+                        self.sessions[key].progress_filename = None
                         try:
                             self.sessions[key].start(buffer)
+                            if filename is not None:
+                                # Use the opened file so path aliases share one
+                                # retry budget, including absolute TFTP paths.
+                                self.sessions[key].progress_filename = os.path.normcase(os.path.realpath(
+                                    self.sessions[key].fileobj.name,
+                                ))
                         except TftpTimeoutExpectACK:
                             self.sessions[key].timeout_expectACK = True
                         except TftpException as err:
@@ -1106,9 +1162,31 @@ class InteractiveTftpServer(TftpServer):
                     for key in self.sessions:
                         if readysock == self.sessions[key].sock:
                             log.debug("Matched input to session key %s" % key)
-                            self.sessions[key].timeout_expectACK = False
                             try:
-                                self.sessions[key].cycle()
+                                session = self.sessions[key]
+                                # tftpy 0.8.6 warns about a mismatched peer but
+                                # still dispatches its packet. Discard it before
+                                # cycle() can mutate state or refresh any timer.
+                                _, peer = session.sock.recvfrom(MAX_BLKSIZE, socket.MSG_PEEK)
+                                if peer != (session.address, session.tidport or session.port):
+                                    session.sock.recvfrom(MAX_BLKSIZE)
+                                    log.warning('Discarding TFTP datagram from unexpected peer %s:%s', *peer)
+                                    break
+                                session.timeout_expectACK = False
+                                previous_block = session.next_block
+                                previous_bytes = session.metrics.bytes
+                                session.cycle()
+                                # tftpy also accepts duplicate ACKs and ignores
+                                # unsupported packets. Only a new block, more
+                                # data, or a successful final ACK proves progress.
+                                # Compare block inequality to allow 16-bit wrap.
+                                if (session.progress_filename is not None
+                                        and (session.next_block != previous_block
+                                             or session.metrics.bytes > previous_bytes
+                                             or session.state is None)):
+                                    self.client_manager.record_transfer_progress(
+                                        session.host, session.progress_filename, session.progress_id,
+                                    )
                                 if self.sessions[key].state is None:
                                     log.info("Successful transfer.")
                                     deletion_list.append(key)
@@ -1360,6 +1438,13 @@ def auto_flash(client_manager, selected_ip, timeout=900, configuration=None):
         targets = [(ip, info) for ip, info in records
                    if info.get('original_ip', ip) == original_ip
                    or (expected and info.get('mac') == expected)]
+        # The overall autoflash limit must also allow a healthy, slow TFTP
+        # download to finish. No traffic still expires at the original limit.
+        for _, info in targets:
+            progress = info.get('last_transfer_progress')
+            if progress is not None:
+                deadline = max(deadline, progress + client_manager.BOOT_GRACE
+                               + client_manager.CONNECT_TIMEOUT)
         connected_targets = [(ip, info) for ip, info in targets if info.get('state') == 'Connected']
         connected = len(connected_targets) == 1
         if connected:

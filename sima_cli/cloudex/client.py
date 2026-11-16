@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -23,6 +24,8 @@ MACOS_TUNNEL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/
 MACOS_WIREGUARD_INSTALL = "Install WireGuard CLI support with: brew install wireguard-tools"
 CONNECTION_SETUP_TIMEOUT_SECONDS = 60
 DIAGNOSTIC_LOG_LINES = 50
+ICE_SELECTION_TIMING = re.compile(r"ICE diagnostics phase=selected elapsed_ms=([0-9]{1,6}) pairs=[0-9]{1,6}")
+MAX_DIAGNOSTIC_TIMING_MS = 900_000
 SAFE_FORWARDER_STAGES = {
     "session configuration accepted",
     "joined authenticated signaling session",
@@ -332,12 +335,18 @@ def _safe_last_stage(log_path):
     return stages[-1] if stages else ""
 
 
-def _submit_diagnostics(api, session, store, reason, report_diagnostics=None):
+def _submit_diagnostics(api, session, store, reason, report_diagnostics=None, *, setup_ms=None):
     sid = session.get("remote_session_id")
     if session.get("diagnostics") is not True or not _valid_session_id(sid):
         return
+    supports_timing = session.get("diagnostics_version") == 2
+    if reason == "direct" and not supports_timing:
+        return
     log_path = store.runtime_paths(session["session_id"])[3]
     stages = []
+    timing = {}
+    if supports_timing and setup_ms is not None and 0 <= setup_ms <= MAX_DIAGNOSTIC_TIMING_MS:
+        timing["setup_ms"] = setup_ms
     try:
         limit = 64 * 1024
         fd = os.open(str(log_path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
@@ -352,15 +361,20 @@ def _submit_diagnostics(api, session, store, reason, report_diagnostics=None):
                     event = line[len(prefix):].strip() if line.startswith(prefix) else line.strip()
                     if event in UPLOAD_FORWARDER_STAGES and (not stages or stages[-1] != event):
                         stages.append(event)
+                    elif supports_timing:
+                        selection = ICE_SELECTION_TIMING.fullmatch(event)
+                        if selection and int(selection[1]) <= MAX_DIAGNOSTIC_TIMING_MS:
+                            timing["ice_selection_ms"] = int(selection[1])
     except OSError:
         pass
     try:
         stages = stages[-32:]
+        extra = {"timing": timing} if timing else {}
         if report_diagnostics is not None:
-            report_diagnostics(api.allocation_id, sid, reason, stages)
+            report_diagnostics(api.allocation_id, sid, reason, stages, **extra)
         else:
             api.call("PUT", "/v1/p2p/ice-sessions/" + sid + "/diagnostics",
-                     {"reason": reason, "stages": stages}, deadline=time.time() + 2)
+                     {"reason": reason, "stages": stages, **extra}, deadline=time.time() + 2)
     except CloudExError:
         # Evidence upload must never prevent connecting or releasing a lease.
         pass
@@ -664,6 +678,7 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
         now = time.time()
         if now >= connection_deadline:
             break
+        started = time.monotonic()
         attempt_deadline = now + (connection_deadline - now) / (len(choices) - number + 1)
         session_id = uuid.uuid4().hex
         session = {
@@ -692,6 +707,8 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
             session["remote_session_id"] = remote_session_id
             if allocated.get("diagnostics") is True:
                 session["diagnostics"] = True
+                if allocated.get("diagnostics_version") == 2:
+                    session["diagnostics_version"] = 2
             store.write_recovery(session)
             try:
                 expires_at = float(allocated["expires_at"])
@@ -702,6 +719,7 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
             report_path.touch(mode=0o600, exist_ok=False)
             config = dict(allocated)
             config.pop("diagnostics", None)
+            config.pop("diagnostics_version", None)
             config["transport"] = selected_transport
             config_path.write_text(json.dumps(config, separators=(",", ":")), encoding="utf-8")
             config_path.chmod(0o600)
@@ -769,8 +787,9 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
                 raise
             progress.update("Direct path timed out; retrying with fresh ICE candidates")
         else:
-            if session["ice_path"] == "relay":
-                _submit_diagnostics(api, session, store, "relay", report_diagnostics)
+            if session["ice_path"] in {"direct", "relay"}:
+                setup_ms = round((time.monotonic() - started) * 1000)
+                _submit_diagnostics(api, session, store, session["ice_path"], report_diagnostics, setup_ms=setup_ms)
             return session
     raise last_error or CloudExError("CloudEx connection failed")
 

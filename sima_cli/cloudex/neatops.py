@@ -229,13 +229,16 @@ class NeatOps:
         self.on_login_required(self)
         return self.access_token()
 
-    def report_cloudex_diagnostics(self, allocation_id, session_id, reason, stages):
+    def report_cloudex_diagnostics(self, allocation_id, session_id, reason, stages, *, timing=None):
         token = self.access_token(allow_refresh=False)
         config = self.configuration()
         path = f"/devkits/allocations/{allocation_id}/diagnostics"
+        report = {"session_id": session_id, "reason": reason, "stages": stages}
+        if timing:
+            report["timing"] = timing
         status, _ = _json_request("POST", config["apiBase"] + path, timeout=3,
                                   headers={"Authorization": "Bearer " + token},
-                                  json={"session_id": session_id, "reason": reason, "stages": stages})
+                                  json=report)
         if status != 202:
             raise CloudExError("NeatOps did not accept CloudEx diagnostics")
 

@@ -178,6 +178,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     allocated = {
         "session_id": "d" * 32,
         "diagnostics": True,
+        "diagnostics_version": 2 if path == "direct" else 1,
         "expires_at": "9999999999",
         "target_id": "ll2",
         "wireguard": {"remote_address": "10.252.1.2/32"},
@@ -202,10 +203,11 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     upload = Mock(side_effect=client.CloudExError("Diagnostics unavailable"))
     result = client.connect(allocation_profile(), store, Mock(), attempts=1, transport="p2p", report_diagnostics=upload)
     cleanup.assert_not_called()
-    if path == "relay":
-        upload.assert_called_once_with(api.allocation_id, allocated["session_id"], "relay", [])
+    assert upload.call_args.args == (api.allocation_id, allocated["session_id"], path, [])
+    if path == "direct":
+        assert upload.call_args.kwargs["timing"]["setup_ms"] >= 0
     else:
-        upload.assert_not_called()
+        assert upload.call_args.kwargs == {}
 
     if bootstrap:
         assert brew.call_args.args[0] == ["/opt/homebrew/bin/brew", "install", "wireguard-tools", "wireguard-go"]
@@ -792,6 +794,7 @@ def test_cloudex_diagnostics_posts_only_safe_stages_for_the_remote_session(tmp_p
     _, _, _, log = store.runtime_paths(local_id)
     log.parent.mkdir(parents=True)
     log.write_text("kerrigan-p2p-forwarder: ICE connection state Failed\n"
+                   "kerrigan-p2p-forwarder: ICE diagnostics phase=selected elapsed_ms=1148 pairs=6\n"
                    "kerrigan-p2p-forwarder: signaling token=fixture-secret\n")
     calls = []
 
@@ -807,6 +810,14 @@ def test_cloudex_diagnostics_posts_only_safe_stages_for_the_remote_session(tmp_p
     client._submit_diagnostics(API(), session, store, "failed")
     assert calls == [("PUT", f"/v1/p2p/ice-sessions/{sid}/diagnostics",
                       {"reason": "failed", "stages": ["ICE connection state Failed"]})]
+    client._submit_diagnostics(API(), session, store, "direct", setup_ms=1520)
+    assert len(calls) == 1
+    session["diagnostics_version"] = 2
+    client._submit_diagnostics(API(), session, store, "direct", setup_ms=1520)
+    assert calls[-1] == ("PUT", f"/v1/p2p/ice-sessions/{sid}/diagnostics", {
+        "reason": "direct", "stages": ["ICE connection state Failed"],
+        "timing": {"setup_ms": 1520, "ice_selection_ms": 1148},
+    })
 
 
 def test_failed_connection_reports_after_attempting_cleanup(tmp_path, monkeypatch):

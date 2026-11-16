@@ -585,15 +585,19 @@ def test_root_external_login_uses_portal_without_internal_initialization(monkeyp
 
 
 
-def test_diagnostics_report_uses_cached_neatops_token_without_reauthentication(api, monkeypatch):
+@pytest.mark.parametrize("reason,timing", [("failed", None), ("direct", {"setup_ms": 1420})])
+def test_diagnostics_report_uses_cached_neatops_token_without_reauthentication(api, monkeypatch, reason, timing):
     api._save(tokens())
     request = Mock(return_value=(202, {"status": "accepted"}))
     monkeypatch.setattr(neatops, "_json_request", request)
     allocation, session = "a" * 32, "b" * 32
-    stages = ["ICE connection state Failed"]
-    api.report_cloudex_diagnostics(allocation, session, "failed", stages)
+    stages = ["ICE connection state Failed"] if reason == "failed" else ["WireGuard handshake confirmed"]
+    api.report_cloudex_diagnostics(allocation, session, reason, stages, timing=timing)
+    expected = {"session_id": session, "reason": reason, "stages": stages}
+    if timing:
+        expected["timing"] = timing
     request.assert_called_once_with(
         "POST", api.config["apiBase"] + f"/devkits/allocations/{allocation}/diagnostics",
         timeout=3, headers={"Authorization": "Bearer private-access"},
-        json={"session_id": session, "reason": "failed", "stages": stages},
+        json=expected,
     )

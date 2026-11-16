@@ -73,8 +73,11 @@ def network_settings(ssh, devkit, server_ip):
                                    'U-Boot was not changed.') from exc
 
 
-def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None):
-    """Return whether the user confirmed and the DevKit reboot was scheduled."""
+def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None, *, auto_confirm=False):
+    """Return whether the user confirmed and the DevKit reboot was scheduled.
+
+    ``auto_confirm`` (the global ``-y``) answers the setup prompt with yes.
+    """
     try:
         ssh = init_ssh_session(devkit)
     except (OSError, paramiko.SSHException) as exc:
@@ -108,8 +111,11 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
             message, title='Reboot DevKit into network boot',
             border_style='yellow', width=100, expand=False,
         ))
-        if not click.confirm('Set up network boot, automatically flash this DevKit, and reboot it from eMMC?' if autoflash
-                             else 'Set up network boot and reboot this DevKit?', default=False):
+        question = ('Set up network boot, automatically flash this DevKit, and reboot it from eMMC?' if autoflash
+                    else 'Set up network boot and reboot this DevKit?')
+        if auto_confirm:
+            click.echo(f'{question} [auto-confirmed by -y]')
+        elif not click.confirm(question, default=False):
             return False
         if configuration is not None:
             configuration.hardware_address = network.get('hardware_address')

@@ -92,6 +92,21 @@ def test_confirmation_precedes_writes_and_reboot(capsys):
     assert 'persist across reboots' in capsys.readouterr().out
 
 
+def test_auto_confirm_sets_up_netboot_without_prompting(capsys):
+    events = []
+    configuration = device.NetbootConfiguration('192.0.2.1')
+    with patch.object(device, 'init_ssh_session'), \
+            patch.object(device, '_checked', side_effect=lambda ssh, cmd: events.append(cmd) or ''), \
+            patch.object(click, 'confirm', side_effect=AssertionError('prompted despite -y')):
+        assert device.configure_and_reboot(
+            '192.0.2.1', '192.0.2.10', autoflash=True, configuration=configuration, auto_confirm=True
+        ) is True
+    assert events[-1] == 'sudo systemd-run --on-active=3s /sbin/reboot'
+    assert configuration.netboot_configured is True
+    assert ('Set up network boot, automatically flash this DevKit, and reboot it from eMMC? '
+            '[auto-confirmed by -y]') in capsys.readouterr().out
+
+
 @pytest.mark.parametrize('configured,flashed,warns', [
     (False, False, False),
     (True, False, True),
@@ -396,6 +411,58 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
         flash.assert_not_called()
     server.stop.assert_called_once_with(now=True)
     manager.shutdown.assert_called_once()
+
+
+def test_yes_flag_runs_setup_reboot_and_autoflash_without_reading_stdin(tmp_path):
+    """sima-cli -y bootimg --netboot --devkit-ip <ip> --autoflash must not stop at any prompt (#353)."""
+    boot = tmp_path / 'netboot.scr.uimg'
+    boot.write_bytes(b'boot')
+    server = MagicMock()
+    server.is_running.wait.return_value = True
+    with patch.object(netboot, 'get_environment_type', return_value=('host', 'linux')), \
+            patch.object(netboot, 'download_image', return_value=[str(boot)]), \
+            patch.object(netboot, 'get_local_ip_candidates', return_value=[('eth0', '192.0.2.10')]), \
+            patch.object(netboot, 'InteractiveTftpServer', return_value=server), \
+            patch.object(netboot, 'ClientManager', return_value=MagicMock()), \
+            patch.object(netboot.threading, 'Thread') as thread, \
+            patch.object(netboot, 'run_cli') as cli, \
+            patch.object(netboot, 'auto_flash') as flash, \
+            patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
+            patch.object(device, 'server_address', return_value='192.0.2.10'), \
+            patch.object(device, 'init_ssh_session'), \
+            patch.object(device, '_checked', return_value='') as command, \
+            patch.object(click, 'confirm', side_effect=AssertionError('prompted despite -y')):
+        thread.return_value.is_alive.return_value = False
+        netboot.setup_netboot('3.0', 'modalix', autoflash=True, devkit='192.0.2.1', auto_confirm_reboot=True)
+    assert any('systemd-run' in call.args[1] for call in command.call_args_list)
+    flash.assert_called_once()
+    cli.assert_not_called()
+
+
+def test_yes_flag_still_asks_before_setting_up_a_discovered_devkit(tmp_path):
+    """-y without --devkit-ip must not reflash whichever DevKit discovery picked (#353)."""
+    boot = tmp_path / 'netboot.scr.uimg'
+    boot.write_bytes(b'boot')
+    server = MagicMock()
+    server.is_running.wait.return_value = True
+    with patch.object(netboot, 'get_environment_type', return_value=('host', 'linux')), \
+            patch.object(netboot, 'download_image', return_value=[str(boot)]), \
+            patch.object(netboot, 'get_local_ip_candidates', return_value=[('eth0', '192.0.2.10')]), \
+            patch.object(netboot, 'InteractiveTftpServer', return_value=server), \
+            patch.object(netboot, 'ClientManager', return_value=MagicMock()), \
+            patch.object(netboot.threading, 'Thread') as thread, \
+            patch.object(netboot, 'run_cli'), \
+            patch.object(netboot, 'auto_flash') as flash, \
+            patch.object(device, 'resolve_device', return_value='192.0.2.1'), \
+            patch.object(device, 'server_address', return_value='192.0.2.10'), \
+            patch.object(device, 'init_ssh_session'), \
+            patch.object(device, '_checked', return_value='') as command, \
+            patch.object(click, 'confirm', return_value=False) as prompt:
+        thread.return_value.is_alive.return_value = False
+        netboot.setup_netboot('3.0', 'modalix', autoflash=True, auto_confirm_reboot=True)
+    prompt.assert_called_once()
+    assert not any('systemd-run' in call.args[1] for call in command.call_args_list)
+    flash.assert_not_called()
 
 
 def test_explicit_flash_ip_cannot_retarget_configured_device(capsys):

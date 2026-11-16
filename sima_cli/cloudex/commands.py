@@ -41,6 +41,12 @@ def _authorize_supported_host():
         authorize_admin()
 
 
+def _authorize_tunnel_cleanup(session):
+    if disconnect_requires_admin(session):
+        console.print("[cyan]→[/cyan] Authorizing local tunnel cleanup")
+        _authorize_supported_host()
+
+
 class StageProgress:
     """A compact spinner for terminals and readable milestones for logs."""
 
@@ -267,8 +273,9 @@ def connect_command(key_file, key_stdin, allocation, environment, transport, att
         raise click.UsageError("Use either --key-file or --key-stdin, not both; --allocation must be used alone.")
     try:
         if allocation:
-            profile = _allocation_profile(_neatops_api(environment), _allocation_id(allocation))
-            _connect_profile(profile, verbose=verbose, attempts=attempts, transport=transport)
+            api = _neatops_api(environment)
+            profile = _allocation_profile(api, _allocation_id(allocation))
+            _connect_profile(profile, verbose=verbose, attempts=attempts, transport=transport, diagnostics_api=api)
             return
         if key_file:
             key = _read_key_file(key_file)
@@ -322,10 +329,25 @@ def _interactive_session_selection_available():
     return sys.stdin.isatty()
 
 
-def _choose_sessions(sessions):
-    """Select one or more local connection records without probing them."""
+def _select_checkboxes(choices, *, message, instruction, mandatory=True):
     from InquirerPy import inquirer
 
+    return set(inquirer.checkbox(
+        message=message,
+        choices=choices,
+        instruction=instruction,
+        mandatory=mandatory,
+        enabled_symbol="[x]",
+        disabled_symbol="[ ]",
+        pointer="❯",
+        transformer=lambda selected: (
+            "{} selected".format(len(selected)) if selected else "None selected"
+        ),
+    ).execute() or [])
+
+
+def _choose_sessions(sessions):
+    """Select one or more local connection records without probing them."""
     choices = []
     for session in sessions:
         device = session.get("device", "DevKit " + _short(session.get("allocation_id")))
@@ -336,18 +358,11 @@ def _choose_sessions(sessions):
             "name": "{} · {} · {} · {}".format(device, session_label, target, expiry),
             "value": session["session_id"],
         })
-    selected_ids = inquirer.checkbox(
+    selected = _select_checkboxes(
+        choices,
         message="Select CloudEx connections to disconnect:",
-        choices=choices,
         instruction="Space to select, Enter to disconnect selected connections",
-        enabled_symbol="[x]",
-        disabled_symbol="[ ]",
-        pointer="❯",
-        transformer=lambda selected: (
-            "{} selected".format(len(selected)) if selected else "None selected"
-        ),
-    ).execute() or []
-    selected = set(selected_ids)
+    )
     return [session for session in sessions if session["session_id"] in selected]
 
 
@@ -381,9 +396,7 @@ def disconnect_command(session_id, disconnect_all):
     for session in selected:
         label = session.get("device", "DevKit " + _short(session.get("allocation_id")))
         try:
-            if disconnect_requires_admin(session):
-                console.print("[cyan]→[/cyan] Authorizing local tunnel cleanup")
-                _authorize_supported_host()
+            _authorize_tunnel_cleanup(session)
             with StageProgress("Disconnecting {}".format(label)) as progress:
                 result = disconnect_session(session, store, progress, authorize=False)
                 if result == "stale":
@@ -452,11 +465,12 @@ def register_cloudex_commands(main):
     main.add_command(cloudex_group)
 
 
-def _connect_profile(profile, verbose=False, attempts=3, transport="auto"):
+def _connect_profile(profile, verbose=False, attempts=3, transport="auto", *, diagnostics_api=None):
     console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
     _authorize_supported_host()
     with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:
-        session = connect(profile, _store(), progress, attempts=attempts, transport=transport)
+        options = {"report_diagnostics": diagnostics_api.report_cloudex_diagnostics} if diagnostics_api else {}
+        session = connect(profile, _store(), progress, attempts=attempts, transport=transport, **options)
         progress.success("Connected to {}".format(session["device"]))
     path = session.get("ice_path", "unknown")
     path_text = "direct" if path == "direct" else "relayed" if path == "relay" else path
@@ -605,36 +619,96 @@ def request_command(device, cluster, duration, environment, verbose):
         api.call("POST", "/devkits/allocations", {"request_id": allocation_id,
                  "cluster_id": selected["cluster_id"], "target_id": selected["id"], "duration_seconds": DURATIONS[duration]})
         profile = _allocation_profile(api, allocation_id)
-        _connect_profile(profile, verbose=verbose)
+        _connect_profile(profile, verbose=verbose, diagnostics_api=api)
     except CloudExError as exc:
         if allocation_id:
             console.print("Inspect: sima-cli -i cloudex devices --environment {}\nResume: sima-cli -i cloudex connect --allocation {} --environment {}\nRelease: sima-cli -i cloudex release {} --environment {}".format(environment, allocation_id, environment, allocation_id, environment), markup=False, soft_wrap=True)
         raise click.ClickException(str(exc)) from exc
 
 
+def _choose_allocations_to_release(api):
+    inventory = api.call("GET", "/devkits")
+    allocations = inventory.get("allocations", [])
+    if not allocations:
+        console.print("You have no CloudEx allocations to release.")
+        return []
+
+    devices = {(d["cluster_id"], d["id"]): d.get("name") for d in inventory.get("devices", [])}
+    choices = []
+    for allocation in allocations:
+        target = allocation["target_id"]
+        name = devices.get((allocation["cluster_id"], target)) or target
+        choices.append({
+            "name": "{} · {} · {}".format(name, _short(allocation["session_id"]), allocation["status"]),
+            "value": allocation["session_id"],
+        })
+    selected = _select_checkboxes(
+        choices,
+        message="Select CloudEx allocations to release:",
+        instruction="Space to select, Enter to release selected allocations",
+        mandatory=False,
+    )
+    if not selected:
+        console.print("[dim]No CloudEx allocations selected.[/dim]")
+    return [allocation["session_id"] for allocation in allocations if allocation["session_id"] in selected]
+
+
+def _release_allocation(allocation_id, store, get_api):
+    failures = []
+    local_cleanup_blocked = False
+    for session in store.list():
+        if session.get("allocation_id") == allocation_id:
+            try:
+                # Rich redirects terminal output during progress rendering.
+                # Ask for sudo before starting the spinner, as disconnect does.
+                _authorize_tunnel_cleanup(session)
+                with StageProgress("Disconnecting CloudEx") as progress:
+                    disconnect_session(session, store, progress, authorize=False)
+            except CloudExError as exc:
+                failures.append("Tunnel cleanup failed: {}. Local retry state retained; retry sima-cli -i cloudex disconnect.".format(exc))
+                local_cleanup_blocked |= disconnect_requires_admin(session)
+    if local_cleanup_blocked:
+        failures.append("Lease release skipped because its local CloudEx tunnel is still running.")
+        return failures
+    try:
+        get_api().call("DELETE", "/devkits/allocations/" + allocation_id)
+    except CloudExError as exc:
+        failures.append("Lease release failed: {}".format(exc))
+    else:
+        console.print("Lease released; device availability returns after cleanup is confirmed.")
+    return failures
+
+
 @cloudex_group.command("release")
-@click.argument("allocation_id")
+@click.argument("allocation_id", required=False)
 @click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True, help="Vulcan environment (requires -i).")
 @_vulcan_only
 def release_command(allocation_id, environment):
-    """Release your NeatOps lease and disconnect its local CloudEx sessions."""
+    """Disconnect local CloudEx sessions and release their NeatOps allocations.
+
+    Omit ALLOCATION_ID in an interactive terminal to select allocations.
+    """
     try:
-        allocation_id = _allocation_id(allocation_id)
+        api = None
+        if allocation_id is None:
+            if not _interactive_session_selection_available():
+                raise click.UsageError("Provide an allocation ID when running without an interactive terminal. "
+                                       "Use sima-cli -i cloudex devices to find your allocation IDs.")
+            api = _neatops_api(environment)
+            allocation_ids = _choose_allocations_to_release(api)
+            if not allocation_ids:
+                return
+        else:
+            allocation_ids = [allocation_id]
+        allocation_ids = [_allocation_id(value) for value in allocation_ids]
         store = _store()
         failures = []
-        for session in store.list():
-            if session.get("allocation_id") == allocation_id:
-                try:
-                    with StageProgress("Disconnecting CloudEx") as progress:
-                        disconnect_session(session, store, progress)
-                except CloudExError as exc:
-                    failures.append("Tunnel cleanup failed: {}. Local retry state retained; retry sima-cli -i cloudex disconnect.".format(exc))
-        try:
-            _neatops_api(environment).call("DELETE", "/devkits/allocations/" + allocation_id)
-        except CloudExError as exc:
-            failures.append("Lease release failed: {}".format(exc))
-        else:
-            console.print("Lease released; device availability returns after cleanup is confirmed.")
+        batch = len(allocation_ids) > 1
+        for allocation_id in allocation_ids:
+            if batch:
+                console.print("Releasing allocation {}".format(allocation_id))
+            errors = _release_allocation(allocation_id, store, lambda: api or _neatops_api(environment))
+            failures.extend("{}: {}".format(allocation_id, error) if batch else error for error in errors)
         if failures:
             raise CloudExError("; ".join(failures))
     except CloudExError as exc:

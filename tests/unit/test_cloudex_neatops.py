@@ -184,7 +184,7 @@ def test_request_selects_device_allocates_then_connects(command_api, monkeypatch
     command_api.call.assert_any_call("POST", "/devkits/allocations", {"request_id": AID,
         "cluster_id": "appliance-id", "target_id": "device-id", "duration_seconds": 14400})
     profile.assert_called_once_with(command_api, AID)
-    connect.assert_called_once_with(PROFILE, verbose=False)
+    connect.assert_called_once_with(PROFILE, verbose=False, diagnostics_api=command_api)
     assert "allocation_secret" not in result.output
 
 
@@ -231,7 +231,7 @@ def test_connect_allocation_skips_manual_key_prompt(command_api, monkeypatch):
     monkeypatch.setattr(commands, "_connect_profile", connect)
     result = CliRunner().invoke(commands.cloudex_group, ["-i", "connect", "--allocation", AID])
     assert result.exit_code == 0, result.output
-    connect.assert_called_once_with(PROFILE, verbose=False, attempts=3, transport="auto")
+    connect.assert_called_once_with(PROFILE, verbose=False, attempts=3, transport="auto", diagnostics_api=command_api)
 
 
 def test_release_disconnects_only_matching_local_allocation(command_api, monkeypatch):
@@ -246,6 +246,135 @@ def test_release_disconnects_only_matching_local_allocation(command_api, monkeyp
     assert disconnect.call_count == 1
     assert disconnect.call_args.args[0] == sessions[0]
     command_api.call.assert_called_once_with("DELETE", "/devkits/allocations/" + AID)
+
+
+def test_release_authorizes_active_tunnel_before_progress_and_releases_after_disconnect(command_api, monkeypatch):
+    session = {"allocation_id": AID, "forwarder_pid": 123}
+    store = Mock()
+    store.list.return_value = [session]
+    monkeypatch.setattr(commands, "_store", lambda: store)
+    monkeypatch.setattr(commands, "disconnect_requires_admin", lambda _: True)
+    events = []
+    commands._authorize_supported_host.side_effect = lambda: events.append("sudo")
+
+    class TrackingProgress(commands.StageProgress):
+        def __enter__(self):
+            events.append("progress")
+            return super().__enter__()
+
+    monkeypatch.setattr(commands, "StageProgress", TrackingProgress)
+    disconnect = Mock(side_effect=lambda *args, **kwargs: events.append("disconnect"))
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+    command_api.call.side_effect = lambda *_: events.append("release")
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release", AID])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["sudo", "progress", "disconnect", "release"]
+    assert disconnect.call_args.kwargs == {"authorize": False}
+    assert "Authorizing local tunnel cleanup" in result.output
+
+
+@pytest.mark.parametrize("sudo_denied", [True, False])
+def test_release_keeps_lease_if_local_tunnel_is_still_running(command_api, monkeypatch, sudo_denied):
+    store = Mock()
+    store.list.return_value = [{"allocation_id": AID, "forwarder_pid": 123}]
+    monkeypatch.setattr(commands, "_store", lambda: store)
+    monkeypatch.setattr(commands, "disconnect_requires_admin", lambda _: True)
+    if sudo_denied:
+        commands._authorize_supported_host.side_effect = CloudExError("administrator authorization was not granted")
+    disconnect = Mock(side_effect=CloudExError("local tunnel cleanup is still pending"))
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release", AID])
+
+    assert result.exit_code != 0
+    assert "Lease release skipped because its local CloudEx tunnel is still running." in result.output
+    assert disconnect.call_count == (0 if sudo_denied else 1)
+    command_api.call.assert_not_called()
+
+
+def test_release_without_id_releases_only_the_selected_allocation(command_api, monkeypatch):
+    other_id = "b" * 32
+    first = {"session_id": AID, "cluster_id": DEVICE["cluster_id"], "target_id": DEVICE["id"], "status": "active"}
+    second = {"session_id": other_id, "cluster_id": "removed-appliance", "target_id": "offline-kit", "status": "ready"}
+    command_api.call.side_effect = [{"devices": [DEVICE], "allocations": [first, second]}, {}]
+    monkeypatch.setattr(commands, "_interactive_session_selection_available", lambda: True)
+    checkbox = Mock()
+    checkbox.return_value.execute.return_value = [other_id]
+    monkeypatch.setattr("InquirerPy.inquirer.checkbox", checkbox)
+    store = Mock()
+    store.list.return_value = [{"allocation_id": AID}, {"allocation_id": other_id}]
+    monkeypatch.setattr(commands, "_store", lambda: store)
+    disconnect = Mock()
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release", "--environment", "staging"])
+
+    assert result.exit_code == 0, result.output
+    choices = checkbox.call_args.kwargs["choices"]
+    assert [choice["value"] for choice in choices] == [AID, other_id]
+    assert DEVICE["name"] in choices[0]["name"]
+    assert "offline-kit" in choices[1]["name"]
+    assert [c.args for c in command_api.call.call_args_list] == [
+        ("GET", "/devkits"), ("DELETE", "/devkits/allocations/" + other_id),
+    ]
+    disconnect.assert_called_once()
+    assert disconnect.call_args.args[0] == {"allocation_id": other_id}
+
+
+@pytest.mark.parametrize("has_allocation", [False, True])
+def test_release_without_selection_does_not_delete(command_api, monkeypatch, has_allocation):
+    allocation = {"session_id": AID, "cluster_id": DEVICE["cluster_id"], "target_id": DEVICE["id"], "status": "active"}
+    command_api.call.side_effect = [{"devices": [DEVICE], "allocations": [allocation] if has_allocation else []}]
+    monkeypatch.setattr(commands, "_interactive_session_selection_available", lambda: True)
+    checkbox = Mock()
+    checkbox.return_value.execute.return_value = []
+    monkeypatch.setattr("InquirerPy.inquirer.checkbox", checkbox)
+    store = Mock()
+    monkeypatch.setattr(commands, "_store", store)
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release"])
+
+    assert result.exit_code == 0, result.output
+    if has_allocation:
+        assert "No CloudEx allocations selected" in result.output
+        assert checkbox.call_args.kwargs["mandatory"] is False
+    else:
+        assert "no CloudEx allocations" in result.output
+        checkbox.assert_not_called()
+    command_api.call.assert_called_once_with("GET", "/devkits")
+    store.assert_not_called()
+
+
+def test_release_checklist_continues_after_a_selected_lease_fails(command_api, monkeypatch):
+    other_id = "b" * 32
+    allocations = [{"session_id": aid, "cluster_id": "appliance", "target_id": aid[:8], "status": "active"}
+                   for aid in (AID, other_id, "c" * 32)]
+    command_api.call.side_effect = [{"allocations": allocations}, CloudExError("Unavailable"), {}]
+    monkeypatch.setattr(commands, "_interactive_session_selection_available", lambda: True)
+    monkeypatch.setattr(commands, "_store", lambda: Mock(list=Mock(return_value=[])))
+    checkbox = Mock()
+    checkbox.return_value.execute.return_value = [AID, other_id]
+    monkeypatch.setattr("InquirerPy.inquirer.checkbox", checkbox)
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release"])
+
+    assert result.exit_code != 0
+    assert "{}: Lease release failed: Unavailable".format(AID) in result.output
+    assert "Lease released;" in result.output
+    assert [c.args for c in command_api.call.call_args_list] == [
+        ("GET", "/devkits"), ("DELETE", "/devkits/allocations/" + AID),
+        ("DELETE", "/devkits/allocations/" + other_id),
+    ]
+
+
+def test_release_without_id_requires_a_terminal(command_api):
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release"])
+
+    assert result.exit_code == 2
+    assert "Provide an allocation ID" in result.output
+    command_api.call.assert_not_called()
 
 
 def test_cancelled_browser_login_keeps_previous_credentials(api, monkeypatch):
@@ -582,3 +711,22 @@ def test_root_external_login_uses_portal_without_internal_initialization(monkeyp
     initialize.assert_not_called()
     portal_login.assert_called_once_with(loginDocker=False)
     vulcan_api.assert_not_called()
+
+
+
+@pytest.mark.parametrize("reason,timing", [("failed", None), ("direct", {"setup_ms": 1420})])
+def test_diagnostics_report_uses_cached_neatops_token_without_reauthentication(api, monkeypatch, reason, timing):
+    api._save(tokens())
+    request = Mock(return_value=(202, {"status": "accepted"}))
+    monkeypatch.setattr(neatops, "_json_request", request)
+    allocation, session = "a" * 32, "b" * 32
+    stages = ["ICE connection state Failed"] if reason == "failed" else ["WireGuard handshake confirmed"]
+    api.report_cloudex_diagnostics(allocation, session, reason, stages, timing=timing)
+    expected = {"session_id": session, "reason": reason, "stages": stages}
+    if timing:
+        expected["timing"] = timing
+    request.assert_called_once_with(
+        "POST", api.config["apiBase"] + f"/devkits/allocations/{allocation}/diagnostics",
+        timeout=3, headers={"Authorization": "Bearer private-access"},
+        json=expected,
+    )

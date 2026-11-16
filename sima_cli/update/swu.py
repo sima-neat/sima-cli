@@ -103,9 +103,18 @@ def _overlay_has_package_state(report):
 
 
 def _overlay_reset_reason(report, source):
-    """Explain why a selected image cannot safely share the overlay package state."""
+    """Explain why the selected image requires a clean package database."""
+    if not _overlay_has_package_state(report):
+        return None
+    # Published eLxr artifacts encode the flavor in their basename.
+    target = re.match(r'elxr-(securepalette|palette|minimal)-',
+                      unquote(urlparse(source).path).rsplit('/', 1)[-1])
+    metadata_flavor = report.get('package_flavors', {}).get('metadata')
+    if target and metadata_flavor and target[1] != metadata_flavor:
+        return (f'The selected image flavor is {target[1]}, but the overlay package '
+                f'database is from {metadata_flavor}.')
     metadata_build = report.get('package_builds', {}).get('metadata')
-    if not metadata_build or not _overlay_has_package_state(report):
+    if not metadata_build:
         return None
     target_build = _source_build_id(source)
     if target_build == metadata_build:
@@ -124,7 +133,7 @@ def _print_overlay_reset_panel(reason):
 
     Console().print(Panel(
         reason + '\n\n'
-        'The overlay contains APT/dpkg state from a different platform build. '
+        'The overlay contains APT/dpkg state tied to its original platform image. '
         'Keeping it can make package management incorrect after reboot.\n\n'
         'sima-cli will save an inventory under /data/.overlay-backup before resetting '
         'OverlayFS. After the upgrade, reinstall the packages and software that were '

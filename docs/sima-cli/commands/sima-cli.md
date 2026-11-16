@@ -39,7 +39,7 @@ None.
 - [`sima-cli peripherals`](./sima-cli-peripherals.md): Show the cameras and microphones plugged into this DevKit.
 - [`sima-cli playbooks`](./sima-cli-playbooks.md): Install and manage playbooks (Codex/Claude).
 - [`sima-cli sdcard`](./sima-cli-sdcard.md): Prepare the SD Card as a data storage device for MLSoc DevKit or Modalix Early Access Unit
-- [`sima-cli sdk`](./sima-cli-sdk.md): Manage and launch SiMa SDK 2.0 container environments (Beta).
+- [`sima-cli sdk`](./sima-cli-sdk.md): Manage and launch SiMa SDK container environments.
 - [`sima-cli selfupdate`](./sima-cli-selfupdate.md): Update sima-cli manually from PyPI or a direct wheel URL.
 - [`sima-cli serial`](./sima-cli-serial.md): Connect to the UART serial console of the DevKit.
 - [`sima-cli update`](./sima-cli-update.md): Update a SiMa DevKit, remote device, or Linux PCIe host.
@@ -77,7 +77,7 @@ Commands:
   peripherals  Show the cameras and microphones plugged into this DevKit.
   playbooks    Install and manage playbooks (Codex/Claude).
   sdcard       Prepare the SD Card as a data storage device for MLSoc...
-  sdk          Manage and launch SiMa SDK 2.0 container environments (Beta).
+  sdk          Manage and launch SiMa SDK container environments.
   selfupdate   Update sima-cli manually from PyPI or a direct wheel URL.
   serial       Connect to the UART serial console of the DevKit.
   update       Update a SiMa DevKit, remote device, or Linux PCIe host.

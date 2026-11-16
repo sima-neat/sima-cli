@@ -376,9 +376,11 @@ jobs:
             runs_on: '["self-hosted","macOS","osx"]'
           - name: Ubuntu x86
             runs_on: '"ubuntu-24.04"'
-          - name: Ubuntu x86 Snap Docker
-            runs_on: '"ubuntu-24.04"'
-            docker_install: snap
+            docker_install: apt
+          # Paused until Snap Store access stabilizes. See #412.
+          # - name: Ubuntu x86 Snap Docker
+          #   runs_on: '"ubuntu-24.04"'
+          #   docker_install: snap
           - name: Ubuntu ARM64
             runs_on: '"ubuntu-24.04-arm"'
           - name: Windows

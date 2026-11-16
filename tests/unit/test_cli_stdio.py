@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from sima_cli.cli import _configure_stdio_errors
+from sima_cli.cli import _configure_stdio
 
 
 class _Stream:
@@ -20,7 +20,7 @@ class TestCliStdio(unittest.TestCase):
         stderr = _Stream()
 
         with patch("sima_cli.cli.sys.stdout", stdout), patch("sima_cli.cli.sys.stderr", stderr):
-            _configure_stdio_errors()
+            _configure_stdio()
 
         self.assertEqual(stdout.errors, "replace")
         self.assertEqual(stderr.errors, "replace")
@@ -30,7 +30,7 @@ class TestCliStdio(unittest.TestCase):
         stderr = _Stream()
 
         with patch("sima_cli.cli.sys.stdout", stdout), patch("sima_cli.cli.sys.stderr", stderr):
-            _configure_stdio_errors()
+            _configure_stdio()
 
         # Without a TTY Python block-buffers stdout; prompts must still appear immediately.
         self.assertTrue(stdout.line_buffering)

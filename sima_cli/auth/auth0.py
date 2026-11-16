@@ -34,6 +34,9 @@ DOC_ACCESS_GRANT = "DocsAccess"
 DOC_ACCESS_GRANT_ALIASES = (DOC_ACCESS_GRANT, "DocAccess")
 PROD_DISCOURSE_URL = "https://community.sima.ai/login"
 STAGING_DISCOURSE_URL = "https://community-dev.sima.ai/login"
+# (connect, read) seconds for device-login calls to Auth0, so a stalled
+# network cannot hold the login until its code expires.
+AUTH_HTTP_TIMEOUT = (10, 30)
 
 # ─────────────────────────────────────────────
 # Configuration loader
@@ -277,27 +280,43 @@ def request_device_code(auth_cfg):
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-    resp = requests.post(auth_cfg["DEVICE_CODE_URL"], data=data, headers=headers)
+    try:
+        resp = requests.post(
+            auth_cfg["DEVICE_CODE_URL"], data=data, headers=headers, timeout=AUTH_HTTP_TIMEOUT
+        )
+    except requests.RequestException as exc:
+        click.echo(f"❌ Could not reach the login server: {exc}", err=True)
+        raise
     if resp.status_code != 200:
         click.echo(f"❌ Error {resp.status_code}: {resp.text}", err=True)
         resp.raise_for_status()
     return resp.json()
 
 
-def poll_for_token(auth_cfg, device_code, interval):
-    """Step 2: Poll for user authorization."""
+def poll_for_token(auth_cfg, device_code, interval, expires_in=None):
+    """Step 2: Poll for user authorization until the device code expires."""
+    deadline = time.monotonic() + expires_in if expires_in else None
     click.echo(f"⏳ Waiting for authorization. Complete the browser login above; checking every {interval} seconds.", err=True)
     while True:
         time.sleep(interval)
-        resp = requests.post(
-            auth_cfg["TOKEN_URL"],
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": auth_cfg["CLIENT_ID"],
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
+        if deadline is not None and time.monotonic() >= deadline:
+            click.echo("❌ Device code expired — restart the flow.", err=True)
+            sys.exit(1)
+        try:
+            resp = requests.post(
+                auth_cfg["TOKEN_URL"],
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "device_code": device_code,
+                    "client_id": auth_cfg["CLIENT_ID"],
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=AUTH_HTTP_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            # A dropped or stalled connection is often brief; keep polling until the code expires.
+            click.echo(f"⚠️  Login server did not respond ({exc.__class__.__name__}); retrying in {interval} seconds.", err=True)
+            continue
 
         if resp.status_code == 200:
             click.echo("✅ sima-cli authorized!", err=True)
@@ -349,7 +368,7 @@ def login_auth0(auth_cfg):
         click.echo(f"  3. If prompted, confirm this code: {highlighted_code}", err=True)
         click.echo("  4. Return to this terminal. sima-cli will continue automatically after authorization.", err=True)
 
-    return poll_for_token(auth_cfg, data["device_code"], data["interval"])
+    return poll_for_token(auth_cfg, data["device_code"], data["interval"], expires_in=data["expires_in"])
 
 # ─────────────────────────────────────────────
 # Decode ID token for user info
@@ -397,10 +416,11 @@ def print_welcome_message(tokens: dict):
     portal_name = click.style("SiMa Developer Portal", fg="cyan", bold=True)
     emoji = click.style("🎉", fg="magenta", bold=True)
 
-    print("\n" + click.style("═" * 60, fg="bright_black"))
-    print(f"{emoji}  Welcome back, {styled_name} ({extract_email(claims)})!  {emoji}")
-    print(f"    You are now signed in to the {portal_name}.")
-    print(click.style("═" * 60, fg="bright_black") + "\n")
+    # stderr, like the login prompts, so it is not mixed into a command's stdout result.
+    click.echo("\n" + click.style("═" * 60, fg="bright_black"), err=True)
+    click.echo(f"{emoji}  Welcome back, {styled_name} ({extract_email(claims)})!  {emoji}", err=True)
+    click.echo(f"    You are now signed in to the {portal_name}.", err=True)
+    click.echo(click.style("═" * 60, fg="bright_black") + "\n", err=True)
 
 # ─────────────────────────────────────────────
 # Unified token access
@@ -424,7 +444,7 @@ def get_or_refresh_tokens(force=False):
                 print_welcome_message(refreshed)
                 return refreshed
             return None
-        print("⚠️ Refresh failed, falling back to new login.")
+        click.echo("⚠️ Refresh failed, falling back to new login.", err=True)
 
     new_tokens = login_auth0(auth_cfg)
     new_tokens = _ensure_access_token_requirements(new_tokens, auth_cfg)

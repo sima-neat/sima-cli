@@ -52,7 +52,7 @@ from sima_cli.vulcan.commands import (
     install_vulcan_package,
 )
 
-def _configure_stdio_errors() -> None:
+def _configure_stdio() -> None:
     for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
         if stream is None or not hasattr(stream, "reconfigure"):
             continue
@@ -117,7 +117,7 @@ LOCAL_ONLY_SUBCOMMANDS = ("peripherals",)
 
 
 def _initialize_main_context(ctx, internal, yes):
-    _configure_stdio_errors()
+    _configure_stdio()
     auto_accept_update = yes or _update_auto_confirm_requested(sys.argv)
     previous_auto_accept = os.environ.get("SIMA_CLI_AUTO_ACCEPT_UPDATE")
     if auto_accept_update:
@@ -210,7 +210,7 @@ def main(ctx, internal, yes):
     # CloudEx selects Developer Portal or internal NeatOps authentication itself;
     # its internal Vulcan flow does not require Artifactory setup.
     if ctx.meta.get('update_inspect') or ctx.invoked_subcommand == 'cloudex':
-        _configure_stdio_errors()
+        _configure_stdio()
         ctx.ensure_object(dict)
         ctx.obj.update(internal=internal, yes=yes)
         return

@@ -248,6 +248,52 @@ def test_release_disconnects_only_matching_local_allocation(command_api, monkeyp
     command_api.call.assert_called_once_with("DELETE", "/devkits/allocations/" + AID)
 
 
+def test_release_authorizes_active_tunnel_before_progress_and_releases_after_disconnect(command_api, monkeypatch):
+    session = {"allocation_id": AID, "forwarder_pid": 123}
+    store = Mock()
+    store.list.return_value = [session]
+    monkeypatch.setattr(commands, "_store", lambda: store)
+    monkeypatch.setattr(commands, "disconnect_requires_admin", lambda _: True)
+    events = []
+    commands._authorize_supported_host.side_effect = lambda: events.append("sudo")
+
+    class TrackingProgress(commands.StageProgress):
+        def __enter__(self):
+            events.append("progress")
+            return super().__enter__()
+
+    monkeypatch.setattr(commands, "StageProgress", TrackingProgress)
+    disconnect = Mock(side_effect=lambda *args, **kwargs: events.append("disconnect"))
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+    command_api.call.side_effect = lambda *_: events.append("release")
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release", AID])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["sudo", "progress", "disconnect", "release"]
+    assert disconnect.call_args.kwargs == {"authorize": False}
+    assert "Authorizing local tunnel cleanup" in result.output
+
+
+@pytest.mark.parametrize("sudo_denied", [True, False])
+def test_release_keeps_lease_if_local_tunnel_is_still_running(command_api, monkeypatch, sudo_denied):
+    store = Mock()
+    store.list.return_value = [{"allocation_id": AID, "forwarder_pid": 123}]
+    monkeypatch.setattr(commands, "_store", lambda: store)
+    monkeypatch.setattr(commands, "disconnect_requires_admin", lambda _: True)
+    if sudo_denied:
+        commands._authorize_supported_host.side_effect = CloudExError("administrator authorization was not granted")
+    disconnect = Mock(side_effect=CloudExError("local tunnel cleanup is still pending"))
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release", AID])
+
+    assert result.exit_code != 0
+    assert "Lease release skipped because its local CloudEx tunnel is still running." in result.output
+    assert disconnect.call_count == (0 if sudo_denied else 1)
+    command_api.call.assert_not_called()
+
+
 def test_release_without_id_releases_only_the_selected_allocation(command_api, monkeypatch):
     other_id = "b" * 32
     first = {"session_id": AID, "cluster_id": DEVICE["cluster_id"], "target_id": DEVICE["id"], "status": "active"}

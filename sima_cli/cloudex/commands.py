@@ -41,6 +41,12 @@ def _authorize_supported_host():
         authorize_admin()
 
 
+def _authorize_tunnel_cleanup(session):
+    if disconnect_requires_admin(session):
+        console.print("[cyan]→[/cyan] Authorizing local tunnel cleanup")
+        _authorize_supported_host()
+
+
 class StageProgress:
     """A compact spinner for terminals and readable milestones for logs."""
 
@@ -390,9 +396,7 @@ def disconnect_command(session_id, disconnect_all):
     for session in selected:
         label = session.get("device", "DevKit " + _short(session.get("allocation_id")))
         try:
-            if disconnect_requires_admin(session):
-                console.print("[cyan]→[/cyan] Authorizing local tunnel cleanup")
-                _authorize_supported_host()
+            _authorize_tunnel_cleanup(session)
             with StageProgress("Disconnecting {}".format(label)) as progress:
                 result = disconnect_session(session, store, progress, authorize=False)
                 if result == "stale":
@@ -651,13 +655,21 @@ def _choose_allocations_to_release(api):
 
 def _release_allocation(allocation_id, store, get_api):
     failures = []
+    local_cleanup_blocked = False
     for session in store.list():
         if session.get("allocation_id") == allocation_id:
             try:
+                # Rich redirects terminal output during progress rendering.
+                # Ask for sudo before starting the spinner, as disconnect does.
+                _authorize_tunnel_cleanup(session)
                 with StageProgress("Disconnecting CloudEx") as progress:
-                    disconnect_session(session, store, progress)
+                    disconnect_session(session, store, progress, authorize=False)
             except CloudExError as exc:
                 failures.append("Tunnel cleanup failed: {}. Local retry state retained; retry sima-cli -i cloudex disconnect.".format(exc))
+                local_cleanup_blocked |= disconnect_requires_admin(session)
+    if local_cleanup_blocked:
+        failures.append("Lease release skipped because its local CloudEx tunnel is still running.")
+        return failures
     try:
         get_api().call("DELETE", "/devkits/allocations/" + allocation_id)
     except CloudExError as exc:
@@ -672,7 +684,7 @@ def _release_allocation(allocation_id, store, get_api):
 @click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True, help="Vulcan environment (requires -i).")
 @_vulcan_only
 def release_command(allocation_id, environment):
-    """Release a NeatOps lease and disconnect its local CloudEx sessions.
+    """Disconnect local CloudEx sessions and release their NeatOps allocations.
 
     Omit ALLOCATION_ID in an interactive terminal to select allocations.
     """

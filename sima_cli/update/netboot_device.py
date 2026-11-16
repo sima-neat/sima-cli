@@ -34,6 +34,15 @@ def resolve_device(devkit=None):
         return None
 
 
+def is_explicit_devkit(devkit):
+    """True when the DevKit was named by IP address, not "auto" or omitted (discovery)."""
+    try:
+        ipaddress.ip_address(str(devkit or '').strip())
+    except ValueError:
+        return False
+    return True
+
+
 def server_address(devkit):
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
         route.connect((devkit, 69))

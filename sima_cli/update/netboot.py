@@ -1569,6 +1569,7 @@ def setup_netboot(
     from sima_cli.update.netboot_device import (
         NetbootConfiguration,
         configure_and_reboot,
+        is_explicit_devkit,
         resolve_device,
         server_address,
     )
@@ -1621,9 +1622,10 @@ def setup_netboot(
                 server_ip,
                 autoflash=autoflash,
                 configuration=configuration,
-                # -y answers this only for a DevKit named with --devkit-ip. A discovered
-                # DevKit is still confirmed by hand, so -y never reflashes an unnamed board.
-                auto_confirm=auto_confirm_reboot and bool(devkit),
+                # -y answers this only for a DevKit named by IP. A discovered DevKit
+                # (--devkit omitted or "auto") is still confirmed by hand, so -y never
+                # reflashes a board nobody named.
+                auto_confirm=auto_confirm_reboot and is_explicit_devkit(devkit),
             )
             if not reboot_scheduled:
                 click.echo(

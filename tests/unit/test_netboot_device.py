@@ -439,8 +439,9 @@ def test_yes_flag_runs_setup_reboot_and_autoflash_without_reading_stdin(tmp_path
     cli.assert_not_called()
 
 
-def test_yes_flag_still_asks_before_setting_up_a_discovered_devkit(tmp_path):
-    """-y without --devkit-ip must not reflash whichever DevKit discovery picked (#353)."""
+@pytest.mark.parametrize('devkit', [None, 'auto', ' Auto '])
+def test_yes_flag_still_asks_before_setting_up_a_discovered_devkit(tmp_path, devkit):
+    """-y must not reflash whichever DevKit discovery picked (#353)."""
     boot = tmp_path / 'netboot.scr.uimg'
     boot.write_bytes(b'boot')
     server = MagicMock()
@@ -459,10 +460,18 @@ def test_yes_flag_still_asks_before_setting_up_a_discovered_devkit(tmp_path):
             patch.object(device, '_checked', return_value='') as command, \
             patch.object(click, 'confirm', return_value=False) as prompt:
         thread.return_value.is_alive.return_value = False
-        netboot.setup_netboot('3.0', 'modalix', autoflash=True, auto_confirm_reboot=True)
+        netboot.setup_netboot('3.0', 'modalix', autoflash=True, devkit=devkit, auto_confirm_reboot=True)
     prompt.assert_called_once()
     assert not any('systemd-run' in call.args[1] for call in command.call_args_list)
     flash.assert_not_called()
+
+
+@pytest.mark.parametrize('value,explicit', [
+    ('192.0.2.1', True), (' 192.0.2.1 ', True), ('2001:db8::1', True),
+    (None, False), ('', False), ('auto', False), ('AUTO', False), ('board13', False),
+])
+def test_only_an_ip_address_names_a_devkit(value, explicit):
+    assert device.is_explicit_devkit(value) is explicit
 
 
 def test_explicit_flash_ip_cannot_retarget_configured_device(capsys):

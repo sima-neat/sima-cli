@@ -29,7 +29,11 @@ TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
 
 
 class ModelRegistryError(RuntimeError):
-    pass
+    """A Model Registry failure with a stable, machine-readable ``code``."""
+
+    def __init__(self, message: str, code: str = "registry_error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def normalize_base_url(value: str) -> str:
@@ -170,14 +174,16 @@ def find_latest_run(
         )
         raise ModelRegistryError(
             f"Multiple packages found for model {model_id!r}, variant "
-            f"{variant_id!r}: {package_ids}."
+            f"{variant_id!r}: {package_ids}.",
+            code="ambiguous_package",
         )
     for run in latest_runs_by_model_variant(runs):
         metadata = run.get("metadata", {})
         if metadata.get("model_id") == model_id and _build_profile_id(metadata) == variant_id:
             return run
     raise ModelRegistryError(
-        f"No completed model build found for model {model_id!r}, variant {variant_id!r}."
+        f"No completed model build found for model {model_id!r}, variant {variant_id!r}.",
+        code="build_not_found",
     )
 
 
@@ -332,7 +338,10 @@ def _download_lock(destination: Path) -> Iterator[None]:
 
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise ModelRegistryError(f"Another download is using {destination}. Retry when it finishes.") from exc
+            raise ModelRegistryError(
+                f"Another download is using {destination}. Retry when it finishes.",
+                code="destination_locked",
+            ) from exc
         yield
 
 
@@ -430,12 +439,13 @@ class RegistryClient:
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
         except requests.RequestException as exc:
-            raise ModelRegistryError(f"GET {url} failed: {exc}") from exc
+            raise ModelRegistryError(f"GET {url} failed: {exc}", code="network_error") from exc
         if allow_not_found and response.status_code == 404:
             return None
         if response.status_code >= 400:
             raise ModelRegistryError(
-                f"GET {url} failed with HTTP {response.status_code}: {_api_error_message(response)}"
+                f"GET {url} failed with HTTP {response.status_code}: {_api_error_message(response)}",
+                code="http_error",
             )
         try:
             payload = response.json()
@@ -471,7 +481,8 @@ class RegistryClient:
         if payload is None:
             raise ModelRegistryError(
                 f"No published model catalog for branch {branch!r} at {self.base_url} (HTTP 404). "
-                "Use models branches to find available branches; no fallback was attempted."
+                "Use models branches to find available branches; no fallback was attempted.",
+                code="branch_not_found",
             )
         catalog = payload.get("catalog") if payload else None
         document = catalog.get("document") if isinstance(catalog, dict) else None
@@ -762,7 +773,8 @@ class RegistryClient:
         with (_download_lock(destination) if temporary_dir is None else nullcontext()):
             if destination.exists() and not force:
                 raise ModelRegistryError(
-                    f"Destination already exists: {destination}. Use --force to replace it."
+                    f"Destination already exists: {destination}. Use --force to replace it.",
+                    code="destination_exists",
                 )
             partial = (temporary_dir / f".{uuid4().hex}.part" if temporary_dir is not None
                        else destination.with_name(f".{destination.name}.part"))
@@ -815,7 +827,8 @@ class RegistryClient:
                 if destination.exists() and not same_deployment and not force:
                     raise ModelRegistryError(
                         f"Destination already exists with a different deployment: {destination}. "
-                        "Use --force to replace it."
+                        "Use --force to replace it.",
+                        code="destination_exists",
                     )
                 cache = destination.with_name(f".{destination.name}.download")
                 _check_directory_destination(cache)

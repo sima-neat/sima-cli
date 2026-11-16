@@ -1459,3 +1459,111 @@ def test_verified_download_on_both_endpoints(tmp_path, base_url, failure):
         assert client.download("run", artifact, destination) == destination
         assert destination.read_bytes() == content
     assert session.calls[0][0] == base_url + "/v1/runs/run/artifacts/package"
+
+
+def _registry_client_with_existing_download(tmp_path):
+    """A real client whose download target already exists under tmp_path."""
+    run = _run()
+    artifact = {
+        "name": "mpk",
+        "artifact_type": "model-pack",
+        "size_bytes": 5,
+        "sha256": hashlib.sha256(b"model").hexdigest(),
+    }
+    client = RegistryClient(PRODUCTION_BASE_URL, session=Mock())
+    client.catalog_models = Mock(return_value=[run])
+    client.run = Mock(return_value={"run": run, "artifacts": [artifact]})
+    client.artifact_download = Mock(return_value={
+        "download_url": "https://download.example/model",
+        "s3_key": "models/run/resnet_50_int8_mpk.tar.gz",
+    })
+    existing = tmp_path / "resnet_50" / "int8" / "resnet_50_int8_mpk.tar.gz"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"model")
+    return client, existing
+
+
+def test_download_json_reports_existing_destination_as_json(tmp_path):
+    client, existing = _registry_client_with_existing_download(tmp_path)
+    args = ["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8",
+            "--output", str(tmp_path), "--json"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "destination_exists"
+    assert str(existing) in payload["error"]["message"]
+    assert "--force" in payload["error"]["message"]
+    assert "Error:" not in result.stdout
+    assert existing.read_bytes() == b"model"
+
+
+def test_download_without_json_keeps_plain_text_error(tmp_path):
+    client, existing = _registry_client_with_existing_download(tmp_path)
+    args = ["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8",
+            "--output", str(tmp_path)]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert f"Error: Destination already exists: {existing}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "code"),
+    [
+        (["branches", "--json"], "http_error"),
+        (["list", "--branch", "develop", "--json"], "http_error"),
+        (["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8", "--json"],
+         "http_error"),
+        (["list", "--branch", "missing", "--json"], "branch_not_found"),
+    ],
+)
+def test_models_json_commands_report_registry_errors_as_json(args, code):
+    status = 404 if code == "branch_not_found" else 503
+    session = FakeSession([FakeResponse(status_code=status, payload={"error": {"message": "Unavailable"}})])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1, result.output
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == code
+    assert PRODUCTION_BASE_URL in error["message"]
+
+
+def test_download_json_reports_missing_build_as_json():
+    client = Mock()
+    client.catalog_models.return_value = []
+    args = ["download", "--id", "missing", "--variant", "int8", "--json"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {"error": {
+        "code": "build_not_found",
+        "message": "No completed model build found for model 'missing', variant 'int8'.",
+    }}
+
+
+@pytest.mark.parametrize("json_output", [True, False])
+def test_download_reports_filesystem_errors_without_traceback(tmp_path, json_output):
+    client, _ = _registry_client_with_existing_download(tmp_path)
+    args = ["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8",
+            "--output", str(tmp_path / "out")] + (["--json"] if json_output else [])
+    denied = PermissionError(13, "Permission denied", str(tmp_path / "out"))
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client), \
+            patch("pathlib.Path.mkdir", side_effect=denied):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, PermissionError)
+    if json_output:
+        error = json.loads(result.stdout)["error"]
+        assert error["code"] == "filesystem_error"
+        assert "Permission denied" in error["message"]
+    else:
+        assert result.stdout == ""
+        assert "Error: [Errno 13] Permission denied" in result.stderr

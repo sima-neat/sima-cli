@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 from copy import deepcopy
@@ -8,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+import requests
 from click.testing import CliRunner
 from rich.console import Console
 
@@ -1567,3 +1569,41 @@ def test_download_reports_filesystem_errors_without_traceback(tmp_path, json_out
     else:
         assert result.stdout == ""
         assert "Error: [Errno 13] Permission denied" in result.stderr
+
+
+class _FailingStreamResponse(FakeResponse):
+    def __init__(self, error):
+        super().__init__()
+        self._error = error
+
+    def iter_content(self, chunk_size=0):
+        del chunk_size
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        ("disk_full", "filesystem_error"),
+        ("connection_reset", "network_error"),
+    ],
+)
+def test_wrapped_download_io_errors_keep_their_code(tmp_path, failure, code):
+    content = b"verified model bytes"
+    artifact = {"name": "package", "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest()}
+    if failure == "disk_full":
+        stream = _FailingStreamResponse(OSError(errno.ENOSPC, "No space left on device"))
+    else:
+        stream = _FailingStreamResponse(requests.ConnectionError("Connection reset by peer"))
+    session = FakeSession([
+        FakeResponse(payload={"artifact": {"download_url": "https://download.example/model"}}),
+        stream,
+    ])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+
+    with pytest.raises(ModelRegistryError) as caught:
+        client.download("run", artifact, tmp_path / "model.tar.gz")
+
+    assert caught.value.code == code
+    assert not (tmp_path / "model.tar.gz").exists()

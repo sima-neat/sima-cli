@@ -36,6 +36,15 @@ class ModelRegistryError(RuntimeError):
         self.code = code
 
 
+def _io_error_code(exc: BaseException) -> str:
+    """Classify a wrapped I/O failure; requests exceptions are OSError subclasses too."""
+    if isinstance(exc, requests.RequestException):
+        return "network_error"
+    if isinstance(exc, OSError):
+        return "filesystem_error"
+    return "registry_error"
+
+
 def normalize_base_url(value: str) -> str:
     normalized = value.strip().rstrip("/")
     if not normalized:
@@ -698,7 +707,7 @@ class RegistryClient:
             except (OSError, ValueError, requests.RequestException) as exc:
                 if cancellation is not None:
                     cancellation.check()
-                raise ModelRegistryError(f"Artifact download failed: {exc}") from exc
+                raise ModelRegistryError(f"Artifact download failed: {exc}", code=_io_error_code(exc)) from exc
         with connection_slot(cancellation):
             self._download_sequential(url, partial, expected_size, expected_sha, progress, cancellation)
 
@@ -706,7 +715,7 @@ class RegistryClient:
         try:
             response = self.session.get(url, stream=True, timeout=self.timeout)
         except requests.RequestException as exc:
-            raise ModelRegistryError(f"Artifact download failed: {exc}") from exc
+            raise ModelRegistryError(f"Artifact download failed: {exc}", code="network_error") from exc
         digest = hashlib.sha256()
         size = 0
         with response, (cancellation.track(response) if cancellation is not None else nullcontext()):
@@ -731,7 +740,9 @@ class RegistryClient:
             except (OSError, requests.RequestException) as exc:
                 if cancellation is not None:
                     cancellation.check()
-                raise ModelRegistryError(f"Could not write downloaded artifact: {exc}") from exc
+                raise ModelRegistryError(
+                    f"Could not write downloaded artifact: {exc}", code=_io_error_code(exc)
+                ) from exc
 
         if cancellation is not None:
             cancellation.check()
@@ -905,7 +916,9 @@ class RegistryClient:
                     _cleanup_directory(backup)
                 _cleanup_directory(cache)
         except OSError as exc:
-            raise ModelRegistryError(f"Could not download deployment to {destination}: {exc}") from exc
+            raise ModelRegistryError(
+                f"Could not download deployment to {destination}: {exc}", code=_io_error_code(exc)
+            ) from exc
         return {
             "path": str(destination), "format": "directory",
             "file_count": len(files), "size_bytes": total,

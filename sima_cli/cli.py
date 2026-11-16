@@ -693,7 +693,11 @@ def show_mla_memory_usage(ctx):
 @click.option("--devkit", "--devkit-ip", "devkit_ip", required=False, help="DevKit IP for remote netboot; discover and select a DevKit when omitted.")
 @click.option("-r", "--rootfs", required=False, help="Custom root fs folders (internal use only)")
 @click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Network boot the selected DevKit, then automatically flash its internal storage once SSH is ready.")
-@click.option("-y", "--yes", is_flag=True, help="Reboot from eMMC after a successful NetBoot flash without prompting.")
+@click.option(
+    "-y", "--yes", is_flag=True,
+    help="Skip NetBoot setup confirmation with an explicit --devkit IP and --autoflash, "
+         "and skip reboot confirmation after a manual NetBoot flash.",
+)
 @click.pass_context
 def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_ip,
                 autoflash, fwtype, rootfs, recovery=False, force=False, yes=False):

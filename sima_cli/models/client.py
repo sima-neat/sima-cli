@@ -21,6 +21,8 @@ from urllib3.util.retry import Retry
 
 from sima_cli.download.parallel import PARALLEL_MIN_SIZE, download_parallel, connection_slot
 
+from .licenses import download_block_reason
+
 ORGANIZATION = "sima-neat"
 REPOSITORY = "models"
 PRODUCTION_BASE_URL = "https://models-registry.neat.sima.ai"
@@ -29,7 +31,22 @@ TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
 
 
 class ModelRegistryError(RuntimeError):
-    pass
+    """A Model Registry failure with a stable, machine-readable ``code``."""
+
+    def __init__(self, message: str, code: str = "registry_error") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _io_error_code(exc: BaseException) -> str:
+    """Classify a wrapped I/O failure; requests exceptions are OSError subclasses too."""
+    if isinstance(exc, requests.HTTPError):
+        return "http_error"
+    if isinstance(exc, requests.RequestException):
+        return "network_error"
+    if isinstance(exc, OSError):
+        return "filesystem_error"
+    return "registry_error"
 
 
 def normalize_base_url(value: str) -> str:
@@ -91,6 +108,12 @@ def _api_error_message(response: requests.Response) -> str:
     return response.reason or f"HTTP {response.status_code}"
 
 
+def _artifact_http_error(response: requests.Response) -> ModelRegistryError:
+    # A parallel range worker may already have closed the response body.
+    reason = f": {response.reason}" if response.reason else ""
+    return ModelRegistryError(f"Artifact download failed with HTTP {response.status_code}{reason}", code="http_error")
+
+
 def _path_url(base_url: str, *parts: str) -> str:
     encoded = [urllib.parse.quote(str(part).strip("/"), safe="._-~") for part in parts]
     return "/".join([base_url, *encoded])
@@ -131,12 +154,21 @@ def latest_runs_by_model_variant(runs: Sequence[Dict[str, Any]]) -> List[Dict[st
     )
 
 
-def _benchmark_fingerprints(model: Dict[str, Any], profile: str, run_ids: Sequence[str]) -> Dict[str, str]:
-    """A fingerprint names the builds it measured, so only a row showing exactly the catalog builds keeps it."""
+def _benchmark_fingerprints(
+    model: Dict[str, Any], profile: str, run_ids: Sequence[str],
+    deployment: Optional[Dict[str, Any]],
+) -> Dict[str, str]:
+    """Only attach a whole-model fingerprint to a row showing every measured component."""
     builds = {
-        build.get("run_id") for build in model.get("builds") or []
-        if isinstance(build, dict) and build.get("build_profile_id") == profile
+        root["run_id"] for root in (deployment or {}).get("artifacts", [])
+        if root.get("component_id") and root.get("run_id")
     }
+    # Package-only selections rely on the catalog for their component run IDs.
+    if not builds:
+        builds = {
+            build.get("run_id") for build in model.get("builds") or []
+            if isinstance(build, dict) and build.get("build_profile_id") == profile
+        }
     if not run_ids or set(run_ids) != builds:
         return {}
     return (model.get("benchmark_fingerprints") or {}).get(profile) or {}
@@ -170,14 +202,16 @@ def find_latest_run(
         )
         raise ModelRegistryError(
             f"Multiple packages found for model {model_id!r}, variant "
-            f"{variant_id!r}: {package_ids}."
+            f"{variant_id!r}: {package_ids}.",
+            code="ambiguous_package",
         )
     for run in latest_runs_by_model_variant(runs):
         metadata = run.get("metadata", {})
         if metadata.get("model_id") == model_id and _build_profile_id(metadata) == variant_id:
             return run
     raise ModelRegistryError(
-        f"No completed model build found for model {model_id!r}, variant {variant_id!r}."
+        f"No completed model build found for model {model_id!r}, variant {variant_id!r}.",
+        code="build_not_found",
     )
 
 
@@ -332,7 +366,10 @@ def _download_lock(destination: Path) -> Iterator[None]:
 
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise ModelRegistryError(f"Another download is using {destination}. Retry when it finishes.") from exc
+            raise ModelRegistryError(
+                f"Another download is using {destination}. Retry when it finishes.",
+                code="destination_locked",
+            ) from exc
         yield
 
 
@@ -430,12 +467,25 @@ class RegistryClient:
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
         except requests.RequestException as exc:
-            raise ModelRegistryError(f"GET {url} failed: {exc}") from exc
+            raise ModelRegistryError(f"GET {url} failed: {exc}", code="network_error") from exc
         if allow_not_found and response.status_code == 404:
             return None
+        if response.status_code == 429:
+            raise ModelRegistryError(
+                f"GET {url} was rate limited (HTTP 429). Wait before retrying.",
+                code="http_error",
+            )
+        if (response.status_code == 403
+                and response.headers.get("X-Cache", "").lower() == "error from cloudfront"):
+            raise ModelRegistryError(
+                f"GET {url} was blocked by the registry CDN (HTTP 403). "
+                "This may be rate limiting; wait a few minutes before retrying.",
+                code="http_error",
+            )
         if response.status_code >= 400:
             raise ModelRegistryError(
-                f"GET {url} failed with HTTP {response.status_code}: {_api_error_message(response)}"
+                f"GET {url} failed with HTTP {response.status_code}: {_api_error_message(response)}",
+                code="http_error",
             )
         try:
             payload = response.json()
@@ -460,7 +510,11 @@ class RegistryClient:
                 normalized.append(branch)
         return sorted(normalized, key=lambda item: str(item["name"]).lower())
 
-    def catalog_models(self, branch: str, query: Optional[str] = None) -> List[Dict[str, Any]]:
+    def catalog_models(
+        self, branch: str, query: Optional[str] = None, *,
+        model_id: Optional[str] = None, variant_id: Optional[str] = None,
+        for_download: bool = False, hydrate: bool = True,
+    ) -> List[Dict[str, Any]]:
         if not branch.strip():
             raise ModelRegistryError("Branch is required.")
         payload = self._get_json(
@@ -471,7 +525,8 @@ class RegistryClient:
         if payload is None:
             raise ModelRegistryError(
                 f"No published model catalog for branch {branch!r} at {self.base_url} (HTTP 404). "
-                "Use models branches to find available branches; no fallback was attempted."
+                "Use models branches to find available branches; no fallback was attempted.",
+                code="branch_not_found",
             )
         catalog = payload.get("catalog") if payload else None
         document = catalog.get("document") if isinstance(catalog, dict) else None
@@ -483,7 +538,24 @@ class RegistryClient:
             str(model.get("id") or ""): model
             for model in models
             if isinstance(model, dict) and model.get("id")
+            and (model_id is None or model["id"] == model_id)
         }
+        if for_download and model_id in definitions:
+            reason = download_block_reason(definitions[model_id].get("license"))
+            if reason:
+                raise ModelRegistryError(f"Model {model_id!r} is not downloadable: {reason}")
+
+        query_terms = (query or "").strip().lower().split()
+
+        def matches(model: Dict[str, Any], profile: str) -> bool:
+            if variant_id is not None and profile != variant_id:
+                return False
+            searchable = " ".join(str(value) for value in (
+                model["id"], profile, model.get("display_name"), model.get("description"),
+                model.get("categories"), branch,
+            ) if value).lower()
+            return all(term in searchable for term in query_terms)
+
         deployments = {
             (model_id, profile): selection
             for model_id, model in definitions.items()
@@ -491,13 +563,15 @@ class RegistryClient:
                 **(model.get("approved_deployments") or {}),
                 **(model.get("branch_deployments") or {}),
             }.items()
+            if matches(model, profile)
         }
         references = [
             (model_id, package["build_profile_id"], {**package, "artifact_name": "package"})
             for model_id, model in definitions.items()
             for package in (model.get("packages") or [])
             if isinstance(package, dict) and package.get("run_id")
-            and (model_id, package.get("build_profile_id")) not in deployments
+            and matches(model, package["build_profile_id"])
+            and (model_id, package["build_profile_id"]) not in deployments
         ]
         for (model_id, profile), selection in deployments.items():
             roots = selection["artifacts"]
@@ -507,57 +581,119 @@ class RegistryClient:
                 raise ModelRegistryError(f"Selected model {model_id!r}, variant {profile!r} has no full deployment root.")
             references.extend((model_id, profile, root) for root in roots)
 
-        query_terms = (query or "").strip().lower().split()
-        selections: List[Dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            summaries = executor.map(self.run, [root["run_id"] for _, _, root in references])
-            for (model_id, profile, root), summary in zip(references, summaries):
-                run = summary.get("run") or {}
-                metadata = run.get("metadata") or {}
-                if (run.get("id") != root["run_id"] or run.get("status") != "completed"
-                        or run.get("run_type") != ("model_package" if root.get("package_id") else "model_compile")
-                        or metadata.get("model_id") != model_id or _build_profile_id(metadata) != profile
-                        or (root.get("package_id") and metadata.get("package_id") != root["package_id"])
-                        or (root.get("component_id") and metadata.get("component_id", "model") != root["component_id"])
-                        or ("component_run_ids" in root and metadata.get("component_run_ids") != root["component_run_ids"])):
-                    raise ModelRegistryError(f"Catalog artifact does not match model {model_id!r}, variant {profile!r}.")
-                artifact = select_model_artifact(
-                    summary.get("artifacts") or [], root["artifact_name"],
-                    artifact_type="model-package" if root.get("package_id") else "model-pack",
-                )
-                artifact_metadata = artifact.get("metadata") or {}
-                model = definitions[model_id]
-                shown_run_ids = (
-                    list((metadata.get("component_run_ids") or {}).values())
-                    if root.get("package_id") else [run["id"]]
-                )
-                searchable = " ".join(str(value) for value in (
-                    model_id, profile, model.get("display_name"), model.get("description"),
-                    model.get("categories"), branch,
-                ) if value).lower()
-                if query_terms and not all(term in searchable for term in query_terms):
-                    continue
-                selections.append({
-                    **run, "artifact_name": root["artifact_name"],
-                    "repository": run.get("repository") or f"{ORGANIZATION}/{REPOSITORY}",
-                    "metadata": {
-                        **metadata, "variant_id": profile, "build_profile_id": profile,
-                        "display_name": model.get("display_name"), "description": model.get("description"),
-                    },
-                    "model_categories": model.get("categories") or {},
-                    "size_bytes": artifact_metadata.get("deployment_size_bytes", artifact.get("size_bytes")),
-                    "sha256": artifact.get("sha256"),
-                    "benchmark_fingerprints": _benchmark_fingerprints(model, profile, shown_run_ids),
-                })
-
+        entries = [
+            self._catalog_entry(definitions[model_id], profile, root, deployments.get((model_id, profile)))
+            for model_id, profile, root in references
+        ]
+        if hydrate and entries:
+            entries = self._hydrate_catalog_entries(entries)
         return sorted(
-            selections,
+            entries,
             key=lambda run: (
-                str(run.get("metadata", {}).get("model_id") or "").lower(),
-                _build_profile_id(run.get("metadata", {})).lower(),
-                str(run.get("metadata", {}).get("package_id") or "").lower(),
+                run["metadata"]["model_id"].lower(),
+                _build_profile_id(run["metadata"]).lower(),
+                str(run["metadata"].get("package_id") or "").lower(),
             ),
         )
+
+    def _hydrate_catalog_entries(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        run_ids = sorted({entry["id"] for entry in entries})
+        summaries = self._model_run_summaries(run_ids) if len(run_ids) > 1 else None
+        if summaries is not None:
+            return [self.hydrate_catalog_model(entry, summaries[entry["id"]]) for entry in entries]
+
+        # Older registries still support the individual summary route.
+        hydrated = []
+        batch_size = 4
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            for start in range(0, len(entries), batch_size):
+                hydrated.extend(executor.map(self.hydrate_catalog_model, entries[start:start + batch_size]))
+        return hydrated
+
+    def _model_run_summaries(self, run_ids: List[str]) -> Optional[Dict[str, Dict[str, Any]]]:
+        path = ("v1", "repositories", ORGANIZATION, REPOSITORY, "runs")
+        summaries: Dict[str, Dict[str, Any]] = {}
+        batch_size = 40
+        for start in range(0, len(run_ids), batch_size):
+            batch = run_ids[start:start + batch_size]
+            # Older readers ignore summary_ids. Limit their normal listing to one row.
+            payload = self._get_json(path, params={"summary_ids": ",".join(batch), "limit": 1}) or {}
+            rows = payload.get("summaries")
+            if start == 0 and "summaries" not in payload and isinstance(payload.get("runs"), list):
+                return None
+            if not isinstance(rows, list):
+                raise ModelRegistryError("The registry did not return a batch of run summaries.")
+            remaining = set(batch)
+            for row in rows:
+                run = row.get("run") if isinstance(row, dict) else None
+                run_id = run.get("id") if isinstance(run, dict) else None
+                if (not isinstance(run_id, str) or run_id not in remaining
+                        or not isinstance(row.get("artifacts"), list)):
+                    raise ModelRegistryError("The registry returned an invalid batch of run summaries.")
+                summaries[run_id] = row
+                remaining.remove(run_id)
+            if remaining:
+                raise ModelRegistryError("The registry omitted a requested run summary.")
+        return summaries
+
+    @staticmethod
+    def _catalog_entry(
+        model: Dict[str, Any], profile: str, root: Dict[str, Any],
+        deployment: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        reason = download_block_reason(model.get("license"))
+        return {
+            "id": root["run_id"],
+            "run_type": "model_package" if root.get("package_id") else "model_compile",
+            "artifact_name": root["artifact_name"],
+            "metadata": {
+                "model_id": model["id"], "variant_id": profile, "build_profile_id": profile,
+                "display_name": model.get("display_name"), "description": model.get("description"),
+                **{key: root[key] for key in ("package_id", "component_id") if key in root},
+            },
+            "model_categories": model.get("categories") or {},
+            "downloadable": reason is None,
+            "download_block_reason": reason,
+            "_catalog": (model, root, deployment),
+        }
+
+    def hydrate_catalog_model(
+        self, entry: Dict[str, Any], summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        model, root, deployment = entry["_catalog"]
+        expected = entry["metadata"]
+        model_id, profile = expected["model_id"], expected["build_profile_id"]
+        if summary is None:
+            summary = self.run(entry["id"])
+        run = summary.get("run") or {}
+        metadata = run.get("metadata") or {}
+        if (run.get("id") != root["run_id"] or run.get("status") != "completed"
+                or run.get("run_type") != entry["run_type"]
+                or metadata.get("model_id") != model_id or _build_profile_id(metadata) != profile
+                or (root.get("package_id") and metadata.get("package_id") != root["package_id"])
+                or (root.get("component_id") and metadata.get("component_id", "model") != root["component_id"])
+                or ("component_run_ids" in root and metadata.get("component_run_ids") != root["component_run_ids"])):
+            raise ModelRegistryError(f"Catalog artifact does not match model {model_id!r}, variant {profile!r}.")
+        artifact = select_model_artifact(
+            summary.get("artifacts") or [], root["artifact_name"],
+            artifact_type="model-package" if root.get("package_id") else "model-pack",
+        )
+        artifact_metadata = artifact.get("metadata") or {}
+        shown_run_ids = (
+            list((metadata.get("component_run_ids") or {}).values())
+            if root.get("package_id") else [run["id"]]
+        )
+        fingerprints = _benchmark_fingerprints(model, profile, shown_run_ids, deployment)
+        return {
+            **run,
+            **{key: value for key, value in entry.items() if key != "_catalog"},
+            "repository": run.get("repository") or f"{ORGANIZATION}/{REPOSITORY}",
+            "metadata": {**metadata, **expected},
+            "size_bytes": artifact_metadata.get("deployment_size_bytes", artifact.get("size_bytes")),
+            "sha256": artifact.get("sha256"),
+            "benchmark_fingerprints": fingerprints,
+            **({"benchmark_component_run_ids": sorted(shown_run_ids)} if deployment and fingerprints else {}),
+        }
 
     def _repository_runs(
         self,
@@ -626,7 +762,10 @@ class RegistryClient:
         payload = self._get_json(("v1", "runs", run_id, "metrics"))
         return payload or {}
 
-    def whole_model_result(self, stage: str, fingerprint: Optional[str]) -> Optional[Dict[str, Any]]:
+    def whole_model_result(
+        self, stage: str, fingerprint: Optional[str],
+        component_run_ids: Optional[Sequence[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Return the model test result of the newest completed run for a benchmark fingerprint."""
         if not fingerprint:
             return None
@@ -638,6 +777,17 @@ class RegistryClient:
         run_id = ((resolved or {}).get("run") or {}).get("id")
         if not run_id:
             return None
+        if component_run_ids is not None:
+            # A promotion can replace the selected runs before the catalog's fingerprints refresh.
+            provenance = self.provenance(str(run_id))
+            measured_ids = {
+                item.get("metadata", {}).get("compile_run_id")
+                for item in provenance.get("inputs") or []
+                if isinstance(item, dict) and isinstance(item.get("metadata"), dict)
+                and item["metadata"].get("compile_run_id")
+            }
+            if measured_ids != set(component_run_ids):
+                return None
         results = [
             result for result in self.test_results(str(run_id)).get("test_results") or []
             if isinstance(result, dict) and result.get("suite") == stage and result.get("name") == "model"
@@ -650,9 +800,9 @@ class RegistryClient:
             allow_not_found=True,
         )
 
-    def detail(self, run_id: str) -> Dict[str, Any]:
+    def detail(self, run_id: str, summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return {
-            "summary": self.run(run_id),
+            "summary": self.run(run_id) if summary is None else summary,
             "provenance": self.provenance(run_id),
             "tests": self.test_results(run_id),
             "metrics": self.metrics(run_id),
@@ -687,7 +837,9 @@ class RegistryClient:
             except (OSError, ValueError, requests.RequestException) as exc:
                 if cancellation is not None:
                     cancellation.check()
-                raise ModelRegistryError(f"Artifact download failed: {exc}") from exc
+                if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                    raise _artifact_http_error(exc.response) from exc
+                raise ModelRegistryError(f"Artifact download failed: {exc}", code=_io_error_code(exc)) from exc
         with connection_slot(cancellation):
             self._download_sequential(url, partial, expected_size, expected_sha, progress, cancellation)
 
@@ -695,16 +847,14 @@ class RegistryClient:
         try:
             response = self.session.get(url, stream=True, timeout=self.timeout)
         except requests.RequestException as exc:
-            raise ModelRegistryError(f"Artifact download failed: {exc}") from exc
+            raise ModelRegistryError(f"Artifact download failed: {exc}", code="network_error") from exc
         digest = hashlib.sha256()
         size = 0
         with response, (cancellation.track(response) if cancellation is not None else nullcontext()):
             if response.status_code in {401, 403}:
                 raise PermissionError("The presigned artifact URL expired or was rejected.")
             if response.status_code >= 400:
-                raise ModelRegistryError(
-                    f"Artifact download failed with HTTP {response.status_code}: {_api_error_message(response)}"
-                )
+                raise _artifact_http_error(response)
             try:
                 with partial.open("wb") as output:
                     for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -720,7 +870,9 @@ class RegistryClient:
             except (OSError, requests.RequestException) as exc:
                 if cancellation is not None:
                     cancellation.check()
-                raise ModelRegistryError(f"Could not write downloaded artifact: {exc}") from exc
+                raise ModelRegistryError(
+                    f"Could not write downloaded artifact: {exc}", code=_io_error_code(exc)
+                ) from exc
 
         if cancellation is not None:
             cancellation.check()
@@ -762,7 +914,8 @@ class RegistryClient:
         with (_download_lock(destination) if temporary_dir is None else nullcontext()):
             if destination.exists() and not force:
                 raise ModelRegistryError(
-                    f"Destination already exists: {destination}. Use --force to replace it."
+                    f"Destination already exists: {destination}. Use --force to replace it.",
+                    code="destination_exists",
                 )
             partial = (temporary_dir / f".{uuid4().hex}.part" if temporary_dir is not None
                        else destination.with_name(f".{destination.name}.part"))
@@ -815,7 +968,8 @@ class RegistryClient:
                 if destination.exists() and not same_deployment and not force:
                     raise ModelRegistryError(
                         f"Destination already exists with a different deployment: {destination}. "
-                        "Use --force to replace it."
+                        "Use --force to replace it.",
+                        code="destination_exists",
                     )
                 cache = destination.with_name(f".{destination.name}.download")
                 _check_directory_destination(cache)
@@ -892,7 +1046,9 @@ class RegistryClient:
                     _cleanup_directory(backup)
                 _cleanup_directory(cache)
         except OSError as exc:
-            raise ModelRegistryError(f"Could not download deployment to {destination}: {exc}") from exc
+            raise ModelRegistryError(
+                f"Could not download deployment to {destination}: {exc}", code=_io_error_code(exc)
+            ) from exc
         return {
             "path": str(destination), "format": "directory",
             "file_count": len(files), "size_bytes": total,

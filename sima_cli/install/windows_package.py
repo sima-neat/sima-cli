@@ -37,6 +37,10 @@ class WindowsPrerequisiteError(click.ClickException):
     """The host is not ready for the requested Windows package transaction."""
 
 
+class _WindowsPnpDriverVersionError(RuntimeError):
+    """A matching Windows PnP device set has no unambiguous driver version."""
+
+
 def _is_windows() -> bool:
     return os.name == "nt"
 
@@ -163,8 +167,35 @@ def _windows_pnp_driver_version(device_name: str) -> Optional[str]:
     script = r"""
 $matches = @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
   Where-Object { $_.DeviceName -eq $env:SIMA_CLI_PREREQ_DEVICE })
-if ($matches.Count -ne 1 -or -not $matches[0].DriverVersion) { exit 3 }
-[Console]::Out.Write([string]$matches[0].DriverVersion)
+if ($matches.Count -lt 1) {
+  [Console]::Error.Write(
+    "No Windows PnP devices named '$env:SIMA_CLI_PREREQ_DEVICE' were found.")
+  exit 3
+}
+$versions = @()
+$missingVersionCount = 0
+foreach ($match in $matches) {
+  $version = [string]$match.DriverVersion
+  if ([string]::IsNullOrWhiteSpace($version)) {
+    $missingVersionCount += 1
+  } else {
+    $versions += $version.Trim()
+  }
+}
+if ($missingVersionCount -gt 0) {
+  [Console]::Error.Write(
+    "$missingVersionCount of $($matches.Count) Windows PnP devices named " +
+    "'$env:SIMA_CLI_PREREQ_DEVICE' do not report DriverVersion.")
+  exit 3
+}
+$versions = @($versions | Sort-Object -Unique)
+if ($versions.Count -ne 1) {
+  [Console]::Error.Write(
+    "Windows PnP devices named '$env:SIMA_CLI_PREREQ_DEVICE' report mixed " +
+    "DriverVersion values: $($versions -join ', ').")
+  exit 3
+}
+[Console]::Out.Write([string]$versions[0])
 """
     environment = os.environ.copy()
     environment["SIMA_CLI_PREREQ_DEVICE"] = device_name
@@ -175,9 +206,24 @@ if ($matches.Count -ne 1 -or -not $matches[0].DriverVersion) { exit 3 }
             capture_output=True,
             env=environment,
         )
-    except OSError:
-        return None
-    return result.stdout.strip() if result.returncode == 0 else None
+    except OSError as error:
+        raise _WindowsPnpDriverVersionError(
+            f"Could not query Windows PnP drivers for '{device_name}': {error}."
+        ) from error
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        raise _WindowsPnpDriverVersionError(
+            detail or (
+                f"Windows PnP driver query for '{device_name}' failed with "
+                f"exit code {result.returncode}."
+            )
+        )
+    version = result.stdout.strip()
+    if not version:
+        raise _WindowsPnpDriverVersionError(
+            f"Windows returned an invalid PnP driver response for '{device_name}'."
+        )
+    return version
 
 
 def _check_command_version(prerequisite: Dict) -> Tuple[bool, Optional[str]]:
@@ -209,6 +255,7 @@ def _check_prerequisites(metadata: Dict) -> List[Dict[str, str]]:
     for prerequisite in prerequisites:
         kind = prerequisite["type"]
         actual = None
+        problem = None
         if kind == "executable":
             passed = shutil.which(prerequisite["value"]) is not None
         elif kind == "windows-service":
@@ -217,8 +264,12 @@ def _check_prerequisites(metadata: Dict) -> List[Dict[str, str]]:
             actual = _windows_product_version(prerequisite["value"])
             passed = actual == prerequisite["version"]
         elif kind == "windows-pnp-driver":
-            actual = _windows_pnp_driver_version(prerequisite["value"])
-            passed = actual == prerequisite["version"]
+            try:
+                actual = _windows_pnp_driver_version(prerequisite["value"])
+                passed = actual == prerequisite["version"]
+            except _WindowsPnpDriverVersionError as error:
+                passed = False
+                problem = str(error)
         elif kind == "command-version":
             passed, actual = _check_command_version(prerequisite)
         else:
@@ -227,15 +278,16 @@ def _check_prerequisites(metadata: Dict) -> List[Dict[str, str]]:
                 for path in (_path_from_spec(candidate) for candidate in prerequisite["candidates"])
             )
         if not passed:
-            failures.append((prerequisite, actual))
+            failures.append((prerequisite, actual, problem))
 
     if failures:
         details = "\n".join(
             f"- {item['name']}: "
+            + (f"{problem} " if problem else "")
             + (f"found {actual or 'no version'}, expected {item['version']}. "
-               if "version" in item else "")
+               if "version" in item and not problem else "")
             + item["guidance"]
-            for item, actual in failures
+            for item, actual, problem in failures
         )
         raise WindowsPrerequisiteError(
             "Windows host prerequisites are not ready; no MSI was started:\n" + details

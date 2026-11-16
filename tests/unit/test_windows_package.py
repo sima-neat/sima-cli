@@ -15,6 +15,7 @@ from sima_cli.install.windows_package import (
     WindowsPackageRestartRequired,
     WindowsPrerequisiteError,
     WindowsPythonInstallError,
+    _WindowsPnpDriverVersionError,
     _managed_python_executable,
     _windows_pnp_driver_version,
     install_windows_package,
@@ -91,6 +92,65 @@ class WindowsPackageTests(unittest.TestCase):
             "SiMa.ai MLA Device",
         )
         self.assertNotIn("SiMa.ai MLA Device", run.call_args.args[0])
+        powershell = run.call_args.args[0][-1]
+        self.assertIn("foreach ($match in $matches)", powershell)
+        self.assertIn("Sort-Object -Unique", powershell)
+        self.assertIn("$missingVersionCount -gt 0", powershell)
+        self.assertIn("$versions.Count -ne 1", powershell)
+        self.assertNotIn("$matches.Count -ne 1", powershell)
+
+    def test_driver_version_query_rejects_zero_matching_devices(self):
+        with patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(
+                returncode=3,
+                stderr="No Windows PnP devices named 'SiMa.ai MLA Device' were found.",
+            ),
+        ), self.assertRaisesRegex(
+            _WindowsPnpDriverVersionError, "No Windows PnP devices"
+        ):
+            _windows_pnp_driver_version("SiMa.ai MLA Device")
+
+    def test_driver_version_query_accepts_multiple_devices_at_one_version(self):
+        with patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(stdout="3.0.0.2"),
+        ):
+            self.assertEqual(
+                _windows_pnp_driver_version("SiMa.ai MLA Device"), "3.0.0.2"
+            )
+
+    def test_driver_version_query_rejects_mixed_device_versions(self):
+        with patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(
+                returncode=3,
+                stderr=(
+                    "Windows PnP devices named 'SiMa.ai MLA Device' report mixed "
+                    "DriverVersion values: 2.1.3.0, 3.0.0.2."
+                ),
+            ),
+        ), self.assertRaisesRegex(
+            _WindowsPnpDriverVersionError,
+            "mixed DriverVersion values: 2.1.3.0, 3.0.0.2",
+        ):
+            _windows_pnp_driver_version("SiMa.ai MLA Device")
+
+    def test_driver_version_query_rejects_a_missing_device_version(self):
+        with patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(
+                returncode=3,
+                stderr=(
+                    "1 of 2 Windows PnP devices named 'SiMa.ai MLA Device' "
+                    "do not report DriverVersion."
+                ),
+            ),
+        ), self.assertRaisesRegex(
+            _WindowsPnpDriverVersionError,
+            "1 of 2 Windows PnP devices.*do not report DriverVersion",
+        ):
+            _windows_pnp_driver_version("SiMa.ai MLA Device")
 
     def test_metadata_rejects_msi_not_in_resources(self):
         self.metadata["resources"].remove(self.msi.name)
@@ -417,6 +477,35 @@ class WindowsPackageTests(unittest.TestCase):
             ):
                 install_windows_package(self.metadata, str(self.root))
         run.assert_not_called()
+
+    def test_mixed_platform_driver_versions_block_before_msi(self):
+        self.metadata["installation"]["prerequisites"] = [{
+            "name": "SiMa Platform MLA driver",
+            "type": "windows-pnp-driver",
+            "value": "SiMa.ai MLA Device",
+            "version": "3.0.0.2",
+            "guidance": "Install the supported Platform package.",
+        }]
+        with patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(
+                returncode=3,
+                stderr=(
+                    "Windows PnP devices named 'SiMa.ai MLA Device' report mixed "
+                    "DriverVersion values: 2.1.3.0, 3.0.0.2."
+                ),
+            ),
+        ) as run:
+            with self.assertRaisesRegex(
+                WindowsPrerequisiteError,
+                "mixed DriverVersion values: 2.1.3.0, 3.0.0.2",
+            ):
+                install_windows_package(self.metadata, str(self.root))
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][0], "powershell.exe")
 
     def test_wrong_gstreamer_version_blocks_before_msi(self):
         gst_inspect = self.root / "gstreamer" / "bin" / "gst-inspect-1.0.exe"

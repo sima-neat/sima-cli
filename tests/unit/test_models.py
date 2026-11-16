@@ -138,8 +138,9 @@ def _test_result(suite, summary, name="model", status="passed"):
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, payload=None, content=b"", reason=""):
+    def __init__(self, status_code=200, payload=None, content=b"", reason="", headers=None):
         self.status_code = status_code
+        self.headers = headers or {}
         self._payload = payload
         self._content = content
         self.reason = reason
@@ -215,7 +216,7 @@ def test_top_level_models_json_keeps_root_diagnostics_on_stderr(arguments):
     }
     fake_client = Mock()
     fake_client.branches.return_value = [{"name": "main"}]
-    fake_client.catalog_models.return_value = [run]
+    fake_client.catalog_models.return_value = [{**run, "downloadable": True}]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     fake_client.artifact_download.return_value = signed
     fake_client.download.return_value = Path(
@@ -961,22 +962,24 @@ def test_list_json_defaults_to_main_without_prompting():
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["branch"] == "main"
-    fake_client.catalog_models.assert_called_once_with("main", query=None)
+    fake_client.catalog_models.assert_called_once_with("main", query=None, hydrate=True)
     fake_client.branches.assert_not_called()
     select.assert_not_called()
 
 
-def test_noninteractive_list_requires_explicit_branch_when_omitted():
+@pytest.mark.parametrize("interactive", [False, True])
+def test_list_defaults_to_main_without_branch_picker(interactive):
     fake_client = Mock()
+    fake_client.catalog_models.return_value = []
 
-    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
+    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client), patch(
+        "sima_cli.models.commands._is_interactive", return_value=interactive
+    ):
         result = CliRunner().invoke(models_group, ["--stg", "list"])
 
-    assert result.exit_code == 1
-    assert "Use --branch BRANCH" in result.output
-    assert "Package    Target    Size" not in result.output
+    assert result.exit_code == 0, result.output
     fake_client.branches.assert_not_called()
-    fake_client.catalog_models.assert_not_called()
+    fake_client.catalog_models.assert_called_once_with("main", query=None, hydrate=False)
 
 
 def test_noninteractive_list_requires_json_instead_of_rendering_overview_table():
@@ -991,7 +994,7 @@ def test_noninteractive_list_requires_json_instead_of_rendering_overview_table()
     assert result.exit_code == 1
     assert "Use --json to list models" in result.output
     assert "Package    Target    Size" not in result.output
-    fake_client.catalog_models.assert_called_once_with("develop", query=None)
+    fake_client.catalog_models.assert_called_once_with("develop", query=None, hydrate=False)
 
 
 def test_model_variant_group_rejects_ambiguous_promoted_packages():
@@ -1083,11 +1086,11 @@ def test_list_accepts_short_branch_option():
         result = CliRunner().invoke(models_group, ["--stg", "list", "-b", "develop"])
 
     assert result.exit_code == 0, result.output
-    fake_client.catalog_models.assert_called_once_with("develop", query=None)
+    fake_client.catalog_models.assert_called_once_with("develop", query=None, hydrate=False)
     fake_client.branches.assert_not_called()
 
 
-def test_list_prompts_for_branch_when_omitted():
+def test_list_prompts_for_branch_on_request():
     fake_client = Mock()
     fake_client.branches.return_value = [{"name": "develop"}, {"name": "main"}]
     fake_client.catalog_models.return_value = []
@@ -1099,12 +1102,12 @@ def test_list_prompts_for_branch_when_omitted():
     ), patch(
         "sima_cli.models.commands.select_branch", return_value="develop"
     ) as select:
-        result = CliRunner().invoke(models_group, ["--stg", "list"])
+        result = CliRunner().invoke(models_group, ["--stg", "list", "--select-branch"])
 
     assert result.exit_code == 0, result.output
     fake_client.branches.assert_called_once_with()
     select.assert_called_once_with(fake_client.branches.return_value)
-    fake_client.catalog_models.assert_called_once_with("develop", query=None)
+    fake_client.catalog_models.assert_called_once_with("develop", query=None, hydrate=False)
 
 
 def test_list_passes_query_to_registry_search():
@@ -1125,12 +1128,13 @@ def test_list_passes_query_to_registry_search():
         )
 
     assert result.exit_code == 0, result.output
-    fake_client.catalog_models.assert_called_once_with("main", query="yolo object detection")
+    fake_client.catalog_models.assert_called_once_with("main", query="yolo object detection", hydrate=False)
 
 
 def test_interactive_list_renders_selected_model_card_without_forcing_download():
     run = _run()
     fake_client = Mock()
+    fake_client.hydrate_catalog_model.return_value = run
     fake_client.catalog_models.return_value = [run]
     fake_client.detail.return_value = {
         "summary": {"run": run, "artifacts": []},
@@ -1173,6 +1177,7 @@ def test_interactive_package_selection_loads_whole_model_results_for_its_profile
     package["benchmark_fingerprints"] = {"performance": FINGERPRINT}
     compile_run = _run(run_id="compile-run", variant_id="modalix_int8")
     fake_client = Mock(spec=RegistryClient)
+    fake_client.hydrate_catalog_model.return_value = package
     fake_client.catalog_models.return_value = [package]
     fake_client.run.return_value = {"run": package, "artifacts": []}
     fake_client.detail.return_value = {
@@ -1247,7 +1252,7 @@ def test_download_command_resolves_and_downloads_selected_model(tmp_path):
         "sha256": hashlib.sha256(content).hexdigest(),
     }
     fake_client = Mock()
-    fake_client.catalog_models.return_value = [run]
+    fake_client.catalog_models.return_value = [{**run, "downloadable": True}]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     signed = {
         "download_url": "https://download.example/model",
@@ -1286,7 +1291,9 @@ def test_download_command_resolves_and_downloads_selected_model(tmp_path):
     assert payload["path"] == str(expected)
     assert payload["build_profile_id"] == "modalix_int8_bf16"
     assert payload["filename"] == "rf_detr_small_modalix_int8_bf16_default.zip"
-    fake_client.catalog_models.assert_called_once_with("main")
+    fake_client.catalog_models.assert_called_once_with(
+        "main", model_id="rf_detr_small", variant_id="modalix_int8_bf16", for_download=True,
+    )
     fake_client.download.assert_called_once_with(
         "package-run", artifact, expected, force=False, initial_download=signed
     )
@@ -1305,7 +1312,7 @@ def test_download_accepts_short_branch_option(tmp_path):
         "s3_key": "models/run/resnet_50_int8_mpk.tar.gz",
     }
     fake_client = Mock()
-    fake_client.catalog_models.return_value = [run]
+    fake_client.catalog_models.return_value = [{**run, "downloadable": True}]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     fake_client.artifact_download.return_value = signed
     destination = tmp_path / "resnet_50" / "int8" / "resnet_50_int8_mpk.tar.gz"
@@ -1329,7 +1336,9 @@ def test_download_accepts_short_branch_option(tmp_path):
         )
 
     assert result.exit_code == 0, result.output
-    fake_client.catalog_models.assert_called_once_with("develop")
+    fake_client.catalog_models.assert_called_once_with(
+        "develop", model_id="resnet_50", variant_id="int8", for_download=True,
+    )
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -1459,3 +1468,133 @@ def test_verified_download_on_both_endpoints(tmp_path, base_url, failure):
         assert client.download("run", artifact, destination) == destination
         assert destination.read_bytes() == content
     assert session.calls[0][0] == base_url + "/v1/runs/run/artifacts/package"
+
+
+def _deployment_catalog(selection_field, license_id="Apache-2.0"):
+    return {"catalog": {"document": {"models": [
+        {"id": "other", "packages": [{
+            "build_profile_id": "int8", "package_id": "default", "run_id": "other-run",
+        }]},
+        {"id": "detector", "license": {"spdx": license_id}, "builds": [],
+         "benchmark_fingerprints": {"int8": {"performance": FINGERPRINT}},
+         selection_field: {"int8": {"artifacts": [
+             {"component_id": "encoder", "run_id": "encoder-run", "artifact_name": "mpk"},
+             {"component_id": "decoder", "run_id": "decoder-run", "artifact_name": "mpk"},
+             {"package_id": "default", "run_id": "selected", "artifact_name": "package"},
+         ]}}},
+    ]}}}
+
+
+@pytest.mark.parametrize("selection_field", ["approved_deployments", "branch_deployments"])
+@pytest.mark.parametrize("complete", [True, False])
+def test_selected_deployment_uses_its_component_runs_for_benchmark(selection_field, complete):
+    run = _run("selected", model_id="detector")
+    run["run_type"] = "model_package"
+    components = {"encoder": "encoder-run"}
+    if complete:
+        components["decoder"] = "decoder-run"
+    run["metadata"].update(package_id="default", component_run_ids=components)
+    session = FakeSession([
+        FakeResponse(payload=_deployment_catalog(selection_field)),
+        FakeResponse(payload=_package_summary(run)),
+    ])
+    client = RegistryClient("https://registry.example", session=session)
+
+    rows = client.catalog_models("main", model_id="detector", variant_id="int8", for_download=True)
+
+    assert len(session.calls) == 2
+    assert session.calls[-1][0].endswith("/v1/runs/selected")
+    assert rows[0]["benchmark_fingerprints"] == ({"performance": FINGERPRINT} if complete else {})
+
+
+def test_catalog_picker_reads_no_run_summaries_until_selection():
+    session = FakeSession([FakeResponse(payload=_deployment_catalog("approved_deployments"))])
+    client = RegistryClient("https://registry.example", session=session)
+
+    assert {row["id"] for row in client.catalog_models("main", hydrate=False)} == {"selected", "other-run"}
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize("license_id", ["LicenseRef-OpenStereo-Academic", "LicenseRef-Unlisted", None])
+def test_download_blocks_catalog_license_before_run_lookup(license_id):
+    session = FakeSession([FakeResponse(payload=_deployment_catalog("approved_deployments", license_id))])
+    client = RegistryClient("https://registry.example", session=session)
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, ["download", "--id", "detector", "--variant", "int8"])
+
+    assert result.exit_code == 1
+    assert "not downloadable" in result.output
+    assert (license_id or "does not identify the model's license") in result.output
+    assert len(session.calls) == 1
+
+
+def test_interactive_list_refuses_download_even_with_yes():
+    run = {**_run(), "downloadable": False, "download_block_reason": "Redistribution prohibited."}
+    client = Mock(spec=RegistryClient)
+    client.catalog_models.return_value = [run]
+    client.hydrate_catalog_model.return_value = run
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client), patch(
+        "sima_cli.models.commands._is_interactive", return_value=True
+    ), patch("sima_cli.models.commands.select_run", return_value=run), patch(
+        "sima_cli.models.commands._selected_model_detail", return_value=_detail()
+    ), patch("sima_cli.models.commands._taxonomy", return_value=None), patch(
+        "sima_cli.models.commands.click.confirm"
+    ) as confirm:
+        result = CliRunner().invoke(models_group, ["list"], obj={"yes": True})
+
+    assert result.exit_code == 0, result.output
+    assert "Redistribution prohibited." in result.output
+    confirm.assert_not_called()
+    client.artifact_download.assert_not_called()
+    client.download.assert_not_called()
+
+
+@pytest.mark.parametrize(("status", "headers", "expected"), [
+    (403, {"X-Cache": "Error from cloudfront"}, "may be rate limiting"),
+    (403, {}, "Forbidden"),
+    (429, {}, "rate limited"),
+])
+def test_registry_rate_limit_errors_distinguish_edge_blocks(status, headers, expected):
+    client = RegistryClient(PRODUCTION_BASE_URL, session=FakeSession([
+        FakeResponse(status_code=status, reason="Forbidden", headers=headers),
+    ]))
+    with pytest.raises(ModelRegistryError, match=expected):
+        client.branches()
+
+
+def test_deployment_benchmark_rejects_stale_catalog_fingerprint():
+    session = FakeSession([
+        FakeResponse(payload={"run": {"id": "old-benchmark"}}),
+        FakeResponse(payload={"inputs": [{"metadata": {"compile_run_id": "old-compile"}}]}),
+    ])
+    client = RegistryClient("https://registry.example", session=session)
+
+    assert client.whole_model_result("performance", FINGERPRINT, ["new-compile"]) is None
+    assert len(session.calls) == 2
+
+
+def test_generation_report_renders_llima_and_each_workload(monkeypatch):
+    # The real LLiMa schema uses a measurement object for each workload metric.
+    report = {
+        "schema": "sima.model-report", "schema_version": 1, "stage": "performance",
+        "runtime": {"llima": "0.6.1+develop.510f52757c3b", "build": {}},
+        "generation": {"workloads": [
+            {"id": "text_n128", "kind": "text", "metrics": {
+                "ttft_ms": {"value": 43.34, "unit": "ms"},
+                "decode_tps": {"value": 74.27, "unit": "tokens/s"},
+            }},
+            {"id": "image_text", "kind": "image", "metrics": {
+                "ttft_ms": {"value": 258.43, "unit": "ms"},
+            }},
+        ]},
+    }
+    card = model_card(_detail(_test_result("performance", report)))
+    assert card["benchmark"]["status"] == "passed"
+    assert card["benchmark"]["generation_workloads"][0]["measurements"]["decode_tps"] == 74.27
+    output = StringIO()
+    monkeypatch.setattr(rendering, "_console", lambda: Console(file=output, width=110))
+    render_model_card(card)
+    rendered = output.getvalue()
+    for field in ("LLiMa version", "0.6.1+develop.510f52757c3b", "text_n128", "image_text",
+                  "Time to first token (ms)", "Decode (tokens/s)"):
+        assert field in rendered

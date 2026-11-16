@@ -59,6 +59,9 @@ def _download_run(
     output: Path,
     force: bool,
 ) -> Dict[str, Any]:
+    if run.get("downloadable") is not True:
+        reason = run.get("download_block_reason") or "No download policy decision is available."
+        raise ModelRegistryError(f"Model is not downloadable: {reason}")
     run_id = str(run.get("id") or "")
     if not run_id:
         raise ModelRegistryError("The selected registry run has no ID.")
@@ -153,6 +156,12 @@ def _selected_model_detail(
         },
         "artifacts": package_summary.get("artifacts") or [],
     }
+
+    def result(stage: str) -> Optional[Dict[str, Any]]:
+        run_ids = selected.get("benchmark_component_run_ids")
+        args = (run_ids,) if run_ids is not None else ()
+        return client.whole_model_result(stage, fingerprints.get(stage), *args)
+
     return {
         "summary": summary,
         "provenance": primary.get("provenance") or {},
@@ -170,8 +179,8 @@ def _selected_model_detail(
                 for metric in (detail.get("metrics") or {}).get("measurements") or []
             ]
         },
-        "benchmark": client.whole_model_result("performance", fingerprints.get("performance")),
-        "accuracy": client.whole_model_result("accuracy", fingerprints.get("accuracy")),
+        "benchmark": result("performance"),
+        "accuracy": result("accuracy"),
     }
 
 
@@ -221,11 +230,9 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
 @click.option(
     "-b",
     "--branch",
-    help=(
-        "Models repository branch. If omitted, select interactively; "
-        "--json defaults to main."
-    ),
+    help="Models repository branch (default: main).",
 )
+@click.option("--select-branch", "pick_branch", is_flag=True, help="Choose a branch interactively instead of using main.")
 @click.option(
     "-q",
     "--query",
@@ -249,6 +256,7 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
 def list_command(
     ctx: click.Context,
     branch: Optional[str],
+    pick_branch: bool,
     query: Optional[str],
     staging: bool,
     json_output: bool,
@@ -258,17 +266,15 @@ def list_command(
     """Browse registered models, or list them with --json."""
     try:
         client = _client(ctx, staging)
-        if branch is None:
-            if json_output:
-                branch = "main"
-            elif not _is_interactive():
-                raise ModelRegistryError(
-                    "Branch selection requires an interactive terminal. "
-                    "Use --branch BRANCH."
-                )
-            else:
-                branch = select_branch(client.branches())
-        runs = client.catalog_models(branch, query=query)
+        if pick_branch:
+            if branch is not None or json_output:
+                raise click.UsageError("--select-branch cannot be used with --branch or --json.")
+            if not _is_interactive():
+                raise ModelRegistryError("--select-branch requires an interactive terminal.")
+            branch = select_branch(client.branches())
+        elif branch is None:
+            branch = "main"
+        runs = client.catalog_models(branch, query=query, hydrate=json_output)
         if json_output:
             echo_json({"branch": branch, "query": query, "models": runs})
             return
@@ -279,10 +285,13 @@ def list_command(
             raise ModelRegistryError(
                 "Model selection requires an interactive terminal. Use --json to list models."
             )
-        selected = select_run(runs)
+        selected = client.hydrate_catalog_model(select_run(runs))
         detail = _selected_model_detail(client, selected)
         card = model_card(detail, _taxonomy(client))
         render_model_card(card)
+        if selected.get("downloadable") is False:
+            click.echo(f"Model is not downloadable: {selected['download_block_reason']}")
+            return
         auto_confirm = bool((ctx.find_root().obj or {}).get("yes"))
         if auto_confirm or click.confirm("Download this model artifact?", default=False):
             result = _download_run(client, selected, output, force)
@@ -331,7 +340,8 @@ def download_command(
     """Download a model variant from the branch catalog."""
     try:
         client = _client(ctx, staging)
-        run = find_latest_run(client.catalog_models(branch), model_id, variant_id)
+        runs = client.catalog_models(branch, model_id=model_id, variant_id=variant_id, for_download=True)
+        run = find_latest_run(runs, model_id, variant_id)
         result = _download_run(client, run, output, force)
     except ModelRegistryError as exc:
         raise click.ClickException(str(exc)) from exc

@@ -14,7 +14,8 @@ sima-cli models list [OPTIONS]
 
 | Name | Description |
 | --- | --- |
-| `-b, --branch` | Models repository branch. If omitted, select interactively; --json defaults to main. |
+| `-b, --branch` | Models repository branch (default: main). |
+| `--select-branch` | Choose a branch interactively instead of using main. |
 | `-q, --query` | Search model names, variants, categories, or branch. Multiple words must all match. |
 | `--stg, --staging` | Use the staging Model Registry unless SIMA_MODELS_REGISTRY_BASE_URL is set. |
 | `--json` | Print machine-readable JSON without prompting. |
@@ -33,8 +34,8 @@ Usage: sima-cli models list [OPTIONS]
   Browse registered models, or list them with --json.
 
 Options:
-  -b, --branch TEXT       Models repository branch. If omitted, select
-                          interactively; --json defaults to main.
+  -b, --branch TEXT       Models repository branch (default: main).
+  --select-branch         Choose a branch interactively instead of using main.
   -q, --query TEXT        Search model names, variants, categories, or branch.
                           Multiple words must all match.
   --stg, --staging        Use the staging Model Registry unless

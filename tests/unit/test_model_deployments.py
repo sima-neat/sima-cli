@@ -142,8 +142,10 @@ def _contents(root):
 def test_download_command_recreates_deployment_folder(deployment, tmp_path, monkeypatch, display_name):
     state = deployment
     monkeypatch.setattr("sima_cli.models.commands.RegistryClient", lambda *_args: state.client)
-    selected = {**state.run, "metadata": {**state.metadata, "display_name": display_name}}
-    monkeypatch.setattr(state.client, "catalog_models", lambda *_args: [selected])
+    selected = {
+        **state.run, "downloadable": True, "metadata": {**state.metadata, "display_name": display_name},
+    }
+    monkeypatch.setattr(state.client, "catalog_models", lambda *_args, **_kwargs: [selected])
     result = CliRunner().invoke(models_group, [
         "--stg", "download", "--id", state.metadata["model_id"],
         "--variant", state.metadata["build_profile_id"], "--output", str(tmp_path), "--json",
@@ -209,7 +211,7 @@ def test_catalog_deployment_downloads(
             "format": "llima" if layout == "directory" else "mpk",
         })
     model = {
-        "id": state.metadata["model_id"], "builds": [], "packages": [],
+        "id": state.metadata["model_id"], "builds": [], "packages": [], "license": {"spdx": "Apache-2.0"},
         "display_name": "Qwen3.5-0.8B" if layout == "directory" else "ResNet-50",
         "build_on_demand": catalog_kind == "approved" or layout == "directory",
     }
@@ -781,8 +783,10 @@ def test_download_rejects_windows_invalid_display_name_before_filesystem_changes
 ):
     state = deployment
     monkeypatch.setattr("sima_cli.models.commands.RegistryClient", lambda *_args: state.client)
-    selected = {**state.run, "metadata": {**state.metadata, "display_name": display_name}}
-    monkeypatch.setattr(state.client, "catalog_models", lambda *_args: [selected])
+    selected = {
+        **state.run, "downloadable": True, "metadata": {**state.metadata, "display_name": display_name},
+    }
+    monkeypatch.setattr(state.client, "catalog_models", lambda *_args, **_kwargs: [selected])
     result = CliRunner().invoke(models_group, [
         "--stg", "download", "--id", state.metadata["model_id"],
         "--variant", state.metadata["build_profile_id"], "--output", str(tmp_path),

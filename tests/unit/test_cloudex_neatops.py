@@ -184,7 +184,7 @@ def test_request_selects_device_allocates_then_connects(command_api, monkeypatch
     command_api.call.assert_any_call("POST", "/devkits/allocations", {"request_id": AID,
         "cluster_id": "appliance-id", "target_id": "device-id", "duration_seconds": 14400})
     profile.assert_called_once_with(command_api, AID)
-    connect.assert_called_once_with(PROFILE, verbose=False)
+    connect.assert_called_once_with(PROFILE, verbose=False, diagnostics_api=command_api)
     assert "allocation_secret" not in result.output
 
 
@@ -231,7 +231,7 @@ def test_connect_allocation_skips_manual_key_prompt(command_api, monkeypatch):
     monkeypatch.setattr(commands, "_connect_profile", connect)
     result = CliRunner().invoke(commands.cloudex_group, ["-i", "connect", "--allocation", AID])
     assert result.exit_code == 0, result.output
-    connect.assert_called_once_with(PROFILE, verbose=False, attempts=3, transport="auto")
+    connect.assert_called_once_with(PROFILE, verbose=False, attempts=3, transport="auto", diagnostics_api=command_api)
 
 
 def test_release_disconnects_only_matching_local_allocation(command_api, monkeypatch):
@@ -582,3 +582,22 @@ def test_root_external_login_uses_portal_without_internal_initialization(monkeyp
     initialize.assert_not_called()
     portal_login.assert_called_once_with(loginDocker=False)
     vulcan_api.assert_not_called()
+
+
+
+@pytest.mark.parametrize("reason,timing", [("failed", None), ("direct", {"setup_ms": 1420})])
+def test_diagnostics_report_uses_cached_neatops_token_without_reauthentication(api, monkeypatch, reason, timing):
+    api._save(tokens())
+    request = Mock(return_value=(202, {"status": "accepted"}))
+    monkeypatch.setattr(neatops, "_json_request", request)
+    allocation, session = "a" * 32, "b" * 32
+    stages = ["ICE connection state Failed"] if reason == "failed" else ["WireGuard handshake confirmed"]
+    api.report_cloudex_diagnostics(allocation, session, reason, stages, timing=timing)
+    expected = {"session_id": session, "reason": reason, "stages": stages}
+    if timing:
+        expected["timing"] = timing
+    request.assert_called_once_with(
+        "POST", api.config["apiBase"] + f"/devkits/allocations/{allocation}/diagnostics",
+        timeout=3, headers={"Authorization": "Bearer private-access"},
+        json=expected,
+    )

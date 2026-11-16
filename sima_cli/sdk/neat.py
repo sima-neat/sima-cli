@@ -754,7 +754,13 @@ def _write_insight_url_routing(config_dir: Path) -> None:
 
 
 def _generate_code_ui_token() -> str:
-    return secrets.token_urlsafe(CODE_UI_SECRET_BYTES)
+    # OpenVSCode images pass the token as `--connection-token "<token>"` and read a value that
+    # starts with "-" as an option: the server then rejects the token or prints usage and exits.
+    # token_urlsafe starts with "-" in 1 of 64 tokens, so draw again until it does not.
+    while True:
+        token = secrets.token_urlsafe(CODE_UI_SECRET_BYTES)
+        if not token.startswith("-"):
+            return token
 
 
 def _sima_cli_home() -> Path:

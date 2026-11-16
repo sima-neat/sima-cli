@@ -798,3 +798,35 @@ def test_cloudex_diagnostics_posts_only_safe_stages_for_the_remote_session(tmp_p
     client._submit_diagnostics(API(), session, store)
     assert calls == [("PUT", f"/v1/p2p/ice-sessions/{sid}/diagnostics",
                       {"stages": ["ICE connection state Failed"]})]
+
+
+def test_failed_connection_reports_after_attempting_cleanup(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path)
+    profile = allocation_profile()
+    sid = "d" * 32
+    api = Mock(url=profile["api_url"], requester=profile["requester"],
+               secret=profile["allocation_secret"], allocation_id=profile["allocation_id"])
+    api.call.return_value = {"session_id": sid, "diagnostics": True, "expires_at": 9999999999}
+    monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(client, "_forwarder_sudo_prefix", Mock(return_value=[]))
+    monkeypatch.setattr(installer, "ensure_forwarder", Mock(return_value=tmp_path / "forwarder"))
+    monkeypatch.setattr(client.subprocess, "Popen", Mock(return_value=Mock(pid=123)))
+    operations = []
+
+    def fail(_sid, _process, _report_path, log_path, *_args, **_kwargs):
+        log_path.write_text("kerrigan-p2p-forwarder: ICE connection state Failed\n")
+        raise client.CloudExError("Original tunnel failure")
+
+    def cleanup(*_args, **_kwargs):
+        operations.append("cleanup")
+
+    def report(allocation_id, session_id, stages):
+        operations.append((allocation_id, session_id, stages))
+        raise client.CloudExError("Diagnostics unavailable")
+
+    monkeypatch.setattr(client, "_wait_forwarder", fail)
+    monkeypatch.setattr(client, "disconnect_session", cleanup)
+    with pytest.raises(client.CloudExError, match="Original tunnel failure"):
+        client.connect(profile, store, Mock(), attempts=1, transport="p2p", report_failure=report)
+    assert operations == ["cleanup", (profile["allocation_id"], sid, ["ICE connection state Failed"])]

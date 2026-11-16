@@ -25,7 +25,7 @@ sima-cli bootimg [OPTIONS]
 | `--devkit, --devkit-ip` | DevKit IP for remote netboot; discover and select a DevKit when omitted. |
 | `-r, --rootfs` | Custom root fs folders (internal use only) |
 | `-a, --autoflash` | Network boot the selected DevKit, then automatically flash its internal storage once SSH is ready. |
-| `-y, --yes` | Reboot from eMMC after a successful NetBoot flash without prompting. |
+| `-y, --yes` | Skip NetBoot setup confirmation with an explicit --devkit IP and --autoflash, and skip reboot confirmation after a manual NetBoot flash. |
 
 ## Arguments
 
@@ -133,7 +133,9 @@ Options:
   -a, --autoflash                 Network boot the selected DevKit, then
                                   automatically flash its internal storage
                                   once SSH is ready.
-  -y, --yes                       Reboot from eMMC after a successful NetBoot
-                                  flash without prompting.
+  -y, --yes                       Skip NetBoot setup confirmation with an
+                                  explicit --devkit IP and --autoflash, and
+                                  skip reboot confirmation after a manual
+                                  NetBoot flash.
   --help                          Show this message and exit.
 ```

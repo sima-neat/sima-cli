@@ -1512,6 +1512,34 @@ def test_selected_deployment_uses_its_component_runs_for_benchmark(selection_fie
     assert rows[0]["benchmark_fingerprints"] == ({"performance": FINGERPRINT} if complete else {})
 
 
+@pytest.mark.parametrize("selection_field", ["approved_deployments", "branch_deployments"])
+def test_package_only_deployment_keeps_fingerprints_when_catalog_builds_match(selection_field):
+    catalog = _deployment_catalog(selection_field)
+    model = catalog["catalog"]["document"]["models"][1]
+    deployment = model[selection_field]["int8"]
+    model["builds"] = [
+        {**root, "build_profile_id": "int8"}
+        for root in deployment["artifacts"] if "component_id" in root
+    ]
+    deployment["artifacts"] = [root for root in deployment["artifacts"] if "package_id" in root]
+    fingerprints = {"accuracy": "e" * 64, "performance": FINGERPRINT}
+    model["benchmark_fingerprints"]["int8"] = fingerprints
+    run = _run("selected", model_id="detector")
+    run["run_type"] = "model_package"
+    run["metadata"].update(
+        package_id="default", component_run_ids={"encoder": "encoder-run", "decoder": "decoder-run"},
+    )
+    client = RegistryClient("https://registry.example", session=FakeSession([
+        FakeResponse(payload=catalog),
+        FakeResponse(payload=_package_summary(run)),
+    ]))
+
+    [selected] = client.catalog_models("main", model_id="detector", variant_id="int8")
+
+    assert selected["benchmark_fingerprints"] == fingerprints
+    assert selected["benchmark_component_run_ids"] == ["decoder-run", "encoder-run"]
+
+
 def test_catalog_picker_reads_no_run_summaries_until_selection():
     session = FakeSession([FakeResponse(payload=_deployment_catalog("approved_deployments"))])
     client = RegistryClient("https://registry.example", session=session)

@@ -138,12 +138,12 @@ def _benchmark_fingerprints(
     deployment: Optional[Dict[str, Any]],
 ) -> Dict[str, str]:
     """Only attach a whole-model fingerprint to a row showing every measured component."""
-    if deployment:
-        builds = {
-            root["run_id"] for root in deployment["artifacts"]
-            if root.get("component_id") and root.get("run_id")
-        }
-    else:
+    builds = {
+        root["run_id"] for root in (deployment or {}).get("artifacts", [])
+        if root.get("component_id") and root.get("run_id")
+    }
+    # Package-only selections rely on the catalog for their component run IDs.
+    if not builds:
         builds = {
             build.get("run_id") for build in model.get("builds") or []
             if isinstance(build, dict) and build.get("build_profile_id") == profile

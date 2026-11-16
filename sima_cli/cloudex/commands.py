@@ -267,8 +267,9 @@ def connect_command(key_file, key_stdin, allocation, environment, transport, att
         raise click.UsageError("Use either --key-file or --key-stdin, not both; --allocation must be used alone.")
     try:
         if allocation:
-            profile = _allocation_profile(_neatops_api(environment), _allocation_id(allocation))
-            _connect_profile(profile, verbose=verbose, attempts=attempts, transport=transport)
+            api = _neatops_api(environment)
+            profile = _allocation_profile(api, _allocation_id(allocation))
+            _connect_profile(profile, verbose=verbose, attempts=attempts, transport=transport, diagnostics_api=api)
             return
         if key_file:
             key = _read_key_file(key_file)
@@ -452,11 +453,12 @@ def register_cloudex_commands(main):
     main.add_command(cloudex_group)
 
 
-def _connect_profile(profile, verbose=False, attempts=3, transport="auto"):
+def _connect_profile(profile, verbose=False, attempts=3, transport="auto", *, diagnostics_api=None):
     console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
     _authorize_supported_host()
     with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:
-        session = connect(profile, _store(), progress, attempts=attempts, transport=transport)
+        options = {"report_failure": diagnostics_api.report_cloudex_failure} if diagnostics_api else {}
+        session = connect(profile, _store(), progress, attempts=attempts, transport=transport, **options)
         progress.success("Connected to {}".format(session["device"]))
     path = session.get("ice_path", "unknown")
     path_text = "direct" if path == "direct" else "relayed" if path == "relay" else path
@@ -605,7 +607,7 @@ def request_command(device, cluster, duration, environment, verbose):
         api.call("POST", "/devkits/allocations", {"request_id": allocation_id,
                  "cluster_id": selected["cluster_id"], "target_id": selected["id"], "duration_seconds": DURATIONS[duration]})
         profile = _allocation_profile(api, allocation_id)
-        _connect_profile(profile, verbose=verbose)
+        _connect_profile(profile, verbose=verbose, diagnostics_api=api)
     except CloudExError as exc:
         if allocation_id:
             console.print("Inspect: sima-cli -i cloudex devices --environment {}\nResume: sima-cli -i cloudex connect --allocation {} --environment {}\nRelease: sima-cli -i cloudex release {} --environment {}".format(environment, allocation_id, environment, allocation_id, environment), markup=False, soft_wrap=True)

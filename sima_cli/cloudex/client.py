@@ -332,7 +332,7 @@ def _safe_last_stage(log_path):
     return stages[-1] if stages else ""
 
 
-def _submit_diagnostics(api, session, store, phase, outcome):
+def _submit_diagnostics(api, session, store, report_failure=None):
     sid = session.get("remote_session_id")
     if session.get("diagnostics") is not True or not _valid_session_id(sid):
         return
@@ -355,9 +355,12 @@ def _submit_diagnostics(api, session, store, phase, outcome):
     except OSError:
         pass
     try:
-        api.call("PUT", "/v1/p2p/ice-sessions/" + sid + "/diagnostics",
-                 {"phase": phase, "outcome": outcome, "stages": stages[-32:]},
-                 deadline=time.time() + 2)
+        stages = stages[-32:]
+        if report_failure is not None:
+            report_failure(api.allocation_id, sid, stages)
+        else:
+            api.call("PUT", "/v1/p2p/ice-sessions/" + sid + "/diagnostics",
+                     {"stages": stages}, deadline=time.time() + 2)
     except CloudExError:
         # Evidence upload must never prevent connecting or releasing a lease.
         pass
@@ -642,7 +645,7 @@ def _forwarder_sudo_prefix(progress=None):
     return prefix + ["/usr/bin/env", "PATH=" + MACOS_TUNNEL_PATH]
 
 
-def connect(profile, store, progress, attempts=3, transport="auto"):
+def connect(profile, store, progress, attempts=3, transport="auto", *, report_failure=None):
     """Create a session and return its durable local record."""
     from .installer import ensure_forwarder
 
@@ -743,14 +746,12 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             store.write(session)
             store.clear_recovery(session_id)
             config_path.unlink(missing_ok=True)
-            _submit_diagnostics(api, session, store, "setup", "connected")
             return session
         except BaseException as exc:
             last_error = exc
             if _creation_definitely_rejected(exc):
                 store.delete(session_id)
                 raise
-            _submit_diagnostics(api, session, store, "setup", "failed")
             progress.update("Cleaning up the failed connection attempt")
             try:
                 disconnect_session(
@@ -762,6 +763,9 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
                 raise CloudExError(
                     "Connection failed and cleanup is pending: {}. Run cloudex disconnect again.".format(cleanup_error)
                 ) from exc
+            finally:
+                if isinstance(exc, Exception):
+                    _submit_diagnostics(api, session, store, report_failure)
             if not isinstance(exc, DirectHandshakeError) or number == len(choices):
                 raise
             progress.update("Direct path timed out; retrying with fresh ICE candidates")
@@ -848,7 +852,6 @@ def disconnect_session(session, store, progress, authorize=True, preserve_log=Fa
     api = CloudExAPI.from_session(session)
     progress.update("Stopping the local encrypted tunnel")
     _stop_forwarder(session)
-    _submit_diagnostics(api, session, store, "teardown", "closed")
     progress.update("Requesting DevKit tunnel cleanup")
     session_id = session["session_id"]
     remote_session_id = _remote_session_id(session, store)

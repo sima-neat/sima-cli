@@ -176,6 +176,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     process = Mock(pid=123, poll=Mock(return_value=None))
     allocated = {
         "session_id": "d" * 32,
+        "diagnostics": True,
         "expires_at": "9999999999",
         "target_id": "ll2",
         "wireguard": {"remote_address": "10.252.1.2/32"},
@@ -791,9 +792,9 @@ def test_cloudex_diagnostics_posts_only_safe_stages_for_the_remote_session(tmp_p
             raise client.CloudExError("diagnostics temporarily unavailable")
 
     session = {"session_id": local_id, "remote_session_id": sid}
-    client._submit_diagnostics(API(), session, store, "setup", "failed")
+    client._submit_diagnostics(API(), session, store)
     assert calls == []
     session["diagnostics"] = True
-    client._submit_diagnostics(API(), session, store, "setup", "failed")
+    client._submit_diagnostics(API(), session, store)
     assert calls == [("PUT", f"/v1/p2p/ice-sessions/{sid}/diagnostics",
-                      {"phase": "setup", "outcome": "failed", "stages": ["ICE connection state Failed"]})]
+                      {"stages": ["ICE connection state Failed"]})]

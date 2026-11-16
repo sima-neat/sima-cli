@@ -34,9 +34,9 @@ def _origin(value):
     return value.rstrip("/")
 
 
-def _json_request(method, url, **kwargs):
+def _json_request(method, url, *, timeout=20, **kwargs):
     try:
-        response = requests.request(method, url, timeout=20, allow_redirects=False, **kwargs)
+        response = requests.request(method, url, timeout=timeout, allow_redirects=False, **kwargs)
     except requests.RequestException:
         raise CloudExError("NeatOps is unavailable; check your connection and retry") from None
     try:
@@ -193,7 +193,7 @@ class NeatOps:
         except OSError:
             raise CloudExError("Sign in first with sima-cli -i cloudex login --environment " + self.environment) from None
 
-    def access_token(self):
+    def access_token(self, *, allow_refresh=True):
         auth = self.configuration()["auth"]
         session = self._read_session()
         try:
@@ -204,7 +204,7 @@ class NeatOps:
             refresh = session.get("refresh_token")
         except (ValueError, KeyError, TypeError):
             raise LoginRequired("Sign-in policy changed; run sima-cli -i cloudex login again") from None
-        if not refresh:
+        if not refresh or not allow_refresh:
             raise LoginRequired("NeatOps sign-in expired; run sima-cli -i cloudex login again")
         tokens = self._exchange({"grant_type": "refresh_token", "refresh_token": refresh})
         tokens.setdefault("refresh_token", refresh)
@@ -228,6 +228,16 @@ class NeatOps:
         self._login_attempted = True
         self.on_login_required(self)
         return self.access_token()
+
+    def report_cloudex_failure(self, allocation_id, session_id, stages):
+        token = self.access_token(allow_refresh=False)
+        config = self.configuration()
+        path = f"/devkits/allocations/{allocation_id}/diagnostics"
+        status, _ = _json_request("POST", config["apiBase"] + path, timeout=3,
+                                  headers={"Authorization": "Bearer " + token},
+                                  json={"session_id": session_id, "stages": stages})
+        if status != 202:
+            raise CloudExError("NeatOps did not accept CloudEx diagnostics")
 
     def call(self, method, path, data=None):
         config = self.configuration()

@@ -248,6 +248,89 @@ def test_release_disconnects_only_matching_local_allocation(command_api, monkeyp
     command_api.call.assert_called_once_with("DELETE", "/devkits/allocations/" + AID)
 
 
+def test_release_without_id_releases_only_the_selected_allocation(command_api, monkeypatch):
+    other_id = "b" * 32
+    first = {"session_id": AID, "cluster_id": DEVICE["cluster_id"], "target_id": DEVICE["id"], "status": "active"}
+    second = {"session_id": other_id, "cluster_id": "removed-appliance", "target_id": "offline-kit", "status": "ready"}
+    command_api.call.side_effect = [{"devices": [DEVICE], "allocations": [first, second]}, {}]
+    monkeypatch.setattr(commands, "_interactive_session_selection_available", lambda: True)
+    checkbox = Mock()
+    checkbox.return_value.execute.return_value = [other_id]
+    monkeypatch.setattr("InquirerPy.inquirer.checkbox", checkbox)
+    store = Mock()
+    store.list.return_value = [{"allocation_id": AID}, {"allocation_id": other_id}]
+    monkeypatch.setattr(commands, "_store", lambda: store)
+    disconnect = Mock()
+    monkeypatch.setattr(commands, "disconnect_session", disconnect)
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release", "--environment", "staging"])
+
+    assert result.exit_code == 0, result.output
+    choices = checkbox.call_args.kwargs["choices"]
+    assert [choice["value"] for choice in choices] == [AID, other_id]
+    assert DEVICE["name"] in choices[0]["name"]
+    assert "offline-kit" in choices[1]["name"]
+    assert [c.args for c in command_api.call.call_args_list] == [
+        ("GET", "/devkits"), ("DELETE", "/devkits/allocations/" + other_id),
+    ]
+    disconnect.assert_called_once()
+    assert disconnect.call_args.args[0] == {"allocation_id": other_id}
+
+
+@pytest.mark.parametrize("has_allocation", [False, True])
+def test_release_without_selection_does_not_delete(command_api, monkeypatch, has_allocation):
+    allocation = {"session_id": AID, "cluster_id": DEVICE["cluster_id"], "target_id": DEVICE["id"], "status": "active"}
+    command_api.call.side_effect = [{"devices": [DEVICE], "allocations": [allocation] if has_allocation else []}]
+    monkeypatch.setattr(commands, "_interactive_session_selection_available", lambda: True)
+    checkbox = Mock()
+    checkbox.return_value.execute.return_value = []
+    monkeypatch.setattr("InquirerPy.inquirer.checkbox", checkbox)
+    store = Mock()
+    monkeypatch.setattr(commands, "_store", store)
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release"])
+
+    assert result.exit_code == 0, result.output
+    if has_allocation:
+        assert "No CloudEx allocations selected" in result.output
+        assert checkbox.call_args.kwargs["mandatory"] is False
+    else:
+        assert "no CloudEx allocations" in result.output
+        checkbox.assert_not_called()
+    command_api.call.assert_called_once_with("GET", "/devkits")
+    store.assert_not_called()
+
+
+def test_release_checklist_continues_after_a_selected_lease_fails(command_api, monkeypatch):
+    other_id = "b" * 32
+    allocations = [{"session_id": aid, "cluster_id": "appliance", "target_id": aid[:8], "status": "active"}
+                   for aid in (AID, other_id, "c" * 32)]
+    command_api.call.side_effect = [{"allocations": allocations}, CloudExError("Unavailable"), {}]
+    monkeypatch.setattr(commands, "_interactive_session_selection_available", lambda: True)
+    monkeypatch.setattr(commands, "_store", lambda: Mock(list=Mock(return_value=[])))
+    checkbox = Mock()
+    checkbox.return_value.execute.return_value = [AID, other_id]
+    monkeypatch.setattr("InquirerPy.inquirer.checkbox", checkbox)
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release"])
+
+    assert result.exit_code != 0
+    assert "{}: Lease release failed: Unavailable".format(AID) in result.output
+    assert "Lease released;" in result.output
+    assert [c.args for c in command_api.call.call_args_list] == [
+        ("GET", "/devkits"), ("DELETE", "/devkits/allocations/" + AID),
+        ("DELETE", "/devkits/allocations/" + other_id),
+    ]
+
+
+def test_release_without_id_requires_a_terminal(command_api):
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "release"])
+
+    assert result.exit_code == 2
+    assert "Provide an allocation ID" in result.output
+    command_api.call.assert_not_called()
+
+
 def test_cancelled_browser_login_keeps_previous_credentials(api, monkeypatch):
     api._save(tokens())
     before = api.path.read_bytes()

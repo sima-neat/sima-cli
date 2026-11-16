@@ -16,7 +16,7 @@ import sys
 
 import click
 from sima_cli.utils.env import get_environment_type
-from typing import Optional, Dict
+from typing import Dict, List, Optional, Tuple
 
 def ensure_discovery_tools():
     """Provision required Linux discovery tools only after an interactive opt-in."""
@@ -57,6 +57,21 @@ def _run(cmd: str, check=False, capture=True) -> subprocess.CompletedProcess:
 
 def _has_nmcli() -> bool:
     return shutil.which("nmcli") is not None
+
+
+# `ip -o link` prints stacked links (macvlan, veth, VLAN) as `name@peer`, for example
+# `eth0@if2`. Only `name` exists as a device, so the suffix is dropped before any lookup.
+_IP_LINK_LINE = re.compile(r"\d+:\s+([^:@\s]+)(?:@[^:\s]+)?:\s+<([^>]*)>")
+
+
+def _parse_ip_link(output: str) -> List[Tuple[str, str]]:
+    """Return (name, flags) for each `ip -o link` line, without the `@peer` suffix."""
+    links = []
+    for line in output.splitlines():
+        m = _IP_LINK_LINE.match(line)
+        if m:
+            links.append((m.group(1), m.group(2)))
+    return links
 
 
 def _iface_has_ipv4(iface: str) -> bool:
@@ -264,11 +279,7 @@ def suggest_and_switch_to_linklocal():
         ensure_discovery_tools()
         cp = _run("ip -o link", capture=True)
         ifaces = []
-        for line in cp.stdout.splitlines():
-            m = re.match(r"\d+:\s+([^:]+):\s+<([^>]+)>", line)
-            if not m:
-                continue
-            iface, flags = m.group(1), m.group(2)
+        for iface, flags in _parse_ip_link(cp.stdout):
             if iface.startswith(("lo", "docker", "veth", "br-", "virbr", "tun", "tap")):
                 continue
             if "UP" in flags and not _iface_has_ipv4(iface):

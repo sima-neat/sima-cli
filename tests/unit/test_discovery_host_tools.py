@@ -113,12 +113,12 @@ IP_O_LINK = (
 )
 
 
-def test_ip_link_names_drop_peer_suffix():
+def test_ip_link_names_drop_peer_suffix_and_record_peer():
     assert linuxll._parse_ip_link(IP_O_LINK) == [
-        ('lo', 'LOOPBACK,UP,LOWER_UP'),
-        ('eth0', 'BROADCAST,MULTICAST,UP,LOWER_UP'),
-        ('eth1.100', 'BROADCAST,MULTICAST,UP,LOWER_UP'),
-        ('enx5444a326738b', 'BROADCAST,MULTICAST,UP,LOWER_UP'),
+        ('lo', 'LOOPBACK,UP,LOWER_UP', False),
+        ('eth0', 'BROADCAST,MULTICAST,UP,LOWER_UP', True),
+        ('eth1.100', 'BROADCAST,MULTICAST,UP,LOWER_UP', True),
+        ('enx5444a326738b', 'BROADCAST,MULTICAST,UP,LOWER_UP', False),
     ]
 
 
@@ -147,15 +147,22 @@ def _scan(ipv4_ifaces):
 
 def test_configured_stacked_interface_is_not_offered_link_local(capsys):
     probed, prompts = _scan({'eth0', 'eth1.100', 'enx5444a326738b'})
-    assert probed == ['eth0', 'eth1.100', 'enx5444a326738b']
+    assert probed == ['enx5444a326738b']
     assert prompts == []
     assert 'No unconfigured network interfaces detected' in capsys.readouterr().out
 
 
+def test_ipv6_only_vlan_is_not_offered_link_local(capsys):
+    # The VLAN is up but has no IPv4 address. Its IPv6 address is outside the IPv4 probe.
+    _, prompts = _scan({'eth0', 'enx5444a326738b'})
+    assert prompts == []
+    assert 'iface=eth1.100' not in capsys.readouterr().out
+
+
 def test_unconfigured_interface_is_still_offered_link_local(capsys):
-    probed, prompts = _scan({'eth0', 'eth1.100'})
-    assert probed == ['eth0', 'eth1.100', 'enx5444a326738b']
+    probed, prompts = _scan({'eth0'})
+    assert probed == ['enx5444a326738b']
     assert len(prompts) == 1
     out = capsys.readouterr().out
     assert 'iface=enx5444a326738b' in out
-    assert '@' not in out
+    assert 'iface=eth1.100' not in out

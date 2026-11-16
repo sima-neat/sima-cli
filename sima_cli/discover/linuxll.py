@@ -61,16 +61,16 @@ def _has_nmcli() -> bool:
 
 # `ip -o link` prints stacked links (macvlan, veth, VLAN) as `name@peer`, for example
 # `eth0@if2`. Only `name` exists as a device, so the suffix is dropped before any lookup.
-_IP_LINK_LINE = re.compile(r"\d+:\s+([^:@\s]+)(?:@[^:\s]+)?:\s+<([^>]*)>")
+_IP_LINK_LINE = re.compile(r"\d+:\s+([^:@\s]+)(@[^:\s]+)?:\s+<([^>]*)>")
 
 
-def _parse_ip_link(output: str) -> List[Tuple[str, str]]:
-    """Return (name, flags) for each `ip -o link` line, without the `@peer` suffix."""
+def _parse_ip_link(output: str) -> List[Tuple[str, str, bool]]:
+    """Return (name, flags, has_peer) for each `ip -o link` line."""
     links = []
     for line in output.splitlines():
         m = _IP_LINK_LINE.match(line)
         if m:
-            links.append((m.group(1), m.group(2)))
+            links.append((m.group(1), m.group(3), m.group(2) is not None))
     return links
 
 
@@ -279,7 +279,10 @@ def suggest_and_switch_to_linklocal():
         ensure_discovery_tools()
         cp = _run("ip -o link", capture=True)
         ifaces = []
-        for iface, flags in _parse_ip_link(cp.stdout):
+        for iface, flags, has_peer in _parse_ip_link(cp.stdout):
+            # Stacked links can carry traffic even without their own IPv4 address.
+            if has_peer:
+                continue
             if iface.startswith(("lo", "docker", "veth", "br-", "virbr", "tun", "tap")):
                 continue
             if "UP" in flags and not _iface_has_ipv4(iface):

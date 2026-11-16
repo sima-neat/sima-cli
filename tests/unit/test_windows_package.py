@@ -103,6 +103,19 @@ class WindowsPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(MetadataValidationError, "exactly match"):
             validate_metadata(self.metadata)
 
+    def test_metadata_rejects_selectable_resources_for_windows_install(self):
+        self.metadata["selectable-resources"] = [
+            {
+                "name": "Optional tutorials",
+                "resource": "tutorials.zip",
+                "checksum": "c" * 64,
+            }
+        ]
+        with self.assertRaisesRegex(
+            MetadataValidationError, "does not support 'selectable-resources'"
+        ):
+            validate_metadata(self.metadata)
+
     def test_metadata_rejects_unsafe_installed_path(self):
         self.metadata["installation"]["verification"] = {
             "command": {"environment": "ProgramFiles", "relative": "..\\doctor.cmd"}

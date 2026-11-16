@@ -46,8 +46,15 @@ Windows Installer 完成後，CLI 會執行已安裝的主機診斷工具，並�
 `sima-cli` 會顯示嘗試安裝的套件、權限指引，以及預定的安裝記錄位置。
 
 透過 Windows「已安裝的應用程式」或 `msiexec` 移除 Scheduler 和 Core。
-Python 套件須從受管理環境另行移除：
+這些 MSI 不負責目前使用者的 Python 套件、已同步的客戶技能或 CLI 登錄記錄；
+請從 PowerShell 分別移除：
 
 ```powershell
-& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall pyneatpcie
+& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
+sima-cli playbooks remove neat-pcie-application-builder --yes
+sima-cli packages list
+sima-cli packages remove gh:sima-neat/core/pciehost/windows/amd64 --version INSTALLED_VERSION --yes
 ```
+
+請將 `INSTALLED_VERSION` 替換為 `packages list` 顯示的精確值。最後一個命令只會
+移除本機 CLI 記錄，不會解除安裝檔案，因此應在上述各安裝程式完成移除後執行。

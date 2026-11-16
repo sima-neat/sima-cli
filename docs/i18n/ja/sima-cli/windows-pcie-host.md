@@ -54,8 +54,16 @@ Windows Installer を起動できない場合、`sima-cli` は対象パッケー
 案内、および予定されていたインストーラーログの保存先を表示します。
 
 Scheduler と Core は Windows の「インストールされているアプリ」または `msiexec`
-で削除します。Python パッケージは管理対象環境から別途削除してください。
+で削除します。これらの MSI は、現在のユーザーの Python パッケージ、同期済みの
+カスタマースキル、CLI レジストリの記録を管理しません。PowerShell から別途削除してください。
 
 ```powershell
-& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall pyneatpcie
+& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
+sima-cli playbooks remove neat-pcie-application-builder --yes
+sima-cli packages list
+sima-cli packages remove gh:sima-neat/core/pciehost/windows/amd64 --version INSTALLED_VERSION --yes
 ```
+
+`INSTALLED_VERSION` は `packages list` に表示される正確な値に置き換えてください。
+最後のコマンドはローカルの CLI 記録だけを削除し、ファイルはアンインストールしません。
+そのため、上記の各インストーラーによる削除後に実行してください。

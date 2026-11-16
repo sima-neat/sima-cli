@@ -278,6 +278,11 @@ def validate_metadata(data: dict):
             if not isinstance(install["script"], str):
                 raise MetadataValidationError("'installation.script' must be a string")
         elif install_type == "windows-msi":
+            if data.get("selectable-resources"):
+                raise MetadataValidationError(
+                    "Windows MSI metadata does not support 'selectable-resources'; "
+                    "declare every installation artifact in 'resources' with an exact checksum"
+                )
             checksum_map = data.get("resources-checksum")
             if not isinstance(checksum_map, dict):
                 raise MetadataValidationError(

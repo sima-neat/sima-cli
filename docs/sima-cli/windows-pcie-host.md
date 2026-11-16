@@ -54,9 +54,17 @@ administrator to review that policy; do not disable Windows security controls.
 If Windows Installer cannot be started, `sima-cli` reports the attempted package,
 permissions guidance, and the intended installer-log location.
 
-Remove Scheduler and Core through Windows Installed apps or `msiexec`. Remove
-the Python package separately from the managed environment:
+Remove Scheduler and Core through Windows Installed apps or `msiexec`. Their
+MSIs do not own the current user's Python package, synced customer skill, or
+CLI registry receipt. Remove those separately from PowerShell:
 
 ```powershell
-& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall pyneatpcie
+& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
+sima-cli playbooks remove neat-pcie-application-builder --yes
+sima-cli packages list
+sima-cli packages remove gh:sima-neat/core/pciehost/windows/amd64 --version INSTALLED_VERSION --yes
 ```
+
+Replace `INSTALLED_VERSION` with the exact value shown by `packages list`.
+The final command removes only the local CLI receipt; it does not uninstall
+files and should run after the owning installers above.

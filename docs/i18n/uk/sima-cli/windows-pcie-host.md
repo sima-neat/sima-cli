@@ -58,8 +58,16 @@ Installer не запускається, `sima-cli` повідомляє, яки
 до журналу інсталятора.
 
 Видаліть Scheduler і Core через «Установлені програми» Windows або `msiexec`.
-Пакет Python видаляється з керованого середовища окремо:
+Ці MSI не керують пакетом Python поточного користувача, синхронізованою навичкою
+користувача або записом реєстру CLI. Видаліть їх окремо в PowerShell:
 
 ```powershell
-& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall pyneatpcie
+& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
+sima-cli playbooks remove neat-pcie-application-builder --yes
+sima-cli packages list
+sima-cli packages remove gh:sima-neat/core/pciehost/windows/amd64 --version INSTALLED_VERSION --yes
 ```
+
+Замініть `INSTALLED_VERSION` точним значенням із `packages list`. Остання команда
+видаляє лише локальний запис CLI, а не файли, тому запускайте її після видалення
+пакетів відповідними інсталяторами вище.

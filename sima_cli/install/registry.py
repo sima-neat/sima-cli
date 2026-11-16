@@ -66,6 +66,34 @@ def list_packages():
 
 
 @packages.command(
+    "remove",
+    help="Remove one local registry receipt without uninstalling package files.",
+)
+@click.argument("name", metavar="PACKAGE")
+@click.option(
+    "--version",
+    "-v",
+    required=True,
+    help="Exact installed version whose registry receipt should be removed.",
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt.")
+def remove_package_receipt(name, version, yes):
+    """Forget an installation receipt after its owning installers are removed."""
+    reg = PackageRegistry()
+    if not yes and not click.confirm(
+        f"Remove only the local registry receipt for {name}@{version}?",
+        default=False,
+    ):
+        click.echo("Registry receipt removal cancelled.")
+        return
+    try:
+        reg.remove_entry(name, version)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Removed local registry receipt: {name}@{version}")
+
+
+@packages.command(
     "show",
     help="Show metadata or post-install instructions for a package.",
     epilog=(
@@ -285,6 +313,14 @@ class PackageRegistry:
             raise ValueError(f"Package {name}@{version} not found in registry.")
         pkg["state"] = state
         pkg["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+        self._save()
+
+    def remove_entry(self, name, version):
+        """Remove one exact local receipt without touching installed package files."""
+        pkg = self._find(name, version)
+        if not pkg:
+            raise ValueError(f"Package {name}@{version} not found in registry.")
+        self._data.remove(pkg)
         self._save()
 
     def list_packages(self):

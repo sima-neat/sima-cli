@@ -457,7 +457,7 @@ def _connect_profile(profile, verbose=False, attempts=3, transport="auto", *, di
     console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
     _authorize_supported_host()
     with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:
-        options = {"report_failure": diagnostics_api.report_cloudex_failure} if diagnostics_api else {}
+        options = {"report_diagnostics": diagnostics_api.report_cloudex_diagnostics} if diagnostics_api else {}
         session = connect(profile, _store(), progress, attempts=attempts, transport=transport, **options)
         progress.success("Connected to {}".format(session["device"]))
     path = session.get("ice_path", "unknown")

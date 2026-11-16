@@ -159,8 +159,9 @@ def test_api_signs_allocation_scoped_request(monkeypatch, environment, restored)
     assert "allocation_secret" not in kwargs["data"].decode()
 
 
+@pytest.mark.parametrize("path", ["direct", "relay"])
 @pytest.mark.parametrize("host,bootstrap", [("linux", False), ("darwin", False), ("darwin", True)])
-def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_path, monkeypatch, host, bootstrap):
+def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_path, monkeypatch, host, bootstrap, path):
     client.sys.platform = host
     which = Mock(return_value="/opt/homebrew/bin/tool")
     if bootstrap:
@@ -192,11 +193,19 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
     popen = Mock(return_value=process)
     monkeypatch.setattr(client.subprocess, "Popen", popen)
-    wait_forwarder = Mock(return_value={"status": "connected", "path": "direct"})
+    wait_forwarder = Mock(return_value={"status": "connected", "path": path})
     monkeypatch.setattr(client, "_wait_forwarder", wait_forwarder)
     monkeypatch.setattr(client.time, "time", Mock(return_value=1000))
 
-    result = client.connect(allocation_profile(), store, Mock(), attempts=1, transport="p2p")
+    cleanup = Mock()
+    monkeypatch.setattr(client, "disconnect_session", cleanup)
+    upload = Mock(side_effect=client.CloudExError("Diagnostics unavailable"))
+    result = client.connect(allocation_profile(), store, Mock(), attempts=1, transport="p2p", report_diagnostics=upload)
+    cleanup.assert_not_called()
+    if path == "relay":
+        upload.assert_called_once_with(api.allocation_id, allocated["session_id"], "relay", [])
+    else:
+        upload.assert_not_called()
 
     if bootstrap:
         assert brew.call_args.args[0] == ["/opt/homebrew/bin/brew", "install", "wireguard-tools", "wireguard-go"]
@@ -204,7 +213,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
         brew.assert_not_called()
     assert result["device"] == "ll2"
     assert result["target"] == "10.252.1.2"
-    assert result["ice_path"] == "direct"
+    assert result["ice_path"] == path
     assert result["expires_at"] == 9999999999.0
     assert store.list()[0]["api_secret"] == allocation_profile()["allocation_secret"]
     assert not store.runtime_paths(result["session_id"])[1].exists()
@@ -792,12 +801,12 @@ def test_cloudex_diagnostics_posts_only_safe_stages_for_the_remote_session(tmp_p
             raise client.CloudExError("diagnostics temporarily unavailable")
 
     session = {"session_id": local_id, "remote_session_id": sid}
-    client._submit_diagnostics(API(), session, store)
+    client._submit_diagnostics(API(), session, store, "failed")
     assert calls == []
     session["diagnostics"] = True
-    client._submit_diagnostics(API(), session, store)
+    client._submit_diagnostics(API(), session, store, "failed")
     assert calls == [("PUT", f"/v1/p2p/ice-sessions/{sid}/diagnostics",
-                      {"stages": ["ICE connection state Failed"]})]
+                      {"reason": "failed", "stages": ["ICE connection state Failed"]})]
 
 
 def test_failed_connection_reports_after_attempting_cleanup(tmp_path, monkeypatch):
@@ -821,12 +830,12 @@ def test_failed_connection_reports_after_attempting_cleanup(tmp_path, monkeypatc
     def cleanup(*_args, **_kwargs):
         operations.append("cleanup")
 
-    def report(allocation_id, session_id, stages):
-        operations.append((allocation_id, session_id, stages))
+    def report(allocation_id, session_id, reason, stages):
+        operations.append((allocation_id, session_id, reason, stages))
         raise client.CloudExError("Diagnostics unavailable")
 
     monkeypatch.setattr(client, "_wait_forwarder", fail)
     monkeypatch.setattr(client, "disconnect_session", cleanup)
     with pytest.raises(client.CloudExError, match="Original tunnel failure"):
-        client.connect(profile, store, Mock(), attempts=1, transport="p2p", report_failure=report)
-    assert operations == ["cleanup", (profile["allocation_id"], sid, ["ICE connection state Failed"])]
+        client.connect(profile, store, Mock(), attempts=1, transport="p2p", report_diagnostics=report)
+    assert operations == ["cleanup", (profile["allocation_id"], sid, "failed", ["ICE connection state Failed"])]

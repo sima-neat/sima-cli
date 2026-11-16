@@ -332,7 +332,7 @@ def _safe_last_stage(log_path):
     return stages[-1] if stages else ""
 
 
-def _submit_diagnostics(api, session, store, report_failure=None):
+def _submit_diagnostics(api, session, store, reason, report_diagnostics=None):
     sid = session.get("remote_session_id")
     if session.get("diagnostics") is not True or not _valid_session_id(sid):
         return
@@ -356,11 +356,11 @@ def _submit_diagnostics(api, session, store, report_failure=None):
         pass
     try:
         stages = stages[-32:]
-        if report_failure is not None:
-            report_failure(api.allocation_id, sid, stages)
+        if report_diagnostics is not None:
+            report_diagnostics(api.allocation_id, sid, reason, stages)
         else:
             api.call("PUT", "/v1/p2p/ice-sessions/" + sid + "/diagnostics",
-                     {"stages": stages}, deadline=time.time() + 2)
+                     {"reason": reason, "stages": stages}, deadline=time.time() + 2)
     except CloudExError:
         # Evidence upload must never prevent connecting or releasing a lease.
         pass
@@ -645,7 +645,7 @@ def _forwarder_sudo_prefix(progress=None):
     return prefix + ["/usr/bin/env", "PATH=" + MACOS_TUNNEL_PATH]
 
 
-def connect(profile, store, progress, attempts=3, transport="auto", *, report_failure=None):
+def connect(profile, store, progress, attempts=3, transport="auto", *, report_diagnostics=None):
     """Create a session and return its durable local record."""
     from .installer import ensure_forwarder
 
@@ -746,7 +746,6 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_fa
             store.write(session)
             store.clear_recovery(session_id)
             config_path.unlink(missing_ok=True)
-            return session
         except BaseException as exc:
             last_error = exc
             if _creation_definitely_rejected(exc):
@@ -765,10 +764,14 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_fa
                 ) from exc
             finally:
                 if isinstance(exc, Exception):
-                    _submit_diagnostics(api, session, store, report_failure)
+                    _submit_diagnostics(api, session, store, "failed", report_diagnostics)
             if not isinstance(exc, DirectHandshakeError) or number == len(choices):
                 raise
             progress.update("Direct path timed out; retrying with fresh ICE candidates")
+        else:
+            if session["ice_path"] == "relay":
+                _submit_diagnostics(api, session, store, "relay", report_diagnostics)
+            return session
     raise last_error or CloudExError("CloudEx connection failed")
 
 

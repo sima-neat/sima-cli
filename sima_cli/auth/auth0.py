@@ -279,14 +279,14 @@ def request_device_code(auth_cfg):
 
     resp = requests.post(auth_cfg["DEVICE_CODE_URL"], data=data, headers=headers)
     if resp.status_code != 200:
-        print(f"❌ Error {resp.status_code}: {resp.text}")
+        click.echo(f"❌ Error {resp.status_code}: {resp.text}", err=True)
         resp.raise_for_status()
     return resp.json()
 
 
 def poll_for_token(auth_cfg, device_code, interval):
     """Step 2: Poll for user authorization."""
-    print(f"⏳ Waiting for authorization. Complete the browser login above; checking every {interval} seconds.")
+    click.echo(f"⏳ Waiting for authorization. Complete the browser login above; checking every {interval} seconds.", err=True)
     while True:
         time.sleep(interval)
         resp = requests.post(
@@ -300,7 +300,7 @@ def poll_for_token(auth_cfg, device_code, interval):
         )
 
         if resp.status_code == 200:
-            print("✅ sima-cli authorized!")
+            click.echo("✅ sima-cli authorized!", err=True)
             tokens = resp.json()
             tokens["timestamp"] = int(time.time())
             save_tokens(tokens)
@@ -313,10 +313,10 @@ def poll_for_token(auth_cfg, device_code, interval):
         elif error == "slow_down":
             interval += 5
         elif error == "expired_token":
-            print("❌ Device code expired — restart the flow.")
+            click.echo("❌ Device code expired — restart the flow.", err=True)
             sys.exit(1)
         else:
-            print(f"❌ Error: {resp.text}")
+            click.echo(f"❌ Error: {resp.text}", err=True)
             sys.exit(1)
 
 
@@ -333,21 +333,21 @@ def login_auth0(auth_cfg):
     highlighted_url = click.style(verify_complete, fg="cyan", bold=True)
     highlighted_code = click.style(user_code, fg="yellow", bold=True)
 
-    print("🔐 sima-cli needs you to authorize this device login.")
-    print(f"⏰ Login link/code expires in {expires_in} minutes.\n")
+    click.echo("🔐 sima-cli needs you to authorize this device login.", err=True)
+    click.echo(f"⏰ Login link/code expires in {expires_in} minutes.\n", err=True)
 
     # Auto-open browser if possible
     if is_browser_available() and verify_complete and webbrowser.open(verify_complete):
-        print(f"🌐 Opening browser for login → {highlighted_url}")
-        print("After signing in, return to this terminal. sima-cli will continue automatically.")
+        click.echo(f"🌐 Opening browser for login → {highlighted_url}", err=True)
+        click.echo("After signing in, return to this terminal. sima-cli will continue automatically.", err=True)
     else:
-        print("⚠️  A browser could not be opened from this environment.")
-        print("Action required:")
-        print("  1. Open this URL in a browser on your workstation:")
-        print(f"     {highlighted_url}")
-        print("  2. Sign in with your SiMa Developer Portal account.")
-        print(f"  3. If prompted, confirm this code: {highlighted_code}")
-        print("  4. Return to this terminal. sima-cli will continue automatically after authorization.")
+        click.echo("⚠️  A browser could not be opened from this environment.", err=True)
+        click.echo("Action required:", err=True)
+        click.echo("  1. Open this URL in a browser on your workstation:", err=True)
+        click.echo(f"     {highlighted_url}", err=True)
+        click.echo("  2. Sign in with your SiMa Developer Portal account.", err=True)
+        click.echo(f"  3. If prompted, confirm this code: {highlighted_code}", err=True)
+        click.echo("  4. Return to this terminal. sima-cli will continue automatically after authorization.", err=True)
 
     return poll_for_token(auth_cfg, data["device_code"], data["interval"])
 

@@ -57,7 +57,10 @@ def _configure_stdio_errors() -> None:
         if stream is None or not hasattr(stream, "reconfigure"):
             continue
         try:
-            stream.reconfigure(errors="replace")
+            # line_buffering: without a TTY (docker exec, pipes, CI) Python buffers
+            # stdout in blocks, so prompts such as the device-login link stay
+            # invisible while the command waits on them.
+            stream.reconfigure(errors="replace", line_buffering=True)
         except (OSError, ValueError):
             # Best-effort only: some stream implementations do not support
             # runtime reconfiguration; safely continue with default behavior.

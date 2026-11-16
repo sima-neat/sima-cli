@@ -7,9 +7,11 @@ from sima_cli.cli import _configure_stdio_errors
 class _Stream:
     def __init__(self):
         self.errors = None
+        self.line_buffering = None
 
     def reconfigure(self, **kwargs):
         self.errors = kwargs.get("errors")
+        self.line_buffering = kwargs.get("line_buffering")
 
 
 class TestCliStdio(unittest.TestCase):
@@ -22,6 +24,17 @@ class TestCliStdio(unittest.TestCase):
 
         self.assertEqual(stdout.errors, "replace")
         self.assertEqual(stderr.errors, "replace")
+
+    def test_configure_stdio_flushes_each_line_without_a_tty(self):
+        stdout = _Stream()
+        stderr = _Stream()
+
+        with patch("sima_cli.cli.sys.stdout", stdout), patch("sima_cli.cli.sys.stderr", stderr):
+            _configure_stdio_errors()
+
+        # Without a TTY Python block-buffers stdout; prompts must still appear immediately.
+        self.assertTrue(stdout.line_buffering)
+        self.assertTrue(stderr.line_buffering)
 
 
 if __name__ == "__main__":

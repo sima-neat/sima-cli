@@ -1,6 +1,8 @@
 import base64
+import io
 import json
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 from sima_cli.auth import auth0
@@ -29,6 +31,25 @@ def _tokens(payload):
 
 
 class TestAuth0AccessTokenRequirements(unittest.TestCase):
+    def test_poll_for_token_announces_waiting_on_stderr_before_polling(self):
+        auth_cfg = {"CLIENT_ID": "client", "TOKEN_URL": "https://auth.example/token"}
+        response = unittest.mock.Mock(status_code=200)
+        response.json.return_value = {"access_token": "token"}
+        seen_before_first_poll = []
+
+        def first_sleep(_interval):
+            seen_before_first_poll.append(stderr.getvalue())
+
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+             patch.object(auth0.time, "sleep", side_effect=first_sleep), \
+             patch.object(auth0.requests, "post", return_value=response), \
+             patch.object(auth0, "save_tokens"):
+            tokens = auth0.poll_for_token(auth_cfg, "device-code", 5)
+
+        self.assertEqual(tokens["access_token"], "token")
+        self.assertIn("Waiting for authorization", seen_before_first_poll[0])
+        self.assertIn("sima-cli authorized", stderr.getvalue())
+
     def test_login_auth0_prints_actionable_manual_browser_instructions(self):
         auth_cfg = {"CLIENT_ID": "client"}
         device_code_response = {
@@ -43,12 +64,15 @@ class TestAuth0AccessTokenRequirements(unittest.TestCase):
         with patch.object(auth0, "request_device_code", return_value=device_code_response), \
              patch.object(auth0, "is_browser_available", return_value=False), \
              patch.object(auth0, "poll_for_token", return_value={"access_token": "token"}) as poll_for_token, \
-             patch("builtins.print") as print_mock:
+             patch("sys.stdout", new_callable=io.StringIO) as stdout, \
+             patch("sys.stderr", new_callable=io.StringIO) as stderr:
             result = auth0.login_auth0(auth_cfg)
 
         self.assertEqual(result, {"access_token": "token"})
         poll_for_token.assert_called_once_with(auth_cfg, "device-code", 5)
-        output = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        # Login prompts go to stderr so they are not mixed into a command's stdout result.
+        self.assertEqual(stdout.getvalue(), "")
+        output = stderr.getvalue()
         self.assertIn("authorize this device login", output)
         self.assertIn("A browser could not be opened", output)
         self.assertIn("Action required", output)

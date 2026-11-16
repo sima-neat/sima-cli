@@ -79,3 +79,19 @@ def test_no_browser_does_not_wait():
          patch.object(neat, "_wait_for_code_ui") as wait:
         assert not neat._open_code_ui_if_browser_available("http://localhost:18501")
     wait.assert_not_called()
+
+
+def test_code_ui_token_never_starts_with_dash():
+    """OpenVSCode reads a `--connection-token` value starting with "-" as an option (#368)."""
+    drawn = iter(["-hTokenPrintsUsage", "--emptyToken", "_valid-token"])
+    with patch.object(neat.secrets, "token_urlsafe", side_effect=lambda n: next(drawn)) as draw:
+        assert neat._generate_code_ui_token() == "_valid-token"
+    assert draw.call_count == 3
+    assert all(call.args == (neat.CODE_UI_SECRET_BYTES,) for call in draw.call_args_list)
+
+
+def test_code_ui_tokens_keep_their_length_and_alphabet():
+    tokens = [neat._generate_code_ui_token() for _ in range(2000)]
+    assert not any(token.startswith("-") for token in tokens)
+    assert {len(token) for token in tokens} == {43}
+    assert len(set(tokens)) == len(tokens)

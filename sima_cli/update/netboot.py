@@ -1507,7 +1507,8 @@ def setup_netboot(
         swtype (str): The software type, either yocto or elxr.
         images (str): Optional read-only directory containing local netboot source artifacts.
         delete_cache (bool): Delete the managed cache entry after the netboot session exits.
-        auto_confirm_reboot (bool): Reboot from eMMC after a manual flash without prompting.
+        auto_confirm_reboot (bool): Skip setup confirmation for autoflash with an explicit
+            DevKit IP, and skip reboot confirmation after a manual flash.
 
     Raises:
         RuntimeError: If the download or TFTP setup fails.
@@ -1614,11 +1615,13 @@ def setup_netboot(
             click.echo(f"   🔹 {iface}: {ip}")
 
         if selected_devkit:
+            explicit_devkit = bool(devkit and devkit.strip().lower() != 'auto')
             reboot_scheduled = configure_and_reboot(
                 selected_devkit,
                 server_ip,
                 autoflash=autoflash,
                 configuration=configuration,
+                auto_confirm_setup=auto_confirm_reboot and autoflash and explicit_devkit,
             )
             if not reboot_scheduled:
                 click.echo(

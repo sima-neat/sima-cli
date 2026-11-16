@@ -73,8 +73,8 @@ def network_settings(ssh, devkit, server_ip):
                                    'U-Boot was not changed.') from exc
 
 
-def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None):
-    """Return whether the user confirmed and the DevKit reboot was scheduled."""
+def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None, *, auto_confirm_setup=False):
+    """Configure NetBoot after confirmation and report whether reboot was scheduled."""
     try:
         ssh = init_ssh_session(devkit)
     except (OSError, paramiko.SSHException) as exc:
@@ -96,7 +96,7 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
         message = Text()
         message.append(f"DevKit: {devkit} ({network['interface']})\nTFTP server: {server_ip}\n"
                        f"Netmask: {network['netmask']}  Gateway: {network['gateway']}\n\n", style='bold cyan')
-        message.append('After confirmation:\n', style='bold yellow')
+        message.append('Planned changes:\n', style='bold yellow')
         message.append('• Boot parameters will be automatically updated on the DevKit to let it boot from the network.\n'
                        '• The DevKit will reboot, interrupting running applications.\n\n')
         if autoflash:
@@ -108,8 +108,9 @@ def configure_and_reboot(devkit, server_ip, autoflash=False, configuration=None)
             message, title='Reboot DevKit into network boot',
             border_style='yellow', width=100, expand=False,
         ))
-        if not click.confirm('Set up network boot, automatically flash this DevKit, and reboot it from eMMC?' if autoflash
-                             else 'Set up network boot and reboot this DevKit?', default=False):
+        prompt = ('Set up network boot, automatically flash this DevKit, and reboot it from eMMC?'
+                  if autoflash else 'Set up network boot and reboot this DevKit?')
+        if not auto_confirm_setup and not click.confirm(prompt, default=False):
             return False
         if configuration is not None:
             configuration.hardware_address = network.get('hardware_address')

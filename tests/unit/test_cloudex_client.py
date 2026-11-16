@@ -774,3 +774,26 @@ def test_macos_forwarder_failure_includes_install_instruction(tmp_path, detail):
 
     assert "brew install wireguard-tools" in message
     assert message.endswith("; last stage: starting WireGuard tunnel")
+
+
+def test_cloudex_diagnostics_posts_only_safe_stages_for_the_remote_session(tmp_path):
+    store = client.SessionStore(tmp_path)
+    local_id, sid = "a" * 32, "b" * 32
+    _, _, _, log = store.runtime_paths(local_id)
+    log.parent.mkdir(parents=True)
+    log.write_text("kerrigan-p2p-forwarder: ICE connection state Failed\n"
+                   "kerrigan-p2p-forwarder: signaling token=fixture-secret\n")
+    calls = []
+
+    class API:
+        def call(self, method, route, data, **kwargs):
+            calls.append((method, route, data))
+            raise client.CloudExError("diagnostics temporarily unavailable")
+
+    session = {"session_id": local_id, "remote_session_id": sid}
+    client._submit_diagnostics(API(), session, store, "setup", "failed")
+    assert calls == []
+    session["diagnostics"] = True
+    client._submit_diagnostics(API(), session, store, "setup", "failed")
+    assert calls == [("PUT", f"/v1/p2p/ice-sessions/{sid}/diagnostics",
+                      {"phase": "setup", "outcome": "failed", "stages": ["ICE connection state Failed"]})]

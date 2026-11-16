@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -39,6 +40,15 @@ SAFE_FORWARDER_STAGES = {
     "signaling session not found",
     "signaling session conflict",
     "signaling rate limited",
+}
+UPLOAD_FORWARDER_STAGES = SAFE_FORWARDER_STAGES | {
+    "ICE candidate gathering complete",
+    "ICE connection state Checking",
+    "ICE connection state Connected",
+    "ICE connection state Completed",
+    "ICE connection state Disconnected",
+    "ICE connection state Failed",
+    "ICE connection state Closed",
 }
 
 
@@ -320,6 +330,37 @@ def _safe_last_stage(log_path):
         if stage in SAFE_FORWARDER_STAGES:
             stages.append(stage)
     return stages[-1] if stages else ""
+
+
+def _submit_diagnostics(api, session, store, phase, outcome):
+    sid = session.get("remote_session_id")
+    if session.get("diagnostics") is not True or not _valid_session_id(sid):
+        return
+    log_path = store.runtime_paths(session["session_id"])[3]
+    stages = []
+    try:
+        limit = 64 * 1024
+        fd = os.open(str(log_path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as log:
+            info = os.fstat(log.fileno())
+            if stat.S_ISREG(info.st_mode):
+                log.seek(max(0, info.st_size - limit))
+                if log.tell():
+                    log.readline(limit)
+                for line in log.read(limit).decode("utf-8", errors="replace").splitlines():
+                    prefix = "kerrigan-p2p-forwarder:"
+                    event = line[len(prefix):].strip() if line.startswith(prefix) else line.strip()
+                    if event in UPLOAD_FORWARDER_STAGES and (not stages or stages[-1] != event):
+                        stages.append(event)
+    except OSError:
+        pass
+    try:
+        api.call("PUT", "/v1/p2p/ice-sessions/" + sid + "/diagnostics",
+                 {"phase": phase, "outcome": outcome, "stages": stages[-32:]},
+                 deadline=time.time() + 2)
+    except CloudExError:
+        # Evidence upload must never prevent connecting or releasing a lease.
+        pass
 
 
 def _safe_selected_path(log_path):
@@ -646,6 +687,8 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             if not _valid_session_id(remote_session_id):
                 raise CloudExError("CloudEx API returned an invalid session identifier")
             session["remote_session_id"] = remote_session_id
+            if allocated.get("diagnostics") is True:
+                session["diagnostics"] = True
             store.write_recovery(session)
             try:
                 expires_at = float(allocated["expires_at"])
@@ -655,6 +698,7 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
             report_path.touch(mode=0o600, exist_ok=False)
             config = dict(allocated)
+            config.pop("diagnostics", None)
             config["transport"] = selected_transport
             config_path.write_text(json.dumps(config, separators=(",", ":")), encoding="utf-8")
             config_path.chmod(0o600)
@@ -699,12 +743,14 @@ def connect(profile, store, progress, attempts=3, transport="auto"):
             store.write(session)
             store.clear_recovery(session_id)
             config_path.unlink(missing_ok=True)
+            _submit_diagnostics(api, session, store, "setup", "connected")
             return session
         except BaseException as exc:
             last_error = exc
             if _creation_definitely_rejected(exc):
                 store.delete(session_id)
                 raise
+            _submit_diagnostics(api, session, store, "setup", "failed")
             progress.update("Cleaning up the failed connection attempt")
             try:
                 disconnect_session(
@@ -802,6 +848,7 @@ def disconnect_session(session, store, progress, authorize=True, preserve_log=Fa
     api = CloudExAPI.from_session(session)
     progress.update("Stopping the local encrypted tunnel")
     _stop_forwarder(session)
+    _submit_diagnostics(api, session, store, "teardown", "closed")
     progress.update("Requesting DevKit tunnel cleanup")
     session_id = session["session_id"]
     remote_session_id = _remote_session_id(session, store)

@@ -29,7 +29,7 @@ None.
 - [`sima-cli neat artifacts`](./sima-cli-neat-artifacts.md): Download artifacts for REPO and branch or tag REF.
 - [`sima-cli neat download`](./sima-cli-neat-download.md): Download a Neat package's metadata resources without installing it.
 - [`sima-cli neat install`](./sima-cli-neat-install.md): Install a Neat artifact package from TARGET.
-- [`sima-cli neat sdk`](./sima-cli-neat-sdk.md): Launch the Neat SDK tool environment.
+- [`sima-cli neat sdk`](./sima-cli-neat-sdk.md): Launch the Palette SDK tool environment.
 
 ## Full Help
 
@@ -52,5 +52,5 @@ Commands:
   artifacts  Download artifacts for REPO and branch or tag REF.
   download   Download a Neat package's metadata resources without...
   install    Install a Neat artifact package from TARGET.
-  sdk        Launch the Neat SDK tool environment.
+  sdk        Launch the Palette SDK tool environment.
 ```

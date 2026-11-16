@@ -1,6 +1,8 @@
-# Neat SDK Networking Setup
+# Palette SDK Networking Setup
 
-The Neat SDK, also known as the Neat Development Environment, runs inside a Docker container. `sima-cli sdk setup` creates the container, prepares the host workspace mount, starts Insight when enabled, and publishes the container ports that the host browser and a DevKit use during development.
+The Palette SDK runs inside a Docker container. `sima-cli sdk setup` creates the container, prepares the host workspace mount, starts Insight when enabled, and publishes the container ports that the host browser and a DevKit use during development.
+
+> **Naming note:** older documentation and some `sima-cli` output may call this product the *Neat SDK*, the *Neat Development Environment*, or *SiMa SDK containers*. These names all refer to the Palette SDK.
 
 This guide explains the networking pieces that matter most when using the SDK with a Modalix DevKit.
 
@@ -9,7 +11,7 @@ This guide explains the networking pieces that matter most when using the SDK wi
 A typical SDK setup has three participants:
 
 - Host computer: runs Docker, `sima-cli`, the SDK container, and your browser.
-- SDK container: runs the Neat Development Environment and optional Insight services.
+- SDK container: runs the Palette SDK development environment and optional Insight services.
 - DevKit: connects to the host over the local network or a direct Ethernet/shared-network link.
 
 The supported SDK container network is `simasdkbridge`. Do not start the SDK container directly from Docker or the VS Code Dev Containers extension when you need DevKit and Insight networking. Use `sima-cli sdk setup` so the container, port mappings, workspace sharing, and Insight configuration are created together.

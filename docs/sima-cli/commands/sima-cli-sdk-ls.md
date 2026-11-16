@@ -1,6 +1,6 @@
 # `sima-cli sdk ls`
 
-List installed and running SiMa SDK containers.
+List installed and running Palette SDK containers.
 
 Parent command: [`sima-cli sdk`](./sima-cli-sdk.md)
 
@@ -23,8 +23,8 @@ None.
 ```text
 Usage: sima-cli sdk ls [OPTIONS]
 
-  List installed and running SiMa SDK containers. Shows SDK name, version, and
-  running status.
+  List installed and running Palette SDK containers. Shows SDK name, version,
+  and running status.
 
 Options:
   --help  Show this message and exit.

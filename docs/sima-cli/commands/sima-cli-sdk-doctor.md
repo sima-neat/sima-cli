@@ -20,7 +20,7 @@ None.
 
 ## Subcommands
 
-- [`sima-cli sdk doctor network`](./sima-cli-sdk-doctor-network.md): Diagnose Ubuntu/Linux host networking for Neat SDK Insight ports.
+- [`sima-cli sdk doctor network`](./sima-cli-sdk-doctor-network.md): Diagnose Ubuntu/Linux host networking for Palette SDK Insight ports.
 
 ## Full Help
 
@@ -33,5 +33,5 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  network  Diagnose Ubuntu/Linux host networking for Neat SDK Insight ports.
+  network  Diagnose Ubuntu/Linux host networking for Palette SDK Insight...
 ```

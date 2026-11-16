@@ -18,14 +18,14 @@ sima-cli sdk setup [OPTIONS]
 | `-y, --yes` | Accept setup defaults; install Model Compiler from a local ZIP if available, otherwise online. |
 | `--devkit` | Configure DevKit integration for setup. Use '--devkit <IP>'. |
 | `--code-server-without-password` | Disable code-server password authentication and bind editor ports to 127.0.0.1 for an authenticated gateway. Requires container recreation. |
-| `--no-insight` | Start Neat SDK without Insight UI/video/WebRTC port mappings. |
+| `--no-insight` | Start Palette SDK without Insight UI/video/WebRTC port mappings. |
 | `--insight-video-channels` | Number of Insight video channels to configure (four exposed ports per channel). (default: 4) |
 | `--no-model-compiler, --no-model-sdk` | Skip Model Compiler extension setup. --no-model-sdk is kept for compatibility. |
 | `--all-extensions` | Install Codex and Claude VS Code extensions without prompting. Neat is installed automatically. SDK_SKIP_CODING_AGENT_INSTALL overrides this option. |
 | `--edgematic-studio, --studio` | Install the Edgematic Studio extension and publish its port. Otherwise prompts after the other extensions; -y accepts. |
 | `--no-edgematic-studio, --no-studio` | Skip the Edgematic Studio extension and do not publish its port. |
 | `--edgematic-studio-port, --studio-port` | Publish the Edgematic Studio port without installing it, for a manual install later. |
-| `--minimal` | Skip optional Neat SDK container extras for CI compilation jobs. |
+| `--minimal` | Skip optional Palette SDK container extras for CI compilation jobs. |
 | `--workspace` | Host workspace directory to mount into SDK containers instead of ~/workspace. |
 | `--persistent-network-profile` | Allow setup to install a persistent NetworkManager shared-network repair profile without prompting. |
 | `--no-container-registry` | Skip the local registry that lets a configured DevKit download images built in the SDK. |
@@ -71,7 +71,7 @@ Options:
                                   and bind editor ports to 127.0.0.1 for an
                                   authenticated gateway. Requires container
                                   recreation.
-  --no-insight                    Start Neat SDK without Insight
+  --no-insight                    Start Palette SDK without Insight
                                   UI/video/WebRTC port mappings.
   --insight-video-channels INTEGER RANGE
                                   Number of Insight video channels to
@@ -93,8 +93,8 @@ Options:
   --edgematic-studio-port, --studio-port
                                   Publish the Edgematic Studio port without
                                   installing it, for a manual install later.
-  --minimal                       Skip optional Neat SDK container extras for
-                                  CI compilation jobs.
+  --minimal                       Skip optional Palette SDK container extras
+                                  for CI compilation jobs.
   --workspace DIRECTORY           Host workspace directory to mount into SDK
                                   containers instead of ~/workspace.
   --persistent-network-profile    Allow setup to install a persistent

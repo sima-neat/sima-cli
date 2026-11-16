@@ -1,6 +1,6 @@
 # `sima-cli sdk neat`
 
-Launch the Neat SDK tool environment.
+Launch the Palette SDK tool environment.
 
 Parent command: [`sima-cli sdk`](./sima-cli-sdk.md)
 
@@ -25,15 +25,15 @@ None.
 ```text
 Usage: sima-cli sdk neat [OPTIONS] [CMD]...
 
-  Launch the Neat SDK tool environment.
+  Launch the Palette SDK tool environment.
 
   If CMD is provided, all remaining tokens are executed inside the matching
   running container with bash -lc. If CMD is omitted, sima-cli opens an
   interactive login shell.
 
-  If no matching Neat SDK container is running, one stopped Neat SDK container
-  is started and the command is retried. When several stopped containers
-  match, sima-cli prompts you to select one before starting it.
+  If no matching Palette SDK container is running, one stopped Palette SDK
+  container is started and the command is retried. When several stopped
+  containers match, sima-cli prompts you to select one before starting it.
 
   Examples:
       sima-cli sdk neat

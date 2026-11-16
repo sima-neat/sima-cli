@@ -82,7 +82,7 @@ pip install sima-cli
 | [Boot Image and Netboot Operations](guides/boot-image-and-netboot.md) | Prepare local or downloaded images, configure remote netboot safely, recover from address changes, and prepare eMMC for flashing with `sima-cli bootimg`. |
 | [SDK Setup and Extension Management](guides/sdk-setup.md) | Choose optional SDK services, browser VS Code extensions, and the Model Compiler installation source when running `sima-cli sdk setup`. |
 | [System Update Operations](guides/system-updates.md) | Use daily builds, signed eLxr 3.0 SWU bundles, A/B inspection, storage staging, and persistent-overlay handling with `sima-cli update`. |
-| [Neat SDK Networking Setup](sdk-networking/index.md) | The Neat SDK, also known as the Neat Development Environment, runs inside a Docker container. `sima-cli sdk setup` creates the container, prepares the host workspace mount, starts Insight when enabled, and publishes the container ports that the host browser and a DevKit use during development. |
+| [Palette SDK Networking Setup](sdk-networking/index.md) | The Palette SDK runs inside a Docker container. `sima-cli sdk setup` creates the container, prepares the host workspace mount, starts Insight when enabled, and publishes the container ports that the host browser and a DevKit use during development. |
 | [Roll Back SDK Network Changes](sdk-networking/rollback.md) | Use rollback when you want to inspect or undo Linux host networking changes made by SDK setup or network repair. |
 | [Troubleshoot SDK Networking](sdk-networking/troubleshooting.md) | Use the network doctor when the SDK container, Insight UI, DevKit SSH, RTSP, WebRTC video, or workspace sync does not behave as expected. |
 
@@ -107,7 +107,7 @@ pip install sima-cli
 | [`sima-cli peripherals`](commands/sima-cli-peripherals.md) | Show the cameras and microphones plugged into this DevKit. |
 | [`sima-cli playbooks`](commands/sima-cli-playbooks.md) | Install and manage playbooks (Codex/Claude). |
 | [`sima-cli sdcard`](commands/sima-cli-sdcard.md) | Prepare the SD Card as a data storage device for MLSoc DevKit or Modalix Early Access Unit |
-| [`sima-cli sdk`](commands/sima-cli-sdk.md) | Manage and launch SiMa SDK container environments. |
+| [`sima-cli sdk`](commands/sima-cli-sdk.md) | Manage and launch Palette SDK container environments. |
 | [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md) | Update sima-cli manually from PyPI or a direct wheel URL. |
 | [`sima-cli serial`](commands/sima-cli-serial.md) | Connect to the UART serial console of the DevKit. |
 | [`sima-cli update`](commands/sima-cli-update.md) | Update a SiMa DevKit, remote device, or Linux PCIe host. |

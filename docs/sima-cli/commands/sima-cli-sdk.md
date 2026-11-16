@@ -1,6 +1,6 @@
 # `sima-cli sdk`
 
-Manage and launch SiMa SDK container environments.
+Manage and launch Palette SDK container environments.
 
 Parent command: [`sima-cli`](./sima-cli.md)
 
@@ -24,10 +24,10 @@ None.
 
 - [`sima-cli sdk doctor`](./sima-cli-sdk-doctor.md): Run read-only SDK diagnostics.
 - [`sima-cli sdk elxr`](./sima-cli-sdk-elxr.md): Launch the eLxr SDK tool environment.
-- [`sima-cli sdk ls`](./sima-cli-sdk-ls.md): List installed and running SiMa SDK containers.
+- [`sima-cli sdk ls`](./sima-cli-sdk-ls.md): List installed and running Palette SDK containers.
 - [`sima-cli sdk model`](./sima-cli-sdk-model.md): Launch the Model SDK tool environment.
 - [`sima-cli sdk mpk`](./sima-cli-sdk-mpk.md): Access MPK CLI toolset container for managing and building pipelines along with the device manager.
-- [`sima-cli sdk neat`](./sima-cli-sdk-neat.md): Launch the Neat SDK tool environment.
+- [`sima-cli sdk neat`](./sima-cli-sdk-neat.md): Launch the Palette SDK tool environment.
 - [`sima-cli sdk network`](./sima-cli-sdk-network.md): Probe or repair SDK network configuration.
 - [`sima-cli sdk remove`](./sima-cli-sdk-remove.md): Remove SDK containers and images.
 - [`sima-cli sdk ros2`](./sima-cli-sdk-ros2.md): Launch the ROS 2 SDK workspace environment.
@@ -42,7 +42,7 @@ None.
 ```text
 Usage: sima-cli sdk [OPTIONS] COMMAND [ARGS]...
 
-  Manage and launch SiMa SDK container environments.
+  Manage and launch Palette SDK container environments.
 
   This group provides access to the full SDK toolchain, including setup,
   container orchestration, tool-specific shells (MPK, model, Yocto, Neat, ROS
@@ -69,10 +69,10 @@ Options:
 Commands:
   doctor   Run read-only SDK diagnostics.
   elxr     Launch the eLxr SDK tool environment.
-  ls       List installed and running SiMa SDK containers.
+  ls       List installed and running Palette SDK containers.
   model    Launch the Model SDK tool environment.
   mpk      Access MPK CLI toolset container for managing and building...
-  neat     Launch the Neat SDK tool environment.
+  neat     Launch the Palette SDK tool environment.
   network  Probe or repair SDK network configuration.
   remove   Remove SDK containers and images.
   ros2     Launch the ROS 2 SDK workspace environment.

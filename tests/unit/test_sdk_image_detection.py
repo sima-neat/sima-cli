@@ -1785,7 +1785,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
 
         self.assertEqual(result.exit_code, 0, result.output)
         ensure_startable.assert_called_once_with("ghcr.io-sima-neat-sdk-v2.1.2")
-        self.assertIn("Starting existing Neat SDK container", result.output)
+        self.assertIn("Starting existing Palette SDK container", result.output)
         run.assert_called_once_with(
             ["docker", "start", "ghcr.io-sima-neat-sdk-v2.1.2"],
             check=True,
@@ -1861,7 +1861,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             result = CliRunner().invoke(sdk, ["neat"])
 
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("No Neat SDK container selected", result.output)
+        self.assertIn("No Palette SDK container selected", result.output)
         self.assertIn("sima-cli sdk -v VERSION neat", result.output)
         exec_cmd.assert_called_once_with(ANY, "neat", None, raise_on_missing=True)
         ensure_startable.assert_not_called()
@@ -1913,7 +1913,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             result = CliRunner().invoke(sdk, ["neat"])
 
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("No stopped Neat SDK containers found", result.output)
+        self.assertIn("No stopped Palette SDK containers found", result.output)
         self.assertIn("sima-cli sdk setup", result.output)
         run.assert_not_called()
 

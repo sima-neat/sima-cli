@@ -78,7 +78,7 @@ port changes.
 
 ## Edgematic Studio
 
-On Neat SDK images, setup installs Edgematic Studio, publishes its port, and
+On Palette SDK images, setup installs Edgematic Studio, publishes its port, and
 starts it, without a prompt. This also applies to `-y` and `--noninteractive`.
 The summary shows Studio's URL in an **Edgematic Studio** panel. Studio uses
 host port `8088`, or another free port when `8088` is taken.

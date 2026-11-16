@@ -12,7 +12,7 @@ Usage:
     sima-cli sdk mpk : go to mpk container
     sima-cli sdk model : go to model container
     sima-cli sdk yocto : go to Yocto container
-    sima-cli sdk neat : go to Neat SDK container
+    sima-cli sdk neat : go to Palette SDK container
     sima-cli sdk ros2 : go to ROS 2 SDK container
     sima-cli sdk elxr : go to elxr container
 """
@@ -88,7 +88,7 @@ class SdkGroup(click.Group):
 @click.pass_context
 def sdk(ctx, version_filter):
     """
-    Manage and launch SiMa SDK container environments.
+    Manage and launch Palette SDK container environments.
 
     This group provides access to the full SDK toolchain, including
     setup, container orchestration, tool-specific shells (MPK, model,
@@ -241,9 +241,9 @@ def _start_stopped_neat_container(ctx) -> None:
     ]
 
     if not matches:
-        message = "No stopped Neat SDK containers found."
+        message = "No stopped Palette SDK containers found."
         if version_filter:
-            message = f"No stopped Neat SDK containers found for version '{version_filter}'."
+            message = f"No stopped Palette SDK containers found for version '{version_filter}'."
         raise click.ClickException(f"{message} Run: sima-cli sdk setup")
 
     if len(matches) > 1:
@@ -256,24 +256,24 @@ def _start_stopped_neat_container(ctx) -> None:
 
     if not name:
         raise click.ClickException(
-            "No Neat SDK container selected. Use 'sima-cli sdk -v VERSION neat' "
+            "No Palette SDK container selected. Use 'sima-cli sdk -v VERSION neat' "
             "to select a version without a prompt."
         )
 
     try:
         ensure_existing_neat_container_startable(name)
         console.print(
-            f"[cyan]▶ Starting existing Neat SDK container:[/cyan] [bold]{name}[/bold] "
+            f"[cyan]▶ Starting existing Palette SDK container:[/cyan] [bold]{name}[/bold] "
             "[dim](this may take a moment)[/dim]"
         )
         subprocess.run(["docker", "start", name], check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         raise click.ClickException(
-            f"Failed to start Neat SDK container '{name}' while running: {' '.join(e.cmd)}"
+            f"Failed to start Palette SDK container '{name}' while running: {' '.join(e.cmd)}"
         ) from e
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
-    console.print(f"[green]✅ Started Neat SDK container:[/green] [bold]{name}[/bold]")
+    console.print(f"[green]✅ Started Palette SDK container:[/green] [bold]{name}[/bold]")
 
 
 def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
@@ -345,7 +345,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
 @click.option(
     "--no-insight",
     is_flag=True,
-    help="Start Neat SDK without Insight UI/video/WebRTC port mappings.",
+    help="Start Palette SDK without Insight UI/video/WebRTC port mappings.",
 )
 @click.option(
     "--insight-video-channels",
@@ -390,7 +390,7 @@ def launch_sdk_tool(tool: str, cmd, ctx, recover_unavailable: bool = False):
 @click.option(
     "--minimal",
     is_flag=True,
-    help="Skip optional Neat SDK container extras for CI compilation jobs.",
+    help="Skip optional Palette SDK container extras for CI compilation jobs.",
 )
 @click.option(
     "--workspace",
@@ -543,7 +543,7 @@ def doctor():
     "--container",
     type=str,
     default="",
-    help="Neat SDK container name. Required when multiple Neat SDK containers exist.",
+    help="Palette SDK container name. Required when multiple Palette SDK containers exist.",
 )
 @click.option(
     "--collect",
@@ -557,7 +557,7 @@ def doctor():
     help="Output .tar.gz file or directory for --collect. Defaults to ./sima-sdk-network-doctor-<timestamp>.tar.gz.",
 )
 def doctor_network(devkit, container, collect, output):
-    """Diagnose Ubuntu/Linux host networking for Neat SDK Insight ports."""
+    """Diagnose Ubuntu/Linux host networking for Palette SDK Insight ports."""
     devkit_ip = _resolve_devkit_ip(devkit) if devkit else ""
     report = build_network_doctor_report(container=container, devkit_ip=devkit_ip)
     print_network_doctor_report(report)
@@ -584,7 +584,7 @@ def network():
     "--container",
     type=str,
     default="",
-    help="Neat SDK container name. Required when multiple Neat SDK containers exist.",
+    help="Palette SDK container name. Required when multiple Palette SDK containers exist.",
 )
 @click.option(
     "--persist",
@@ -592,7 +592,7 @@ def network():
     help="Install/update a persistent NetworkManager dispatcher hook after applying runtime repair.",
 )
 def network_repair(devkit, container, persist):
-    """Apply scoped Ubuntu/Linux host network repair for Neat SDK Insight paths."""
+    """Apply scoped Ubuntu/Linux host network repair for Palette SDK Insight paths."""
     devkit_ip = _resolve_devkit_ipv4(devkit)
     report = repair_linux_devkit_network(container=container, devkit_ip=devkit_ip, persist=persist)
     print_network_doctor_report(report)
@@ -799,13 +799,13 @@ def yocto(ctx, cmd):
 @click.pass_context
 def neat(ctx, cmd):
     """
-    Launch the Neat SDK tool environment.
+    Launch the Palette SDK tool environment.
 
     If CMD is provided, all remaining tokens are executed inside the matching
     running container with bash -lc. If CMD is omitted, sima-cli opens an
     interactive login shell.
 
-    If no matching Neat SDK container is running, one stopped Neat SDK
+    If no matching Palette SDK container is running, one stopped Palette SDK
     container is started and the command is retried. When several stopped
     containers match, sima-cli prompts you to select one before starting it.
 
@@ -874,7 +874,7 @@ def run(ctx, script_path):
 @click.pass_context
 def list_sdk(ctx):
     """
-    List installed and running SiMa SDK containers.
+    List installed and running Palette SDK containers.
     Shows SDK name, version, and running status.
     """
     containers = get_all_containers(running_containers_only=False)

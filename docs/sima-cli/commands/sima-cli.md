@@ -24,7 +24,7 @@ None.
 
 - [`sima-cli appzoo`](./sima-cli-appzoo.md): Access sample apps from the App Zoo.
 - [`sima-cli bootimg`](./sima-cli-bootimg.md): Prepare a bootable image for the SiMa DevKit.
-- [`sima-cli device`](./sima-cli-device.md): Discover nearby SiMa.ai devices on the local network.
+- [`sima-cli device`](./sima-cli-device.md): Discover and manage device(s) for MPK deployment and app lifecycle management purposes, compatible with both PCIe and Ethernet deployment models. Host side only.
 - [`sima-cli download`](./sima-cli-download.md): Download a file or a whole folder from a given URL.
 - [`sima-cli install`](./sima-cli-install.md): Install SiMa packages.
 - [`sima-cli login`](./sima-cli-login.md): Authenticate with the SiMa Developer Portal.
@@ -39,7 +39,7 @@ None.
 - [`sima-cli peripherals`](./sima-cli-peripherals.md): Show the cameras and microphones plugged into this DevKit.
 - [`sima-cli playbooks`](./sima-cli-playbooks.md): Install and manage playbooks (Codex/Claude).
 - [`sima-cli sdcard`](./sima-cli-sdcard.md): Prepare the SD Card as a data storage device for MLSoc DevKit or Modalix Early Access Unit
-- [`sima-cli sdk`](./sima-cli-sdk.md): Manage and launch SiMa SDK container environments.
+- [`sima-cli sdk`](./sima-cli-sdk.md): Manage and launch Palette SDK container environments.
 - [`sima-cli selfupdate`](./sima-cli-selfupdate.md): Update sima-cli manually from PyPI or a direct wheel URL.
 - [`sima-cli serial`](./sima-cli-serial.md): Connect to the UART serial console of the DevKit.
 - [`sima-cli update`](./sima-cli-update.md): Update a SiMa DevKit, remote device, or Linux PCIe host.
@@ -63,7 +63,7 @@ Options:
 Commands:
   appzoo       Access sample apps from the App Zoo.
   bootimg      Prepare a bootable image for the SiMa DevKit.
-  device       Discover nearby SiMa.ai devices on the local network.
+  device       Discover and manage device(s) for MPK deployment and app...
   download     Download a file or a whole folder from a given URL.
   install      Install SiMa packages.
   login        Authenticate with the SiMa Developer Portal.
@@ -77,7 +77,7 @@ Commands:
   peripherals  Show the cameras and microphones plugged into this DevKit.
   playbooks    Install and manage playbooks (Codex/Claude).
   sdcard       Prepare the SD Card as a data storage device for MLSoc...
-  sdk          Manage and launch SiMa SDK container environments.
+  sdk          Manage and launch Palette SDK container environments.
   selfupdate   Update sima-cli manually from PyPI or a direct wheel URL.
   serial       Connect to the UART serial console of the DevKit.
   update       Update a SiMa DevKit, remote device, or Linux PCIe host.

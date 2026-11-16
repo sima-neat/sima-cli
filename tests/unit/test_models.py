@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 from copy import deepcopy
@@ -8,10 +9,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+import requests
 from click.testing import CliRunner
 from rich.console import Console
 
 from sima_cli.cli import main
+from sima_cli.download.parallel import PARALLEL_MIN_SIZE
 from sima_cli.models import rendering
 from sima_cli.models.client import (
     PRODUCTION_BASE_URL,
@@ -1475,6 +1478,159 @@ def test_verified_download_on_both_endpoints(tmp_path, base_url, failure):
     assert session.calls[0][0] == base_url + "/v1/runs/run/artifacts/package"
 
 
+def _registry_client_with_existing_download(tmp_path):
+    """A real client whose download target already exists under tmp_path."""
+    run = _run()
+    artifact = {
+        "name": "mpk",
+        "artifact_type": "model-pack",
+        "size_bytes": 5,
+        "sha256": hashlib.sha256(b"model").hexdigest(),
+    }
+    catalog = {"catalog": {"document": {"models": [{
+        "id": "resnet_50", "license": {"spdx": "Apache-2.0"},
+        "approved_deployments": {"int8": {"artifacts": [{
+            "run_id": run["id"], "component_id": "model", "artifact_name": "mpk",
+        }]}},
+    }]}}}
+    client = RegistryClient(PRODUCTION_BASE_URL, session=FakeSession([
+        FakeResponse(payload=catalog),
+        FakeResponse(payload={"run": run, "artifacts": [artifact]}),
+    ]))
+    client.artifact_download = Mock(return_value={
+        "download_url": "https://download.example/model",
+        "s3_key": "models/run/resnet_50_int8_mpk.tar.gz",
+    })
+    existing = tmp_path / "resnet_50" / "int8" / "resnet_50_int8_mpk.tar.gz"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"model")
+    return client, existing
+
+
+def test_download_json_reports_existing_destination_as_json(tmp_path):
+    client, existing = _registry_client_with_existing_download(tmp_path)
+    args = ["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8",
+            "--output", str(tmp_path), "--json"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "destination_exists"
+    assert str(existing) in payload["error"]["message"]
+    assert "--force" in payload["error"]["message"]
+    assert "Error:" not in result.stdout
+    assert existing.read_bytes() == b"model"
+
+
+def test_download_without_json_keeps_plain_text_error(tmp_path):
+    client, existing = _registry_client_with_existing_download(tmp_path)
+    args = ["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8",
+            "--output", str(tmp_path)]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert f"Error: Destination already exists: {existing}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "code"),
+    [
+        (["branches", "--json"], "http_error"),
+        (["list", "--branch", "develop", "--json"], "http_error"),
+        (["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8", "--json"],
+         "http_error"),
+        (["list", "--branch", "missing", "--json"], "branch_not_found"),
+    ],
+)
+def test_models_json_commands_report_registry_errors_as_json(args, code):
+    status = 404 if code == "branch_not_found" else 503
+    session = FakeSession([FakeResponse(status_code=status, payload={"error": {"message": "Unavailable"}})])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1, result.output
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == code
+    assert PRODUCTION_BASE_URL in error["message"]
+
+
+def test_download_json_reports_missing_build_as_json():
+    client = Mock()
+    client.catalog_models.return_value = []
+    args = ["download", "--id", "missing", "--variant", "int8", "--json"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {"error": {
+        "code": "build_not_found",
+        "message": "No completed model build found for model 'missing', variant 'int8'.",
+    }}
+
+
+@pytest.mark.parametrize("json_output", [True, False])
+def test_download_reports_filesystem_errors_without_traceback(tmp_path, json_output):
+    client, _ = _registry_client_with_existing_download(tmp_path)
+    args = ["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8",
+            "--output", str(tmp_path / "out")] + (["--json"] if json_output else [])
+    denied = PermissionError(13, "Permission denied", str(tmp_path / "out"))
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client), \
+            patch("pathlib.Path.mkdir", side_effect=denied):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, PermissionError)
+    if json_output:
+        error = json.loads(result.stdout)["error"]
+        assert error["code"] == "filesystem_error"
+        assert "Permission denied" in error["message"]
+    else:
+        assert result.stdout == ""
+        assert "Error: [Errno 13] Permission denied" in result.stderr
+
+
+class _FailingStreamResponse(FakeResponse):
+    def __init__(self, error):
+        super().__init__()
+        self._error = error
+
+    def iter_content(self, chunk_size=0):
+        del chunk_size
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        ("disk_full", "filesystem_error"),
+        ("connection_reset", "network_error"),
+    ],
+)
+def test_wrapped_download_io_errors_keep_their_code(tmp_path, failure, code):
+    content = b"verified model bytes"
+    artifact = {"name": "package", "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest()}
+    if failure == "disk_full":
+        stream = _FailingStreamResponse(OSError(errno.ENOSPC, "No space left on device"))
+    else:
+        stream = _FailingStreamResponse(requests.ConnectionError("Connection reset by peer"))
+    session = FakeSession([
+        FakeResponse(payload={"artifact": {"download_url": "https://download.example/model"}}),
+        stream,
+    ])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+
+    with pytest.raises(ModelRegistryError) as caught:
+        client.download("run", artifact, tmp_path / "model.tar.gz")
+
+    assert caught.value.code == code
+    assert not (tmp_path / "model.tar.gz").exists()
+
+
 def _deployment_catalog(selection_field, license_id="Apache-2.0"):
     return {"catalog": {"document": {"models": [
         {"id": "other", "packages": [{
@@ -1592,8 +1748,9 @@ def test_registry_rate_limit_errors_distinguish_edge_blocks(status, headers, exp
     client = RegistryClient(PRODUCTION_BASE_URL, session=FakeSession([
         FakeResponse(status_code=status, reason="Forbidden", headers=headers),
     ]))
-    with pytest.raises(ModelRegistryError, match=expected):
+    with pytest.raises(ModelRegistryError, match=expected) as caught:
         client.branches()
+    assert caught.value.code == "http_error"
 
 
 def test_deployment_benchmark_rejects_stale_catalog_fingerprint():
@@ -1687,3 +1844,29 @@ def test_unfiltered_json_list_batches_summaries_and_preserves_output():
     assert batch.single_lookups == []
     assert len(legacy.batches) == 1
     assert sorted(legacy.single_lookups) == sorted(summaries)
+
+
+@pytest.mark.parametrize("size", [1024, PARALLEL_MIN_SIZE], ids=["sequential", "parallel"])
+@pytest.mark.parametrize("status", [404, 503])
+def test_artifact_http_failures_keep_http_error_code(tmp_path, size, status):
+    signed_url = "https://download.example/model?signature=private"
+    response = requests.Response()
+    response.status_code = status
+    response.url = signed_url
+    response.reason = "Unavailable"
+    response._content = b""
+    response._content_consumed = True
+    with requests.Session() as session:
+        client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+        with patch.object(requests.Session, "get", return_value=response) as get, \
+                pytest.raises(ModelRegistryError) as caught:
+            client.download(
+                "run", {"name": "package", "size_bytes": size, "sha256": "a" * 64},
+                tmp_path / "model.tar.gz", initial_download={"download_url": signed_url},
+            )
+
+    assert ("Range" in get.call_args.kwargs.get("headers", {})) == (size >= PARALLEL_MIN_SIZE)
+    assert caught.value.code == "http_error"
+    assert f"HTTP {status}" in str(caught.value)
+    assert signed_url not in str(caught.value)
+    assert not (tmp_path / "model.tar.gz").exists()

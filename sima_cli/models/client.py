@@ -31,7 +31,22 @@ TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
 
 
 class ModelRegistryError(RuntimeError):
-    pass
+    """A Model Registry failure with a stable, machine-readable ``code``."""
+
+    def __init__(self, message: str, code: str = "registry_error") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _io_error_code(exc: BaseException) -> str:
+    """Classify a wrapped I/O failure; requests exceptions are OSError subclasses too."""
+    if isinstance(exc, requests.HTTPError):
+        return "http_error"
+    if isinstance(exc, requests.RequestException):
+        return "network_error"
+    if isinstance(exc, OSError):
+        return "filesystem_error"
+    return "registry_error"
 
 
 def normalize_base_url(value: str) -> str:
@@ -91,6 +106,12 @@ def _api_error_message(response: requests.Response) -> str:
             if message:
                 return str(message)
     return response.reason or f"HTTP {response.status_code}"
+
+
+def _artifact_http_error(response: requests.Response) -> ModelRegistryError:
+    # A parallel range worker may already have closed the response body.
+    reason = f": {response.reason}" if response.reason else ""
+    return ModelRegistryError(f"Artifact download failed with HTTP {response.status_code}{reason}", code="http_error")
 
 
 def _path_url(base_url: str, *parts: str) -> str:
@@ -181,14 +202,16 @@ def find_latest_run(
         )
         raise ModelRegistryError(
             f"Multiple packages found for model {model_id!r}, variant "
-            f"{variant_id!r}: {package_ids}."
+            f"{variant_id!r}: {package_ids}.",
+            code="ambiguous_package",
         )
     for run in latest_runs_by_model_variant(runs):
         metadata = run.get("metadata", {})
         if metadata.get("model_id") == model_id and _build_profile_id(metadata) == variant_id:
             return run
     raise ModelRegistryError(
-        f"No completed model build found for model {model_id!r}, variant {variant_id!r}."
+        f"No completed model build found for model {model_id!r}, variant {variant_id!r}.",
+        code="build_not_found",
     )
 
 
@@ -343,7 +366,10 @@ def _download_lock(destination: Path) -> Iterator[None]:
 
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise ModelRegistryError(f"Another download is using {destination}. Retry when it finishes.") from exc
+            raise ModelRegistryError(
+                f"Another download is using {destination}. Retry when it finishes.",
+                code="destination_locked",
+            ) from exc
         yield
 
 
@@ -441,20 +467,25 @@ class RegistryClient:
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
         except requests.RequestException as exc:
-            raise ModelRegistryError(f"GET {url} failed: {exc}") from exc
+            raise ModelRegistryError(f"GET {url} failed: {exc}", code="network_error") from exc
         if allow_not_found and response.status_code == 404:
             return None
         if response.status_code == 429:
-            raise ModelRegistryError(f"GET {url} was rate limited (HTTP 429). Wait before retrying.")
+            raise ModelRegistryError(
+                f"GET {url} was rate limited (HTTP 429). Wait before retrying.",
+                code="http_error",
+            )
         if (response.status_code == 403
                 and response.headers.get("X-Cache", "").lower() == "error from cloudfront"):
             raise ModelRegistryError(
                 f"GET {url} was blocked by the registry CDN (HTTP 403). "
-                "This may be rate limiting; wait a few minutes before retrying."
+                "This may be rate limiting; wait a few minutes before retrying.",
+                code="http_error",
             )
         if response.status_code >= 400:
             raise ModelRegistryError(
-                f"GET {url} failed with HTTP {response.status_code}: {_api_error_message(response)}"
+                f"GET {url} failed with HTTP {response.status_code}: {_api_error_message(response)}",
+                code="http_error",
             )
         try:
             payload = response.json()
@@ -494,7 +525,8 @@ class RegistryClient:
         if payload is None:
             raise ModelRegistryError(
                 f"No published model catalog for branch {branch!r} at {self.base_url} (HTTP 404). "
-                "Use models branches to find available branches; no fallback was attempted."
+                "Use models branches to find available branches; no fallback was attempted.",
+                code="branch_not_found",
             )
         catalog = payload.get("catalog") if payload else None
         document = catalog.get("document") if isinstance(catalog, dict) else None
@@ -805,7 +837,9 @@ class RegistryClient:
             except (OSError, ValueError, requests.RequestException) as exc:
                 if cancellation is not None:
                     cancellation.check()
-                raise ModelRegistryError(f"Artifact download failed: {exc}") from exc
+                if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                    raise _artifact_http_error(exc.response) from exc
+                raise ModelRegistryError(f"Artifact download failed: {exc}", code=_io_error_code(exc)) from exc
         with connection_slot(cancellation):
             self._download_sequential(url, partial, expected_size, expected_sha, progress, cancellation)
 
@@ -813,16 +847,14 @@ class RegistryClient:
         try:
             response = self.session.get(url, stream=True, timeout=self.timeout)
         except requests.RequestException as exc:
-            raise ModelRegistryError(f"Artifact download failed: {exc}") from exc
+            raise ModelRegistryError(f"Artifact download failed: {exc}", code="network_error") from exc
         digest = hashlib.sha256()
         size = 0
         with response, (cancellation.track(response) if cancellation is not None else nullcontext()):
             if response.status_code in {401, 403}:
                 raise PermissionError("The presigned artifact URL expired or was rejected.")
             if response.status_code >= 400:
-                raise ModelRegistryError(
-                    f"Artifact download failed with HTTP {response.status_code}: {_api_error_message(response)}"
-                )
+                raise _artifact_http_error(response)
             try:
                 with partial.open("wb") as output:
                     for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -838,7 +870,9 @@ class RegistryClient:
             except (OSError, requests.RequestException) as exc:
                 if cancellation is not None:
                     cancellation.check()
-                raise ModelRegistryError(f"Could not write downloaded artifact: {exc}") from exc
+                raise ModelRegistryError(
+                    f"Could not write downloaded artifact: {exc}", code=_io_error_code(exc)
+                ) from exc
 
         if cancellation is not None:
             cancellation.check()
@@ -880,7 +914,8 @@ class RegistryClient:
         with (_download_lock(destination) if temporary_dir is None else nullcontext()):
             if destination.exists() and not force:
                 raise ModelRegistryError(
-                    f"Destination already exists: {destination}. Use --force to replace it."
+                    f"Destination already exists: {destination}. Use --force to replace it.",
+                    code="destination_exists",
                 )
             partial = (temporary_dir / f".{uuid4().hex}.part" if temporary_dir is not None
                        else destination.with_name(f".{destination.name}.part"))
@@ -933,7 +968,8 @@ class RegistryClient:
                 if destination.exists() and not same_deployment and not force:
                     raise ModelRegistryError(
                         f"Destination already exists with a different deployment: {destination}. "
-                        "Use --force to replace it."
+                        "Use --force to replace it.",
+                        code="destination_exists",
                     )
                 cache = destination.with_name(f".{destination.name}.download")
                 _check_directory_destination(cache)
@@ -1010,7 +1046,9 @@ class RegistryClient:
                     _cleanup_directory(backup)
                 _cleanup_directory(cache)
         except OSError as exc:
-            raise ModelRegistryError(f"Could not download deployment to {destination}: {exc}") from exc
+            raise ModelRegistryError(
+                f"Could not download deployment to {destination}: {exc}", code=_io_error_code(exc)
+            ) from exc
         return {
             "path": str(destination), "format": "directory",
             "file_count": len(files), "size_bytes": total,

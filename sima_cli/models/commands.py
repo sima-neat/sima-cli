@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NoReturn, Optional
 
 import click
 
@@ -40,6 +40,18 @@ def _client(ctx: click.Context, staging: bool) -> RegistryClient:
     group_staging = bool((ctx.obj or {}).get("models_staging"))
     base_url = resolve_base_url(staging=staging or group_staging)
     return RegistryClient(base_url)
+
+
+def _fail(exc: Exception, json_output: bool) -> NoReturn:
+    """Report a failure as JSON on stdout with --json, else as a Click error."""
+    if not isinstance(exc, ModelRegistryError):
+        # Local filesystem failures (for example an unwritable --output) are not
+        # registry errors, but --json callers still need a parseable result.
+        exc = ModelRegistryError(str(exc), code="filesystem_error")
+    if json_output:
+        echo_json({"error": {"code": exc.code, "message": str(exc)}})
+        raise click.exceptions.Exit(1)
+    raise click.ClickException(str(exc)) from exc
 
 
 def _is_interactive() -> bool:
@@ -216,8 +228,8 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
     """List branches containing registered models."""
     try:
         branches = _client(ctx, staging).branches()
-    except ModelRegistryError as exc:
-        raise click.ClickException(str(exc)) from exc
+    except (ModelRegistryError, OSError) as exc:
+        _fail(exc, json_output)
     if json_output:
         echo_json({"branches": branches})
     else:
@@ -296,8 +308,8 @@ def list_command(
         if auto_confirm or click.confirm("Download this model artifact?", default=False):
             result = _download_run(client, selected, summary, output, force)
             click.secho(f"Downloaded to {result['path']}", fg="green")
-    except ModelRegistryError as exc:
-        raise click.ClickException(str(exc)) from exc
+    except (ModelRegistryError, OSError) as exc:
+        _fail(exc, json_output)
 
 
 @models_group.command("download")
@@ -347,8 +359,8 @@ def download_command(
         summary = client.run(entry["id"])
         run = client.hydrate_catalog_model(entry, summary)
         result = _download_run(client, run, summary, output, force)
-    except ModelRegistryError as exc:
-        raise click.ClickException(str(exc)) from exc
+    except (ModelRegistryError, OSError) as exc:
+        _fail(exc, json_output)
     if json_output:
         echo_json(result)
     else:

@@ -554,12 +554,7 @@ class RegistryClient:
             for model_id, profile, root in references
         ]
         if hydrate and entries:
-            hydrated = []
-            batch_size = 4
-            with ThreadPoolExecutor(max_workers=batch_size) as executor:
-                for start in range(0, len(entries), batch_size):
-                    hydrated.extend(executor.map(self.hydrate_catalog_model, entries[start:start + batch_size]))
-            entries = hydrated
+            entries = self._hydrate_catalog_entries(entries)
         return sorted(
             entries,
             key=lambda run: (
@@ -568,6 +563,46 @@ class RegistryClient:
                 str(run["metadata"].get("package_id") or "").lower(),
             ),
         )
+
+    def _hydrate_catalog_entries(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        run_ids = sorted({entry["id"] for entry in entries})
+        summaries = self._model_run_summaries(run_ids) if len(run_ids) > 1 else None
+        if summaries is not None:
+            return [self.hydrate_catalog_model(entry, summaries[entry["id"]]) for entry in entries]
+
+        # Older registries still support the individual summary route.
+        hydrated = []
+        batch_size = 4
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            for start in range(0, len(entries), batch_size):
+                hydrated.extend(executor.map(self.hydrate_catalog_model, entries[start:start + batch_size]))
+        return hydrated
+
+    def _model_run_summaries(self, run_ids: List[str]) -> Optional[Dict[str, Dict[str, Any]]]:
+        path = ("v1", "repositories", ORGANIZATION, REPOSITORY, "runs")
+        summaries: Dict[str, Dict[str, Any]] = {}
+        batch_size = 40
+        for start in range(0, len(run_ids), batch_size):
+            batch = run_ids[start:start + batch_size]
+            # Older readers ignore summary_ids. Limit their normal listing to one row.
+            payload = self._get_json(path, params={"summary_ids": ",".join(batch), "limit": 1}) or {}
+            rows = payload.get("summaries")
+            if start == 0 and "summaries" not in payload and isinstance(payload.get("runs"), list):
+                return None
+            if not isinstance(rows, list):
+                raise ModelRegistryError("The registry did not return a batch of run summaries.")
+            remaining = set(batch)
+            for row in rows:
+                run = row.get("run") if isinstance(row, dict) else None
+                run_id = run.get("id") if isinstance(run, dict) else None
+                if (not isinstance(run_id, str) or run_id not in remaining
+                        or not isinstance(row.get("artifacts"), list)):
+                    raise ModelRegistryError("The registry returned an invalid batch of run summaries.")
+                summaries[run_id] = row
+                remaining.remove(run_id)
+            if remaining:
+                raise ModelRegistryError("The registry omitted a requested run summary.")
+        return summaries
 
     @staticmethod
     def _catalog_entry(
@@ -590,11 +625,14 @@ class RegistryClient:
             "_catalog": (model, root, deployment),
         }
 
-    def hydrate_catalog_model(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+    def hydrate_catalog_model(
+        self, entry: Dict[str, Any], summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         model, root, deployment = entry["_catalog"]
         expected = entry["metadata"]
         model_id, profile = expected["model_id"], expected["build_profile_id"]
-        summary = self.run(entry["id"])
+        if summary is None:
+            summary = self.run(entry["id"])
         run = summary.get("run") or {}
         metadata = run.get("metadata") or {}
         if (run.get("id") != root["run_id"] or run.get("status") != "completed"
@@ -730,9 +768,9 @@ class RegistryClient:
             allow_not_found=True,
         )
 
-    def detail(self, run_id: str) -> Dict[str, Any]:
+    def detail(self, run_id: str, summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return {
-            "summary": self.run(run_id),
+            "summary": self.run(run_id) if summary is None else summary,
             "provenance": self.provenance(run_id),
             "tests": self.test_results(run_id),
             "metrics": self.metrics(run_id),

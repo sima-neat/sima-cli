@@ -217,6 +217,7 @@ def test_top_level_models_json_keeps_root_diagnostics_on_stderr(arguments):
     fake_client = Mock()
     fake_client.branches.return_value = [{"name": "main"}]
     fake_client.catalog_models.return_value = [{**run, "downloadable": True}]
+    fake_client.hydrate_catalog_model.return_value = fake_client.catalog_models.return_value[0]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     fake_client.artifact_download.return_value = signed
     fake_client.download.return_value = Path(
@@ -1136,6 +1137,7 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
     fake_client = Mock()
     fake_client.hydrate_catalog_model.return_value = run
     fake_client.catalog_models.return_value = [run]
+    fake_client.run.return_value = {"run": run, "artifacts": []}
     fake_client.detail.return_value = {
         "summary": {"run": run, "artifacts": []},
         "provenance": {},
@@ -1159,7 +1161,8 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
     assert "Benchmark" in result.output
     assert "not measured" in result.output
     assert "Package    Target    Size" not in result.output
-    fake_client.detail.assert_called_once_with("run-1")
+    fake_client.run.assert_called_once_with("run-1")
+    fake_client.detail.assert_called_once_with("run-1", summary=fake_client.run.return_value)
     fake_client.download.assert_not_called()
 
 
@@ -1253,6 +1256,7 @@ def test_download_command_resolves_and_downloads_selected_model(tmp_path):
     }
     fake_client = Mock()
     fake_client.catalog_models.return_value = [{**run, "downloadable": True}]
+    fake_client.hydrate_catalog_model.return_value = fake_client.catalog_models.return_value[0]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     signed = {
         "download_url": "https://download.example/model",
@@ -1292,7 +1296,7 @@ def test_download_command_resolves_and_downloads_selected_model(tmp_path):
     assert payload["build_profile_id"] == "modalix_int8_bf16"
     assert payload["filename"] == "rf_detr_small_modalix_int8_bf16_default.zip"
     fake_client.catalog_models.assert_called_once_with(
-        "main", model_id="rf_detr_small", variant_id="modalix_int8_bf16", for_download=True,
+        "main", model_id="rf_detr_small", variant_id="modalix_int8_bf16", for_download=True, hydrate=False,
     )
     fake_client.download.assert_called_once_with(
         "package-run", artifact, expected, force=False, initial_download=signed
@@ -1313,6 +1317,7 @@ def test_download_accepts_short_branch_option(tmp_path):
     }
     fake_client = Mock()
     fake_client.catalog_models.return_value = [{**run, "downloadable": True}]
+    fake_client.hydrate_catalog_model.return_value = fake_client.catalog_models.return_value[0]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     fake_client.artifact_download.return_value = signed
     destination = tmp_path / "resnet_50" / "int8" / "resnet_50_int8_mpk.tar.gz"
@@ -1337,7 +1342,7 @@ def test_download_accepts_short_branch_option(tmp_path):
 
     assert result.exit_code == 0, result.output
     fake_client.catalog_models.assert_called_once_with(
-        "develop", model_id="resnet_50", variant_id="int8", for_download=True,
+        "develop", model_id="resnet_50", variant_id="int8", for_download=True, hydrate=False,
     )
 
 
@@ -1533,6 +1538,7 @@ def test_interactive_list_refuses_download_even_with_yes():
     client = Mock(spec=RegistryClient)
     client.catalog_models.return_value = [run]
     client.hydrate_catalog_model.return_value = run
+    client.run.return_value = {"run": run, "artifacts": []}
     with patch("sima_cli.models.commands.RegistryClient", return_value=client), patch(
         "sima_cli.models.commands._is_interactive", return_value=True
     ), patch("sima_cli.models.commands.select_run", return_value=run), patch(
@@ -1598,3 +1604,58 @@ def test_generation_report_renders_llima_and_each_workload(monkeypatch):
     for field in ("LLiMa version", "0.6.1+develop.510f52757c3b", "text_n128", "image_text",
                   "Time to first token (ms)", "Decode (tokens/s)"):
         assert field in rendered
+
+
+def test_unfiltered_json_list_batches_summaries_and_preserves_output():
+    models = []
+    summaries = {}
+    for i in range(81):
+        run_id = f"00000000-0000-4000-8000-{i:012d}"
+        model_id = f"model_{i:03d}"
+        run = _run(run_id, model_id=model_id)
+        run.update(run_type="model_package", git_ref="refs/heads/inherited", failure_classification=None)
+        run["metadata"].update(package_id="default", component_run_ids={"model": f"compile-{i}"})
+        models.append({
+            "id": model_id, "license": {"spdx": "Apache-2.0"},
+            "packages": [{"run_id": run_id, "package_id": "default", "build_profile_id": "int8"}],
+            "builds": [{"run_id": f"compile-{i}", "build_profile_id": "int8"}],
+            "benchmark_fingerprints": {"int8": {"performance": FINGERPRINT}},
+        })
+        summaries[run_id] = _package_summary(run)
+    catalog = {"catalog": {"document": {"models": models}}}
+
+    class Session:
+        def __init__(self, batch_supported):
+            self.batch_supported = batch_supported
+            self.batches = []
+            self.single_lookups = []
+
+        def get(self, url, params, **kwargs):
+            if url.endswith("/catalogs/current"):
+                return FakeResponse(payload=catalog)
+            if url.endswith("/repositories/sima-neat/models/runs"):
+                batch = params["summary_ids"].split(",")
+                self.batches.append(batch)
+                payload = (
+                    {"summaries": [summaries[run_id] for run_id in reversed(batch)]}
+                    if self.batch_supported else {"runs": []}
+                )
+                return FakeResponse(payload=payload)
+            run_id = url.rsplit("/", 1)[-1]
+            self.single_lookups.append(run_id)
+            return FakeResponse(payload=summaries[run_id])
+
+    def list_json(session):
+        client = RegistryClient("https://registry.example", session=session)
+        with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+            result = CliRunner().invoke(models_group, ["list", "--json"])
+        assert result.exit_code == 0, result.output
+        return result.stdout
+
+    batch = Session(batch_supported=True)
+    legacy = Session(batch_supported=False)
+    assert list_json(batch) == list_json(legacy)
+    assert [len(ids) for ids in batch.batches] == [40, 40, 1]
+    assert batch.single_lookups == []
+    assert len(legacy.batches) == 1
+    assert sorted(legacy.single_lookups) == sorted(summaries)

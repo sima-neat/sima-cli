@@ -56,6 +56,7 @@ def _taxonomy(client: RegistryClient) -> Optional[Dict[str, Any]]:
 def _download_run(
     client: RegistryClient,
     run: Dict[str, Any],
+    summary: Dict[str, Any],
     output: Path,
     force: bool,
 ) -> Dict[str, Any]:
@@ -65,7 +66,6 @@ def _download_run(
     run_id = str(run.get("id") or "")
     if not run_id:
         raise ModelRegistryError("The selected registry run has no ID.")
-    summary = client.run(run_id)
     artifacts = summary.get("artifacts") or []
     artifact = select_model_artifact(
         artifacts, run.get("artifact_name"),
@@ -107,7 +107,7 @@ def _download_run(
 
 
 def _selected_model_detail(
-    client: RegistryClient, selected: Dict[str, Any]
+    client: RegistryClient, selected: Dict[str, Any], selected_summary: Dict[str, Any],
 ) -> Dict[str, Any]:
     selected_metadata = selected.get("metadata") or {}
     fingerprints = selected.get("benchmark_fingerprints") or {}
@@ -122,15 +122,13 @@ def _selected_model_detail(
             key=lambda item: (item[0] != "model", item[0]),
         )
         details = [(component, client.detail(run_id)) for component, run_id in components]
-        package_summary = client.run(str(selected.get("id") or ""))
     else:
         details = [
             (
                 str(selected_metadata.get("component_id") or "model"),
-                client.detail(str(selected.get("id") or "")),
+                client.detail(str(selected.get("id") or ""), summary=selected_summary),
             )
         ]
-        package_summary = details[0][1].get("summary") or {}
 
     primary = details[0][1]
     registry_run = ((primary.get("summary") or {}).get("run") or {})
@@ -154,7 +152,7 @@ def _selected_model_detail(
                 or {}
             ),
         },
-        "artifacts": package_summary.get("artifacts") or [],
+        "artifacts": selected_summary.get("artifacts") or [],
     }
 
     def result(stage: str) -> Optional[Dict[str, Any]]:
@@ -285,8 +283,10 @@ def list_command(
             raise ModelRegistryError(
                 "Model selection requires an interactive terminal. Use --json to list models."
             )
-        selected = client.hydrate_catalog_model(select_run(runs))
-        detail = _selected_model_detail(client, selected)
+        entry = select_run(runs)
+        summary = client.run(entry["id"])
+        selected = client.hydrate_catalog_model(entry, summary)
+        detail = _selected_model_detail(client, selected, summary)
         card = model_card(detail, _taxonomy(client))
         render_model_card(card)
         if selected.get("downloadable") is False:
@@ -294,7 +294,7 @@ def list_command(
             return
         auto_confirm = bool((ctx.find_root().obj or {}).get("yes"))
         if auto_confirm or click.confirm("Download this model artifact?", default=False):
-            result = _download_run(client, selected, output, force)
+            result = _download_run(client, selected, summary, output, force)
             click.secho(f"Downloaded to {result['path']}", fg="green")
     except ModelRegistryError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -340,9 +340,13 @@ def download_command(
     """Download a model variant from the branch catalog."""
     try:
         client = _client(ctx, staging)
-        runs = client.catalog_models(branch, model_id=model_id, variant_id=variant_id, for_download=True)
-        run = find_latest_run(runs, model_id, variant_id)
-        result = _download_run(client, run, output, force)
+        runs = client.catalog_models(
+            branch, model_id=model_id, variant_id=variant_id, for_download=True, hydrate=False,
+        )
+        entry = find_latest_run(runs, model_id, variant_id)
+        summary = client.run(entry["id"])
+        run = client.hydrate_catalog_model(entry, summary)
+        result = _download_run(client, run, summary, output, force)
     except ModelRegistryError as exc:
         raise click.ClickException(str(exc)) from exc
     if json_output:

@@ -146,6 +146,7 @@ def test_download_command_recreates_deployment_folder(deployment, tmp_path, monk
         **state.run, "downloadable": True, "metadata": {**state.metadata, "display_name": display_name},
     }
     monkeypatch.setattr(state.client, "catalog_models", lambda *_args, **_kwargs: [selected])
+    monkeypatch.setattr(state.client, "hydrate_catalog_model", lambda entry, summary: entry)
     result = CliRunner().invoke(models_group, [
         "--stg", "download", "--id", state.metadata["model_id"],
         "--variant", state.metadata["build_profile_id"], "--output", str(tmp_path), "--json",
@@ -242,6 +243,7 @@ def test_catalog_deployment_downloads(
     assert selected["size_bytes"] == (sum(map(len, state.payloads.values()))
                                        if layout == "directory" else len(state.manifest_content))
     assert selected["artifact_name"] == state.root_name
+    state.requests.clear()
     monkeypatch.setattr("sima_cli.models.commands.RegistryClient", lambda *_args: state.client)
     result = CliRunner().invoke(models_group, [
         "download", "--branch", branch, "--id", state.metadata["model_id"],
@@ -259,7 +261,9 @@ def test_catalog_deployment_downloads(
     else:
         assert Path(report["path"]).name == state.filename
         assert Path(report["path"]).read_bytes() == state.manifest_content
-    assert not any("/runs/unused-component" in path for path in state.requests)
+    assert [path for path in state.requests if path.count("/") == 3 and path.startswith("/v1/runs/")] == [
+        f"/v1/runs/{state.run['id']}",
+    ]
 
 
 @pytest.mark.parametrize("name", ["package", _ELF])
@@ -787,6 +791,7 @@ def test_download_rejects_windows_invalid_display_name_before_filesystem_changes
         **state.run, "downloadable": True, "metadata": {**state.metadata, "display_name": display_name},
     }
     monkeypatch.setattr(state.client, "catalog_models", lambda *_args, **_kwargs: [selected])
+    monkeypatch.setattr(state.client, "hydrate_catalog_model", lambda entry, summary: entry)
     result = CliRunner().invoke(models_group, [
         "--stg", "download", "--id", state.metadata["model_id"],
         "--variant", state.metadata["build_profile_id"], "--output", str(tmp_path),

@@ -155,6 +155,7 @@ pip install sima-cli
 - [`sima-cli neat sdk`](commands/sima-cli-neat-sdk.md)
 - [`sima-cli packages build`](commands/sima-cli-packages-build.md)
 - [`sima-cli packages list`](commands/sima-cli-packages-list.md)
+- [`sima-cli packages remove`](commands/sima-cli-packages-remove.md)
 - [`sima-cli packages show`](commands/sima-cli-packages-show.md)
 - [`sima-cli peripherals describe`](commands/sima-cli-peripherals-describe.md)
 - [`sima-cli peripherals list`](commands/sima-cli-peripherals-list.md)

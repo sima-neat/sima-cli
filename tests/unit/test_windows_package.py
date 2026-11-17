@@ -1254,7 +1254,9 @@ class WindowsPackageTests(unittest.TestCase):
             metadata_installer, "_is_platform_compatible", return_value=True
         ), patch.object(
             metadata_installer, "_download_assets", return_value=[str(self.msi)]
-        ), patch.object(metadata_installer, "_print_post_install_message"):
+        ) as self.download_assets, patch.object(
+            metadata_installer, "_print_post_install_message"
+        ):
             if not fails:
                 metadata_installer.install_from_metadata(
                     "metadata", False, str(self.root), **options
@@ -1350,7 +1352,8 @@ class WindowsPackageTests(unittest.TestCase):
                 )
 
     def test_missing_wheel_after_msi_records_partial_python_failure(self):
-        responses = [python_facts(), completed()]
+        # The selected Python is checked before download and again before the MSI.
+        responses = [python_facts(), python_facts(), completed()]
 
         def remove_wheel_during_msi(command, **kwargs):
             if command[0] == "msiexec.exe":
@@ -1368,6 +1371,61 @@ class WindowsPackageTests(unittest.TestCase):
         registry.update_state.assert_called_once_with(
             self.metadata["name"], self.metadata["version"], "partial-python-failed"
         )
+
+    def test_missing_python_and_gstreamer_are_reported_before_download(self):
+        # A clean host learns every missing prerequisite in one run, with the exact
+        # versions from the metadata, before any package resource is downloaded.
+        self.metadata["installation"]["prerequisites"] = [{
+            "name": "GStreamer 1.28.6 MSVC x64 runtime",
+            "type": "command-version",
+            "candidates": [{
+                "environment": "TEST_GSTREAMER",
+                "relative": "bin\\gst-inspect-1.0.exe",
+            }],
+            "arguments": ["--version"],
+            "version": "1.28.6",
+            "version-pattern": r"version ([0-9]+(?:\.[0-9]+){2})",
+            "guidance": "Install GStreamer 1.28.6 MSVC x64.",
+        }]
+        self.assertTrue(validate_metadata(self.metadata))
+        cases = [
+            ({"python_executable": None}, [], "compatible Python 3.14 amd64 installation"),
+            (
+                {"python_executable": str(self.python)},
+                [python_facts(arch="ARM64")],
+                "Python architecture arm64 was found; this package requires amd64.",
+            ),
+        ]
+        for options, responses, python_problem in cases:
+            with self.subTest(options=options), patch.dict(
+                os.environ, {"TEST_GSTREAMER": str(self.root / "missing")}
+            ), patch(
+                "sima_cli.install.windows_package._is_windows", return_value=True
+            ), patch(
+                "sima_cli.install.windows_package.Path.home", return_value=self.root / "home"
+            ), patch(
+                "sima_cli.install.windows_package._python_bootstrap_candidates", return_value=[]
+            ), patch(
+                "sima_cli.install.windows_package._run", side_effect=responses
+            ) as run:
+                registry, output = self.install_from_windows_metadata(fails=True, **options)
+
+                self.download_assets.assert_not_called()
+                self.assertEqual(run.call_count, len(responses))
+                self.assertIn(
+                    "- GStreamer 1.28.6 MSVC x64 runtime: found no version, expected 1.28.6. "
+                    "Install GStreamer 1.28.6 MSVC x64.",
+                    output,
+                )
+                self.assertIn(python_problem, output)
+                self.assertIn(
+                    "Install Python 3.14 (amd64) for Windows from "
+                    "https://www.python.org/downloads/windows/",
+                    output,
+                )
+                registry.update_state.assert_called_once_with(
+                    self.metadata["name"], self.metadata["version"], "prerequisite-failed"
+                )
 
     def test_restart_required_is_not_reported_as_failure(self):
         self.metadata["resources"].insert(0, self.scheduler_msi.name)

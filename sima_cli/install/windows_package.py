@@ -21,6 +21,7 @@ MSI_INSTALL_REJECTED_BY_POLICY = 1625
 WINDOWS_ELEVATION_CANCELLED = 1223
 ELEVATED_INSTALLER_EXIT_CODE_MISSING = 9001
 ELEVATED_INSTALLER_LAUNCH_FAILED = 9002
+PYTHON_WINDOWS_DOWNLOAD_URL = "https://www.python.org/downloads/windows/"
 
 
 class WindowsPackageRestartRequired(click.ClickException):
@@ -401,6 +402,13 @@ def _python_compatibility_error(python_package: Dict, facts: Dict[str, str]) -> 
     return None
 
 
+def _python_install_guidance(python_package: Dict) -> str:
+    required = " ".join(filter(None, ["Python", python_package.get("requires-python")]))
+    if python_package.get("arch"):
+        required += f" ({python_package['arch']})"
+    return f"Install {required} for Windows from {PYTHON_WINDOWS_DOWNLOAD_URL}"
+
+
 def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
     python_package = metadata["installation"].get("python")
     if not python_package or not python_executable:
@@ -417,7 +425,10 @@ def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
         )
     compatibility_error = _python_compatibility_error(python_package, facts)
     if compatibility_error:
-        raise WindowsPrerequisiteError(f"{compatibility_error} No MSI was started.")
+        raise WindowsPrerequisiteError(
+            f"{compatibility_error} {_python_install_guidance(python_package)}, or select a "
+            "compatible interpreter with --python-executable <path>. No MSI was started."
+        )
     actual_arch = _normalize_python_arch(str(facts.get("arch", "")))
     click.echo(f"Selected Python environment verified: {facts['version']} {actual_arch}.")
 
@@ -460,6 +471,20 @@ def _python_bootstrap_candidates(required_version: Optional[str]) -> List[List[s
     return unique
 
 
+def _bootstrap_python(python_package: Dict, environment: Path) -> List[str]:
+    required_version = python_package.get("requires-python")
+    for command in _python_bootstrap_candidates(required_version):
+        facts, _ = _inspect_python(command)
+        if facts is not None and _python_compatibility_error(python_package, facts) is None:
+            return command
+    required_arch = python_package.get("arch", "the required architecture")
+    raise WindowsPrerequisiteError(
+        f"A compatible Python {required_version or ''} {required_arch} installation is required "
+        f"to create '{environment}'. {_python_install_guidance(python_package)}, use "
+        "--python-executable <path>, or use --native-only. No MSI was started."
+    )
+
+
 def _managed_python_executable(metadata: Dict) -> str:
     python_package = metadata["installation"]["python"]
     distribution = python_package["distribution"]
@@ -476,21 +501,7 @@ def _managed_python_executable(metadata: Dict) -> str:
             "No MSI was started."
         )
 
-    required_version = python_package.get("requires-python")
-    selected = None
-    for command in _python_bootstrap_candidates(required_version):
-        facts, _ = _inspect_python(command)
-        if facts is not None and _python_compatibility_error(python_package, facts) is None:
-            selected = command
-            break
-    if selected is None:
-        required_arch = python_package.get("arch", "the required architecture")
-        raise WindowsPrerequisiteError(
-            f"A compatible Python {required_version or ''} {required_arch} installation is required "
-            f"to create '{environment}'. Install Python, use --python-executable <path>, or use "
-            "--native-only. No MSI was started."
-        )
-
+    selected = _bootstrap_python(python_package, environment)
     click.echo(f"Creating managed Python environment: {environment}")
     result = _run(
         [*selected, "-m", "venv", str(environment)],
@@ -881,6 +892,34 @@ def _install_customer_skills(metadata: Dict, manager: Optional[SkillManager]) ->
     if installed:
         click.echo("Installed customer skills: " + ", ".join(installed))
     return installed
+
+
+def preflight_windows_package(
+    metadata: Dict,
+    python_executable: Optional[str] = None,
+    native_only: bool = False,
+) -> None:
+    """Report missing host prerequisites and Python before any resource is downloaded."""
+    if not _is_windows():
+        return
+    problems = []
+    try:
+        _check_prerequisites(metadata)
+    except WindowsPrerequisiteError as error:
+        problems.append(error.message)
+    python_package = metadata["installation"].get("python")
+    if python_package and not native_only:
+        environment = Path.home() / python_package["distribution"]
+        managed = environment / "Scripts" / "python.exe"
+        try:
+            if python_executable or managed.is_file():
+                _preflight_python(metadata, python_executable or str(managed))
+            elif not environment.exists():
+                _bootstrap_python(python_package, environment)
+        except WindowsPrerequisiteError as error:
+            problems.append(error.message)
+    if problems:
+        raise WindowsPrerequisiteError("\n".join(problems))
 
 
 def install_windows_package(

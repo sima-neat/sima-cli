@@ -38,6 +38,7 @@ from sima_cli.install.windows_package import (
     WindowsPrerequisiteError,
     WindowsPythonInstallError,
     install_windows_package,
+    preflight_windows_package,
 )
 
 console = Console()
@@ -1619,6 +1620,17 @@ def install_from_metadata(
                 
             if _check_whether_disk_is_big_enough(metadata, force) or force:
                 if download_only or force or _is_platform_compatible(metadata, force):
+                    if install_type == "windows-msi" and not download_only:
+                        try:
+                            preflight_windows_package(metadata, python_executable, native_only)
+                        except BaseException as error:
+                            registry.update_state(
+                                metadata.get("name"),
+                                metadata.get("version"),
+                                "prerequisite-failed"
+                                if isinstance(error, WindowsPrerequisiteError) else "failed",
+                            )
+                            raise
                     local_paths = _download_assets(metadata, metadata_url, install_dir, internal, tag=tag)
                     if download_only:
                         click.echo(f"✅ Download complete. {len(local_paths)} resource(s) saved to: {install_dir}")

@@ -1607,6 +1607,13 @@ def install_from_metadata(
             check_compatibility=not download_only,
         )
         if metadata:
+            install_type = metadata.get("installation", {}).get("type", "script")
+            if (python_executable or native_only) and install_type != "windows-msi":
+                option = "--native-only" if native_only else "--python-executable"
+                raise click.UsageError(
+                    f"{option} applies only to Windows MSI packages; "
+                    f"'{metadata.get('name')}' uses the '{install_type}' installation type."
+                )
             print_metadata_summary(metadata=metadata)
             if not download_only:
                 registry.create_entry(metadata.get('name'), metadata.get('version'), metadata, '')
@@ -1622,7 +1629,6 @@ def install_from_metadata(
                         _combine_multipart_files(install_dir, local_paths=local_paths)
                         _extract_archives_in_folder(install_dir, local_paths)
                         _mark_install_script_executable(metadata, install_dir)
-                        install_type = metadata.get("installation", {}).get("type", "script")
                         try:
                             if install_type == "windows-msi":
                                 result = install_windows_package(
@@ -1665,7 +1671,7 @@ def install_from_metadata(
                             )
                             raise
 
-    except MetadataAccessForbidden:
+    except (MetadataAccessForbidden, click.UsageError):
         raise
     except Exception as e:
         click.echo(f"❌ Failed to install from metadata URL {metadata_url}: {e}")

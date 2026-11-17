@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -9,6 +11,7 @@ import click
 from click.testing import CliRunner
 
 from sima_cli.cli import main
+from sima_cli.install import metadata_installer
 from sima_cli.install.metadata_validator import MetadataValidationError, validate_metadata
 from sima_cli.install.windows_package import (
     WindowsNativeInstallError,
@@ -26,6 +29,14 @@ from sima_cli.vulcan.commands import install_vulcan_package
 
 def completed(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+
+
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def direct_url(wheel_sha256):
+    return completed(stdout=json.dumps({"archive_info": {"hashes": {"sha256": wheel_sha256}}}))
 
 
 def python_facts(version="3.14", arch="AMD64"):
@@ -57,8 +68,8 @@ class WindowsPackageTests(unittest.TestCase):
             "platforms": [{"type": "host", "os": ["windows"], "arch": ["amd64"]}],
             "resources": [self.msi.name, self.wheel.name],
             "resources-checksum": {
-                self.msi.name: "a" * 64,
-                self.wheel.name: "b" * 64,
+                self.msi.name: sha256(self.msi),
+                self.wheel.name: sha256(self.wheel),
             },
             "installation": {
                 "type": "windows-msi",
@@ -286,7 +297,7 @@ class WindowsPackageTests(unittest.TestCase):
 
     def test_coordinated_native_packages_install_in_manifest_order(self):
         self.metadata["resources"].insert(0, self.scheduler_msi.name)
-        self.metadata["resources-checksum"][self.scheduler_msi.name] = "c" * 64
+        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
         self.metadata["installation"].pop("msi")
         self.metadata["installation"]["native-packages"] = [
             {
@@ -312,9 +323,38 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].args[0][2], str(self.scheduler_msi))
         self.assertEqual(run.call_args_list[1].args[0][2], str(self.msi))
 
+    def test_msi_modified_after_download_is_not_started(self):
+        self.metadata["resources"].insert(0, self.scheduler_msi.name)
+        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
+        self.metadata["installation"].pop("msi")
+        self.metadata["installation"]["native-packages"] = [
+            {
+                "owner": "scheduler",
+                "msi": self.scheduler_msi.name,
+                "version": "0.6.1",
+            },
+            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
+        ]
+
+        def install_scheduler_and_replace_core(*args, **kwargs):
+            self.msi.write_bytes(b"replaced msi")
+            return completed()
+
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=install_scheduler_and_replace_core,
+        ) as run:
+            with self.assertRaisesRegex(WindowsNativeInstallError, "declared SHA-256"):
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][2], str(self.scheduler_msi))
+
     def test_coordinated_native_failure_reports_completed_packages(self):
         self.metadata["resources"].insert(0, self.scheduler_msi.name)
-        self.metadata["resources-checksum"][self.scheduler_msi.name] = "c" * 64
+        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
         self.metadata["installation"].pop("msi")
         self.metadata["installation"]["native-packages"] = [
             {
@@ -897,7 +937,13 @@ class WindowsPackageTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_matching_python_package_is_verified_without_reinstall(self):
-        responses = [python_facts(), completed(), completed(stdout="0.6.1\n"), completed()]
+        responses = [
+            python_facts(),
+            completed(),
+            completed(stdout="0.6.1\n"),
+            direct_url(sha256(self.wheel)),
+            completed(),
+        ]
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
             "sima_cli.install.windows_package._run", side_effect=responses
         ) as run:
@@ -906,7 +952,7 @@ class WindowsPackageTests(unittest.TestCase):
             )
 
         self.assertEqual(result["python"], "already-installed")
-        self.assertEqual(run.call_count, 4)
+        self.assertEqual(run.call_count, 5)
         self.assertNotIn("pip", [part for call in run.call_args_list for part in call.args[0]])
 
     def test_matching_broken_python_package_is_reinstalled_and_verified(self):
@@ -914,7 +960,39 @@ class WindowsPackageTests(unittest.TestCase):
             python_facts(),
             completed(),
             completed(stdout="0.6.1\n"),
+            direct_url(sha256(self.wheel)),
             completed(returncode=1, stderr="import failed"),
+            completed(),
+            completed(stdout="0.6.1\n"),
+            completed(),
+        ]
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", side_effect=responses
+        ) as run:
+            result = install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python)
+            )
+
+        self.assertEqual(result["python"], "installed")
+        self.assertEqual(
+            run.call_args_list[5].args[0],
+            [
+                str(self.python),
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "--force-reinstall",
+                str(self.wheel),
+            ],
+        )
+
+    def test_same_python_version_from_another_build_is_force_reinstalled(self):
+        responses = [
+            python_facts(),
+            completed(),
+            completed(stdout="0.6.1\n"),
+            direct_url("d" * 64),
             completed(),
             completed(stdout="0.6.1\n"),
             completed(),
@@ -936,9 +1014,69 @@ class WindowsPackageTests(unittest.TestCase):
                 "install",
                 "--upgrade",
                 "--force-reinstall",
+                "--no-deps",
                 str(self.wheel),
             ],
         )
+
+    def test_same_python_version_with_legacy_matching_hash_is_not_reinstalled(self):
+        legacy_record = completed(
+            stdout=json.dumps({"archive_info": {"hash": f"sha256={sha256(self.wheel)}"}})
+        )
+        responses = [
+            python_facts(), completed(), completed(stdout="0.6.1\n"), legacy_record, completed()
+        ]
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", side_effect=responses
+        ) as run:
+            result = install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python)
+            )
+
+        self.assertEqual(result["python"], "already-installed")
+        self.assertNotIn("pip", [part for call in run.call_args_list for part in call.args[0]])
+
+    def test_same_python_version_without_install_record_is_force_reinstalled(self):
+        responses = [
+            python_facts(),
+            completed(),
+            completed(stdout="0.6.1\n"),
+            completed(stdout="\n"),
+            completed(),
+            completed(stdout="0.6.1\n"),
+            completed(),
+        ]
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", side_effect=responses
+        ) as run:
+            result = install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python)
+            )
+
+        self.assertEqual(result["python"], "installed")
+        self.assertEqual(
+            run.call_args_list[4].args[0][-3:],
+            ["--force-reinstall", "--no-deps", str(self.wheel)],
+        )
+
+    def test_wheel_modified_after_download_is_not_installed(self):
+        responses = [python_facts(), completed(), completed(returncode=3)]
+
+        def replace_wheel_during_msi(command, **kwargs):
+            if command[0] == "msiexec.exe":
+                self.wheel.write_bytes(b"replaced wheel")
+            return responses.pop(0)
+
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", side_effect=replace_wheel_during_msi
+        ) as run:
+            with self.assertRaisesRegex(WindowsPythonInstallError, "declared SHA-256"):
+                install_windows_package(
+                    self.metadata, str(self.root), python_executable=str(self.python)
+                )
+
+        self.assertEqual(run.call_count, 3)
+        self.assertNotIn("pip", [part for call in run.call_args_list for part in call.args[0]])
 
     def test_missing_python_package_is_installed_and_verified(self):
         responses = [
@@ -1004,6 +1142,29 @@ class WindowsPackageTests(unittest.TestCase):
                     self.metadata, str(self.root), python_executable=str(self.python)
                 )
         self.assertEqual(run.call_count, 2)
+
+    def assert_windows_option_rejected(self, option, **options):
+        metadata = {"name": "linux-package", "version": "1", "installation": {"type": "script"}}
+        with patch.object(
+            metadata_installer,
+            "_download_and_validate_metadata",
+            return_value=(metadata, None),
+        ), patch.object(metadata_installer, "registry"), patch.object(
+            metadata_installer, "_download_assets"
+        ) as download:
+            with self.assertRaisesRegex(click.UsageError, f"{option} applies only to Windows"):
+                metadata_installer.install_from_metadata(
+                    "metadata", False, str(self.root), **options
+                )
+        download.assert_not_called()
+
+    def test_python_executable_is_rejected_for_non_windows_package(self):
+        self.assert_windows_option_rejected(
+            "--python-executable", python_executable=str(self.python)
+        )
+
+    def test_native_only_is_rejected_for_non_windows_package(self):
+        self.assert_windows_option_rejected("--native-only", native_only=True)
 
     def test_cli_exposes_managed_python_and_native_only_options(self):
         runner = CliRunner()

@@ -66,6 +66,23 @@ def _declared_resource(metadata: Dict, install_dir: str, resource: str) -> Path:
     return path
 
 
+def _declared_sha256(metadata: Dict, resource: str) -> str:
+    return str(metadata.get("resources-checksum", {}).get(resource, "")).strip().lower()
+
+
+def _verify_declared_checksum(metadata: Dict, resource: str, path: Path, error_type) -> None:
+    from sima_cli.install.metadata_installer import _compute_sha256
+
+    expected = _declared_sha256(metadata, resource)
+    actual = _compute_sha256(path)
+    if actual != expected:
+        raise error_type(
+            f"Windows package resource '{resource}' no longer matches its declared SHA-256 "
+            f"(expected {expected}, found {actual}); it was not started. "
+            "Rerun the same command to download a verified copy."
+        )
+
+
 def _run(command, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, **kwargs)
 
@@ -498,6 +515,28 @@ def _python_distribution_version(python_executable: str, distribution: str) -> O
     return result.stdout.strip()
 
 
+def _python_distribution_archive_sha256(python_executable: str, distribution: str) -> Optional[str]:
+    script = (
+        "import importlib.metadata as m; "
+        f"print(m.distribution({json.dumps(distribution)}).read_text('direct_url.json') or '')"
+    )
+    result = _run(
+        [python_executable, "-c", script],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        archive = json.loads(result.stdout).get("archive_info", {})
+        sha256 = archive.get("hashes", {}).get("sha256")
+        if not sha256 and str(archive.get("hash", "")).startswith("sha256="):
+            sha256 = archive["hash"][len("sha256="):]
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return str(sha256).strip().lower() if sha256 else None
+
+
 def _verify_python_import(
     python_executable: str,
     distribution: str,
@@ -542,26 +581,38 @@ def _install_python_wheel(
     module = python_package.get("import", distribution)
     installed = _python_distribution_version(str(executable), distribution)
     force_reinstall = False
+    no_deps = False
     if installed == version:
-        try:
-            _verify_python_import(str(executable), distribution, module, version)
-        except WindowsPythonInstallError:
+        recorded_sha256 = _python_distribution_archive_sha256(str(executable), distribution)
+        if recorded_sha256 != _declared_sha256(metadata, python_package["wheel"]):
             click.echo(
-                f"Python package {distribution} {version} is present but failed verification; "
-                "reinstalling it."
+                f"Python package {distribution} {version} was not installed from this "
+                "release's wheel; reinstalling it."
             )
-            force_reinstall = True
+            force_reinstall = no_deps = True
         else:
-            click.echo(
-                f"Python package {distribution} {version} is already installed and verified."
-            )
-            return "already-installed"
+            try:
+                _verify_python_import(str(executable), distribution, module, version)
+            except WindowsPythonInstallError:
+                click.echo(
+                    f"Python package {distribution} {version} is present but failed "
+                    "verification; reinstalling it."
+                )
+                force_reinstall = True
+            else:
+                click.echo(
+                    f"Python package {distribution} {version} is already installed and verified."
+                )
+                return "already-installed"
 
     if installed and not force_reinstall:
         click.echo(f"Replacing {distribution} {installed} with requested version {version}.")
     pip_options = ["--upgrade"]
     if force_reinstall:
         pip_options.append("--force-reinstall")
+    if no_deps:
+        pip_options.append("--no-deps")
+    _verify_declared_checksum(metadata, python_package["wheel"], wheel, WindowsPythonInstallError)
     result = _run(
         [str(executable), "-m", "pip", "install", *pip_options, str(wheel)],
         text=True,
@@ -613,6 +664,7 @@ def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str,
         click.echo(
             f"Installing {owner} native package {index}/{len(packages)}: {msi.name}"
         )
+        _verify_declared_checksum(metadata, package["msi"], msi, WindowsNativeInstallError)
         try:
             result = _run_native_installer(command, log_path)
         except OSError as error:

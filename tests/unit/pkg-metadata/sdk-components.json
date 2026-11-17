@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "revision": 6,
+  "build_sdk_version": "3.0.0",
+  "sdks": {
+    "3.0.0": {
+      "sdk_releases": [
+        "3.0.0",
+        "3.0.0.0",
+        "3.0.0.1",
+        "3.0.0.2"
+      ],
+      "status": "qualified",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "engines": [
+        {
+          "code_server": "4.140.0",
+          "vscode": "1.140.0"
+        },
+        {
+          "code_server": "4.144.0",
+          "vscode": "1.144.0"
+        }
+      ],
+      "components": {
+        "codex": {
+          "id": "openai.chatgpt",
+          "version": "26.908.40401",
+          "artifacts": {
+            "amd64": {
+              "url": "https://open-vsx.org/api/openai/chatgpt/linux-x64/26.908.40401/file/openai.chatgpt-26.908.40401@linux-x64.vsix",
+              "sha256": "4b6d13d480222df091f905343c6666a53b67877fa8551ee7ac0b7ace15d4c244"
+            },
+            "arm64": {
+              "url": "https://open-vsx.org/api/openai/chatgpt/linux-arm64/26.908.40401/file/openai.chatgpt-26.908.40401@linux-arm64.vsix",
+              "sha256": "9f805309294d09d94d94accce23d49818911f22877d7b1c8fd3094a37945487c"
+            }
+          }
+        },
+        "claude": {
+          "id": "anthropic.claude-code",
+          "version": "2.1.316",
+          "artifacts": {
+            "amd64": {
+              "url": "https://open-vsx.org/api/Anthropic/claude-code/linux-x64/2.1.316/file/Anthropic.claude-code-2.1.316@linux-x64.vsix",
+              "sha256": "bd5d429660c4f5a38d21926e5c30615312d3f3efe2a5e78f65b576cf22181bc2"
+            },
+            "arm64": {
+              "url": "https://open-vsx.org/api/Anthropic/claude-code/linux-arm64/2.1.316/file/Anthropic.claude-code-2.1.316@linux-arm64.vsix",
+              "sha256": "260ae913b915d33d607c6d5df6d2acc310912b6461d50808a0ed2c6665f429bf"
+            }
+          }
+        },
+        "codex-cli": {
+          "package": "@openai/codex",
+          "version": "0.153.4",
+          "artifact": {
+            "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.153.4.tgz",
+            "sha256": "fd04263c1adfa1d285c6c0ad86a97cab508d3012ee9eab80a99f773cc4b2fb3a"
+          }
+        },
+        "claude-cli": {
+          "version": "2.1.311",
+          "artifacts": {
+            "amd64": {
+              "url": "https://downloads.claude.ai/claude-code-releases/2.1.311/linux-x64/claude",
+              "sha256": "86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada"
+            },
+            "arm64": {
+              "url": "https://downloads.claude.ai/claude-code-releases/2.1.311/linux-arm64/claude",
+              "sha256": "2e2496c9a8065df93acb0fca2d341f59a6b8777649b2e025ab8c9bcd5eef61f3"
+            }
+          }
+        }
+      }
+    }
+  },
+  "model_compiler": {
+    "2.0.0": {
+      "version": "2.0.0",
+      "installer": "legacy",
+      "architectures": [
+        "amd64"
+      ]
+    },
+    "2.1.0": {
+      "version": "2.1.0",
+      "installer": "legacy",
+      "architectures": [
+        "amd64"
+      ]
+    },
+    "2.1.1": {
+      "version": "2.1.1",
+      "installer": "legacy",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ]
+    },
+    "2.1.2": {
+      "version": "2.1.2",
+      "installer": "legacy",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ]
+    },
+    "2.1.3": {
+      "version": "2.1.3.1",
+      "installer": "neat",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "bundle_sdk_version": "2.1.3"
+    },
+    "3.0.0": {
+      "version": "3.0.0",
+      "installer": "neat",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ]
+    },
+    "3.0.0.0": {
+      "version": "3.0.0",
+      "installer": "neat",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ]
+    },
+    "3.0.0.1": {
+      "version": "3.0.0.1",
+      "installer": "neat",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ]
+    },
+    "3.0.0.2": {
+      "version": "3.0.0.2",
+      "installer": "neat",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ]
+    },
+    "2.1.2.3": {
+      "version": "2.1.2",
+      "installer": "legacy",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ]
+    }
+  }
+}

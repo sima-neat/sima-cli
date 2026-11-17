@@ -11,6 +11,7 @@ import requests
 from sima_cli.auth.devportal import login_external
 from sima_cli.update.query import ARTIFACTORY_BASE_URL
 from sima_cli.update.mirror_catalog import read_mirror_index
+from sima_cli.utils.tag import resolve_version
 from sima_cli.utils.config import get_auth_token
 from sima_cli.utils.config_loader import load_resource_config
 
@@ -261,6 +262,9 @@ def resolve_bundle(requested, board, internal=False, *, allow_external_fallback=
             {'name': b['version'].ljust(version_width) + '  Created: ' + (b['created'].strftime('%Y-%m-%d %H:%M:%S UTC') if b['created'] else 'unknown'),
              'value': b['url']} for b in builds
         ]).execute()
+    # Public release channels apply only to the eLxr 3.0+ SWU path.
+    if not requested or requested.strip().lower() in {'ga', 'beta', 'alpha'}:
+        requested = resolve_version(requested)
     if not requested or not re.fullmatch(r'\d+\.\d+(?:\.\d+)?', requested):
         raise click.ClickException(
             'Specify an official release with -v (for example, -v 3.0.0), '

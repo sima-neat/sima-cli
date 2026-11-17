@@ -179,7 +179,7 @@ def test_external_release_uses_portal_swu_path(requested):
     session.assert_not_called()
 
 
-@pytest.mark.parametrize('requested', [None, 'latest', '3.0.0_daily_B11', '../3.0.0'])
+@pytest.mark.parametrize('requested', ['qa', 'latest', '3.0.0_daily_B11', '../3.0.0'])
 def test_external_release_requires_explicit_release(requested):
     with pytest.raises(click.ClickException, match='Specify an official release'):
         swu_artifacts.resolve_bundle(requested, 'modalix')

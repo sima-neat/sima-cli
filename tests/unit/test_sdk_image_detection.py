@@ -3,6 +3,7 @@ import os
 import socket
 import subprocess
 import unittest
+import click
 from click.testing import CliRunner
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -111,6 +112,12 @@ def _last_docker_run_command(run_mock):
 
 
 class TestSdkImageDetection(unittest.TestCase):
+    def setUp(self):
+        catalog = json.loads((Path(__file__).parent / "pkg-metadata/sdk-components.json").read_text())
+        patcher = patch("sima_cli.sdk.utils._load_sdk_release_mapping", return_value=catalog)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_sdk_platform_version_uses_image_label(self):
         result = Mock(returncode=0, stdout="3.0.0~git20261006\n")
         with patch("sima_cli.sdk.utils.subprocess.run", return_value=result):
@@ -4260,7 +4267,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
         prompt.assert_not_called()
         run.assert_not_called()
 
-    def test_model_sdk_extension_skips_arm64_before_2_1_1(self):
+    def test_model_sdk_extension_rejects_arm64_before_2_1_1(self):
         sdk_release = "SDK Version = 2.0.0_Palette_SDK_neat_main_780365a\n"
         read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
 
@@ -4269,7 +4276,8 @@ table ip6 nm-shared-enx6c1ff720d573 {
              patch("sima_cli.sdk.model_compiler.inquirer.select") as prompt, \
              patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="aarch64\n")]) as run, \
              patch("sima_cli.sdk.utils.run_command") as run_command:
-            ensure_model_sdk_extension_installed("container", "docker")
+            with self.assertRaisesRegex(click.ClickException, "architecture arm64"):
+                ensure_model_sdk_extension_installed("container", "docker")
 
         prompt.assert_not_called()
         self.assertEqual(run.call_count, 2)
@@ -4400,24 +4408,15 @@ table ip6 nm-shared-enx6c1ff720d573 {
         self.assertNotIn("sima-cli login", install_script)
         self.assertNotIn("tools/model-compiler", install_script)
 
-    def test_model_sdk_extension_uses_vulcan_for_versions_after_2_1_3_on_arm64(self):
-        sdk_release = "SDK Version = 2.2.0_Palette_SDK_neat_main_780365a\n"
-        read_result = unittest.mock.Mock(returncode=0, stdout=sdk_release)
-
+    def test_model_sdk_extension_rejects_unmapped_sdk(self):
         with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.2.0"), \
-             patch("sima_cli.sdk.utils.sys.stdin.isatty", return_value=True), \
-             patch("sima_cli.sdk.model_compiler.inquirer.select", return_value=unittest.mock.Mock(execute=unittest.mock.Mock(return_value="online"))), \
-             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[read_result, unittest.mock.Mock(returncode=0, stdout="aarch64\n")]), \
-             patch("sima_cli.sdk.utils.run_command") as run_command:
-            ensure_model_sdk_extension_installed("container", "docker")
-
-        install_script = run_command.call_args_list[-1].args[0][-1]
-        self.assertEqual(run_command.call_count, 1)
-        self.assertIn(
-            '"$SIMA_CLI_BIN" neat install model-compiler/arm64@v2.1.3.1',
-            install_script,
-        )
-        self.assertNotIn("tools/model-compiler", install_script)
+             patch("sima_cli.sdk.utils.subprocess.run", side_effect=[
+                 Mock(returncode=0, stdout="SDK Version = 2.2.0_Palette_SDK_neat_main_abc\n"),
+                 Mock(returncode=0, stdout="aarch64\n")]), \
+             patch("sima_cli.sdk.utils.run_command") as run:
+            with self.assertRaisesRegex(click.ClickException, "No Model Compiler compatibility mapping for SDK 2.2.0"):
+                ensure_model_sdk_extension_installed("container", "docker", auto_install=True)
+        run.assert_not_called()
 
     def test_model_sdk_extension_auto_installs_without_prompt(self):
         sdk_release = "SDK Version = 2.0.0_Palette_SDK_neat_main_780365a\n"

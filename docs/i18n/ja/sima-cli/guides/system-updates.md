@@ -4,6 +4,10 @@
 
 コマンドリファレンス: [`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
 
+## 公開 GA リリースへの更新
+
+従来の eLxr OTA 更新で最新の公開リリースを選択すると、Developer Portal のリリースメタデータから GA バージョンを解決し、そのバージョンを `simaai-ota` に明示的に渡します。APT に新しい候補があっても GA は変更されません。`ga`、`beta`、`alpha` の明示指定にも同じメタデータを使用します。リリースメタデータが取得できない場合や GA バージョンが APT に存在しない場合は、更新を停止します。内部モードおよび強制プレリリースモードでの最新バージョンへの更新は従来どおりです。
+
 ## eLxr 3.0+ の内部日次更新
 
 内部モードではプレリリースの警告を表示します。eLxr 3.0+ を実行中の Modalix デバイスでは、`sima-cli -i update` はまず Artifactory を照会します。認証情報の欠落、HTTP 401/403 または 5xx 応答、接続失敗、タイムアウトの場合は、[日次プラットフォームインデックス](https://artifacts.neat.sima.ai/daily-platform-images/index.json)へフォールバックします。照会に成功して一致するビルドがない場合はフォールバックしません。

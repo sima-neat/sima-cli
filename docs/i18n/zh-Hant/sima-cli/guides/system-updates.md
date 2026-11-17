@@ -4,6 +4,10 @@
 
 命令參考：[`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
 
+## 公開 GA 版本更新
+
+在舊版 eLxr OTA 流程中選擇最新公開版本時，會從 Developer Portal 的版本中繼資料解析 GA 版本，並將該確切版本傳給 `simaai-ota`。即使 APT 提供更新的候選版本，也不會取代 GA。明確指定 `ga`、`beta` 或 `alpha` 時，也會使用相同的中繼資料。若無法取得版本中繼資料，或 APT 中沒有該 GA 版本，更新便會停止。內部模式及強制預先發行模式的最新版本更新行為維持不變。
+
 ## eLxr 3.0+ 內部每日更新
 
 內部模式會顯示預先發行警告。在已執行 eLxr 3.0+ 的 Modalix 裝置上，`sima-cli -i update` 會先查詢 Artifactory。若缺少認證資訊、收到 HTTP 401/403 或 5xx 回應、連線失敗或逾時，會改用[每日平台索引](https://artifacts.neat.sima.ai/daily-platform-images/index.json)。若查詢成功但沒有符合建置，則不會改用備援來源。

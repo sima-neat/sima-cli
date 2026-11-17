@@ -4,6 +4,10 @@
 
 명령 참조: [`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
 
+## 공개 GA 릴리스 업데이트
+
+기존 eLxr OTA 경로에서 최신 공개 릴리스를 선택하면 Developer Portal 릴리스 메타데이터에서 GA 버전을 확인하고 해당 버전을 `simaai-ota`에 명시적으로 전달합니다. APT에 더 새로운 후보가 있어도 GA 대신 선택하지 않습니다. `ga`, `beta`, `alpha`를 명시적으로 지정할 때도 같은 메타데이터를 사용합니다. 릴리스 메타데이터를 가져올 수 없거나 GA 버전이 APT에 없으면 업데이트를 중단합니다. 내부 모드와 강제 사전 릴리스 모드의 최신 버전 업데이트 동작은 그대로 유지됩니다.
+
 ## eLxr 3.0+ 내부 일일 업데이트
 
 내부 모드에서는 사전 릴리스 경고를 표시합니다. 이미 eLxr 3.0+를 실행 중인 Modalix 장치에서 `sima-cli -i update`는 Artifactory를 먼저 조회합니다. 자격 증명 누락, HTTP 401/403 또는 5xx 응답, 연결 실패 및 시간 초과 시 [일일 플랫폼 인덱스](https://artifacts.neat.sima.ai/daily-platform-images/index.json)로 전환합니다. 조회에 성공했지만 일치하는 빌드가 없으면 전환하지 않습니다.

@@ -88,3 +88,35 @@ def test_invalid_release_value_is_an_error(ota, monkeypatch, value):
     monkeypatch.setattr(tag, 'download_file_from_url', download)
     with pytest.raises(click.ClickException, match='no valid version'):
         tag.resolve_version(None)
+
+
+@pytest.mark.parametrize('failure,message', [
+    ('metadata', 'Failed to resolve tag'),
+    ('missing_ga', 'Published GA release 3.0.1 is not available'),
+])
+def test_cli_reports_release_failure_without_applying_ota(ota, monkeypatch, failure, message):
+    from click.testing import CliRunner
+    from sima_cli import cli
+    from sima_cli.update import updater
+
+    monkeypatch.setattr(cli, 'check_for_update', Mock(return_value=False))
+    monkeypatch.setattr(cli, 'get_environment_type', lambda: ('board', 'elxr'))
+    monkeypatch.setattr(cli, 'is_devkit_running_elxr', lambda: True)
+    # Select the legacy APT dispatcher, retaining the real perform_update wrapper.
+    monkeypatch.setattr(cli, 'handle_update', Mock(return_value=False))
+    monkeypatch.setattr(updater, 'get_environment_type', lambda: ('board', 'elxr'))
+    monkeypatch.setattr(updater, 'get_local_board_info', lambda: (
+        'modalix', '2.1.3', 'modalix', False, 'elxr'))
+    monkeypatch.setattr(updater, 'is_devkit_running_elxr', lambda: True)
+    if failure == 'metadata':
+        monkeypatch.setattr(tag, 'download_file_from_url', Mock(side_effect=OSError('offline')))
+    else:
+        monkeypatch.setattr(elxr, '_get_available_palette_versions', lambda: ['3.0.2'])
+
+    result = CliRunner().invoke(cli.main, ['update', '-y'], obj={})
+
+    assert result.exit_code == 1, result.output
+    assert 'Error: ' + message in result.output
+    # APT metadata refresh is allowed; the OTA installer must never run.
+    assert ota.call_count == 1
+    assert ota.call_args.args[0] == ['sudo', '-n', 'apt', 'update']

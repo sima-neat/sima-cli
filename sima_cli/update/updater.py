@@ -801,5 +801,7 @@ def perform_update(
         else:
             click.echo("❌ Unable to retrieve target board information")
 
+    except (click.ClickException, click.Abort):
+        raise
     except Exception as e:
         click.echo(f"❌ Update failed: {e}")

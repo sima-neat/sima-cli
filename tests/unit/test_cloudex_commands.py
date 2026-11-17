@@ -57,7 +57,7 @@ def test_connect_prompts_for_backend_key_without_putting_it_in_argv(monkeypatch)
     assert "encoded" not in result.output
     assert "Connected to ll2" in result.output
     assert "ssh sima@10.252.1.2" in result.output
-    assert connect.call_args.kwargs == {"attempts": 3, "transport": "auto"}
+    assert connect.call_args.kwargs == {"attempts": None, "transport": "auto"}
 
 
 @pytest.mark.parametrize("environment", ["vulcan-staging", "vulcan-production"])

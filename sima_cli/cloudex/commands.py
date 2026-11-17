@@ -260,7 +260,7 @@ def cloudex_group(ctx, internal):
 @click.option("--allocation", help="Connect to your NeatOps allocation ID without copying a key.")
 @click.option("--environment", type=click.Choice(["production", "staging"]), default="production", show_default=True, help="Vulcan environment (requires -i).")
 @click.option("--transport", type=click.Choice(["auto", "p2p", "turn"]), default="auto", hidden=True)
-@click.option("--attempts", type=click.IntRange(1, 5), default=3, hidden=True)
+@click.option("--attempts", type=click.IntRange(1, 5), hidden=True)
 @click.option(
     "--verbose",
     is_flag=True,
@@ -465,7 +465,7 @@ def register_cloudex_commands(main):
     main.add_command(cloudex_group)
 
 
-def _connect_profile(profile, verbose=False, attempts=3, transport="auto", *, diagnostics_api=None):
+def _connect_profile(profile, verbose=False, attempts=None, transport="auto", *, diagnostics_api=None):
     console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
     _authorize_supported_host()
     with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:

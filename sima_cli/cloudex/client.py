@@ -23,6 +23,7 @@ FORWARDER_NAME = "kerrigan-p2p-forwarder"
 MACOS_TUNNEL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 MACOS_WIREGUARD_INSTALL = "Install WireGuard CLI support with: brew install wireguard-tools"
 CONNECTION_SETUP_TIMEOUT_SECONDS = 60
+RELAY_SETUP_WINDOW_SECONDS = 35
 DIAGNOSTIC_LOG_LINES = 50
 ICE_SELECTION_TIMING = re.compile(r"ICE diagnostics phase=selected elapsed_ms=([0-9]{1,6}) pairs=[0-9]{1,6}")
 MAX_DIAGNOSTIC_TIMING_MS = 900_000
@@ -321,18 +322,21 @@ def _read_report(path):
     return report if isinstance(report, dict) else {}
 
 
-def _safe_last_stage(log_path):
+def _forwarder_log_state(log_path):
     try:
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return ""
-    stages = []
+        return "", ""
+    last_stage = ""
+    selected_path = ""
     for line in lines:
         prefix = "kerrigan-p2p-forwarder:"
         stage = line[len(prefix):].strip() if line.startswith(prefix) else line.strip()
         if stage in SAFE_FORWARDER_STAGES:
-            stages.append(stage)
-    return stages[-1] if stages else ""
+            last_stage = stage
+        if stage in {"selected ICE path direct", "selected ICE path relay"}:
+            selected_path = stage.rsplit(" ", 1)[-1]
+    return last_stage, selected_path
 
 
 def _submit_diagnostics(api, session, store, reason, report_diagnostics=None, *, setup_ms=None):
@@ -380,23 +384,6 @@ def _submit_diagnostics(api, session, store, reason, report_diagnostics=None, *,
         pass
 
 
-def _safe_selected_path(log_path):
-    """Recover the non-sensitive selected path from forwarder lifecycle logs."""
-    try:
-        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    selected = ""
-    for line in lines:
-        prefix = "kerrigan-p2p-forwarder:"
-        stage = line[len(prefix):].strip() if line.startswith(prefix) else line.strip()
-        if stage == "selected ICE path direct":
-            selected = "direct"
-        elif stage == "selected ICE path relay":
-            selected = "relay"
-    return selected
-
-
 def _diagnostic_log_excerpt(log_path):
     """Return bounded, credential-free native diagnostics for terminal output."""
     try:
@@ -424,7 +411,7 @@ def _connection_deadline(allocated, overall_deadline=None):
 
 
 def _forwarder_failure(log_path):
-    stage = _safe_last_stage(log_path)
+    stage, _ = _forwarder_log_state(log_path)
     suffix = "; last stage: " + stage if stage else ""
     try:
         detail = log_path.read_text(encoding="utf-8", errors="replace").lower()
@@ -493,11 +480,31 @@ def _forwarder_running(pid):
 
 
 def _wait_forwarder(session_id, process, report_path, log_path, deadline, progress,
-                    remote_status=None):
+                    remote_status=None, *, relay_deadline=None):
     previous = None
     next_remote_check = 0.0
-    while time.time() < deadline:
-        stage = _safe_last_stage(log_path)
+    while True:
+        # Read local state even at the deadline. The forwarder can complete
+        # between the previous poll and the end of the setup window.
+        stage, selected_path = _forwarder_log_state(log_path)
+        report = _read_report(report_path)
+        if report.get("session_id") != session_id:
+            report = {}
+        if report.get("status") == "connected":
+            return report
+        if report.get("status") == "failed":
+            raise CloudExError(_forwarder_failure(log_path))
+        path = report.get("path")
+        if path not in {"direct", "relay"}:
+            path = selected_path
+        if stage == "WireGuard handshake confirmed":
+            # The log can precede the final report. Retain the selected path
+            # from the checking report or the lifecycle log in that case.
+            return {"session_id": session_id, "status": "connected", "path": path or "unknown"}
+        if path == "relay" and relay_deadline is not None:
+            deadline = max(deadline, relay_deadline)
+        if time.time() >= deadline:
+            break
         if stage and stage != previous:
             progress.update({
                 "joined authenticated signaling session": "Host joined signaling; waiting for DevKit",
@@ -508,7 +515,7 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
         if remote_status is not None and time.monotonic() >= next_remote_check:
             next_remote_check = time.monotonic() + 1
             try:
-                remote = remote_status()
+                remote = remote_status(deadline)
             except CloudExError:
                 remote = None
             if isinstance(remote, dict):
@@ -524,25 +531,13 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
                     progress.update("Host joined signaling; waiting for DevKit startup")
                 elif remote_state == "gathering_candidates":
                     progress.update("Both peers joined; exchanging ICE candidates")
-        report = _read_report(report_path)
-        if report.get("session_id") == session_id:
-            if report.get("status") == "connected":
-                return report
-            if report.get("status") == "failed":
-                raise CloudExError(_forwarder_failure(log_path))
-        if stage == "WireGuard handshake confirmed":
-            # The handshake log is emitted immediately before the final report
-            # write. The preceding "checking" report already carries the
-            # selected path; use it (or the sanitized selection stage) rather
-            # than racing the write and presenting a connected path as unknown.
-            path = report.get("path")
-            if path not in {"direct", "relay"}:
-                path = _safe_selected_path(log_path) or "unknown"
-            return {"session_id": session_id, "status": "connected", "path": path}
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            continue
         if process.poll() is not None:
             raise CloudExError(_forwarder_failure(log_path) + "; host diagnostics: " + str(log_path))
-        time.sleep(0.2)
-    last_stage = "; last host stage: " + previous if previous else ""
+        time.sleep(min(0.2, remaining))
+    last_stage = "; last host stage: " + stage if stage else ""
     diagnostics = _diagnostic_log_excerpt(log_path)
     log_output = "\nForwarder log ({}):\n{}".format(log_path, diagnostics) if diagnostics else ""
     raise DirectHandshakeError(
@@ -659,7 +654,7 @@ def _forwarder_sudo_prefix(progress=None):
     return prefix + ["/usr/bin/env", "PATH=" + MACOS_TUNNEL_PATH]
 
 
-def connect(profile, store, progress, attempts=3, transport="auto", *, report_diagnostics=None):
+def connect(profile, store, progress, attempts=None, transport="auto", *, report_diagnostics=None):
     """Create a session and return its durable local record."""
     from .installer import ensure_forwarder
 
@@ -670,8 +665,12 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
         return existing
     sudo_prefix = _forwarder_sudo_prefix(progress=progress)
     forwarder = ensure_forwarder(progress=progress)
-    choices = (["p2p"] * attempts + ["routed"] if transport == "auto"
-               else ["routed"] if transport == "turn" else ["p2p"] * attempts)
+    if transport == "auto":
+        choices = ["p2p", "routed", "routed"] if attempts is None else ["p2p"] * attempts + ["routed"]
+    elif transport == "turn":
+        choices = ["routed"]
+    else:
+        choices = ["p2p"] * (3 if attempts is None else attempts)
     last_error = None
     connection_deadline = time.time() + CONNECTION_SETUP_TIMEOUT_SECONDS
     for number, selected_transport in enumerate(choices, 1):
@@ -680,6 +679,11 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
             break
         started = time.monotonic()
         attempt_deadline = now + (connection_deadline - now) / (len(choices) - number + 1)
+        # P2P can also select TURN. Give an attempt that uses relay a longer
+        # setup window while preserving the overall and server deadlines.
+        relay_deadline = min(connection_deadline, now + RELAY_SETUP_WINDOW_SECONDS)
+        if selected_transport == "routed":
+            attempt_deadline = max(attempt_deadline, relay_deadline)
         session_id = uuid.uuid4().hex
         session = {
             "version": 1,
@@ -744,10 +748,11 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
                 log_path,
                 _connection_deadline(allocated, attempt_deadline),
                 progress,
-                remote_status=lambda: api.call(
+                remote_status=lambda deadline: api.call(
                     "GET", "/v1/p2p/ice-sessions/" + remote_session_id,
-                    deadline=attempt_deadline,
+                    deadline=deadline,
                 ),
+                relay_deadline=_connection_deadline(allocated, relay_deadline),
             )
             wireguard = allocated.get("wireguard") or {}
             target = str(wireguard.get("remote_address") or "").partition("/")[0]
@@ -785,7 +790,9 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
                     _submit_diagnostics(api, session, store, "failed", report_diagnostics)
             if not isinstance(exc, DirectHandshakeError) or number == len(choices):
                 raise
-            progress.update("Direct path timed out; retrying with fresh ICE candidates")
+            next_transport = choices[number]
+            progress.update("Connection setup timed out. Retrying over the relay" if next_transport == "routed"
+                            else "Connection setup timed out. Retrying with fresh ICE candidates")
         else:
             if session["ice_path"] in {"direct", "relay"}:
                 setup_ms = round((time.monotonic() - started) * 1000)

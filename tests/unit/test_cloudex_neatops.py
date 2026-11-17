@@ -231,7 +231,7 @@ def test_connect_allocation_skips_manual_key_prompt(command_api, monkeypatch):
     monkeypatch.setattr(commands, "_connect_profile", connect)
     result = CliRunner().invoke(commands.cloudex_group, ["-i", "connect", "--allocation", AID])
     assert result.exit_code == 0, result.output
-    connect.assert_called_once_with(PROFILE, verbose=False, attempts=3, transport="auto", diagnostics_api=command_api)
+    connect.assert_called_once_with(PROFILE, verbose=False, attempts=None, transport="auto", diagnostics_api=command_api)
 
 
 def test_release_disconnects_only_matching_local_allocation(command_api, monkeypatch):

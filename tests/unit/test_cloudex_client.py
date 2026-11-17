@@ -250,10 +250,18 @@ def test_wait_forwarder_timeout_prints_sanitized_diagnostic_log(tmp_path, monkey
     log.write_text(
         "untrusted output that must not be printed\n"
         "kerrigan-p2p-forwarder: joined authenticated signaling session\n"
-        "kerrigan-p2p-forwarder: ICE connection state Failed\n"
     )
     process = Mock(poll=Mock(return_value=None))
-    monkeypatch.setattr(client.time, "time", Mock(return_value=2000))
+    clock = Mock(return_value=1998.9)
+    monkeypatch.setattr(client.time, "time", clock)
+
+    def reach_deadline(_seconds):
+        clock.return_value = 1999
+        with log.open("a") as stream:
+            stream.write("kerrigan-p2p-forwarder: WireGuard public key received through signaling\n")
+            stream.write("kerrigan-p2p-forwarder: ICE connection state Failed\n")
+
+    monkeypatch.setattr(client.time, "sleep", reach_deadline)
 
     with pytest.raises(client.DirectHandshakeError, match="deadline expired") as raised:
         client._wait_forwarder(
@@ -262,8 +270,71 @@ def test_wait_forwarder_timeout_prints_sanitized_diagnostic_log(tmp_path, monkey
 
     message = str(raised.value)
     assert "Forwarder log" in message
+    assert "last host stage: WireGuard public key received through signaling" in message
     assert "ICE connection state Failed" in message
     assert "untrusted output" not in message
+
+
+@pytest.mark.parametrize("confirmation", ["report", "log"])
+def test_wait_forwarder_accepts_confirmation_at_deadline(tmp_path, monkeypatch, confirmation):
+    session_id = "b" * 32
+    report = tmp_path / "report.json"
+    log = tmp_path / "forwarder.log"
+    log.write_text("kerrigan-p2p-forwarder: selected ICE path relay\n")
+    clock = Mock(return_value=99.9)
+    monkeypatch.setattr(client.time, "time", clock)
+
+    def confirm(_seconds):
+        clock.return_value = 100
+        if confirmation == "report":
+            report.write_text(json.dumps({
+                "session_id": session_id, "status": "connected", "path": "relay",
+            }))
+        else:
+            with log.open("a") as stream:
+                stream.write("kerrigan-p2p-forwarder: WireGuard handshake confirmed\n")
+
+    monkeypatch.setattr(client.time, "sleep", confirm)
+    process = Mock(poll=Mock(return_value=None))
+    remote_status = Mock(return_value={})
+
+    result = client._wait_forwarder(
+        session_id, process, report, log, 100, Mock(), remote_status=remote_status,
+    )
+
+    assert result == {"session_id": session_id, "status": "connected", "path": "relay"}
+    remote_status.assert_called_once_with(100)
+
+
+def test_wait_forwarder_extends_p2p_attempt_when_it_selects_relay(tmp_path, monkeypatch):
+    session_id = "b" * 32
+    report = tmp_path / "report.json"
+    log = tmp_path / "forwarder.log"
+    log.write_text(
+        "kerrigan-p2p-forwarder: selected ICE path relay\n"
+        "kerrigan-p2p-forwarder: starting WireGuard tunnel\n"
+    )
+    clock = Mock(return_value=100)
+    monkeypatch.setattr(client.time, "time", clock)
+
+    def confirm(_seconds):
+        clock.return_value = 105
+        report.write_text(json.dumps({
+            "session_id": session_id, "status": "connected", "path": "relay",
+        }))
+
+    monkeypatch.setattr(client.time, "sleep", confirm)
+    process = Mock(poll=Mock(return_value=None))
+    remote_status = Mock(return_value={})
+
+    result = client._wait_forwarder(
+        session_id, process, report, log, 100, Mock(),
+        remote_status=remote_status, relay_deadline=115,
+    )
+
+    assert result["path"] == "relay"
+    assert result["status"] == "connected"
+    remote_status.assert_called_once_with(115)
 
 
 def test_failed_connect_keeps_the_reported_host_diagnostics(tmp_path, monkeypatch):
@@ -398,7 +469,7 @@ def test_wait_forwarder_surfaces_devkit_failure_and_diagnostic_paths(tmp_path):
             log,
             9999999999,
             Mock(),
-            remote_status=lambda: {
+            remote_status=lambda _deadline: {
                 "status": "failed",
                 "last_error": "DevKit ICE startup failed; device diagnostics: " + device_log,
             },
@@ -850,3 +921,49 @@ def test_failed_connection_reports_after_attempting_cleanup(tmp_path, monkeypatc
     with pytest.raises(client.CloudExError, match="Original tunnel failure"):
         client.connect(profile, store, Mock(), attempts=1, transport="p2p", report_diagnostics=report)
     assert operations == ["cleanup", (profile["allocation_id"], sid, "failed", ["ICE connection state Failed"])]
+
+
+def test_auto_connect_moves_to_relay_after_one_direct_preferred_attempt(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path)
+    profile = allocation_profile()
+    api = Mock(url=profile["api_url"], requester=profile["requester"],
+               secret=profile["allocation_secret"], allocation_id=profile["allocation_id"])
+    api.call.return_value = {"session_id": "d" * 32, "expires_at": 9999999999,
+                             "wireguard": {"remote_address": "10.252.1.2/32"}}
+    monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(client, "_forwarder_sudo_prefix", Mock(return_value=[]))
+    monkeypatch.setattr(installer, "ensure_forwarder", Mock(return_value=tmp_path / "forwarder"))
+    monkeypatch.setattr(client, "disconnect_session", Mock())
+    transports = []
+
+    def start(command, **_kwargs):
+        with open(command[command.index("--config") + 1], encoding="utf-8") as stream:
+            configuration = json.load(stream)
+        transports.append(configuration["transport"])
+        return Mock(pid=123)
+
+    monkeypatch.setattr(client.subprocess, "Popen", start)
+    clock = Mock(return_value=1000)
+    monkeypatch.setattr(client.time, "time", clock)
+
+    def wait_for_attempt(_sid, _process, _report, _log, deadline, _progress, **_kwargs):
+        if len(transports) == 1:
+            assert deadline == 1020
+            clock.return_value = deadline
+            raise client.DirectHandshakeError("No usable path")
+        if len(transports) == 2:
+            assert deadline == 1055
+            clock.return_value = deadline
+            raise client.DirectHandshakeError("WireGuard handshake stalled")
+        assert deadline == 1060
+        return {"status": "connected", "path": "relay"}
+
+    wait = Mock(side_effect=wait_for_attempt)
+    monkeypatch.setattr(client, "_wait_forwarder", wait)
+
+    result = client.connect(profile, store, Mock())
+
+    assert transports == ["p2p", "routed", "routed"]
+    assert result["ice_path"] == "relay"
+    assert client.disconnect_session.call_count == 2

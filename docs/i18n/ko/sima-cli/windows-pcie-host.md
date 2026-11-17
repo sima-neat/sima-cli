@@ -27,8 +27,12 @@ GStreamer, 호환되는 Python 버전과 아키텍처, pip를 확인합니다. �
 
 Windows Installer가 완료되면 CLI는 설치된 호스트 진단 도구를 실행하고,
 패키지에 맞는 `neat-pcie-application-builder` 스킬을 현재 사용자의 Codex 및
-Claude 스킬 디렉터리에 동기화합니다. 처음 설치할 때 카드에 암호 없이
-SSH로 접속할 수 있도록 설정하세요.
+Claude 스킬 디렉터리에 동기화합니다. 두 MSI 중 하나를 실행하기 전에 CLI는 해당
+스킬 ID가 사용되지 않았거나 같은 설치 패키지 경로로 이미 등록되어 있는지도
+확인합니다. 다른 소스의 스킬이나 같은 ID를 사용하는 등록되지 않은 스킬 디렉터리는
+변경하지 않고 설치를 중단합니다. 패키지를 다시 설치할 때는 같은 패키지 경로로
+등록된 스킬만 교체할 수 있습니다. 처음 설치할 때 카드에 암호 없이 SSH로 접속할 수
+있도록 설정하세요.
 
 ```powershell
 & "C:\Program Files\SimaPCIeHost\bin\pcie-setup.cmd"

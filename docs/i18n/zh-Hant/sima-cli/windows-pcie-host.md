@@ -25,7 +25,10 @@ sima-cli neat install core/pciehost/windows/amd64@3.0
 
 Windows Installer 完成後，CLI 會執行已安裝的主機診斷工具，並將與套件配對的
 `neat-pcie-application-builder` 技能同步到目前使用者的 Codex 與 Claude
-技能目錄。首次安裝時，請設定免密碼 SSH 卡片連線：
+技能目錄。在執行任一 MSI 前，CLI 也會檢查此技能 ID 尚未使用，或已登錄至相同的
+已安裝套件路徑。若技能來自其他來源，或存在具有相同 ID 但未登錄的技能目錄，CLI
+不會變更該技能或目錄，並會停止安裝。再次安裝套件時，只能取代登錄至相同套件
+路徑的技能。首次安裝時，請設定免密碼 SSH 卡片連線：
 
 ```powershell
 & "C:\Program Files\SimaPCIeHost\bin\pcie-setup.cmd"

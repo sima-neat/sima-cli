@@ -1658,7 +1658,8 @@ def install_from_metadata(
                                 "prerequisite-failed",
                             )
                             raise
-                        except Exception as error:
+                        except BaseException as error:
+                            # Ctrl+C during an MSI must not leave the receipt at installing.
                             if install_type != "windows-msi":
                                 raise
                             if not getattr(error, "native_packages_installed", None):

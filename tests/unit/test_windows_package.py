@@ -1285,6 +1285,36 @@ class WindowsPackageTests(unittest.TestCase):
             self.metadata["name"], self.metadata["version"], "failed"
         )
 
+    def test_interrupted_install_records_a_terminal_receipt(self):
+        # Ctrl+C reaches the installer as KeyboardInterrupt, which is not an
+        # Exception; the receipt must still leave "installing" before it propagates.
+        self.metadata["resources"].insert(0, self.scheduler_msi.name)
+        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
+        self.metadata["installation"].pop("msi")
+        self.metadata["installation"]["native-packages"] = [
+            {"owner": "scheduler", "msi": self.scheduler_msi.name, "version": "0.6.1"},
+            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
+        ]
+        for completed_msis, state in ((0, "failed"), (1, "partial-native-failed")):
+            responses = [completed()] * completed_msis
+            used = {}
+
+            def interrupt(command, **_kwargs):
+                used["registry"] = metadata_installer.registry
+                if responses:
+                    return responses.pop(0)
+                raise KeyboardInterrupt
+
+            with self.subTest(state=state), patch(
+                "sima_cli.install.windows_package._is_windows", return_value=True
+            ), patch("sima_cli.install.windows_package._run", side_effect=interrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.install_from_windows_metadata()
+
+                used["registry"].update_state.assert_called_once_with(
+                    self.metadata["name"], self.metadata["version"], state
+                )
+
     def test_missing_wheel_after_msi_records_partial_python_failure(self):
         responses = [python_facts(), completed()]
 

@@ -879,8 +879,9 @@ def install_windows_package(
         verification = _verify_native_installation(metadata)
         skills = _install_customer_skills(metadata, skill_manager)
         python_status = _install_python_wheel(metadata, install_dir, selected_python)
-    except Exception as error:
-        # The caller records whether any native package completed before the failure.
+    except BaseException as error:
+        # The caller records whether any native package completed before the failure
+        # or interruption.
         error.native_packages_installed = [item["owner"] for item in installed]
         raise
     return {

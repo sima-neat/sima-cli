@@ -384,8 +384,22 @@ def validate_metadata(data: dict):
             if skills is not None:
                 if not isinstance(skills, list) or not skills:
                     raise MetadataValidationError("'installation.skills' must be a non-empty list")
+                skill_ids = set()
                 for index, skill in enumerate(skills):
-                    _validate_windows_path_spec(skill, f"installation.skills[{index}]")
+                    prefix = f"installation.skills[{index}]"
+                    _validate_windows_path_spec(skill, prefix)
+                    skill_id = skill.get("id") if isinstance(skill, dict) else None
+                    if not isinstance(skill_id, str) or not re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9._-]*", skill_id
+                    ):
+                        raise MetadataValidationError(
+                            f"'{prefix}.id' must be a valid customer skill ID"
+                        )
+                    if skill_id in skill_ids:
+                        raise MetadataValidationError(
+                            "'installation.skills' contains a duplicate skill ID"
+                        )
+                    skill_ids.add(skill_id)
         else:
             raise MetadataValidationError(f"Unsupported installation type: '{install_type}'")
 

@@ -28,8 +28,12 @@ different application environment or `--native-only` for a C++-only install.
 
 After Windows Installer completes, the CLI runs the installed host doctor and
 syncs the package-matched `neat-pcie-application-builder` skill into the current
-user's Codex and Claude skill directories. On the first installation, provision
-passwordless SSH to the card:
+user's Codex and Claude skill directories. Before either MSI runs, the CLI also
+checks that this skill ID is unclaimed or is already registered to the same
+installed package path. A skill from another source, or an unregistered skill
+directory with the same ID, is left untouched and stops the installation.
+Repeating the package install may replace only the skill registered to that same
+package path. On the first installation, provision passwordless SSH to the card:
 
 ```powershell
 & "C:\Program Files\SimaPCIeHost\bin\pcie-setup.cmd"

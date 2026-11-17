@@ -693,17 +693,56 @@ def _verify_native_installation(metadata: Dict) -> Dict[str, str]:
     return {"status": "passed", "command": str(command)}
 
 
-def _install_customer_skills(metadata: Dict) -> List[str]:
+def _declared_skill_id(spec: Dict[str, str]) -> str:
+    skill_id = spec.get("id", "")
+    if not skill_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", skill_id):
+        raise WindowsPrerequisiteError(
+            "The Windows package declares an invalid customer skill ID: "
+            f"'{skill_id}'. No native package was installed."
+        )
+    return skill_id
+
+
+def _preflight_customer_skills(metadata: Dict) -> Optional[SkillManager]:
     skill_specs = metadata["installation"].get("skills", [])
     if not skill_specs:
-        return []
+        return None
     try:
         manager = SkillManager()
     except (OSError, SkillError) as error:
-        raise WindowsNativeInstallError(
-            "Native MSI installation completed, but the customer skill registry could not be "
-            f"opened: {error}. The native installation was kept."
+        raise WindowsPrerequisiteError(
+            "The customer skill registry could not be opened before native package "
+            f"installation: {error}. No native package was installed."
         ) from error
+
+    for spec in skill_specs:
+        source = _path_from_spec(spec)
+        if source is None:
+            raise WindowsPrerequisiteError(
+                "The Windows package customer skill location cannot be resolved because "
+                f"the {spec['environment']} environment variable is not set. "
+                "No native package was installed."
+            )
+        skill_id = _declared_skill_id(spec)
+        try:
+            manager.check_install_ownership(skill_id, str(source))
+        except (OSError, SkillError) as error:
+            raise WindowsPrerequisiteError(
+                "Customer skill ownership validation failed before native package "
+                f"installation: {error} No native package was installed."
+            ) from error
+    return manager
+
+
+def _install_customer_skills(metadata: Dict, manager: Optional[SkillManager]) -> List[str]:
+    skill_specs = metadata["installation"].get("skills", [])
+    if not skill_specs:
+        return []
+    if manager is None:
+        raise WindowsNativeInstallError(
+            "Native MSI installation completed without a customer skill ownership check. "
+            "The native installation was kept."
+        )
     installed = []
     for spec in skill_specs:
         source = _path_from_spec(spec)
@@ -712,8 +751,15 @@ def _install_customer_skills(metadata: Dict) -> List[str]:
                 "Native MSI installation completed, but an installed customer skill is missing. "
                 "The native installation was kept."
             )
+        declared_id = _declared_skill_id(spec)
         try:
-            installed.extend(manager.install(str(source), force=True))
+            discovered_ids = manager.install(str(source), dry_run=True)
+            if discovered_ids != [declared_id]:
+                discovered = ", ".join(discovered_ids) or "none"
+                raise SkillError(
+                    f"declared skill '{declared_id}', but discovered: {discovered}"
+                )
+            installed.extend(manager.install(str(source), replace_same_source=True))
         except (OSError, SkillError) as error:
             raise WindowsNativeInstallError(
                 "Native MSI installation completed, but customer skill installation failed: "
@@ -737,11 +783,12 @@ def install_windows_package(
         raise click.ClickException("--native-only cannot be combined with --python-executable.")
 
     _check_prerequisites(metadata)
+    skill_manager = _preflight_customer_skills(metadata)
     selected_python = _prepare_python_executable(metadata, python_executable, native_only)
     installed = _install_native_packages(metadata, install_dir)
     click.echo("Coordinated native installation completed successfully.")
     verification = _verify_native_installation(metadata)
-    skills = _install_customer_skills(metadata)
+    skills = _install_customer_skills(metadata, skill_manager)
     python_status = _install_python_wheel(metadata, install_dir, selected_python)
     return {
         "native": "installed",

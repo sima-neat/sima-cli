@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import click
 from click.testing import CliRunner
@@ -20,6 +20,7 @@ from sima_cli.install.windows_package import (
     _windows_pnp_driver_version,
     install_windows_package,
 )
+from sima_cli.playbooks.manager import SkillError
 from sima_cli.vulcan.commands import install_vulcan_package
 
 
@@ -181,6 +182,30 @@ class WindowsPackageTests(unittest.TestCase):
             "command": {"environment": "ProgramFiles", "relative": "..\\doctor.cmd"}
         }
         with self.assertRaisesRegex(MetadataValidationError, "safe relative Windows path"):
+            validate_metadata(self.metadata)
+
+    def test_metadata_requires_customer_skill_id(self):
+        self.metadata["installation"]["skills"] = [{
+            "environment": "ProgramFiles",
+            "relative": "SimaPCIeHost\\skills\\neat-pcie-application-builder",
+        }]
+        with self.assertRaisesRegex(MetadataValidationError, r"skills\[0\].id"):
+            validate_metadata(self.metadata)
+
+    def test_metadata_rejects_duplicate_customer_skill_ids(self):
+        self.metadata["installation"]["skills"] = [
+            {
+                "id": "neat-pcie-application-builder",
+                "environment": "ProgramFiles",
+                "relative": "SimaPCIeHost\\skills\\neat-pcie-application-builder",
+            },
+            {
+                "id": "neat-pcie-application-builder",
+                "environment": "ProgramFiles",
+                "relative": "SimaPCIeHost\\skills\\duplicate",
+            },
+        ]
+        with self.assertRaisesRegex(MetadataValidationError, "duplicate skill ID"):
             validate_metadata(self.metadata)
 
     def test_native_only_invokes_msiexec_and_does_not_invoke_pip(self):
@@ -595,12 +620,16 @@ class WindowsPackageTests(unittest.TestCase):
                     self.metadata, str(self.root), native_only=True
                 )
 
-    def test_installed_customer_skill_is_synced_after_native_verification(self):
+    def test_same_owner_customer_skill_is_replaced_after_native_verification(self):
         skill = self.root / "installed" / "skill"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("# Customer skill\n", encoding="utf-8")
         self.metadata["installation"]["skills"] = [
-            {"environment": "TEST_PROGRAM_FILES", "relative": "installed\\skill"}
+            {
+                "id": "skill",
+                "environment": "TEST_PROGRAM_FILES",
+                "relative": "installed\\skill",
+            }
         ]
         self.assertTrue(validate_metadata(self.metadata))
         with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
@@ -610,19 +639,124 @@ class WindowsPackageTests(unittest.TestCase):
         ), patch(
             "sima_cli.install.windows_package.SkillManager"
         ) as manager_type:
-            manager_type.return_value.install.return_value = [
-                "neat-pcie-application-builder"
-            ]
+            manager_type.return_value.install.return_value = ["skill"]
             result = install_windows_package(
                 self.metadata, str(self.root), native_only=True
             )
 
-        manager_type.return_value.install.assert_called_once_with(str(skill), force=True)
-        self.assertEqual(result["skills"], ["neat-pcie-application-builder"])
+        manager_type.return_value.check_install_ownership.assert_called_once_with(
+            "skill", str(skill)
+        )
+        self.assertEqual(
+            manager_type.return_value.install.call_args_list,
+            [
+                call(str(skill), dry_run=True),
+                call(str(skill), replace_same_source=True),
+            ],
+        )
+        self.assertEqual(result["skills"], ["skill"])
+
+    def test_discovered_skill_id_mismatch_does_not_write_customer_skill(self):
+        skill = self.root / "installed" / "skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Customer skill\n", encoding="utf-8")
+        self.metadata["installation"]["skills"] = [{
+            "id": "declared-skill",
+            "environment": "TEST_PROGRAM_FILES",
+            "relative": "installed\\skill",
+        }]
+        with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ) as run, patch(
+            "sima_cli.install.windows_package.SkillManager"
+        ) as manager_type:
+            manager_type.return_value.install.return_value = ["unexpected-skill"]
+            with self.assertRaisesRegex(
+                WindowsNativeInstallError,
+                "declared skill 'declared-skill'.*unexpected-skill",
+            ):
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
+
+        self.assertEqual(run.call_count, 1)
+        manager_type.return_value.install.assert_called_once_with(
+            str(skill), dry_run=True
+        )
+
+    def test_different_owner_customer_skill_blocks_before_native_install(self):
+        skill = (
+            self.root
+            / "SimaPCIeHost"
+            / "share"
+            / "sima-pcie-host"
+            / "skills"
+            / "neat-pcie-application-builder"
+        )
+        self.metadata["installation"]["skills"] = [{
+            "id": "neat-pcie-application-builder",
+            "environment": "TEST_PROGRAM_FILES",
+            "relative": (
+                "SimaPCIeHost\\share\\sima-pcie-host\\skills\\"
+                "neat-pcie-application-builder"
+            ),
+        }]
+        with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ) as run, patch(
+            "sima_cli.install.windows_package.SkillManager"
+        ) as manager_type:
+            manager_type.return_value.check_install_ownership.side_effect = SkillError(
+                "Skill 'neat-pcie-application-builder' is already owned by "
+                "'C:\\independent-skill'."
+            )
+            with self.assertRaisesRegex(
+                WindowsPrerequisiteError, "already owned.*No native package was installed"
+            ):
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
+
+        manager_type.return_value.check_install_ownership.assert_called_once_with(
+            "neat-pcie-application-builder", str(skill)
+        )
+        manager_type.return_value.install.assert_not_called()
+        run.assert_not_called()
+
+    def test_invalid_declared_skill_id_blocks_before_native_install(self):
+        self.metadata["installation"]["skills"] = [{
+            "id": "invalid skill",
+            "environment": "TEST_PROGRAM_FILES",
+            "relative": "SimaPCIeHost\\skills\\invalid skill",
+        }]
+        with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ) as run, patch(
+            "sima_cli.install.windows_package.SkillManager"
+        ) as manager_type:
+            with self.assertRaisesRegex(
+                WindowsPrerequisiteError, "invalid customer skill ID"
+            ):
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
+
+        manager_type.return_value.check_install_ownership.assert_not_called()
+        run.assert_not_called()
 
     def test_missing_installed_customer_skill_reports_retained_native_install(self):
         self.metadata["installation"]["skills"] = [
-            {"environment": "TEST_PROGRAM_FILES", "relative": "missing\\skill"}
+            {
+                "id": "skill",
+                "environment": "TEST_PROGRAM_FILES",
+                "relative": "missing\\skill",
+            }
         ]
         with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
             "sima_cli.install.windows_package._is_windows", return_value=True
@@ -632,24 +766,31 @@ class WindowsPackageTests(unittest.TestCase):
                     self.metadata, str(self.root), native_only=True
                 )
 
-    def test_customer_skill_registry_failure_reports_retained_native_install(self):
+    def test_customer_skill_registry_failure_blocks_before_native_install(self):
         skill = self.root / "installed" / "skill"
         skill.mkdir(parents=True)
         self.metadata["installation"]["skills"] = [
-            {"environment": "TEST_PROGRAM_FILES", "relative": "installed\\skill"}
+            {
+                "id": "skill",
+                "environment": "TEST_PROGRAM_FILES",
+                "relative": "installed\\skill",
+            }
         ]
         with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
             "sima_cli.install.windows_package._is_windows", return_value=True
         ), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
-        ), patch(
+        ) as run, patch(
             "sima_cli.install.windows_package.SkillManager",
             side_effect=OSError("registry unavailable"),
         ):
-            with self.assertRaisesRegex(WindowsNativeInstallError, "registry could not be opened"):
+            with self.assertRaisesRegex(
+                WindowsPrerequisiteError, "registry could not be opened"
+            ):
                 install_windows_package(
                     self.metadata, str(self.root), native_only=True
                 )
+        run.assert_not_called()
 
     def test_msiexec_permission_denial_is_reported_with_log_location(self):
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(

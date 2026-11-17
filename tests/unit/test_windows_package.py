@@ -17,6 +17,7 @@ from sima_cli.install import metadata_installer
 from sima_cli.install.metadata_validator import MetadataValidationError, validate_metadata
 from sima_cli.install.windows_package import (
     ELEVATED_INSTALLER_EXIT_CODE_MISSING,
+    ELEVATED_INSTALLER_LAUNCH_FAILED,
     WindowsNativeInstallError,
     WindowsPackageRestartRequired,
     WindowsPrerequisiteError,
@@ -318,8 +319,41 @@ class WindowsPackageTests(unittest.TestCase):
                 )
 
         powershell = run.call_args.args[0][-1]
-        self.assertIn("if ($null -eq $process.ExitCode) {", powershell)
+        self.assertIn("if ($null -eq $process) {", powershell)
         self.assertIn(f"exit {ELEVATED_INSTALLER_EXIT_CODE_MISSING}", powershell)
+
+    def test_elevated_installer_launch_failure_is_not_reported_as_cancelled(self):
+        # Only Win32 error 1223 from the approval prompt means the user declined;
+        # any other launch error must say what failed.
+        with patch(
+            "sima_cli.install.windows_package._is_windows", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._is_windows_administrator",
+            return_value=False,
+        ), patch(
+            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(
+                returncode=ELEVATED_INSTALLER_LAUNCH_FAILED,
+                stderr="The system cannot find the file specified\n",
+            ),
+        ) as run:
+            with self.assertRaises(WindowsNativeInstallError) as raised:
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True
+                )
+
+        message = str(raised.exception)
+        self.assertNotIn("cancelled", message)
+        self.assertIn("Could not start Windows Installer for native", message)
+        self.assertIn("The system cannot find the file specified", message)
+        self.assertIn("msiexec.exe is available", message)
+        self.assertIn("sima-cli-msi-install-01-native.log", message)
+        powershell = run.call_args.args[0][-1]
+        self.assertIn("$exception.NativeErrorCode -eq 1223", powershell)
+        self.assertIn(f"exit {ELEVATED_INSTALLER_LAUNCH_FAILED}", powershell)
+        self.assertNotIn("Start-Process", powershell)
 
     def test_coordinated_native_packages_install_in_manifest_order(self):
         self.metadata["resources"].insert(0, self.scheduler_msi.name)

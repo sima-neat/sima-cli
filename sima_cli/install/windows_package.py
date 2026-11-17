@@ -20,6 +20,7 @@ MSI_RESTART_REQUIRED = 3010
 MSI_INSTALL_REJECTED_BY_POLICY = 1625
 WINDOWS_ELEVATION_CANCELLED = 1223
 ELEVATED_INSTALLER_EXIT_CODE_MISSING = 9001
+ELEVATED_INSTALLER_LAUNCH_FAILED = 9002
 
 
 class WindowsPackageRestartRequired(click.ClickException):
@@ -115,20 +116,34 @@ def _run_native_installer(command: List[str], log_path: Path) -> subprocess.Comp
             f"administrator to install the native packages. Intended installer log: {log_path}"
         )
 
+    # Start-Process drops the Win32 error code, so only Process.Start can tell a
+    # declined approval prompt (1223) apart from any other launch failure.
     script = r"""
 $ErrorActionPreference = 'Stop'
 try {
-  $process = Start-Process -FilePath 'msiexec.exe' `
-    -ArgumentList $env:SIMA_CLI_MSI_ARGUMENTS -Verb RunAs -Wait -PassThru
-  if ($null -eq $process.ExitCode) {
-    [Console]::Error.WriteLine('Windows Installer did not report an exit code.')
-    exit 9001
-  }
-  exit $process.ExitCode
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo `
+    'msiexec.exe', $env:SIMA_CLI_MSI_ARGUMENTS
+  $startInfo.Verb = 'runas'
+  $startInfo.UseShellExecute = $true
+  $process = [System.Diagnostics.Process]::Start($startInfo)
 } catch {
-  [Console]::Error.WriteLine($_.Exception.Message)
-  exit 1223
+  $exception = $_.Exception
+  [Console]::Error.WriteLine($exception.Message)
+  while ($null -ne $exception) {
+    if ($exception -is [System.ComponentModel.Win32Exception] -and
+        $exception.NativeErrorCode -eq 1223) {
+      exit 1223
+    }
+    $exception = $exception.InnerException
+  }
+  exit 9002
 }
+if ($null -eq $process) {
+  [Console]::Error.WriteLine('Windows Installer did not report an exit code.')
+  exit 9001
+}
+$process.WaitForExit()
+exit $process.ExitCode
 """
     environment = os.environ.copy()
     environment["SIMA_CLI_MSI_ARGUMENTS"] = subprocess.list2cmdline(command[1:])
@@ -143,6 +158,8 @@ try {
             script,
         ],
         env=environment,
+        stderr=subprocess.PIPE,
+        text=True,
     )
 
 
@@ -713,6 +730,15 @@ def _install_native_packages(
                 f"Windows administrator approval was cancelled for {owner}. "
                 "No later native package or Python package was installed. Rerun the same "
                 f"command when approval is available. Intended installer log: {log_path}"
+            )
+        if result.returncode == ELEVATED_INSTALLER_LAUNCH_FAILED:
+            detail = (result.stderr or "").strip() or "Windows did not report a reason"
+            raise WindowsNativeInstallError(
+                f"Could not start Windows Installer for {owner} with administrator approval: "
+                f"{detail}. No later native package or Python package was installed. Check that "
+                "msiexec.exe is available, the current account's permissions, and Windows "
+                "application-control policy; do not disable security controls. Then rerun the "
+                f"same command. Intended installer log: {log_path}"
             )
         if result.returncode == ELEVATED_INSTALLER_EXIT_CODE_MISSING:
             raise WindowsNativeInstallError(

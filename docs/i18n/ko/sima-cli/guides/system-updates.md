@@ -4,6 +4,12 @@
 
 명령 참조: [`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
 
+## eLxr 3.0+ 공개 릴리스
+
+eLxr 3.0+의 공개 SWU 경로에서는 버전을 생략하면 공개된 GA 릴리스를 확인합니다. `ga`, `beta`, `alpha`를 명시적으로 지정할 때도 같은 Developer Portal 릴리스 메타데이터를 사용합니다. 명시적 버전과 SWU 파일 및 URL의 기존 동작은 유지됩니다. 내부 일일 빌드는 기존 카탈로그를 사용합니다.
+
+eLxr 2.1.3 장치는 Debian APT 미러만 사용합니다. 버전을 생략하면 최신 패키지를 설치하고 명시적 패키지 버전은 APT에서 확인합니다. 이 경로는 `releases.json`을 읽지 않으며 릴리스 채널 선택자를 지원하지 않습니다. eLxr 2.1.3에서 3.0+로 이전하려면 복구 또는 프로비저닝이 필요합니다.
+
 ## eLxr 3.0+ 내부 일일 업데이트
 
 내부 모드에서는 사전 릴리스 경고를 표시합니다. 이미 eLxr 3.0+를 실행 중인 Modalix 장치에서 `sima-cli -i update`는 Artifactory를 먼저 조회합니다. 자격 증명 누락, HTTP 401/403 또는 5xx 응답, 연결 실패 및 시간 초과 시 [일일 플랫폼 인덱스](https://artifacts.neat.sima.ai/daily-platform-images/index.json)로 전환합니다. 조회에 성공했지만 일치하는 빌드가 없으면 전환하지 않습니다.

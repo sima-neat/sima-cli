@@ -850,3 +850,39 @@ def test_failed_connection_reports_after_attempting_cleanup(tmp_path, monkeypatc
     with pytest.raises(client.CloudExError, match="Original tunnel failure"):
         client.connect(profile, store, Mock(), attempts=1, transport="p2p", report_diagnostics=report)
     assert operations == ["cleanup", (profile["allocation_id"], sid, "failed", ["ICE connection state Failed"])]
+
+
+def test_auto_connect_moves_to_relay_after_one_direct_preferred_attempt(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path)
+    profile = allocation_profile()
+    api = Mock(url=profile["api_url"], requester=profile["requester"],
+               secret=profile["allocation_secret"], allocation_id=profile["allocation_id"])
+    api.call.return_value = {"session_id": "d" * 32, "expires_at": 9999999999,
+                             "wireguard": {"remote_address": "10.252.1.2/32"}}
+    monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(client, "_forwarder_sudo_prefix", Mock(return_value=[]))
+    monkeypatch.setattr(installer, "ensure_forwarder", Mock(return_value=tmp_path / "forwarder"))
+    monkeypatch.setattr(client, "disconnect_session", Mock())
+    transports = []
+
+    def start(command, **_kwargs):
+        with open(command[command.index("--config") + 1], encoding="utf-8") as stream:
+            configuration = json.load(stream)
+        transports.append(configuration["transport"])
+        return Mock(pid=123)
+
+    monkeypatch.setattr(client.subprocess, "Popen", start)
+    monkeypatch.setattr(client.time, "time", lambda: 1000)
+    wait = Mock(side_effect=[
+        client.DirectHandshakeError("No usable path"),
+        client.DirectHandshakeError("WireGuard handshake stalled"),
+        {"status": "connected", "path": "relay"},
+    ])
+    monkeypatch.setattr(client, "_wait_forwarder", wait)
+
+    result = client.connect(profile, store, Mock())
+
+    assert transports == ["p2p", "routed", "routed"]
+    assert result["ice_path"] == "relay"
+    assert client.disconnect_session.call_count == 2

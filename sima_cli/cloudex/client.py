@@ -659,7 +659,7 @@ def _forwarder_sudo_prefix(progress=None):
     return prefix + ["/usr/bin/env", "PATH=" + MACOS_TUNNEL_PATH]
 
 
-def connect(profile, store, progress, attempts=3, transport="auto", *, report_diagnostics=None):
+def connect(profile, store, progress, attempts=None, transport="auto", *, report_diagnostics=None):
     """Create a session and return its durable local record."""
     from .installer import ensure_forwarder
 
@@ -670,8 +670,12 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
         return existing
     sudo_prefix = _forwarder_sudo_prefix(progress=progress)
     forwarder = ensure_forwarder(progress=progress)
-    choices = (["p2p"] * attempts + ["routed"] if transport == "auto"
-               else ["routed"] if transport == "turn" else ["p2p"] * attempts)
+    if transport == "auto":
+        choices = ["p2p", "routed", "routed"] if attempts is None else ["p2p"] * attempts + ["routed"]
+    elif transport == "turn":
+        choices = ["routed"]
+    else:
+        choices = ["p2p"] * (3 if attempts is None else attempts)
     last_error = None
     connection_deadline = time.time() + CONNECTION_SETUP_TIMEOUT_SECONDS
     for number, selected_transport in enumerate(choices, 1):
@@ -785,7 +789,9 @@ def connect(profile, store, progress, attempts=3, transport="auto", *, report_di
                     _submit_diagnostics(api, session, store, "failed", report_diagnostics)
             if not isinstance(exc, DirectHandshakeError) or number == len(choices):
                 raise
-            progress.update("Direct path timed out; retrying with fresh ICE candidates")
+            next_transport = choices[number]
+            progress.update("Connection setup timed out. Retrying over the relay" if next_transport == "routed"
+                            else "Connection setup timed out. Retrying with fresh ICE candidates")
         else:
             if session["ice_path"] in {"direct", "relay"}:
                 setup_ms = round((time.monotonic() - started) * 1000)

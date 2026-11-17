@@ -792,20 +792,29 @@ class SkillManager:
     def _install_skill(self, skill_root: Path, manifest: dict, source: SourceRef) -> dict:
         skill_id = manifest["id"]
         installed_paths: Dict[str, str] = {}
+        created: List[Path] = []
 
-        for agent in manifest["agents"]:
-            if agent not in {"codex", "claude"}:
-                continue
-            dest_root = self._agent_skills_root(agent)
-            dest = dest_root / skill_id
-            if dest.exists():
-                shutil.rmtree(dest)
-            dest.mkdir(parents=True, exist_ok=True)
+        try:
+            for agent in manifest["agents"]:
+                if agent not in {"codex", "claude"}:
+                    continue
+                dest_root = self._agent_skills_root(agent)
+                dest = dest_root / skill_id
+                if dest.exists():
+                    shutil.rmtree(dest)
+                else:
+                    created.append(dest)
+                dest.mkdir(parents=True, exist_ok=True)
 
-            self._copy_common(skill_root, dest)
-            self._apply_agent_overlay(skill_root, agent, dest)
-            self._apply_template_substitutions(dest, agent)
-            installed_paths[agent] = str(dest)
+                self._copy_common(skill_root, dest)
+                self._apply_agent_overlay(skill_root, agent, dest)
+                self._apply_template_substitutions(dest, agent)
+                installed_paths[agent] = str(dest)
+        except BaseException:
+            # An unregistered partial copy would block every later ownership check.
+            for path in created:
+                shutil.rmtree(path, ignore_errors=True)
+            raise
 
         if not installed_paths:
             raise SkillError(

@@ -19,6 +19,7 @@ MSI_RESTART_INITIATED = 1641
 MSI_RESTART_REQUIRED = 3010
 MSI_INSTALL_REJECTED_BY_POLICY = 1625
 WINDOWS_ELEVATION_CANCELLED = 1223
+ELEVATED_INSTALLER_EXIT_CODE_MISSING = 9001
 
 
 class WindowsPackageRestartRequired(click.ClickException):
@@ -74,7 +75,14 @@ def _verify_declared_checksum(metadata: Dict, resource: str, path: Path, error_t
     from sima_cli.install.metadata_installer import _compute_sha256
 
     expected = _declared_sha256(metadata, resource)
-    actual = _compute_sha256(path)
+    try:
+        actual = _compute_sha256(path)
+    except OSError as error:
+        raise error_type(
+            f"Windows package resource '{resource}' could not be read for SHA-256 "
+            f"verification at '{path}': {error}; it was not started. "
+            "Close any program using the file, then rerun the same command."
+        ) from error
     if actual != expected:
         raise error_type(
             f"Windows package resource '{resource}' no longer matches its declared SHA-256 "
@@ -110,6 +118,10 @@ $ErrorActionPreference = 'Stop'
 try {
   $process = Start-Process -FilePath 'msiexec.exe' `
     -ArgumentList $env:SIMA_CLI_MSI_ARGUMENTS -Verb RunAs -Wait -PassThru
+  if ($null -eq $process.ExitCode) {
+    [Console]::Error.WriteLine('Windows Installer did not report an exit code.')
+    exit 9001
+  }
   exit $process.ExitCode
 } catch {
   [Console]::Error.WriteLine($_.Exception.Message)
@@ -684,6 +696,12 @@ def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str,
                 f"Windows administrator approval was cancelled for {owner}. "
                 "No later native package or Python package was installed. Rerun the same "
                 f"command when approval is available. Intended installer log: {log_path}"
+            )
+        if result.returncode == ELEVATED_INSTALLER_EXIT_CODE_MISSING:
+            raise WindowsNativeInstallError(
+                f"Windows Installer for {owner} ended without reporting an exit code, so its "
+                "result is unknown. The release remains incomplete; check the installer log, "
+                f"then rerun the same command. Installer log: {log_path}"
             )
         if result.returncode != 0:
             installed_owners = ", ".join(item["owner"] for item in installed) or "none"

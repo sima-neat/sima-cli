@@ -323,6 +323,59 @@ compatibility:
         self.assertFalse((self.claude_home / "skills" / "netops").exists())
         self.assertEqual(unrelated.read_text(encoding="utf-8"), "independent\n")
 
+    @patch("sima_cli.playbooks.manager.get_environment_type", return_value=("host", "mac"))
+    def test_failed_second_agent_copy_is_removed_so_rerun_succeeds(self, _mock_env):
+        source_root = self.root / "package"
+        source_root.mkdir(parents=True)
+        skill_path = self._create_skill(source_root)
+        apply_overlay = self.manager._apply_agent_overlay
+
+        def fail_claude_overlay(skill_root, agent, dest):
+            if agent == "claude":
+                raise OSError("claude skills directory is locked")
+            apply_overlay(skill_root, agent, dest)
+
+        with patch.object(
+            self.manager, "_apply_agent_overlay", side_effect=fail_claude_overlay
+        ), self.assertRaisesRegex(OSError, "claude skills directory is locked"):
+            self.manager.install(str(skill_path), replace_same_source=True)
+
+        self.assertFalse((self.codex_home / "skills" / "netops").exists())
+        self.assertFalse((self.claude_home / "skills" / "netops").exists())
+        self.assertIsNone(self.registry.get_skill("netops"))
+        self.assertEqual(
+            self.manager.install(str(skill_path), replace_same_source=True), ["netops"]
+        )
+
+    @patch("sima_cli.playbooks.manager.get_environment_type", return_value=("host", "mac"))
+    def test_failed_install_cleanup_preserves_preexisting_agent_directory(self, _mock_env):
+        source_root = self.root / "package"
+        source_root.mkdir(parents=True)
+        skill_path = self._create_skill(source_root)
+        customer = self.claude_home / "skills" / "netops"
+        customer.mkdir(parents=True)
+        marker = customer / "customer.txt"
+        marker.write_text("independent\n", encoding="utf-8")
+        rmtree = shutil.rmtree
+        locked = [customer]
+
+        def locked_customer_directory(path, *args, **kwargs):
+            # The lock clears after the first attempt, so a cleanup that also
+            # targeted this directory would delete it.
+            if Path(path) in locked:
+                locked.remove(Path(path))
+                raise PermissionError(13, "The directory is in use", str(path))
+            rmtree(path, *args, **kwargs)
+
+        with patch(
+            "sima_cli.playbooks.manager.shutil.rmtree", side_effect=locked_customer_directory
+        ), self.assertRaisesRegex(PermissionError, "The directory is in use"):
+            self.manager.install(str(skill_path))
+
+        self.assertFalse((self.codex_home / "skills" / "netops").exists())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "independent\n")
+        self.assertIsNone(self.registry.get_skill("netops"))
+
     def test_different_registered_source_cannot_replace_skill(self):
         independent_source = self.root / "independent" / "netops"
         package_source = self.root / "package" / "netops"

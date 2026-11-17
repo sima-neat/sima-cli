@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import uuid
 
+from sima_cli.install.metadata_validator import validate_metadata
 from sima_cli.install.windows_package import install_windows_package
 
 
@@ -96,6 +97,7 @@ include(CPack)
         }
         (dist / "metadata.json").write_text(
             json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        validate_metadata(json.loads((dist / "metadata.json").read_text(encoding="utf-8")))
 
         installed = False
         try:

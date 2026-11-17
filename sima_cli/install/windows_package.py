@@ -25,6 +25,8 @@ ELEVATED_INSTALLER_EXIT_CODE_MISSING = 9001
 class WindowsPackageRestartRequired(click.ClickException):
     """The native package installed, but Windows must restart before pip runs."""
 
+    exit_code = MSI_RESTART_REQUIRED
+
 
 class WindowsPythonInstallError(click.ClickException):
     """The MSI succeeded, but the requested Python installation failed."""
@@ -587,7 +589,12 @@ def _install_python_wheel(
     if not executable.is_file():
         raise WindowsPythonInstallError(f"Selected Python executable does not exist: '{executable}'.")
 
-    wheel = _declared_resource(metadata, install_dir, python_package["wheel"])
+    try:
+        wheel = _declared_resource(metadata, install_dir, python_package["wheel"])
+    except click.ClickException as error:
+        raise WindowsPythonInstallError(
+            f"{error.message} The native installation was kept."
+        ) from error
     distribution = python_package["distribution"]
     version = python_package["version"]
     module = python_package.get("import", distribution)
@@ -656,8 +663,9 @@ def _safe_log_label(owner: str) -> str:
     return label.strip("-") or "package"
 
 
-def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str, str]]:
-    installed = []
+def _install_native_packages(
+    metadata: Dict, install_dir: str, installed: List[Dict[str, str]]
+) -> List[Dict[str, str]]:
     root = Path(install_dir).resolve()
     packages = _native_packages(metadata["installation"])
     for index, package in enumerate(packages, start=1):
@@ -686,10 +694,19 @@ def _install_native_packages(metadata: Dict, install_dir: str) -> List[Dict[str,
                 f"do not disable security controls. Intended installer log: {log_path}"
             ) from error
         if result.returncode in {MSI_RESTART_INITIATED, MSI_RESTART_REQUIRED}:
+            completed_owners = ", ".join([item["owner"] for item in installed] + [owner])
+            remaining = [item["owner"] for item in packages[index:]]
+            remaining_text = (
+                "native packages " + ", ".join(remaining) + " and any"
+                if remaining
+                else "any"
+            )
             raise WindowsPackageRestartRequired(
                 f"Windows Installer completed {owner} with restart code {result.returncode}. "
-                "Restart Windows, then rerun the command to continue the coordinated installation. "
-                f"Installer log: {log_path}"
+                f"Native packages installed in this run: {completed_owners}. "
+                f"Not yet run: {remaining_text} verification, customer skill, and Python steps. "
+                "Restart Windows, then rerun the same command to continue the coordinated "
+                f"installation. Installer log: {log_path}"
             )
         if result.returncode == WINDOWS_ELEVATION_CANCELLED:
             raise WindowsNativeInstallError(
@@ -852,14 +869,20 @@ def install_windows_package(
     if native_only and python_executable:
         raise click.ClickException("--native-only cannot be combined with --python-executable.")
 
-    _check_prerequisites(metadata)
-    skill_manager = _preflight_customer_skills(metadata)
-    selected_python = _prepare_python_executable(metadata, python_executable, native_only)
-    installed = _install_native_packages(metadata, install_dir)
-    click.echo("Coordinated native installation completed successfully.")
-    verification = _verify_native_installation(metadata)
-    skills = _install_customer_skills(metadata, skill_manager)
-    python_status = _install_python_wheel(metadata, install_dir, selected_python)
+    installed: List[Dict[str, str]] = []
+    try:
+        _check_prerequisites(metadata)
+        skill_manager = _preflight_customer_skills(metadata)
+        selected_python = _prepare_python_executable(metadata, python_executable, native_only)
+        _install_native_packages(metadata, install_dir, installed)
+        click.echo("Coordinated native installation completed successfully.")
+        verification = _verify_native_installation(metadata)
+        skills = _install_customer_skills(metadata, skill_manager)
+        python_status = _install_python_wheel(metadata, install_dir, selected_python)
+    except Exception as error:
+        # The caller records whether any native package completed before the failure.
+        error.native_packages_installed = [item["owner"] for item in installed]
+        raise
     return {
         "native": "installed",
         "native_packages": installed,

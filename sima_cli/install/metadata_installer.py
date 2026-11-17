@@ -34,7 +34,6 @@ from sima_cli.install.metadata_info import print_metadata_summary, parse_size_st
 from sima_cli.utils.container_registries import install_from_cr
 from sima_cli.install.registry import PackageRegistry
 from sima_cli.install.windows_package import (
-    WindowsNativeInstallError,
     WindowsPackageRestartRequired,
     WindowsPrerequisiteError,
     WindowsPythonInstallError,
@@ -1644,13 +1643,14 @@ def install_from_metadata(
                                 return result
                             _run_installation_script(
                                 metadata=metadata, extract_path=install_dir, force=force)
-                        except WindowsPackageRestartRequired:
+                        except WindowsPackageRestartRequired as error:
                             registry.update_state(
                                 metadata.get("name"),
                                 metadata.get("version"),
                                 "restart-required",
                             )
-                            raise
+                            click.echo(f"⚠️  Restart required to finish installing from metadata URL {metadata_url}: {error}")
+                            sys.exit(error.exit_code)
                         except WindowsPrerequisiteError:
                             registry.update_state(
                                 metadata.get("name"),
@@ -1658,12 +1658,15 @@ def install_from_metadata(
                                 "prerequisite-failed",
                             )
                             raise
-                        except (WindowsNativeInstallError, WindowsPythonInstallError) as error:
-                            state = (
-                                "partial-native-failed"
-                                if isinstance(error, WindowsNativeInstallError)
-                                else "partial-python-failed"
-                            )
+                        except Exception as error:
+                            if install_type != "windows-msi":
+                                raise
+                            if not getattr(error, "native_packages_installed", None):
+                                state = "failed"
+                            elif isinstance(error, WindowsPythonInstallError):
+                                state = "partial-python-failed"
+                            else:
+                                state = "partial-native-failed"
                             registry.update_state(
                                 metadata.get("name"),
                                 metadata.get("version"),

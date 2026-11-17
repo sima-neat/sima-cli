@@ -1202,9 +1202,11 @@ class WindowsPackageTests(unittest.TestCase):
                 )
         self.assertEqual(run.call_count, 2)
 
-    def install_from_windows_metadata(self, fails=False):
+    def install_from_windows_metadata(self, fails=False, exit_code=1, **options):
         # install_from_metadata records the receipt state, then reports any
-        # install error as "Failed to install" and exits with status 1.
+        # install error as "Failed to install" and exits with status 1; a
+        # restart-required result exits with the Windows Installer restart code.
+        options = options or {"native_only": True}
         output = io.StringIO()
         with redirect_stdout(output), patch.object(
             metadata_installer,
@@ -1221,25 +1223,30 @@ class WindowsPackageTests(unittest.TestCase):
         ), patch.object(metadata_installer, "_print_post_install_message"):
             if not fails:
                 metadata_installer.install_from_metadata(
-                    "metadata", False, str(self.root), native_only=True
+                    "metadata", False, str(self.root), **options
                 )
             else:
                 with self.assertRaises(SystemExit) as raised:
                     metadata_installer.install_from_metadata(
-                        "metadata", False, str(self.root), native_only=True
+                        "metadata", False, str(self.root), **options
                     )
-                self.assertEqual(raised.exception.code, 1)
+                self.assertEqual(raised.exception.code, exit_code)
         return registry, output.getvalue()
 
     def test_windows_install_records_each_outcome_in_the_package_registry(self):
-        # Any WindowsNativeInstallError records partial-native-failed, including
-        # one raised before the first MSI started.
+        # A failure records a partial state only when a native package completed
+        # before it; otherwise nothing was installed and the receipt says failed.
+        def after_native(error):
+            error.native_packages_installed = ["core"]
+            return error
+
         outcomes = [
             ({"native": "installed", "python": "installed"}, False, "installed"),
             ({"native": "installed", "python": "already-installed"}, False, "installed"),
-            (WindowsNativeInstallError("msi failed"), True, "partial-native-failed"),
-            (WindowsPythonInstallError("pip failed"), True, "partial-python-failed"),
-            (WindowsPackageRestartRequired("restart"), True, "restart-required"),
+            (WindowsNativeInstallError("approval cancelled"), True, "failed"),
+            (click.ClickException("not windows"), True, "failed"),
+            (after_native(WindowsNativeInstallError("msi failed")), True, "partial-native-failed"),
+            (after_native(WindowsPythonInstallError("pip failed")), True, "partial-python-failed"),
             (WindowsPrerequisiteError("missing driver"), True, "prerequisite-failed"),
         ]
         for outcome, fails, state in outcomes:
@@ -1261,6 +1268,69 @@ class WindowsPackageTests(unittest.TestCase):
                 )
                 if fails:
                     self.assertIn(f"Failed to install from metadata URL metadata: {outcome}", output)
+
+    def test_cancelled_first_msi_records_failed_receipt(self):
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._is_windows_administrator",
+            return_value=False,
+        ), patch(
+            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run", return_value=completed(returncode=1223)
+        ):
+            registry, output = self.install_from_windows_metadata(fails=True)
+
+        self.assertIn("administrator approval was cancelled", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "failed"
+        )
+
+    def test_missing_wheel_after_msi_records_partial_python_failure(self):
+        responses = [python_facts(), completed()]
+
+        def remove_wheel_during_msi(command, **kwargs):
+            if command[0] == "msiexec.exe":
+                self.wheel.unlink()
+            return responses.pop(0)
+
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", side_effect=remove_wheel_during_msi
+        ):
+            registry, output = self.install_from_windows_metadata(
+                fails=True, python_executable=str(self.python)
+            )
+
+        self.assertIn("resource is missing", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "partial-python-failed"
+        )
+
+    def test_restart_required_is_not_reported_as_failure(self):
+        self.metadata["resources"].insert(0, self.scheduler_msi.name)
+        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
+        self.metadata["installation"].pop("msi")
+        self.metadata["installation"]["native-packages"] = [
+            {
+                "owner": "scheduler",
+                "msi": self.scheduler_msi.name,
+                "version": "0.6.1",
+            },
+            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
+        ]
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", return_value=completed(returncode=3010)
+        ) as run:
+            registry, output = self.install_from_windows_metadata(fails=True, exit_code=3010)
+
+        self.assertEqual(run.call_count, 1)
+        self.assertNotIn("Failed to install", output)
+        self.assertIn("Restart required", output)
+        self.assertIn("Native packages installed in this run: scheduler.", output)
+        self.assertIn("Not yet run: native packages core", output)
+        self.assertIn("rerun the same command", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "restart-required"
+        )
 
     def assert_windows_option_rejected(self, option, **options):
         metadata = {"name": "linux-package", "version": "1", "installation": {"type": "script"}}

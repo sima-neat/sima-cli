@@ -16,12 +16,12 @@ import shlex
 import platform
 import shutil
 import tempfile
-import importlib.resources as pkg_resources
+import click
+import requests
 from collections import defaultdict
 from contextlib import ExitStack
 from rich.console import Console
 from rich.panel import Panel
-from sima_cli.install.compatibility import version_matches
 
 from sima_cli.sdk.docker_staging import docker_cp_staging_dir as _docker_cp_staging_dir
 from sima_cli.sdk.model_compiler import discover_archive, normalize_arch, select_source, stage_archive
@@ -1001,52 +1001,71 @@ def _is_arm64_platform() -> bool:
     return machine in {"aarch64", "arm64"}
 
 
+SDK_COMPONENTS_URL = "https://artifacts.neat.sima.ai/sdk/components.json"
+
+
 def _load_sdk_release_mapping() -> Dict:
-    if hasattr(pkg_resources, "files"):
-        resource = pkg_resources.files("sima_cli.sdk").joinpath("releases.json")
-        with resource.open("r", encoding="utf-8") as handle:
-            mapping = json.load(handle)
-    else:
-        # Python 3.8 does not provide files().
-        with pkg_resources.open_text("sima_cli.sdk", "releases.json", encoding="utf-8") as handle:
-            mapping = json.load(handle)
-    if mapping["schema_version"] != 1:
-        raise ValueError("Unsupported SDK release mapping schema version")
-    return mapping
-
-
-def _model_sdk_extension_arch(base_version: str, mapping: Dict = None) -> str:
-    if mapping is None:
-        mapping = _load_sdk_release_mapping()
-    machine = platform.machine().lower()
-    for arch, rule in mapping["model_compiler"]["architectures"].items():
-        if machine in rule["machines"] and version_matches(base_version, rule["sdk_versions"]):
-            return arch
-    return ""
+    """Read compiler pins from the SDK-owned catalog, including for older images."""
+    try:
+        response = requests.get(SDK_COMPONENTS_URL, timeout=8, headers={"Cache-Control": "no-cache"})
+        response.raise_for_status()
+        mapping = response.json()
+        if (not isinstance(mapping, dict) or mapping.get("schema_version") != 1
+                or type(mapping.get("revision")) is not int or mapping["revision"] < 1):
+            raise ValueError("unsupported SDK compatibility catalog schema")
+        releases = mapping.get("model_compiler")
+        if not isinstance(releases, dict) or not releases:
+            raise ValueError("the SDK compatibility catalog has no Model Compiler mappings")
+        version_pattern = r"[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?"
+        for sdk, compiler in releases.items():
+            if not isinstance(compiler, dict):
+                raise ValueError("invalid Model Compiler entry for SDK {}".format(sdk))
+            arches = compiler.get("architectures")
+            if (not re.fullmatch(version_pattern, sdk)
+                    or not isinstance(compiler.get("version"), str)
+                    or not re.fullmatch(version_pattern, compiler["version"])
+                    or not isinstance(compiler.get("bundle_sdk_version", compiler["version"]), str)
+                    or not re.fullmatch(version_pattern, compiler.get("bundle_sdk_version", compiler["version"]))
+                    or compiler.get("installer") not in ("neat", "legacy")
+                    or not isinstance(arches, list) or not arches
+                    or any(arch not in ("amd64", "arm64") for arch in arches)
+                    or len(set(arches)) != len(arches)):
+                raise ValueError("invalid Model Compiler entry for SDK {}".format(sdk))
+        return mapping
+    except (requests.RequestException, ValueError) as exc:
+        raise click.ClickException(
+            "Cannot resolve Model Compiler from {}: {}. "
+            "Retry after the SDK compatibility catalog is available, or use "
+            "--no-model-compiler to skip compiler setup.".format(SDK_COMPONENTS_URL, exc)
+        ) from exc
 
 
 def _model_sdk_extension_release(base_version: str, mapping: Dict = None) -> Dict:
     if mapping is None:
         mapping = _load_sdk_release_mapping()
-    # First match wins: explicit release pins precede historical fallback rules.
-    for release in mapping["model_compiler"]["releases"]:
-        if version_matches(base_version, release["sdk_versions"]):
-            return release
-    return {}
+    compiler = mapping["model_compiler"].get(base_version)
+    if compiler is None:
+        raise click.ClickException(
+            "No Model Compiler compatibility mapping for SDK {} in {}. "
+            "Add an explicit SDK mapping before installing, or use --no-model-compiler."
+            .format(base_version, SDK_COMPONENTS_URL)
+        )
+    return compiler
 
 
-def _model_sdk_extension_install_args(base_version: str, arch: str = None) -> List[str]:
-    mapping = _load_sdk_release_mapping()
-    arch = _model_sdk_extension_arch(base_version, mapping) if arch is None else arch
-    arch_rule = mapping["model_compiler"]["architectures"].get(arch)
-    if not arch_rule or not version_matches(base_version, arch_rule["sdk_versions"]):
-        return []
-    release = _model_sdk_extension_release(base_version, mapping)
-    return [arg.format(
-        arch=arch,
-        sdk_version=base_version,
-        legacy_sdk_version=".".join(base_version.split(".")[:3]),
-    ) for arg in release.get("install_args", [])]
+def _model_sdk_extension_install_args(base_version: str, arch: str = None, mapping: Dict = None) -> List[str]:
+    compiler = _model_sdk_extension_release(base_version, mapping)
+    if arch is None:
+        arch = normalize_arch(platform.machine())
+    if arch not in compiler["architectures"]:
+        raise click.ClickException(
+            "Model Compiler is not mapped for SDK {} on architecture {}. "
+            "Use --no-model-compiler to skip compiler setup.".format(base_version, arch or "unknown")
+        )
+    version = compiler["version"]
+    if compiler["installer"] == "neat":
+        return ["neat", "install", "model-compiler/{}@v{}".format(arch, version)]
+    return ["install", "-v", version, "tools/model-compiler/{}".format(arch)]
 
 
 def _edgematic_studio_arch() -> str:
@@ -1312,23 +1331,20 @@ def ensure_model_sdk_extension_installed(
         check=False,
     )
     if sdk_release.returncode != 0:
-        print(f"⚠️  Could not read /etc/sdk-release in '{sdk_container_name}'. Skipping Model Compiler extension install.")
-        return
+        raise click.ClickException(f"Could not read /etc/sdk-release in '{sdk_container_name}'; cannot resolve Model Compiler.")
 
     base_version = _extract_sdk_base_version(sdk_release.stdout or "")
     if not base_version:
-        print(f"⚠️  Could not determine SDK base version in '{sdk_container_name}'. Skipping Model Compiler extension install.")
-        return
+        raise click.ClickException(f"Could not determine SDK version in '{sdk_container_name}'; cannot resolve Model Compiler.")
 
     machine = subprocess.run(
         ["docker", "exec", sdk_container_name, "uname", "-m"],
         text=True, capture_output=True, check=False,
     )
     arch = normalize_arch(machine.stdout or "") if machine.returncode == 0 else ""
-    extension_install_args = _model_sdk_extension_install_args(base_version, arch)
-    if not extension_install_args:
-        print("ℹ️  Model Compiler extension install is not available for this SDK architecture/version; skipping.")
-        return
+    mapping = _load_sdk_release_mapping()
+    compiler = _model_sdk_extension_release(base_version, mapping)
+    extension_install_args = _model_sdk_extension_install_args(base_version, arch, mapping)
     uses_vulcan = extension_install_args[:2] == ["neat", "install"]
 
     console.print(
@@ -1348,10 +1364,7 @@ def ensure_model_sdk_extension_installed(
             expand=False,
         )
     )
-    expected_version = _model_sdk_extension_release(base_version)["bundle_sdk_version"].format(
-        sdk_version=base_version,
-        legacy_sdk_version=".".join(base_version.split(".")[:3]),
-    )
+    expected_version = compiler.get("bundle_sdk_version", compiler["version"])
     local_archive = discover_archive(arch, expected_version)
     unattended = noninteractive or auto_install or not sys.stdin.isatty()
     source = select_source(local_archive, noninteractive=unattended, yes=auto_install)

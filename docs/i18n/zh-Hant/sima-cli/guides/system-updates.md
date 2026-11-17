@@ -4,6 +4,12 @@
 
 命令參考：[`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
 
+## eLxr 3.0+ 公開版本
+
+eLxr 3.0+ 的公開 SWU 流程在未指定版本時，會解析已發佈的 GA 版本。明確指定 `ga`、`beta` 或 `alpha` 時，也會使用相同的 Developer Portal 版本中繼資料。明確指定版本、SWU 檔案及 URL 的既有行為維持不變。內部每日建置使用既有目錄。
+
+執行 eLxr 2.1.3 的裝置只使用 Debian APT 鏡像站：未指定版本時安裝最新套件，明確指定的套件版本則會透過 APT 檢查。此流程不讀取 `releases.json`，也不接受發行通道選擇器。從 eLxr 2.1.3 移轉至 3.0+ 需要復原或佈建。
+
 ## eLxr 3.0+ 內部每日更新
 
 內部模式會顯示預先發行警告。在已執行 eLxr 3.0+ 的 Modalix 裝置上，`sima-cli -i update` 會先查詢 Artifactory。若缺少認證資訊、收到 HTTP 401/403 或 5xx 回應、連線失敗或逾時，會改用[每日平台索引](https://artifacts.neat.sima.ai/daily-platform-images/index.json)。若查詢成功但沒有符合建置，則不會改用備援來源。

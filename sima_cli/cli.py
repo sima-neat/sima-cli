@@ -562,7 +562,7 @@ def update(ctx, version_or_url, version_option, ip, yes, passwd, flavor, force, 
     if dryrun and not is_elxr:
         raise click.ClickException("--dryrun is only supported when running update on an ELXR devkit.")
 
-    # Resolve the version or tag (GA/Beta/Alpha/QA) if not on eLxr
+    # Resolve the version or tag (GA/Beta/Alpha) if not on eLxr
     # On eLxr always use latest (no version) or explicit version string
 
     if not is_elxr:

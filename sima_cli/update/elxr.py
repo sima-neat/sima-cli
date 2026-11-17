@@ -536,6 +536,12 @@ def update_elxr(
         click.echo("ℹ️  Not an ELXR devkit, skipping update")
         return
 
+    if version_or_url and version_or_url.strip().lower() in {"ga", "beta", "alpha", "qa"}:
+        raise click.ClickException(
+            "Release-channel selectors are not supported for legacy eLxr APT updates. "
+            "Omit the version for the latest APT packages or specify an APT package version."
+        )
+
     if auto_confirm:
         _prime_sudo_credentials(passwd)
 

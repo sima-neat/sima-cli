@@ -17,6 +17,13 @@ from sima_cli.sdk.model_compiler import (
 from sima_cli.sdk.utils import ensure_model_sdk_extension_installed
 
 
+@pytest.fixture(autouse=True)
+def compiler_catalog():
+    catalog = json.loads((Path(__file__).parent / "pkg-metadata/sdk-components.json").read_text())
+    with patch("sima_cli.sdk.utils._load_sdk_release_mapping", return_value=catalog):
+        yield
+
+
 def bundle(path, arch="arm64", version="2.1.3", overrides=None):
     wheel = f"compiler-1.0-py3-none-manylinux2014_{'aarch64' if arch == 'arm64' else 'x86_64'}.whl"
     files = {

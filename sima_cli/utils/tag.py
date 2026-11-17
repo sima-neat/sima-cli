@@ -7,11 +7,11 @@ from sima_cli.download import download_file_from_url
 
 def tag_resolver(tag: str, internal: bool = False) -> str:
     """
-    Resolve a release tag ('ga', 'beta', 'alpha', 'qa') to its version number
+    Resolve a release tag ('ga', 'beta', 'alpha') to its version number
     using the remote releases.json file.
 
     Args:
-        tag (str): One of ['ga', 'beta', 'alpha', 'qa']
+        tag (str): One of ['ga', 'beta', 'alpha']
         internal (bool): Whether to use internal download credentials.
 
     Returns:
@@ -41,6 +41,9 @@ def tag_resolver(tag: str, internal: bool = False) -> str:
                 raise ValueError(f"❌ Tag '{tag}' not found in releases.json.")
 
             version = data[tag]
+            if not isinstance(version, str) or not version.strip():
+                raise ValueError(f"❌ Tag '{tag}' has no valid version in releases.json.")
+            version = version.strip()
             print(f"✅ Resolved tag '{tag}' → version {version}")
             return version
 
@@ -68,11 +71,12 @@ def resolve_version(ver: Optional[str], internal: bool = False) -> str:
             return tag_resolver("ga", internal=internal)
 
         ver = ver.strip().lower()
-        if ver in {"ga", "beta", "alpha", "qa"}:
+        if ver == "qa":
+            raise ValueError("QA release selector is not supported. Use ga, beta, or alpha.")
+        if ver in {"ga", "beta", "alpha"}:
             return tag_resolver(ver, internal=internal)
     except Exception as e:
-        click.secho(f"❌ Failed to resolve tag: {e}", fg="red")
-        exit(0)
+        raise click.ClickException(f"Failed to resolve tag: {e}") from e
 
     print(f"✅ Using explicit version: {ver}")
     return ver

@@ -4,9 +4,11 @@
 
 命令參考：[`sima-cli update`](../../../../sima-cli/commands/sima-cli-update.md)
 
-## 公開 GA 版本更新
+## eLxr 3.0+ 公開版本
 
-在舊版 eLxr OTA 流程中選擇最新公開版本時，會從 Developer Portal 的版本中繼資料解析 GA 版本，並將該確切版本傳給 `simaai-ota`。即使 APT 提供更新的候選版本，也不會取代 GA。明確指定 `ga`、`beta` 或 `alpha` 時，也會使用相同的中繼資料。若無法取得版本中繼資料，或 APT 中沒有該 GA 版本，更新便會停止。內部模式及強制預先發行模式的最新版本更新行為維持不變。
+eLxr 3.0+ 的公開 SWU 流程在未指定版本時，會解析已發佈的 GA 版本。明確指定 `ga`、`beta` 或 `alpha` 時，也會使用相同的 Developer Portal 版本中繼資料。明確指定版本、SWU 檔案及 URL 的既有行為維持不變。內部每日建置使用既有目錄。
+
+執行 eLxr 2.1.3 的裝置只使用 Debian APT 鏡像站：未指定版本時安裝最新套件，明確指定的套件版本則會透過 APT 檢查。此流程不讀取 `releases.json`，也不接受發行通道選擇器。從 eLxr 2.1.3 移轉至 3.0+ 需要復原或佈建。
 
 ## eLxr 3.0+ 內部每日更新
 

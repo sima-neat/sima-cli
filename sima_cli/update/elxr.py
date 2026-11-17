@@ -9,7 +9,6 @@ from rich.panel import Panel
 from rich.text import Text
 
 from sima_cli.utils.env import is_devkit_running_elxr
-from sima_cli.utils.tag import resolve_version
 
 APT_SOURCE_FILE = "/etc/apt/sources.list.d/0000mirror.list"
 APT_MAIN_SOURCE_FILE = "/etc/apt/sources.list"
@@ -537,16 +536,11 @@ def update_elxr(
         click.echo("ℹ️  Not an ELXR devkit, skipping update")
         return
 
-    if version_or_url and version_or_url.strip().lower() == "qa":
-        raise click.ClickException("QA release selector is not supported. Use ga, beta, or alpha.")
-
-    release_tag = bool(
-        version_or_url and version_or_url.strip().lower() in {"ga", "beta", "alpha"}
-    )
-    if release_tag:
-        # Release metadata is hosted on the Developer Portal, including when
-        # the requested packages will be downloaded from an internal mirror.
-        version_or_url = resolve_version(version_or_url)
+    if version_or_url and version_or_url.strip().lower() in {"ga", "beta", "alpha", "qa"}:
+        raise click.ClickException(
+            "Release-channel selectors are not supported for legacy eLxr APT updates. "
+            "Omit the version for the latest APT packages or specify an APT package version."
+        )
 
     if auto_confirm:
         _prime_sudo_credentials(passwd)
@@ -590,7 +584,6 @@ def update_elxr(
     # Main interaction loop
     # -----------------------------
     simaai_ota = _resolve_simaai_ota()
-    selected_latest = False
     if version_or_url is None and not auto_confirm:
         from InquirerPy import inquirer
 
@@ -601,17 +594,12 @@ def update_elxr(
             if auto_confirm:
                 cmd = [simaai_ota, "-f", "-o"]
                 desc = "Update all packages to the latest"
-                selected_latest = True
                 break
 
             choice = inquirer.select(
                 message="How would you like to update this ELXR devkit?",
                 choices=[
-                    {"name": (
-                        "Update to the latest GA release"
-                        if not internal and not force_external_fallback
-                        else "Update all packages to the latest"
-                    ), "value": "latest"},
+                    {"name": "Update all packages to the latest", "value": "latest"},
                     {"name": "Update to a specific sima-palette version", "value": "version"},
                     {"name": "Cancel", "value": "cancel"},
                 ],
@@ -625,7 +613,6 @@ def update_elxr(
             if choice == "latest":
                 cmd = [simaai_ota, "-f", "-o"]
                 desc = "Update all packages to the latest"
-                selected_latest = True
                 break
 
             elif choice == "version":
@@ -722,10 +709,6 @@ def update_elxr(
             installed_version = _get_installed_palette_version()
             installed_distro_version = _get_installed_elxr_distro_version()
             latest_version = versions[0] if versions else None
-            if release_tag and version_or_url in versions:
-                cmd = [simaai_ota, "-f", "-o", "-v", version_or_url]
-                desc = f"Update to release version {version_or_url}"
-                break
             if _is_current_elxr_version(version_or_url, installed_version, installed_distro_version):
                 cmd = [simaai_ota, "-f", "-o", "-v", version_or_url]
                 desc = f"Force reinstall specific version {version_or_url}"
@@ -756,17 +739,6 @@ def update_elxr(
     # -----------------------------
     # Execute update
     # -----------------------------
-    if selected_latest and not internal and not force_external_fallback:
-        # APT may advertise newer builds than the published GA channel. Pin
-        # the selected release instead of letting OTA choose its own latest.
-        ga_version = resolve_version(None)
-        if ga_version not in _get_available_palette_versions():
-            raise click.ClickException(
-                f"Published GA release {ga_version} is not available in the ELXR APT repository."
-            )
-        cmd.extend(["-v", ga_version])
-        desc = f"Update to GA release {ga_version}"
-
     cmd = sudo + cmd
     if dryrun:
         click.echo(f"🧪 ELXR dry run complete. Would run: {' '.join(cmd)}")

@@ -4,14 +4,17 @@ Use daily builds, signed eLxr 3.0 SWU bundles, A/B inspection, storage staging, 
 
 Command reference: [`sima-cli update`](../commands/sima-cli-update.md)
 
-## Public GA updates
+## Public releases on eLxr 3.0+
 
-For the legacy eLxr OTA path, selecting the latest public release resolves the
-published GA version from Developer Portal release metadata, then passes that
-exact version to `simaai-ota`. A newer APT candidate does not override GA.
-Explicit `ga`, `beta`, and `alpha` selectors use the same metadata.
-Missing release metadata or a GA version absent from APT stops the update.
-Internal and forced prerelease latest updates retain their existing behavior.
+The public SWU path on eLxr 3.0+ resolves the published GA release when no
+version is given. Explicit `ga`, `beta`, and `alpha` selectors use the same
+Developer Portal release metadata. Explicit versions and SWU files/URLs retain
+their existing behavior. Internal daily builds use their existing catalog.
+
+Devices running eLxr 2.1.3 use only the Debian APT mirror: an unversioned update
+installs its latest packages, and explicit package versions are checked against
+APT. This path never reads `releases.json` and does not accept release-channel
+selectors. Moving from eLxr 2.1.3 to 3.0+ requires recovery/provisioning.
 
 ## Internal daily updates on eLxr 3.0+
 

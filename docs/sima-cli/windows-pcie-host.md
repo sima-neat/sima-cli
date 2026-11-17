@@ -48,13 +48,20 @@ under Windows PowerShell's default local policy. It does not change the user's
 or machine's execution policy, and a policy enforced by an administrator still
 takes precedence.
 
-Repeating the command repairs or upgrades the native package set. A matching,
-working Python package is verified and left in place. If a native package or pip
-step fails, correct the reported problem and run the same command again; the
-installer reports any native packages that completed before the failure.
+Repeating the command runs the same checks and passes each MSI to Windows
+Installer again in the same order. The Python package is left in place only when
+it was installed from this release's wheel and still imports; otherwise
+`sima-cli` reinstalls the wheel. If a native package or pip step fails, correct
+the reported problem and run the same command again; the installer reports any
+native packages that completed before the failure.
 Windows Installer error `1625` means the package was rejected by the host's
-application-control policy. Use an approved signed release or ask the Windows
-administrator to review that policy; do not disable Windows security controls.
+application-control policy. The Neat MSI packages and the DLLs and Python
+extension module in this release are not code-signed. `sima-cli` downloads them
+over HTTPS from the release channel, verifies each package's SHA-256 checksum
+after download and again immediately before installing it, and stops if a
+package no longer matches. A corporate application-control policy may block
+unsigned binaries; ask the Windows administrator to review that policy.
+`sima-cli` does not disable any Windows security control.
 If Windows Installer cannot be started, `sima-cli` reports the attempted package,
 permissions guidance, and the intended installer-log location.
 

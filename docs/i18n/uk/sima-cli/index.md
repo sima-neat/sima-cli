@@ -93,7 +93,7 @@ pip install sima-cli
 | --- | --- |
 | [`sima-cli appzoo`](../../../sima-cli/commands/sima-cli-appzoo.md) | Отримайте доступ до прикладів програм із App Zoo. |
 | [`sima-cli bootimg`](../../../sima-cli/commands/sima-cli-bootimg.md) | Підготуйте завантажувальний образ для SiMa DevKit. |
-| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | Знаходьте й керуйте пристроями для розгортання MPK і керування життєвим циклом застосунків. Підтримуються розгортання через PCIe та Ethernet. Лише на хості. |
+| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | Знайдіть пристрої, розташовані поблизу, в локальній мережі SiMa.ai. |
 | [`sima-cli download`](../../../sima-cli/commands/sima-cli-download.md) | Завантажте файл або цілу папку за вказаним URL-адресою. |
 | [`sima-cli install`](../../../sima-cli/commands/sima-cli-install.md) | Встановіть пакети SiMa. |
 | [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md) | Авторизуйтеся на порталі для розробників SiMa. |

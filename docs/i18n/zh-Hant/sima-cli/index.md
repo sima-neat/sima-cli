@@ -93,7 +93,7 @@ pip install sima-cli
 | --- | --- |
 | [`sima-cli appzoo`](../../../sima-cli/commands/sima-cli-appzoo.md) | 從 App Zoo 取得範例應用程式。 |
 | [`sima-cli bootimg`](../../../sima-cli/commands/sima-cli-bootimg.md) | 為 SiMa DevKit 準備一個可開機的映像檔。 |
-| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | 探索並管理用於 MPK 部署和應用程式生命週期管理的裝置，同時支援 PCIe 與 Ethernet 部署方式。僅適用於主機端。 |
+| [`sima-cli device`](../../../sima-cli/commands/sima-cli-device.md) | 在區域網路中搜尋附近的 SiMa.ai 裝置。 |
 | [`sima-cli download`](../../../sima-cli/commands/sima-cli-download.md) | 從指定的網址下載檔案或整個資料夾。 |
 | [`sima-cli install`](../../../sima-cli/commands/sima-cli-install.md) | 安裝 SiMa 套件。 |
 | [`sima-cli login`](../../../sima-cli/commands/sima-cli-login.md) | 透過 SiMa 開發者入口網站進行驗證。 |

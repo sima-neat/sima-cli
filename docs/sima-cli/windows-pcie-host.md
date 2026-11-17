@@ -56,10 +56,10 @@ the reported problem and run the same command again; the installer reports any
 native packages that completed before the failure.
 Windows Installer error `1625` means the package was rejected by the host's
 application-control policy. The Neat MSI packages and the DLLs and Python
-extension module in this release are not code-signed. `sima-cli` downloads them
-over HTTPS from the release channel, verifies each package's SHA-256 checksum
-after download and again immediately before installing it, and stops if a
-package no longer matches. A corporate application-control policy may block
+extension module in the first release are not code-signed. `sima-cli` downloads
+them over HTTPS from the release channel, verifies each package's SHA-256
+checksum after download and again before starting Windows Installer or pip, and
+stops if a package no longer matches. A corporate application-control policy may block
 unsigned binaries; ask the Windows administrator to review that policy.
 `sima-cli` does not disable any Windows security control.
 If Windows Installer cannot be started, `sima-cli` reports the attempted package,

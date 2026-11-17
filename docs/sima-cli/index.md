@@ -93,7 +93,7 @@ pip install sima-cli
 | --- | --- |
 | [`sima-cli appzoo`](commands/sima-cli-appzoo.md) | Access sample apps from the App Zoo. |
 | [`sima-cli bootimg`](commands/sima-cli-bootimg.md) | Prepare a bootable image for the SiMa DevKit. |
-| [`sima-cli device`](commands/sima-cli-device.md) | Discover and manage device(s) for MPK deployment and app lifecycle management purposes, compatible with both PCIe and Ethernet deployment models. Host side only. |
+| [`sima-cli device`](commands/sima-cli-device.md) | Discover nearby SiMa.ai devices on the local network. |
 | [`sima-cli download`](commands/sima-cli-download.md) | Download a file or a whole folder from a given URL. |
 | [`sima-cli install`](commands/sima-cli-install.md) | Install SiMa packages. |
 | [`sima-cli login`](commands/sima-cli-login.md) | Authenticate with the SiMa Developer Portal. |

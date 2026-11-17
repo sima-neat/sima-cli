@@ -45,9 +45,9 @@ Windows Installer 完成後，CLI 會執行已安裝的主機診斷工具，並�
 Windows Installer。只有當 Python 套件是從此版本的 wheel 安裝且仍可匯入時才會保留；
 否則 `sima-cli` 會重新安裝 wheel。若原生套件或 pip 步驟失敗，請修正顯示的問題後
 再執行相同命令；安裝程式會列出失敗前已完成的原生套件。Windows Installer 錯誤 `1625`
-表示主機的應用程式控制原則拒絕了套件。此版本的 Neat MSI 套件、DLL 與 Python
+表示主機的應用程式控制原則拒絕了套件。首次發行的 Neat MSI 套件、DLL 與 Python
 擴充模組皆未經程式碼簽署。`sima-cli` 透過 HTTPS 從發行通道下載這些檔案，在下載後
-驗證每個套件的 SHA-256 檢查碼，並在即將安裝前再次驗證；若套件不再相符便會停止。
+驗證每個套件的 SHA-256 檢查碼，並在啟動 Windows Installer 或 pip 前再次驗證；若套件不再相符便會停止。
 企業的應用程式控制原則可能會封鎖未簽署的二進位檔；請 Windows 管理員檢視該原則。
 `sima-cli` 不會停用任何 Windows 安全性控制。若無法啟動 Windows Installer，
 `sima-cli` 會顯示嘗試安裝的套件、權限指引，以及預定的安裝記錄位置。

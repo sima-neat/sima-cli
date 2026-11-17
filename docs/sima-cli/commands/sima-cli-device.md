@@ -1,6 +1,6 @@
 # `sima-cli device`
 
-Discover and manage device(s) for MPK deployment and app lifecycle management purposes, compatible with both PCIe and Ethernet deployment models. Host side only.
+Discover nearby SiMa.ai devices on the local network.
 
 Parent command: [`sima-cli`](./sima-cli.md)
 
@@ -27,9 +27,7 @@ None.
 ```text
 Usage: sima-cli device [OPTIONS] COMMAND [ARGS]...
 
-  Discover and manage device(s) for MPK deployment and app lifecycle
-  management purposes, compatible with both PCIe and Ethernet deployment
-  models. Host side only.
+  Discover nearby SiMa.ai devices on the local network.
 
 Options:
   --help  Show this message and exit.

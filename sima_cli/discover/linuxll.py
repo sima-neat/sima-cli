@@ -6,6 +6,7 @@ Linux Link Local Helper : Ubuntu doesn't default to APIPA so it will not work ou
 
 This is only for Linux host (Ubuntu), as on mac and Windows the fallback to APIPA is default behavior.
 """
+import json
 import os
 import re
 import time
@@ -77,6 +78,21 @@ def _parse_ip_link(output: str) -> List[Tuple[str, str, bool]]:
 def _iface_has_ipv4(iface: str) -> bool:
     cp = _run(f"ip -4 addr show {iface}")
     return " inet " in cp.stdout
+
+
+# Link kinds that can never be the cable to a DevKit: one end of a container or network
+# namespace veth pair. VLAN and macvlan links stay eligible, since a DevKit can sit behind one.
+_EXCLUDED_LINK_KINDS = frozenset({"veth"})
+
+
+def _link_kind(iface: str) -> str:
+    """Return the kernel link kind (veth, vlan, macvlan, ...), or "" for a plain NIC or on error."""
+    cp = _run(f"ip -j -d link show dev {iface}")
+    try:
+        kind = json.loads(cp.stdout)[0].get("linkinfo", {}).get("info_kind", "")
+    except (ValueError, IndexError, TypeError, AttributeError):
+        return ""
+    return kind if isinstance(kind, str) else ""
 
 def _get_mac(iface: str) -> str:
     try:
@@ -280,12 +296,15 @@ def suggest_and_switch_to_linklocal():
         cp = _run("ip -o link", capture=True)
         ifaces = []
         for iface, flags, has_peer in _parse_ip_link(cp.stdout):
-            # Stacked links can carry traffic even without their own IPv4 address.
-            if has_peer:
-                continue
             if iface.startswith(("lo", "docker", "veth", "br-", "virbr", "tun", "tap")):
                 continue
-            if "UP" in flags and not _iface_has_ipv4(iface):
+            if "UP" not in flags:
+                continue
+            # A stacked link (`name@peer`) is checked by its real name like any other NIC;
+            # only the kinds that cannot lead to a DevKit, such as a container's veth, are skipped.
+            if has_peer and _link_kind(iface) in _EXCLUDED_LINK_KINDS:
+                continue
+            if not _iface_has_ipv4(iface):
                 ifaces.append(iface)
 
         if not ifaces:

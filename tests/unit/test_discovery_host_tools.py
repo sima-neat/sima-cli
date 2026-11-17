@@ -1,4 +1,5 @@
 """Discovery on minimal Linux hosts must not fail with missing executables."""
+import json
 import subprocess
 from unittest.mock import patch
 
@@ -122,9 +123,35 @@ def test_ip_link_names_drop_peer_suffix_and_record_peer():
     ]
 
 
-def _scan(ipv4_ifaces):
-    """Run the link-local scan over IP_O_LINK; return (ifaces probed for IPv4, prompts shown)."""
-    probed, prompts = [], []
+# Kernel link kinds for the stacked links in IP_O_LINK: eth0@if58 is the container's end of
+# a Docker veth pair, eth1.100@eth1 is a VLAN.
+LINK_KINDS = {'eth0': 'veth', 'eth1.100': 'vlan'}
+
+
+def _ip_link_json(iface, kind):
+    """`ip -j -d link show dev IFACE` output; a plain NIC has no linkinfo."""
+    info = {'ifname': iface, 'flags': ['BROADCAST', 'MULTICAST', 'UP', 'LOWER_UP']}
+    if kind:
+        info['linkinfo'] = {'info_kind': kind}
+    return json.dumps([info])
+
+
+def _scan(ipv4_ifaces, kinds=LINK_KINDS):
+    """Run the link-local scan over IP_O_LINK.
+
+    Return (ifaces probed for IPv4, ifaces whose link kind was looked up, prompts shown).
+    """
+    probed, kind_lookups, prompts = [], [], []
+    kind_cmd = 'ip -j -d link show dev '
+
+    def run(cmd, *args, **kwargs):
+        if cmd == 'ip -o link':
+            return subprocess.CompletedProcess([], 0, IP_O_LINK, '')
+        if cmd.startswith(kind_cmd):
+            iface = cmd[len(kind_cmd):]
+            kind_lookups.append(iface)
+            return subprocess.CompletedProcess([], 0, _ip_link_json(iface, kinds.get(iface, '')), '')
+        raise AssertionError('unexpected command: ' + cmd)
 
     def has_ipv4(iface):
         probed.append(iface)
@@ -136,33 +163,68 @@ def _scan(ipv4_ifaces):
 
     with patch.object(linuxll, 'get_environment_type', return_value=('host', 'linux')), \
             patch.object(linuxll, 'ensure_discovery_tools'), \
-            patch.object(linuxll, '_run', return_value=subprocess.CompletedProcess([], 0, IP_O_LINK, '')), \
+            patch.object(linuxll, '_run', side_effect=run), \
             patch.object(linuxll, '_iface_has_ipv4', side_effect=has_ipv4), \
             patch.object(linuxll, '_describe_iface', side_effect=lambda iface: 'iface=' + iface), \
             patch.object(linuxll, '_is_usb_ethernet', return_value=False), \
             patch('builtins.input', side_effect=answer):
         linuxll.suggest_and_switch_to_linklocal()
-    return probed, prompts
+    return probed, kind_lookups, prompts
 
 
 def test_configured_stacked_interface_is_not_offered_link_local(capsys):
-    probed, prompts = _scan({'eth0', 'eth1.100', 'enx5444a326738b'})
-    assert probed == ['enx5444a326738b']
+    probed, kind_lookups, prompts = _scan({'eth1.100', 'enx5444a326738b'})
+    # The VLAN is checked by its real name and has IPv4; the container veth is never a DevKit link.
+    assert probed == ['eth1.100', 'enx5444a326738b']
+    assert kind_lookups == ['eth0', 'eth1.100']
     assert prompts == []
     assert 'No unconfigured network interfaces detected' in capsys.readouterr().out
 
 
-def test_ipv6_only_vlan_is_not_offered_link_local(capsys):
-    # The VLAN is up but has no IPv4 address. Its IPv6 address is outside the IPv4 probe.
-    _, prompts = _scan({'eth0', 'enx5444a326738b'})
+def test_configured_macvlan_from_issue_352_is_not_offered_link_local(capsys):
+    # Issue #352: a Docker macvlan shown as eth0@if2 that holds an IPv4 address.
+    probed, _, prompts = _scan({'eth0', 'eth1.100', 'enx5444a326738b'},
+                               kinds={'eth0': 'macvlan', 'eth1.100': 'vlan'})
+    assert probed == ['eth0', 'eth1.100', 'enx5444a326738b']
     assert prompts == []
-    assert 'iface=eth1.100' not in capsys.readouterr().out
+    assert 'No unconfigured network interfaces detected' in capsys.readouterr().out
+
+
+def test_stacked_interface_without_ipv4_is_offered_link_local(capsys):
+    # A VLAN with no IPv4 address can be the link to the DevKit, so it must still be offered.
+    probed, _, prompts = _scan({'enx5444a326738b'})
+    assert probed == ['eth1.100', 'enx5444a326738b']
+    assert len(prompts) == 1
+    out = capsys.readouterr().out
+    assert 'iface=eth1.100' in out
+    assert 'iface=eth0' not in out
+
+
+def test_container_veth_without_ipv4_is_not_offered_link_local(capsys):
+    # The container's end of a veth pair on an IPv6-only network has no IPv4 address.
+    probed, _, prompts = _scan({'eth1.100', 'enx5444a326738b'})
+    assert 'eth0' not in probed
+    assert prompts == []
 
 
 def test_unconfigured_interface_is_still_offered_link_local(capsys):
-    probed, prompts = _scan({'eth0'})
-    assert probed == ['enx5444a326738b']
+    probed, _, prompts = _scan({'eth0', 'eth1.100'})
+    assert probed == ['eth1.100', 'enx5444a326738b']
     assert len(prompts) == 1
     out = capsys.readouterr().out
     assert 'iface=enx5444a326738b' in out
     assert 'iface=eth1.100' not in out
+
+
+@pytest.mark.parametrize('stdout, kind', [
+    (_ip_link_json('eth0', 'veth'), 'veth'),
+    (_ip_link_json('eth1.100', 'vlan'), 'vlan'),
+    (_ip_link_json('enx5444a326738b', ''), ''),
+    ('', ''),
+    ('[]', ''),
+    ('Device "eth9" does not exist.', ''),
+])
+def test_link_kind_reads_ip_json(stdout, kind):
+    with patch.object(linuxll, '_run', return_value=subprocess.CompletedProcess([], 0, stdout, '')) as run:
+        assert linuxll._link_kind('eth0') == kind
+    run.assert_called_once_with('ip -j -d link show dev eth0')

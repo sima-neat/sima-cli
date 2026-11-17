@@ -107,7 +107,7 @@ pip install sima-cli
 | [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md) | Показуйте камери та мікрофони, підключені до цього DevKit. |
 | [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md) | Встановіть і керуйте сценаріями (Codex/Claude). |
 | [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md) | Підготуйте SD-карту як пристрій для зберігання даних для ранньої версії MLSoc DevKit або Modalix. |
-| [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | Керуйте та розгортайте контейнерні середовища SiMa SDK 2.0 (бета-версія). |
+| [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | Керуйте контейнерними середовищами SiMa SDK і запускайте їх. |
 | [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md) | Оновіть sima-cli вручну, завантаживши його з PyPI або за допомогою прямого посилання на файл. |
 | [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md) | Підключіться до послідовного інтерфейсу UART на платі розробника DevKit. |
 | [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md) | Оновлює SiMa DevKit, віддалений пристрій або хост Linux PCIe. |

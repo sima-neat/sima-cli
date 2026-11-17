@@ -346,3 +346,33 @@ def package_report(report):
     stream = StringIO()
     render_overlay(report, console=Console(file=stream, width=120))
     return stream.getvalue()
+
+
+def test_official_overlay_flavors_with_identical_release_versions(tmp_path):
+    from io import StringIO
+
+    lower, upper = tmp_path / 'lower', tmp_path / 'upper'
+    lower.mkdir()
+    upper.mkdir()
+
+    def installed(package):
+        return (f'Package: {package}\nArchitecture: all\n'
+                'Status: install ok installed\nVersion: 3.0.0\n\n')
+
+    def read(path, *args, **kwargs):
+        if str(path).endswith('/var/lib/dpkg/status'):
+            troot = 'troot-modalix' if str(path).startswith(str(lower)) else 'troot-modalix-secure'
+            return StringIO(installed('simaai-palette-modalix') + installed(troot))
+        raise OSError(str(path))
+
+    mount = {'filesystems': [{'fstype': 'overlay',
+                             'options': f'lowerdir={lower},upperdir={upper}'}]}
+    with patch('builtins.open', side_effect=read), \
+            patch('subprocess.check_output', side_effect=[json.dumps(mount), '']):
+        report = collect_overlay()
+    assert report['package_builds']['image'] == report['package_builds']['metadata'] == '3.0.0'
+    assert report['package_flavors'] == {'image': 'palette', 'metadata': 'securepalette'}
+    output = package_report(report)
+    assert 'Package metadata mismatch' in output
+    assert 'Overlay package flavor: securepalette' in output
+    assert 'Package metadata matches the running image' not in output

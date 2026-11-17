@@ -62,6 +62,15 @@ def test_manual_flash_offer_controls_reboot(confirmed):
     assert events == (['reboot'] if confirmed else [])
 
 
+def test_manual_flash_reboots_without_prompt_when_confirmed_by_flag():
+    with patch.object(click, 'confirm') as prompt, \
+            patch.object(netboot, '_schedule_reboot_into_emmc') as reboot:
+        assert netboot._offer_reboot_into_emmc('192.0.2.2', auto_confirm_reboot=True)
+
+    prompt.assert_not_called()
+    reboot.assert_called_once_with('192.0.2.2')
+
+
 def test_failed_ssh_wait_does_not_mark_connected():
     manager=netboot.ClientManager();manager.clients={'192.0.2.2':{'state':'Booting'}}
     def wait(*args,**kwargs):

@@ -52,12 +52,15 @@ from sima_cli.vulcan.commands import (
     install_vulcan_package,
 )
 
-def _configure_stdio_errors() -> None:
+def _configure_stdio() -> None:
     for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
         if stream is None or not hasattr(stream, "reconfigure"):
             continue
         try:
-            stream.reconfigure(errors="replace")
+            # line_buffering: without a TTY (docker exec, pipes, CI) Python buffers
+            # stdout in blocks, so prompts such as the device-login link stay
+            # invisible while the command waits on them.
+            stream.reconfigure(errors="replace", line_buffering=True)
         except (OSError, ValueError):
             # Best-effort only: some stream implementations do not support
             # runtime reconfiguration; safely continue with default behavior.
@@ -114,7 +117,7 @@ LOCAL_ONLY_SUBCOMMANDS = ("peripherals",)
 
 
 def _initialize_main_context(ctx, internal, yes):
-    _configure_stdio_errors()
+    _configure_stdio()
     auto_accept_update = yes or _update_auto_confirm_requested(sys.argv)
     previous_auto_accept = os.environ.get("SIMA_CLI_AUTO_ACCEPT_UPDATE")
     if auto_accept_update:
@@ -207,7 +210,7 @@ def main(ctx, internal, yes):
     # CloudEx selects Developer Portal or internal NeatOps authentication itself;
     # its internal Vulcan flow does not require Artifactory setup.
     if ctx.meta.get('update_inspect') or ctx.invoked_subcommand == 'cloudex':
-        _configure_stdio_errors()
+        _configure_stdio()
         ctx.ensure_object(dict)
         ctx.obj.update(internal=internal, yes=yes)
         return
@@ -693,9 +696,14 @@ def show_mla_memory_usage(ctx):
 @click.option("--devkit", "--devkit-ip", "devkit_ip", required=False, help="DevKit IP for remote netboot; discover and select a DevKit when omitted.")
 @click.option("-r", "--rootfs", required=False, help="Custom root fs folders (internal use only)")
 @click.option("-a", "--autoflash", is_flag=True, default=False, show_default=True, help="Network boot the selected DevKit, then automatically flash its internal storage once SSH is ready.")
+@click.option(
+    "-y", "--yes", is_flag=True,
+    help="Skip NetBoot setup confirmation with an explicit --devkit IP and --autoflash, "
+         "and skip reboot confirmation after a manual NetBoot flash.",
+)
 @click.pass_context
 def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_ip,
-                autoflash, fwtype, rootfs, recovery=False, force=False):
+                autoflash, fwtype, rootfs, recovery=False, force=False, yes=False):
     """
     Prepare a bootable image for the SiMa DevKit.
 
@@ -773,6 +781,12 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
     """
 
     uses_netboot = netboot or autoflash
+    if uses_netboot and sys.platform == "win32":
+        raise click.ClickException(
+            "NetBoot requires WSL 2 on Windows. Open a WSL 2 distro, install "
+            "sima-cli inside it, and rerun the command there. Use mirrored "
+            "networking so the DevKit can reach the TFTP server."
+        )
     if images and not uses_netboot:
         raise click.UsageError("--images requires --netboot or --autoflash.")
     if delete_cache and not uses_netboot:
@@ -795,7 +809,6 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
             raise click.UsageError("--recovery requires --boardtype modalix and --fwtype elxr.")
 
     from sima_cli.update.bootimg import write_image
-    from sima_cli.update.netboot import setup_netboot
     internal = ctx.obj.get("internal", False)
     if internal and ctx.meta.get('daily_netboot') and (boardtype != 'modalix' or fwtype != 'elxr'):
         if not internal_resource_exists() or not ctx.obj.get('internal_reachable', True):
@@ -812,7 +825,9 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
     
     try:
         boardtype = boardtype if boardtype != 'mlsoc' else 'davinci'
-        if netboot or autoflash:
+        if uses_netboot:
+            from sima_cli.update.netboot import setup_netboot
+
             netboot_options = {}
             if images:
                 netboot_options["images"] = str(images)
@@ -821,7 +836,8 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
             setup_netboot(
                 version, boardtype, internal, autoflash, flavor='headless',
                 rootfs=rootfs, swtype=fwtype, allow_daily_fallback=force,
-                devkit=devkit_ip, **netboot_options,
+                devkit=devkit_ip, auto_confirm_reboot=yes or ctx.obj.get("yes", False),
+                **netboot_options,
             )
             click.echo("✅ Netboot session ended and the TFTP server is stopped.")
         else:

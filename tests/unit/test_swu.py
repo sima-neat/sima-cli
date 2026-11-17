@@ -329,6 +329,33 @@ def test_matching_selected_build_keeps_overlay_package_state(tmp_path):
                    for call in target.run.call_args_list)
 
 
+def test_same_release_different_image_flavor_resets_overlay(tmp_path):
+    report = {
+        'package_builds': {'image': '3.0.0', 'metadata': '3.0.0'},
+        'package_flavors': {'image': 'securepalette', 'metadata': 'securepalette'},
+        'entries': [{'path': '/var/lib/dpkg/status'}],
+    }
+    backup = ('/data/.overlay-backup/test', [], [])
+    with patch.object(swu, 'inspect_overlay', return_value=report), \
+            patch.object(swu, 'bundle_supports_overlay_cleanup', return_value=True), \
+            patch.object(swu, 'preserve_overlay_info', return_value=backup) as preserve, \
+            patch.object(swu, 'print_overlay_recovery_guidance'):
+        target = run_install(tmp_path, source_version='3.0.0',
+                             source_name='elxr-palette-modalix-3.0.0-agate-arm64.swu')
+    preserve.assert_called_once()
+    assert any('SWUPDATE_CLEAN_OVERLAY=1 swupdate ' in call.args[0]
+               for call in target.run.call_args_list)
+
+
+def test_same_release_same_flavor_keeps_overlay():
+    report = {'package_builds': {'image': '3.0.0', 'metadata': '3.0.0'},
+              'package_flavors': {'image': 'securepalette', 'metadata': 'securepalette'},
+              'entries': [{'path': '/var/lib/dpkg/status'}]}
+    source = swu_artifacts.BundleSource(
+        'https://example.test/elxr-securepalette-modalix-3.0.0-arm64.swu', '3.0.0')
+    assert swu._overlay_reset_reason(report, source) is None
+
+
 def test_new_selected_build_resets_overlay_package_state(tmp_path):
     report = {
         'package_builds': {'image': '1454', 'metadata': '1454'},
@@ -400,8 +427,9 @@ def test_clean_reset_rejects_unsupported_bundle_before_backup(tmp_path):
 
 
 def run_install(tmp_path, *, fail=False, dryrun=False, root='/data', ip='192.0.2.1',
-                key_directory=None, auto_confirm=True, source_version=None, reboot=False):
-    bundle = tmp_path / 'bundle.swu'
+                key_directory=None, auto_confirm=True, source_version=None, reboot=False,
+                source_name='bundle.swu'):
+    bundle = tmp_path / source_name
     bundle.write_bytes(b'signed bundle fixture')
     source = (swu_artifacts.BundleSource(str(bundle), source_version)
               if source_version else str(bundle))

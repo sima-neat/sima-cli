@@ -107,7 +107,7 @@ pip install sima-cli
 | [`sima-cli peripherals`](commands/sima-cli-peripherals.md) | Show the cameras and microphones plugged into this DevKit. |
 | [`sima-cli playbooks`](commands/sima-cli-playbooks.md) | Install and manage playbooks (Codex/Claude). |
 | [`sima-cli sdcard`](commands/sima-cli-sdcard.md) | Prepare the SD Card as a data storage device for MLSoc DevKit or Modalix Early Access Unit |
-| [`sima-cli sdk`](commands/sima-cli-sdk.md) | Manage and launch SiMa SDK 2.0 container environments (Beta). |
+| [`sima-cli sdk`](commands/sima-cli-sdk.md) | Manage and launch SiMa SDK container environments. |
 | [`sima-cli selfupdate`](commands/sima-cli-selfupdate.md) | Update sima-cli manually from PyPI or a direct wheel URL. |
 | [`sima-cli serial`](commands/sima-cli-serial.md) | Connect to the UART serial console of the DevKit. |
 | [`sima-cli update`](commands/sima-cli-update.md) | Update a SiMa DevKit, remote device, or Linux PCIe host. |

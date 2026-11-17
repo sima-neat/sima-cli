@@ -76,6 +76,8 @@ def _run_label(run: Dict[str, Any]) -> str:
     compiler = " ".join(
         value for value in (run.get("toolchain_name"), run.get("toolchain_version")) if value
     )
+    if "_catalog" in run:
+        return f"{model_id} / {variant_id} — compiled model"
     target = run.get("target_platform") or "unknown target"
     return f"{model_id} / {variant_id} — {compiler or 'unknown compiler'} — {target}"
 
@@ -210,38 +212,121 @@ def _github_model_folder_url(run: Dict[str, Any], model_id: Any) -> Optional[str
 
 
 def _model_report(result: Optional[Dict[str, Any]], stage: str, section: str) -> Tuple[str, Dict[str, Any]]:
-    """Return the status of a whole-model test result and its report, or an empty report when unusable."""
+    """Return a supported test report, or an empty report when unusable."""
+    if result is None:
+        return "not measured", {}
+    if not isinstance(result, dict):
+        return "unsupported format", {}
     if not result:
         return "not measured", {}
     report = result.get("summary")
     if (not isinstance(report, dict) or report.get("schema") != "sima.model-report"
+            or type(report.get("schema_version")) is not int
             or report.get("schema_version") != 1 or report.get("stage") != stage
-            or not isinstance(report.get(section), dict)):
+            or not isinstance(report.get("runtime"), dict)):
+        return "unsupported format", {}
+    runtime = report["runtime"]
+    if (not any(isinstance(runtime.get(name), str) and runtime[name].strip()
+                for name in ("pyneat", "llima"))
+            or ("build" in runtime and not isinstance(runtime["build"], dict))):
+        return "unsupported format", {}
+    if stage == "performance":
+        scope = report.get("scope", "model")
+        if scope not in ("model", "components"):
+            return "unsupported format", {}
+        if scope == "components":
+            section = "components"
+            if (any(key in report for key in ("metrics", "workload", "telemetry", "generation"))
+                    or not _component_reports_supported(report.get(section))):
+                return "unsupported format", {}
+        elif "generation" in report:
+            generation = report["generation"]
+            workloads = generation.get("workloads") if isinstance(generation, dict) else None
+            if not isinstance(workloads, list) or not workloads or any(
+                not isinstance(workload, dict) or not isinstance(workload.get("id"), str)
+                or not isinstance(workload.get("metrics"), dict) for workload in workloads
+            ):
+                return "unsupported format", {}
+            return str(result.get("status") or "available"), report
+    if not isinstance(report.get(section), dict):
         return "unsupported format", {}
     return str(result.get("status") or "available"), report
 
 
+def _component_reports_supported(components: Any) -> bool:
+    """Validate the fields consumed by the component card before rendering any of it."""
+    if not isinstance(components, dict) or not components:
+        return False
+    for name, component in components.items():
+        if (not isinstance(name, str)
+                or re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", name) is None
+                or not isinstance(component, dict)
+                or not isinstance(component.get("metrics"), dict)
+                or not isinstance(component.get("workload"), str)
+                or not component["workload"].strip()):
+            return False
+        if any(not isinstance(key, str) or not isinstance(value, (int, float))
+               or isinstance(value, bool) for key, value in component["metrics"].items()):
+            return False
+        if any(key in component and not isinstance(component[key], dict)
+               for key in ("telemetry", "execution_plan", "mla_layer_stats", "mla_stage_stats")):
+            return False
+    return True
+
+
 def _numeric_values(values: Any) -> Dict[str, Any]:
+    if not isinstance(values, dict):
+        return {}
     # The registry stores reports as JSON objects without key order, so sort for a stable card.
     return {
-        name: value for name, value in sorted((values or {}).items())
+        name: value for name, value in sorted(values.items())
         if isinstance(value, (int, float)) and not isinstance(value, bool)
     }
 
 
 def _benchmark_summary(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     status, report = _model_report(result, "performance", "metrics")
-    return {
+    summary = {
         "status": status,
         "workload": report.get("workload"),
         "pyneat_version": (report.get("runtime") or {}).get("pyneat"),
         "measurements": _numeric_values(report.get("metrics")),
     }
+    runtime = report.get("runtime") or {}
+    if runtime.get("llima"):
+        summary["llima_version"] = runtime["llima"]
+    if "generation" in report:
+        summary["generation_workloads"] = [
+            {
+                "id": workload["id"],
+                "measurements": _numeric_values({
+                    name: metric.get("value") for name, metric in workload["metrics"].items()
+                    if isinstance(metric, dict)
+                }),
+            }
+            for workload in report["generation"]["workloads"]
+        ]
+    if report.get("scope") == "components":
+        summary["scope"] = "components"
+        summary["components"] = [
+            {
+                "id": component_id,
+                "workload": component["workload"],
+                "measurements": _numeric_values(component["metrics"]),
+                **{key: component[key] for key in (
+                    "telemetry", "execution_plan", "mla_layer_stats", "mla_stage_stats"
+                ) if key in component},
+            }
+            for component_id, component in sorted(report["components"].items())
+        ]
+    return summary
 
 
 def _accuracy_summary(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     status, report = _model_report(result, "accuracy", "datasets")
+    runtime = report.get("runtime") or {}
     return {
+        **({"llima_version": runtime["llima"]} if runtime.get("llima") else {}),
         "status": status,
         "pyneat_version": (report.get("runtime") or {}).get("pyneat"),
         "datasets": [
@@ -323,7 +408,9 @@ def _format_value(value: Any) -> str:
 
 
 def _console() -> Console:
-    return Console(file=click.get_text_stream("stdout"), highlight=False)
+    console = Console(file=click.get_text_stream("stdout"), highlight=False)
+    console.width = min(console.width, 120)
+    return console
 
 
 def _value_text(value: Any, style: str = "") -> Text:
@@ -495,7 +582,8 @@ def render_model_card(card: Dict[str, Any]) -> None:
     accuracy = card["accuracy"]
     accuracy_parts = [_metadata_grid([
         ["Status", _status_text(accuracy.get("status"))],
-        ["PyNeat version", accuracy.get("pyneat_version")],
+        ["PyNeat version" if not accuracy.get("llima_version") else "LLiMa version",
+         accuracy.get("llima_version") or accuracy.get("pyneat_version")],
     ])]
     accuracy_table = _result_table("Dataset", "Samples", "Metric", "Value")
     for dataset in accuracy["datasets"]:
@@ -514,14 +602,44 @@ def render_model_card(card: Dict[str, Any]) -> None:
     benchmark = card["benchmark"]
     benchmark_parts = [_metadata_grid([
         ["Status", _status_text(benchmark.get("status"))],
-        ["Workload", benchmark.get("workload")],
-        ["PyNeat version", benchmark.get("pyneat_version")],
+        *([["Workload", benchmark.get("workload")]] if benchmark.get("scope") != "components" else []),
+        ["PyNeat version" if not benchmark.get("llima_version") else "LLiMa version",
+         benchmark.get("llima_version") or benchmark.get("pyneat_version")],
     ])]
-    measurement_table = _result_table("Measurement", "Value")
-    for name, value in benchmark["measurements"].items():
-        measurement_table.add_row(name, _format_measurement(value))
-    if measurement_table.row_count:
-        benchmark_parts.extend([Text(""), measurement_table])
+    if benchmark.get("scope") == "components":
+        benchmark_parts.append(Text("Independent component benchmarks", style="dim"))
+        for component in benchmark["components"]:
+            label = component["id"].replace("_", " ").capitalize()
+            benchmark_parts.append(Panel(
+                Group(
+                    _metadata_grid([["Workload", component["workload"]]]),
+                    Text(""),
+                    _benchmark_table(component["measurements"]),
+                ),
+                title=Text(f"{label} ({component['id']})"),
+                title_align="left",
+                border_style="blue",
+            ))
+    elif benchmark.get("generation_workloads"):
+        table = _result_table("Generation workload", "Measurement", "Value")
+        labels = {
+            "ttft_ms": "Time to first token (ms)",
+            "prefill_tps": "Prefill (tokens/s)",
+            "decode_tps": "Decode (tokens/s)",
+        }
+        for workload in benchmark["generation_workloads"]:
+            for metric, value in workload["measurements"].items():
+                table.add_row(workload["id"], labels.get(metric, metric), _format_measurement(value))
+        benchmark_parts.extend([Text(""), table])
+    elif benchmark["measurements"]:
+        benchmark_parts.extend([Text(""), _benchmark_table(benchmark["measurements"])])
     console.print(
         Panel(Group(*benchmark_parts), title="Benchmark", title_align="left", border_style="blue")
     )
+
+
+def _benchmark_table(measurements: Dict[str, Any]) -> Table:
+    table = _result_table("Measurement", "Value")
+    for name, value in measurements.items():
+        table.add_row(name, _format_measurement(value))
+    return table

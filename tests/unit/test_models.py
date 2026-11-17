@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+from copy import deepcopy
 from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+import requests
 from click.testing import CliRunner
 from rich.console import Console
 
 from sima_cli.cli import main
+from sima_cli.download.parallel import PARALLEL_MIN_SIZE
 from sima_cli.models import rendering
 from sima_cli.models.client import (
     PRODUCTION_BASE_URL,
@@ -77,6 +81,40 @@ PERFORMANCE_REPORT = {
     "telemetry": {"status": "ok"},
     "components": {"model": {"execution_plan": {}, "layer_stats": []}},
 }
+COMPONENT_PERFORMANCE_REPORT = {
+    "schema": "sima.model-report",
+    "schema_version": 1,
+    "stage": "performance",
+    "scope": "components",
+    "runtime": {"pyneat": PYNEAT, "build": {}},
+    # Deliberately opposite the expected display order.
+    "components": {
+        "text_encoder": {
+            "workload": "One prompt padded to 77 tokens",
+            "metrics": {
+                "throughput_fps": 643.9, "latency_avg_ms": 2.76,
+                "avg_power_watts": 9.1, "energy_per_inference_joules": 0.0141,
+                "mla_memory_peak_mib": 35,
+            },
+            "telemetry": {"status": "ok", "power_som_watts": {"mean": 9.1}},
+            "execution_plan": {"name": "text_encoder"},
+            "mla_layer_stats": {"status": "ok", "layers": []},
+            "mla_stage_stats": {"status": "ok", "stages": []},
+        },
+        "image_encoder": {
+            "workload": "Image preprocessing, encoder and tensor conversions",
+            "metrics": {
+                "throughput_fps": 230.5, "latency_avg_ms": 6.37,
+                "avg_power_watts": 11.3, "energy_per_inference_joules": 0.049,
+                "mla_memory_peak_mib": 120,
+            },
+            "telemetry": {"status": "ok", "power_som_watts": {"mean": 11.3}},
+            "execution_plan": {"name": "image_encoder"},
+            "mla_layer_stats": {"status": "ok", "layers": []},
+            "mla_stage_stats": {"status": "ok", "stages": []},
+        },
+    },
+}
 ACCURACY_REPORT = {
     "schema": "sima.model-report",
     "schema_version": 1,
@@ -103,8 +141,9 @@ def _test_result(suite, summary, name="model", status="passed"):
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, payload=None, content=b"", reason=""):
+    def __init__(self, status_code=200, payload=None, content=b"", reason="", headers=None):
         self.status_code = status_code
+        self.headers = headers or {}
         self._payload = payload
         self._content = content
         self.reason = reason
@@ -180,7 +219,8 @@ def test_top_level_models_json_keeps_root_diagnostics_on_stderr(arguments):
     }
     fake_client = Mock()
     fake_client.branches.return_value = [{"name": "main"}]
-    fake_client.catalog_models.return_value = [run]
+    fake_client.catalog_models.return_value = [{**run, "downloadable": True}]
+    fake_client.hydrate_catalog_model.return_value = fake_client.catalog_models.return_value[0]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     fake_client.artifact_download.return_value = signed
     fake_client.download.return_value = Path(
@@ -716,6 +756,118 @@ def test_model_card_reads_whole_model_reports():
     }]
 
 
+def test_model_card_reads_explicit_model_scope_with_composed_components():
+    report = {**PERFORMANCE_REPORT, "scope": "model", "components": {
+        "backbone": {"execution_plan": {}},
+        "decoder": {"execution_plan": {}},
+    }}
+    benchmark = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    assert benchmark == model_card(_detail(_test_result("performance", PERFORMANCE_REPORT)))["benchmark"]
+    assert "components" not in benchmark
+
+
+def test_model_card_preserves_independent_component_results_and_evidence():
+    card = model_card(_detail(
+        _test_result("performance", COMPONENT_PERFORMANCE_REPORT, status="failed"),
+        _test_result("accuracy", ACCURACY_REPORT),
+    ))
+    benchmark = card["benchmark"]
+    assert benchmark["status"] == "failed"
+    assert benchmark["pyneat_version"] == PYNEAT
+    assert benchmark["scope"] == "components"
+    assert benchmark["measurements"] == {}
+    assert benchmark["workload"] is None
+    assert [c["id"] for c in benchmark["components"]] == ["image_encoder", "text_encoder"]
+    for component in benchmark["components"]:
+        original = COMPONENT_PERFORMANCE_REPORT["components"][component["id"]]
+        assert component["measurements"] == original["metrics"]
+        assert component["workload"] == original["workload"]
+        for key in ("telemetry", "execution_plan", "mla_layer_stats", "mla_stage_stats"):
+            assert component[key] == original[key]
+    assert card["accuracy"] == model_card(_detail(accuracy=_test_result("accuracy", ACCURACY_REPORT)))["accuracy"]
+
+
+def test_component_results_support_arbitrary_ids_and_stable_order():
+    report = deepcopy(COMPONENT_PERFORMANCE_REPORT)
+    report["components"] = {
+        "z_audio_decoder": report["components"]["text_encoder"],
+        "a_feature_extractor": report["components"]["image_encoder"],
+    }
+    first = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    report["components"] = dict(reversed(list(report["components"].items())))
+    second = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    assert first == second
+    assert [c["id"] for c in first["components"]] == ["a_feature_extractor", "z_audio_decoder"]
+
+
+@pytest.mark.parametrize("components", [
+    None, [], {}, {"image_encoder": None}, {"image_encoder": []},
+    {"image_encoder": {}}, {"bad id": {"metrics": {}, "workload": "work"}},
+    {"encoder": {"metrics": [], "workload": "work"}},
+    {"encoder": {"metrics": {"throughput_fps": True}, "workload": "work"}},
+    {"encoder": {"metrics": {"throughput_fps": "fast"}, "workload": "work"}},
+    {"encoder": {"metrics": {}, "workload": None}},
+    {"encoder": {"metrics": {}, "workload": " "}},
+    {"encoder": {"metrics": {}, "workload": "work", "telemetry": []}},
+    {"encoder": {"metrics": {}, "workload": "work", "execution_plan": []}},
+])
+def test_model_card_rejects_malformed_component_maps(components):
+    report = {**COMPONENT_PERFORMANCE_REPORT, "components": components}
+    benchmark = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    assert benchmark["status"] == "unsupported format"
+    assert benchmark["measurements"] == {}
+    assert not benchmark.get("components")
+
+
+@pytest.mark.parametrize("scope", [None, "unknown", "", [], {}])
+def test_model_card_rejects_invalid_scope_even_with_top_level_metrics(scope):
+    report = {**PERFORMANCE_REPORT, "scope": scope}
+    assert model_card(_detail(_test_result("performance", report)))["benchmark"]["status"] == "unsupported format"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("schema_version", None), ("schema_version", 99), ("schema_version", "1"),
+    ("schema_version", True), ("stage", "accuracy"), ("runtime", []),
+    ("runtime", {}), ("runtime", {"pyneat": []}),
+    ("runtime", {"pyneat": PYNEAT, "build": []}),
+    ("runtime", "bad runtime"), ("metrics", {}), ("workload", "aggregate"),
+    ("telemetry", {}),
+])
+def test_model_card_rejects_unsupported_component_reports(field, value):
+    report = {**COMPONENT_PERFORMANCE_REPORT, field: value}
+    benchmark = model_card(_detail(_test_result("performance", report)))["benchmark"]
+    assert benchmark["status"] == "unsupported format"
+    assert benchmark["measurements"] == {}
+
+
+def test_model_card_rejects_missing_component_report_version():
+    report = {key: value for key, value in COMPONENT_PERFORMANCE_REPORT.items() if key != "schema_version"}
+    assert model_card(_detail(_test_result("performance", report)))["benchmark"]["status"] == "unsupported format"
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_component_benchmark_rendering_labels_each_workload_and_measurement(monkeypatch, width):
+    output = StringIO()
+    monkeypatch.setattr(rendering, "_console", lambda: Console(file=output, width=width, color_system=None))
+    card = model_card(_detail(_test_result("performance", COMPONENT_PERFORMANCE_REPORT)))
+    render_model_card(card)
+    rendered = output.getvalue()
+    image = rendered.index("Image encoder (image_encoder)")
+    text = rendered.index("Text encoder (text_encoder)")
+    assert image < text
+    for component_id, start, end in (("image_encoder", image, text), ("text_encoder", text, len(rendered))):
+        section = rendered[start:end]
+        original = COMPONENT_PERFORMANCE_REPORT["components"][component_id]
+        # Rich wraps workloads at terminal width; compare words rather than border characters.
+        assert all(word in section for word in original["workload"].split())
+        for metric, value in original["metrics"].items():
+            assert metric in section
+            assert str(value) in section
+    assert "Independent component benchmarks" in rendered
+    assert "unsupported format" not in rendered
+    assert "874.4" not in rendered  # No sum of independently measured throughputs.
+
+
 @pytest.mark.parametrize("report", [
     {**PERFORMANCE_REPORT, "schema_version": 2},
     {**PERFORMANCE_REPORT, "schema": "sima.benchmark"},
@@ -814,22 +966,24 @@ def test_list_json_defaults_to_main_without_prompting():
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["branch"] == "main"
-    fake_client.catalog_models.assert_called_once_with("main", query=None)
+    fake_client.catalog_models.assert_called_once_with("main", query=None, hydrate=True)
     fake_client.branches.assert_not_called()
     select.assert_not_called()
 
 
-def test_noninteractive_list_requires_explicit_branch_when_omitted():
+@pytest.mark.parametrize("interactive", [False, True])
+def test_list_defaults_to_main_without_branch_picker(interactive):
     fake_client = Mock()
+    fake_client.catalog_models.return_value = []
 
-    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client):
+    with patch("sima_cli.models.commands.RegistryClient", return_value=fake_client), patch(
+        "sima_cli.models.commands._is_interactive", return_value=interactive
+    ):
         result = CliRunner().invoke(models_group, ["--stg", "list"])
 
-    assert result.exit_code == 1
-    assert "Use --branch BRANCH" in result.output
-    assert "Package    Target    Size" not in result.output
+    assert result.exit_code == 0, result.output
     fake_client.branches.assert_not_called()
-    fake_client.catalog_models.assert_not_called()
+    fake_client.catalog_models.assert_called_once_with("main", query=None, hydrate=False)
 
 
 def test_noninteractive_list_requires_json_instead_of_rendering_overview_table():
@@ -844,7 +998,7 @@ def test_noninteractive_list_requires_json_instead_of_rendering_overview_table()
     assert result.exit_code == 1
     assert "Use --json to list models" in result.output
     assert "Package    Target    Size" not in result.output
-    fake_client.catalog_models.assert_called_once_with("develop", query=None)
+    fake_client.catalog_models.assert_called_once_with("develop", query=None, hydrate=False)
 
 
 def test_model_variant_group_rejects_ambiguous_promoted_packages():
@@ -936,11 +1090,11 @@ def test_list_accepts_short_branch_option():
         result = CliRunner().invoke(models_group, ["--stg", "list", "-b", "develop"])
 
     assert result.exit_code == 0, result.output
-    fake_client.catalog_models.assert_called_once_with("develop", query=None)
+    fake_client.catalog_models.assert_called_once_with("develop", query=None, hydrate=False)
     fake_client.branches.assert_not_called()
 
 
-def test_list_prompts_for_branch_when_omitted():
+def test_list_prompts_for_branch_on_request():
     fake_client = Mock()
     fake_client.branches.return_value = [{"name": "develop"}, {"name": "main"}]
     fake_client.catalog_models.return_value = []
@@ -952,12 +1106,12 @@ def test_list_prompts_for_branch_when_omitted():
     ), patch(
         "sima_cli.models.commands.select_branch", return_value="develop"
     ) as select:
-        result = CliRunner().invoke(models_group, ["--stg", "list"])
+        result = CliRunner().invoke(models_group, ["--stg", "list", "--select-branch"])
 
     assert result.exit_code == 0, result.output
     fake_client.branches.assert_called_once_with()
     select.assert_called_once_with(fake_client.branches.return_value)
-    fake_client.catalog_models.assert_called_once_with("develop", query=None)
+    fake_client.catalog_models.assert_called_once_with("develop", query=None, hydrate=False)
 
 
 def test_list_passes_query_to_registry_search():
@@ -978,13 +1132,15 @@ def test_list_passes_query_to_registry_search():
         )
 
     assert result.exit_code == 0, result.output
-    fake_client.catalog_models.assert_called_once_with("main", query="yolo object detection")
+    fake_client.catalog_models.assert_called_once_with("main", query="yolo object detection", hydrate=False)
 
 
 def test_interactive_list_renders_selected_model_card_without_forcing_download():
     run = _run()
     fake_client = Mock()
+    fake_client.hydrate_catalog_model.return_value = run
     fake_client.catalog_models.return_value = [run]
+    fake_client.run.return_value = {"run": run, "artifacts": []}
     fake_client.detail.return_value = {
         "summary": {"run": run, "artifacts": []},
         "provenance": {},
@@ -1008,11 +1164,13 @@ def test_interactive_list_renders_selected_model_card_without_forcing_download()
     assert "Benchmark" in result.output
     assert "not measured" in result.output
     assert "Package    Target    Size" not in result.output
-    fake_client.detail.assert_called_once_with("run-1")
+    fake_client.run.assert_called_once_with("run-1")
+    fake_client.detail.assert_called_once_with("run-1", summary=fake_client.run.return_value)
     fake_client.download.assert_not_called()
 
 
-def test_interactive_package_selection_loads_whole_model_results_for_its_profile():
+@pytest.mark.parametrize("report", [PERFORMANCE_REPORT, COMPONENT_PERFORMANCE_REPORT])
+def test_interactive_package_selection_loads_whole_model_results_for_its_profile(report):
     package = _run(run_id="package-run", variant_id="modalix_int8")
     package["run_type"] = "model_package"
     package["metadata"].update(
@@ -1025,6 +1183,7 @@ def test_interactive_package_selection_loads_whole_model_results_for_its_profile
     package["benchmark_fingerprints"] = {"performance": FINGERPRINT}
     compile_run = _run(run_id="compile-run", variant_id="modalix_int8")
     fake_client = Mock(spec=RegistryClient)
+    fake_client.hydrate_catalog_model.return_value = package
     fake_client.catalog_models.return_value = [package]
     fake_client.run.return_value = {"run": package, "artifacts": []}
     fake_client.detail.return_value = {
@@ -1034,7 +1193,7 @@ def test_interactive_package_selection_loads_whole_model_results_for_its_profile
         "metrics": {"measurements": []},
     }
     fake_client.whole_model_result.side_effect = lambda stage, fingerprint: (
-        _test_result("performance", PERFORMANCE_REPORT) if fingerprint else None
+        _test_result("performance", report) if fingerprint else None
     )
     fake_client.taxonomy.return_value = None
 
@@ -1049,6 +1208,11 @@ def test_interactive_package_selection_loads_whole_model_results_for_its_profile
 
     assert result.exit_code == 0, result.output
     assert "latency_avg_ms" in result.output
+    if report.get("scope") == "components":
+        assert "Image encoder" in result.output
+        assert "Text encoder" in result.output
+        assert "230.5" in result.output
+        assert "643.9" in result.output
     assert "not measured" in result.output
     assert [call.args for call in fake_client.whole_model_result.call_args_list] == [
         ("performance", FINGERPRINT),
@@ -1094,7 +1258,8 @@ def test_download_command_resolves_and_downloads_selected_model(tmp_path):
         "sha256": hashlib.sha256(content).hexdigest(),
     }
     fake_client = Mock()
-    fake_client.catalog_models.return_value = [run]
+    fake_client.catalog_models.return_value = [{**run, "downloadable": True}]
+    fake_client.hydrate_catalog_model.return_value = fake_client.catalog_models.return_value[0]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     signed = {
         "download_url": "https://download.example/model",
@@ -1133,7 +1298,9 @@ def test_download_command_resolves_and_downloads_selected_model(tmp_path):
     assert payload["path"] == str(expected)
     assert payload["build_profile_id"] == "modalix_int8_bf16"
     assert payload["filename"] == "rf_detr_small_modalix_int8_bf16_default.zip"
-    fake_client.catalog_models.assert_called_once_with("main")
+    fake_client.catalog_models.assert_called_once_with(
+        "main", model_id="rf_detr_small", variant_id="modalix_int8_bf16", for_download=True, hydrate=False,
+    )
     fake_client.download.assert_called_once_with(
         "package-run", artifact, expected, force=False, initial_download=signed
     )
@@ -1152,7 +1319,8 @@ def test_download_accepts_short_branch_option(tmp_path):
         "s3_key": "models/run/resnet_50_int8_mpk.tar.gz",
     }
     fake_client = Mock()
-    fake_client.catalog_models.return_value = [run]
+    fake_client.catalog_models.return_value = [{**run, "downloadable": True}]
+    fake_client.hydrate_catalog_model.return_value = fake_client.catalog_models.return_value[0]
     fake_client.run.return_value = {"run": run, "artifacts": [artifact]}
     fake_client.artifact_download.return_value = signed
     destination = tmp_path / "resnet_50" / "int8" / "resnet_50_int8_mpk.tar.gz"
@@ -1176,7 +1344,9 @@ def test_download_accepts_short_branch_option(tmp_path):
         )
 
     assert result.exit_code == 0, result.output
-    fake_client.catalog_models.assert_called_once_with("develop")
+    fake_client.catalog_models.assert_called_once_with(
+        "develop", model_id="resnet_50", variant_id="int8", for_download=True, hydrate=False,
+    )
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -1306,3 +1476,397 @@ def test_verified_download_on_both_endpoints(tmp_path, base_url, failure):
         assert client.download("run", artifact, destination) == destination
         assert destination.read_bytes() == content
     assert session.calls[0][0] == base_url + "/v1/runs/run/artifacts/package"
+
+
+def _registry_client_with_existing_download(tmp_path):
+    """A real client whose download target already exists under tmp_path."""
+    run = _run()
+    artifact = {
+        "name": "mpk",
+        "artifact_type": "model-pack",
+        "size_bytes": 5,
+        "sha256": hashlib.sha256(b"model").hexdigest(),
+    }
+    catalog = {"catalog": {"document": {"models": [{
+        "id": "resnet_50", "license": {"spdx": "Apache-2.0"},
+        "approved_deployments": {"int8": {"artifacts": [{
+            "run_id": run["id"], "component_id": "model", "artifact_name": "mpk",
+        }]}},
+    }]}}}
+    client = RegistryClient(PRODUCTION_BASE_URL, session=FakeSession([
+        FakeResponse(payload=catalog),
+        FakeResponse(payload={"run": run, "artifacts": [artifact]}),
+    ]))
+    client.artifact_download = Mock(return_value={
+        "download_url": "https://download.example/model",
+        "s3_key": "models/run/resnet_50_int8_mpk.tar.gz",
+    })
+    existing = tmp_path / "resnet_50" / "int8" / "resnet_50_int8_mpk.tar.gz"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"model")
+    return client, existing
+
+
+def test_download_json_reports_existing_destination_as_json(tmp_path):
+    client, existing = _registry_client_with_existing_download(tmp_path)
+    args = ["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8",
+            "--output", str(tmp_path), "--json"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "destination_exists"
+    assert str(existing) in payload["error"]["message"]
+    assert "--force" in payload["error"]["message"]
+    assert "Error:" not in result.stdout
+    assert existing.read_bytes() == b"model"
+
+
+def test_download_without_json_keeps_plain_text_error(tmp_path):
+    client, existing = _registry_client_with_existing_download(tmp_path)
+    args = ["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8",
+            "--output", str(tmp_path)]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert f"Error: Destination already exists: {existing}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "code"),
+    [
+        (["branches", "--json"], "http_error"),
+        (["list", "--branch", "develop", "--json"], "http_error"),
+        (["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8", "--json"],
+         "http_error"),
+        (["list", "--branch", "missing", "--json"], "branch_not_found"),
+    ],
+)
+def test_models_json_commands_report_registry_errors_as_json(args, code):
+    status = 404 if code == "branch_not_found" else 503
+    session = FakeSession([FakeResponse(status_code=status, payload={"error": {"message": "Unavailable"}})])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1, result.output
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == code
+    assert PRODUCTION_BASE_URL in error["message"]
+
+
+def test_download_json_reports_missing_build_as_json():
+    client = Mock()
+    client.catalog_models.return_value = []
+    args = ["download", "--id", "missing", "--variant", "int8", "--json"]
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {"error": {
+        "code": "build_not_found",
+        "message": "No completed model build found for model 'missing', variant 'int8'.",
+    }}
+
+
+@pytest.mark.parametrize("json_output", [True, False])
+def test_download_reports_filesystem_errors_without_traceback(tmp_path, json_output):
+    client, _ = _registry_client_with_existing_download(tmp_path)
+    args = ["download", "--branch", "develop", "--id", "resnet_50", "--variant", "int8",
+            "--output", str(tmp_path / "out")] + (["--json"] if json_output else [])
+    denied = PermissionError(13, "Permission denied", str(tmp_path / "out"))
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client), \
+            patch("pathlib.Path.mkdir", side_effect=denied):
+        result = CliRunner().invoke(models_group, args)
+
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, PermissionError)
+    if json_output:
+        error = json.loads(result.stdout)["error"]
+        assert error["code"] == "filesystem_error"
+        assert "Permission denied" in error["message"]
+    else:
+        assert result.stdout == ""
+        assert "Error: [Errno 13] Permission denied" in result.stderr
+
+
+class _FailingStreamResponse(FakeResponse):
+    def __init__(self, error):
+        super().__init__()
+        self._error = error
+
+    def iter_content(self, chunk_size=0):
+        del chunk_size
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        ("disk_full", "filesystem_error"),
+        ("connection_reset", "network_error"),
+    ],
+)
+def test_wrapped_download_io_errors_keep_their_code(tmp_path, failure, code):
+    content = b"verified model bytes"
+    artifact = {"name": "package", "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest()}
+    if failure == "disk_full":
+        stream = _FailingStreamResponse(OSError(errno.ENOSPC, "No space left on device"))
+    else:
+        stream = _FailingStreamResponse(requests.ConnectionError("Connection reset by peer"))
+    session = FakeSession([
+        FakeResponse(payload={"artifact": {"download_url": "https://download.example/model"}}),
+        stream,
+    ])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+
+    with pytest.raises(ModelRegistryError) as caught:
+        client.download("run", artifact, tmp_path / "model.tar.gz")
+
+    assert caught.value.code == code
+    assert not (tmp_path / "model.tar.gz").exists()
+
+
+def _deployment_catalog(selection_field, license_id="Apache-2.0"):
+    return {"catalog": {"document": {"models": [
+        {"id": "other", "packages": [{
+            "build_profile_id": "int8", "package_id": "default", "run_id": "other-run",
+        }]},
+        {"id": "detector", "license": {"spdx": license_id}, "builds": [],
+         "benchmark_fingerprints": {"int8": {"performance": FINGERPRINT}},
+         selection_field: {"int8": {"artifacts": [
+             {"component_id": "encoder", "run_id": "encoder-run", "artifact_name": "mpk"},
+             {"component_id": "decoder", "run_id": "decoder-run", "artifact_name": "mpk"},
+             {"package_id": "default", "run_id": "selected", "artifact_name": "package"},
+         ]}}},
+    ]}}}
+
+
+@pytest.mark.parametrize("selection_field", ["approved_deployments", "branch_deployments"])
+@pytest.mark.parametrize("complete", [True, False])
+def test_selected_deployment_uses_its_component_runs_for_benchmark(selection_field, complete):
+    run = _run("selected", model_id="detector")
+    run["run_type"] = "model_package"
+    components = {"encoder": "encoder-run"}
+    if complete:
+        components["decoder"] = "decoder-run"
+    run["metadata"].update(package_id="default", component_run_ids=components)
+    session = FakeSession([
+        FakeResponse(payload=_deployment_catalog(selection_field)),
+        FakeResponse(payload=_package_summary(run)),
+    ])
+    client = RegistryClient("https://registry.example", session=session)
+
+    rows = client.catalog_models("main", model_id="detector", variant_id="int8", for_download=True)
+
+    assert len(session.calls) == 2
+    assert session.calls[-1][0].endswith("/v1/runs/selected")
+    assert rows[0]["benchmark_fingerprints"] == ({"performance": FINGERPRINT} if complete else {})
+
+
+@pytest.mark.parametrize("selection_field", ["approved_deployments", "branch_deployments"])
+def test_package_only_deployment_keeps_fingerprints_when_catalog_builds_match(selection_field):
+    catalog = _deployment_catalog(selection_field)
+    model = catalog["catalog"]["document"]["models"][1]
+    deployment = model[selection_field]["int8"]
+    model["builds"] = [
+        {**root, "build_profile_id": "int8"}
+        for root in deployment["artifacts"] if "component_id" in root
+    ]
+    deployment["artifacts"] = [root for root in deployment["artifacts"] if "package_id" in root]
+    fingerprints = {"accuracy": "e" * 64, "performance": FINGERPRINT}
+    model["benchmark_fingerprints"]["int8"] = fingerprints
+    run = _run("selected", model_id="detector")
+    run["run_type"] = "model_package"
+    run["metadata"].update(
+        package_id="default", component_run_ids={"encoder": "encoder-run", "decoder": "decoder-run"},
+    )
+    client = RegistryClient("https://registry.example", session=FakeSession([
+        FakeResponse(payload=catalog),
+        FakeResponse(payload=_package_summary(run)),
+    ]))
+
+    [selected] = client.catalog_models("main", model_id="detector", variant_id="int8")
+
+    assert selected["benchmark_fingerprints"] == fingerprints
+    assert selected["benchmark_component_run_ids"] == ["decoder-run", "encoder-run"]
+
+
+def test_catalog_picker_reads_no_run_summaries_until_selection():
+    session = FakeSession([FakeResponse(payload=_deployment_catalog("approved_deployments"))])
+    client = RegistryClient("https://registry.example", session=session)
+
+    assert {row["id"] for row in client.catalog_models("main", hydrate=False)} == {"selected", "other-run"}
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize("license_id", ["LicenseRef-OpenStereo-Academic", "LicenseRef-Unlisted", None])
+def test_download_blocks_catalog_license_before_run_lookup(license_id):
+    session = FakeSession([FakeResponse(payload=_deployment_catalog("approved_deployments", license_id))])
+    client = RegistryClient("https://registry.example", session=session)
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        result = CliRunner().invoke(models_group, ["download", "--id", "detector", "--variant", "int8"])
+
+    assert result.exit_code == 1
+    assert "not downloadable" in result.output
+    assert (license_id or "does not identify the model's license") in result.output
+    assert len(session.calls) == 1
+
+
+def test_interactive_list_refuses_download_even_with_yes():
+    run = {**_run(), "downloadable": False, "download_block_reason": "Redistribution prohibited."}
+    client = Mock(spec=RegistryClient)
+    client.catalog_models.return_value = [run]
+    client.hydrate_catalog_model.return_value = run
+    client.run.return_value = {"run": run, "artifacts": []}
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client), patch(
+        "sima_cli.models.commands._is_interactive", return_value=True
+    ), patch("sima_cli.models.commands.select_run", return_value=run), patch(
+        "sima_cli.models.commands._selected_model_detail", return_value=_detail()
+    ), patch("sima_cli.models.commands._taxonomy", return_value=None), patch(
+        "sima_cli.models.commands.click.confirm"
+    ) as confirm:
+        result = CliRunner().invoke(models_group, ["list"], obj={"yes": True})
+
+    assert result.exit_code == 0, result.output
+    assert "Redistribution prohibited." in result.output
+    confirm.assert_not_called()
+    client.artifact_download.assert_not_called()
+    client.download.assert_not_called()
+
+
+@pytest.mark.parametrize(("status", "headers", "expected"), [
+    (403, {"X-Cache": "Error from cloudfront"}, "may be rate limiting"),
+    (403, {}, "Forbidden"),
+    (429, {}, "rate limited"),
+])
+def test_registry_rate_limit_errors_distinguish_edge_blocks(status, headers, expected):
+    client = RegistryClient(PRODUCTION_BASE_URL, session=FakeSession([
+        FakeResponse(status_code=status, reason="Forbidden", headers=headers),
+    ]))
+    with pytest.raises(ModelRegistryError, match=expected) as caught:
+        client.branches()
+    assert caught.value.code == "http_error"
+
+
+def test_deployment_benchmark_rejects_stale_catalog_fingerprint():
+    session = FakeSession([
+        FakeResponse(payload={"run": {"id": "old-benchmark"}}),
+        FakeResponse(payload={"inputs": [{"metadata": {"compile_run_id": "old-compile"}}]}),
+    ])
+    client = RegistryClient("https://registry.example", session=session)
+
+    assert client.whole_model_result("performance", FINGERPRINT, ["new-compile"]) is None
+    assert len(session.calls) == 2
+
+
+def test_generation_report_renders_llima_and_each_workload(monkeypatch):
+    # The real LLiMa schema uses a measurement object for each workload metric.
+    report = {
+        "schema": "sima.model-report", "schema_version": 1, "stage": "performance",
+        "runtime": {"llima": "0.6.1+develop.510f52757c3b", "build": {}},
+        "generation": {"workloads": [
+            {"id": "text_n128", "kind": "text", "metrics": {
+                "ttft_ms": {"value": 43.34, "unit": "ms"},
+                "decode_tps": {"value": 74.27, "unit": "tokens/s"},
+            }},
+            {"id": "image_text", "kind": "image", "metrics": {
+                "ttft_ms": {"value": 258.43, "unit": "ms"},
+            }},
+        ]},
+    }
+    card = model_card(_detail(_test_result("performance", report)))
+    assert card["benchmark"]["status"] == "passed"
+    assert card["benchmark"]["generation_workloads"][0]["measurements"]["decode_tps"] == 74.27
+    output = StringIO()
+    monkeypatch.setattr(rendering, "_console", lambda: Console(file=output, width=110))
+    render_model_card(card)
+    rendered = output.getvalue()
+    for field in ("LLiMa version", "0.6.1+develop.510f52757c3b", "text_n128", "image_text",
+                  "Time to first token (ms)", "Decode (tokens/s)"):
+        assert field in rendered
+
+
+def test_unfiltered_json_list_batches_summaries_and_preserves_output():
+    models = []
+    summaries = {}
+    for i in range(81):
+        run_id = f"00000000-0000-4000-8000-{i:012d}"
+        model_id = f"model_{i:03d}"
+        run = _run(run_id, model_id=model_id)
+        run.update(run_type="model_package", git_ref="refs/heads/inherited", failure_classification=None)
+        run["metadata"].update(package_id="default", component_run_ids={"model": f"compile-{i}"})
+        models.append({
+            "id": model_id, "license": {"spdx": "Apache-2.0"},
+            "packages": [{"run_id": run_id, "package_id": "default", "build_profile_id": "int8"}],
+            "builds": [{"run_id": f"compile-{i}", "build_profile_id": "int8"}],
+            "benchmark_fingerprints": {"int8": {"performance": FINGERPRINT}},
+        })
+        summaries[run_id] = _package_summary(run)
+    catalog = {"catalog": {"document": {"models": models}}}
+
+    class Session:
+        def __init__(self, batch_supported):
+            self.batch_supported = batch_supported
+            self.batches = []
+            self.single_lookups = []
+
+        def get(self, url, params, **kwargs):
+            if url.endswith("/catalogs/current"):
+                return FakeResponse(payload=catalog)
+            if url.endswith("/repositories/sima-neat/models/runs"):
+                batch = params["summary_ids"].split(",")
+                self.batches.append(batch)
+                payload = (
+                    {"summaries": [summaries[run_id] for run_id in reversed(batch)]}
+                    if self.batch_supported else {"runs": []}
+                )
+                return FakeResponse(payload=payload)
+            run_id = url.rsplit("/", 1)[-1]
+            self.single_lookups.append(run_id)
+            return FakeResponse(payload=summaries[run_id])
+
+    def list_json(session):
+        client = RegistryClient("https://registry.example", session=session)
+        with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+            result = CliRunner().invoke(models_group, ["list", "--json"])
+        assert result.exit_code == 0, result.output
+        return result.stdout
+
+    batch = Session(batch_supported=True)
+    legacy = Session(batch_supported=False)
+    assert list_json(batch) == list_json(legacy)
+    assert [len(ids) for ids in batch.batches] == [40, 40, 1]
+    assert batch.single_lookups == []
+    assert len(legacy.batches) == 1
+    assert sorted(legacy.single_lookups) == sorted(summaries)
+
+
+@pytest.mark.parametrize("size", [1024, PARALLEL_MIN_SIZE], ids=["sequential", "parallel"])
+@pytest.mark.parametrize("status", [404, 503])
+def test_artifact_http_failures_keep_http_error_code(tmp_path, size, status):
+    signed_url = "https://download.example/model?signature=private"
+    response = requests.Response()
+    response.status_code = status
+    response.url = signed_url
+    response.reason = "Unavailable"
+    response._content = b""
+    response._content_consumed = True
+    with requests.Session() as session:
+        client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+        with patch.object(requests.Session, "get", return_value=response) as get, \
+                pytest.raises(ModelRegistryError) as caught:
+            client.download(
+                "run", {"name": "package", "size_bytes": size, "sha256": "a" * 64},
+                tmp_path / "model.tar.gz", initial_download={"download_url": signed_url},
+            )
+
+    assert ("Range" in get.call_args.kwargs.get("headers", {})) == (size >= PARALLEL_MIN_SIZE)
+    assert caught.value.code == "http_error"
+    assert f"HTTP {status}" in str(caught.value)
+    assert signed_url not in str(caught.value)
+    assert not (tmp_path / "model.tar.gz").exists()

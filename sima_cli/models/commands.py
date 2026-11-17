@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NoReturn, Optional
 
 import click
 
@@ -42,6 +42,18 @@ def _client(ctx: click.Context, staging: bool) -> RegistryClient:
     return RegistryClient(base_url)
 
 
+def _fail(exc: Exception, json_output: bool) -> NoReturn:
+    """Report a failure as JSON on stdout with --json, else as a Click error."""
+    if not isinstance(exc, ModelRegistryError):
+        # Local filesystem failures (for example an unwritable --output) are not
+        # registry errors, but --json callers still need a parseable result.
+        exc = ModelRegistryError(str(exc), code="filesystem_error")
+    if json_output:
+        echo_json({"error": {"code": exc.code, "message": str(exc)}})
+        raise click.exceptions.Exit(1)
+    raise click.ClickException(str(exc)) from exc
+
+
 def _is_interactive() -> bool:
     return sys.stdin.isatty()
 
@@ -56,13 +68,16 @@ def _taxonomy(client: RegistryClient) -> Optional[Dict[str, Any]]:
 def _download_run(
     client: RegistryClient,
     run: Dict[str, Any],
+    summary: Dict[str, Any],
     output: Path,
     force: bool,
 ) -> Dict[str, Any]:
+    if run.get("downloadable") is not True:
+        reason = run.get("download_block_reason") or "No download policy decision is available."
+        raise ModelRegistryError(f"Model is not downloadable: {reason}")
     run_id = str(run.get("id") or "")
     if not run_id:
         raise ModelRegistryError("The selected registry run has no ID.")
-    summary = client.run(run_id)
     artifacts = summary.get("artifacts") or []
     artifact = select_model_artifact(
         artifacts, run.get("artifact_name"),
@@ -104,7 +119,7 @@ def _download_run(
 
 
 def _selected_model_detail(
-    client: RegistryClient, selected: Dict[str, Any]
+    client: RegistryClient, selected: Dict[str, Any], selected_summary: Dict[str, Any],
 ) -> Dict[str, Any]:
     selected_metadata = selected.get("metadata") or {}
     fingerprints = selected.get("benchmark_fingerprints") or {}
@@ -119,15 +134,13 @@ def _selected_model_detail(
             key=lambda item: (item[0] != "model", item[0]),
         )
         details = [(component, client.detail(run_id)) for component, run_id in components]
-        package_summary = client.run(str(selected.get("id") or ""))
     else:
         details = [
             (
                 str(selected_metadata.get("component_id") or "model"),
-                client.detail(str(selected.get("id") or "")),
+                client.detail(str(selected.get("id") or ""), summary=selected_summary),
             )
         ]
-        package_summary = details[0][1].get("summary") or {}
 
     primary = details[0][1]
     registry_run = ((primary.get("summary") or {}).get("run") or {})
@@ -151,8 +164,14 @@ def _selected_model_detail(
                 or {}
             ),
         },
-        "artifacts": package_summary.get("artifacts") or [],
+        "artifacts": selected_summary.get("artifacts") or [],
     }
+
+    def result(stage: str) -> Optional[Dict[str, Any]]:
+        run_ids = selected.get("benchmark_component_run_ids")
+        args = (run_ids,) if run_ids is not None else ()
+        return client.whole_model_result(stage, fingerprints.get(stage), *args)
+
     return {
         "summary": summary,
         "provenance": primary.get("provenance") or {},
@@ -170,8 +189,8 @@ def _selected_model_detail(
                 for metric in (detail.get("metrics") or {}).get("measurements") or []
             ]
         },
-        "benchmark": client.whole_model_result("performance", fingerprints.get("performance")),
-        "accuracy": client.whole_model_result("accuracy", fingerprints.get("accuracy")),
+        "benchmark": result("performance"),
+        "accuracy": result("accuracy"),
     }
 
 
@@ -209,8 +228,8 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
     """List branches containing registered models."""
     try:
         branches = _client(ctx, staging).branches()
-    except ModelRegistryError as exc:
-        raise click.ClickException(str(exc)) from exc
+    except (ModelRegistryError, OSError) as exc:
+        _fail(exc, json_output)
     if json_output:
         echo_json({"branches": branches})
     else:
@@ -221,11 +240,9 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
 @click.option(
     "-b",
     "--branch",
-    help=(
-        "Models repository branch. If omitted, select interactively; "
-        "--json defaults to main."
-    ),
+    help="Models repository branch (default: main).",
 )
+@click.option("--select-branch", "pick_branch", is_flag=True, help="Choose a branch interactively instead of using main.")
 @click.option(
     "-q",
     "--query",
@@ -249,6 +266,7 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
 def list_command(
     ctx: click.Context,
     branch: Optional[str],
+    pick_branch: bool,
     query: Optional[str],
     staging: bool,
     json_output: bool,
@@ -258,17 +276,15 @@ def list_command(
     """Browse registered models, or list them with --json."""
     try:
         client = _client(ctx, staging)
-        if branch is None:
-            if json_output:
-                branch = "main"
-            elif not _is_interactive():
-                raise ModelRegistryError(
-                    "Branch selection requires an interactive terminal. "
-                    "Use --branch BRANCH."
-                )
-            else:
-                branch = select_branch(client.branches())
-        runs = client.catalog_models(branch, query=query)
+        if pick_branch:
+            if branch is not None or json_output:
+                raise click.UsageError("--select-branch cannot be used with --branch or --json.")
+            if not _is_interactive():
+                raise ModelRegistryError("--select-branch requires an interactive terminal.")
+            branch = select_branch(client.branches())
+        elif branch is None:
+            branch = "main"
+        runs = client.catalog_models(branch, query=query, hydrate=json_output)
         if json_output:
             echo_json({"branch": branch, "query": query, "models": runs})
             return
@@ -279,16 +295,21 @@ def list_command(
             raise ModelRegistryError(
                 "Model selection requires an interactive terminal. Use --json to list models."
             )
-        selected = select_run(runs)
-        detail = _selected_model_detail(client, selected)
+        entry = select_run(runs)
+        summary = client.run(entry["id"])
+        selected = client.hydrate_catalog_model(entry, summary)
+        detail = _selected_model_detail(client, selected, summary)
         card = model_card(detail, _taxonomy(client))
         render_model_card(card)
+        if selected.get("downloadable") is False:
+            click.echo(f"Model is not downloadable: {selected['download_block_reason']}")
+            return
         auto_confirm = bool((ctx.find_root().obj or {}).get("yes"))
         if auto_confirm or click.confirm("Download this model artifact?", default=False):
-            result = _download_run(client, selected, output, force)
+            result = _download_run(client, selected, summary, output, force)
             click.secho(f"Downloaded to {result['path']}", fg="green")
-    except ModelRegistryError as exc:
-        raise click.ClickException(str(exc)) from exc
+    except (ModelRegistryError, OSError) as exc:
+        _fail(exc, json_output)
 
 
 @models_group.command("download")
@@ -331,10 +352,15 @@ def download_command(
     """Download a model variant from the branch catalog."""
     try:
         client = _client(ctx, staging)
-        run = find_latest_run(client.catalog_models(branch), model_id, variant_id)
-        result = _download_run(client, run, output, force)
-    except ModelRegistryError as exc:
-        raise click.ClickException(str(exc)) from exc
+        runs = client.catalog_models(
+            branch, model_id=model_id, variant_id=variant_id, for_download=True, hydrate=False,
+        )
+        entry = find_latest_run(runs, model_id, variant_id)
+        summary = client.run(entry["id"])
+        run = client.hydrate_catalog_model(entry, summary)
+        result = _download_run(client, run, summary, output, force)
+    except (ModelRegistryError, OSError) as exc:
+        _fail(exc, json_output)
     if json_output:
         echo_json(result)
     else:

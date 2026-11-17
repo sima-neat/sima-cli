@@ -376,9 +376,11 @@ jobs:
             runs_on: '["self-hosted","macOS","osx"]'
           - name: Ubuntu x86
             runs_on: '"ubuntu-24.04"'
-          - name: Ubuntu x86 Snap Docker
-            runs_on: '"ubuntu-24.04"'
-            docker_install: snap
+            docker_install: apt
+          # Paused until Snap Store access stabilizes. See #412.
+          # - name: Ubuntu x86 Snap Docker
+          #   runs_on: '"ubuntu-24.04"'
+          #   docker_install: snap
           - name: Ubuntu ARM64
             runs_on: '"ubuntu-24.04-arm"'
           - name: Windows
@@ -439,8 +441,8 @@ jobs:
           sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "$env:RUNNER_TEMP\sima-cli-vulcan-install"
           $versionOutput = & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" --version
           $versionOutput
-          if (($versionOutput -join "`n") -notlike "*${{ needs.build.outputs.short_sha }}*") {
-            throw "Installed sima-cli version does not contain expected build SHA ${{ needs.build.outputs.short_sha }}"
+          if (($versionOutput -join "`n").Trim() -cne "SiMa CLI version: ${{ needs.build.outputs.version }}") {
+            throw "Installed sima-cli version does not match expected version ${{ needs.build.outputs.version }}"
           }
 
       - name: Set up WSL2 Ubuntu on Windows
@@ -554,7 +556,7 @@ jobs:
           sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir "${RUNNER_TEMP}/sima-cli-vulcan-install"
           candidate_version="$("$HOME/.sima-cli/.venv/bin/sima-cli" --version)"
           printf '%s\n' "$candidate_version"
-          grep -F "${{ needs.build.outputs.short_sha }}" <<<"$candidate_version"
+          test "$candidate_version" = "SiMa CLI version: ${{ needs.build.outputs.version }}"
           "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
           if [[ "${{ matrix.docker_install }}" == "snap" ]]; then
             mkdir -p "$HOME/.sima-cli"
@@ -582,7 +584,7 @@ jobs:
           /tmp/workflow-sima-cli/bin/sima-cli install --vulcan --env "${{ vars.VULCAN_ENV || 'dev' }}" "sima-cli@${{ needs.build.outputs.ref_name }}:${{ needs.build.outputs.short_sha }}" --install-dir /tmp/sima-cli-vulcan-install
           candidate_version="$("$HOME/.sima-cli/.venv/bin/sima-cli" --version)"
           printf '%s\n' "$candidate_version"
-          grep -F "${{ needs.build.outputs.short_sha }}" <<<"$candidate_version"
+          test "$candidate_version" = "SiMa CLI version: ${{ needs.build.outputs.version }}"
           "$HOME/.sima-cli/.venv/bin/sima-cli" install ghcr:sima-neat/sdk
           docker rm -f ghcr.io-sima-neat-sdk-latest || true
           "$HOME/.sima-cli/.venv/bin/sima-cli" sdk setup -y -n --minimal

@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import click
 import pytest
+from click.testing import CliRunner
 
+from sima_cli.cli import main
 from sima_cli.update import netboot_device as device, netboot
 from sima_cli.sdk import commands as sdk
 
@@ -344,6 +346,51 @@ def test_netboot_sudo_does_not_allocate_echoing_pty():
     ssh.exec_command.assert_called_once_with('sudo -S true', get_pty=False)
 
 
+@pytest.mark.parametrize('global_options,bootimg_options,expect_autoflash', [
+    (['-y'], [], True),
+    ([], ['--yes'], True),
+    ([], [], False),
+])
+def test_explicit_devkit_autoflash_with_empty_stdin(
+        tmp_path, global_options, bootimg_options, expect_autoflash):
+    (tmp_path / 'netboot.scr.uimg').touch()
+    assets = netboot.NetbootAssets(str(tmp_path), [], None, str(tmp_path / 'cache'))
+    server = MagicMock()
+    server.is_running.wait.return_value = True
+
+    with patch('sima_cli.cli.check_for_update', return_value=False), \
+            patch('sima_cli.cli.CONFIG_PATH', str(tmp_path / 'config.json')), \
+            patch.dict('os.environ', {'SIMA_CLI_INTERNAL': '0'}), \
+            patch.object(netboot, 'get_environment_type', return_value=('host', 'mac')), \
+            patch.object(netboot, '_prepare_netboot_assets', return_value=assets), \
+            patch.object(netboot, 'get_local_ip_candidates', return_value=[]), \
+            patch.object(netboot, 'InteractiveTftpServer', return_value=server), \
+            patch.object(netboot, 'ClientManager'), \
+            patch.object(netboot.threading, 'Thread') as thread, \
+            patch.object(device, 'server_address', return_value='192.0.2.10'), \
+            patch.object(device, 'init_ssh_session'), \
+            patch.object(device, '_checked', return_value='') as command, \
+            patch.object(netboot, 'auto_flash') as flash:
+        thread.return_value.is_alive.return_value = False
+        result = CliRunner().invoke(main, [
+            *global_options, 'bootimg', '--images', str(tmp_path),
+            '--netboot', '--devkit', '192.0.2.1', '--autoflash', *bootimg_options,
+        ], input='')
+
+    prompt = 'Set up network boot, automatically flash this DevKit, and reboot it from eMMC?'
+    if expect_autoflash:
+        assert result.exit_code == 0, result.output
+        assert prompt not in result.output
+        flash.assert_called_once()
+        assert flash.call_args.args[1] == '192.0.2.1'
+        assert flash.call_args.kwargs['configuration'].netboot_configured
+    else:
+        assert result.exit_code == 1, result.output
+        assert prompt in result.output
+        flash.assert_not_called()
+        assert command.call_count == 1  # Preflight only.
+
+
 @pytest.mark.parametrize('confirmed', [False, True, None])
 @pytest.mark.parametrize('autoflash', [False, True])
 def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
@@ -354,7 +401,7 @@ def test_confirmation_controls_reboot_and_autoflash_without_stopping_tftp(
     server.is_running.wait.return_value = True
     manager = MagicMock()
 
-    def interact(client_manager, configuration=None):
+    def interact(client_manager, configuration=None, *, auto_confirm_reboot=False):
         assert client_manager is manager
         assert configuration is not None
         server.stop.assert_not_called()

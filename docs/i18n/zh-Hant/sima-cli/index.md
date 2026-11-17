@@ -107,7 +107,7 @@ pip install sima-cli
 | [`sima-cli peripherals`](../../../sima-cli/commands/sima-cli-peripherals.md) | 顯示連接到此 DevKit 的攝影機與麥克風。 |
 | [`sima-cli playbooks`](../../../sima-cli/commands/sima-cli-playbooks.md) | 安裝並管理劇本（Codex/Claude）。 |
 | [`sima-cli sdcard`](../../../sima-cli/commands/sima-cli-sdcard.md) | 為 MLSoc DevKit 或 Modalix 的早期測試版本，準備好 SD 卡作為資料儲存裝置。 |
-| [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | 管理並啟動 SiMa SDK 2.0 容器環境（測試版）。 |
+| [`sima-cli sdk`](../../../sima-cli/commands/sima-cli-sdk.md) | 管理並啟動 SiMa SDK 容器環境。 |
 | [`sima-cli selfupdate`](../../../sima-cli/commands/sima-cli-selfupdate.md) | 手動從 PyPI 或直接的 wheel URL 更新 sima-cli。 |
 | [`sima-cli serial`](../../../sima-cli/commands/sima-cli-serial.md) | 連接到 DevKit 的 UART 序列埠控制台。 |
 | [`sima-cli update`](../../../sima-cli/commands/sima-cli-update.md) | 更新 SiMa DevKit、遠端裝置或 Linux PCIe 主機。 |

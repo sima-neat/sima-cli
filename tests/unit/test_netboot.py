@@ -1,7 +1,34 @@
+import sys
 import unittest
 from unittest.mock import call, patch
 
+from click.testing import CliRunner
+
+from sima_cli.cli import bootimg_cmd
 from sima_cli.update import netboot, netboot_device
+
+
+class NetbootPlatformTests(unittest.TestCase):
+    def test_native_windows_rejects_netboot_before_loading_tftp(self):
+        with patch.object(sys, "platform", "win32"), patch.dict(
+            sys.modules, {"sima_cli.update.netboot": None}
+        ):
+            for option in ("--netboot", "--autoflash"):
+                with self.subTest(option=option):
+                    result = CliRunner().invoke(bootimg_cmd, [option, "-v", "3.0.0"], obj={})
+
+                    self.assertEqual(result.exit_code, 1, result.output)
+                    self.assertIn("NetBoot requires WSL 2 on Windows", result.output)
+                    self.assertIn("mirrored networking", result.output)
+
+    def test_native_windows_can_write_boot_image_without_loading_tftp(self):
+        with patch.object(sys, "platform", "win32"), patch.dict(
+            sys.modules, {"sima_cli.update.netboot": None}
+        ), patch("sima_cli.update.bootimg.write_image") as write_image:
+            result = CliRunner().invoke(bootimg_cmd, ["-v", "3.0.0"], obj={})
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        write_image.assert_called_once()
 
 
 class FakeClientManager:
@@ -86,7 +113,7 @@ class NetbootFlashTests(unittest.TestCase):
             netboot.emmc_image_paths = ["/images/modalix.img.gz"]
             netboot.troot_image_path = "/images/troot_blob.be"
 
-            netboot.run_cli(FakeClientManager())
+            netboot.run_cli(FakeClientManager(), auto_confirm_reboot=True)
 
             mock_flash.assert_called_once_with(
                 unittest.mock.ANY,
@@ -95,6 +122,7 @@ class NetbootFlashTests(unittest.TestCase):
                 troot_image_path="/images/troot_blob.be",
                 configuration=None,
                 offer_reboot=True,
+                auto_confirm_reboot=True,
             )
         finally:
             netboot.emmc_image_paths = old_emmc

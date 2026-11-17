@@ -1,6 +1,6 @@
 # `sima-cli sdk`
 
-Manage and launch SiMa SDK 2.0 container environments (Beta).
+Manage and launch SiMa SDK container environments.
 
 Parent command: [`sima-cli`](./sima-cli.md)
 
@@ -42,14 +42,14 @@ None.
 ```text
 Usage: sima-cli sdk [OPTIONS] COMMAND [ARGS]...
 
-  Manage and launch SiMa SDK 2.0 container environments (Beta).
+  Manage and launch SiMa SDK container environments.
 
-  This group provides access to the full SDK 2.0 toolchain, including setup,
+  This group provides access to the full SDK toolchain, including setup,
   container orchestration, tool-specific shells (MPK, model, Yocto, Neat, ROS
-  2, eLxr), and hybrid `.sima` script execution. These commands are intended
-  for SDK 2.0+ users only.
+  2, eLxr), and hybrid `.sima` script execution. These commands support SDK
+  2.0 and newer.
 
-  \c Host platforms only.
+  Host platforms only.
 
   Typical Use Cases
 
@@ -59,7 +59,7 @@ Usage: sima-cli sdk [OPTIONS] COMMAND [ARGS]...
 
       • Stopping or removing SDK containers and cached images
 
-      • Launching MPK, model, Yocto, Neat, or eLxr shells
+      • Launching MPK, model, Yocto, Neat, ROS 2, or eLxr shells
 
 Options:
   -v, --version TEXT  Filter SDK containers by version tag (e.g.

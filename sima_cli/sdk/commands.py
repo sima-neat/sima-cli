@@ -88,14 +88,14 @@ class SdkGroup(click.Group):
 @click.pass_context
 def sdk(ctx, version_filter):
     """
-    Manage and launch SiMa SDK 2.0 container environments (Beta).
+    Manage and launch SiMa SDK container environments.
 
-    This group provides access to the full SDK 2.0 toolchain, including
+    This group provides access to the full SDK toolchain, including
     setup, container orchestration, tool-specific shells (MPK, model,
-    Yocto, Neat, ROS 2, eLxr), and hybrid `.sima` script execution. These commands are
-    intended for SDK 2.0+ users only.
+    Yocto, Neat, ROS 2, eLxr), and hybrid `.sima` script execution. These
+    commands support SDK 2.0 and newer.
 
-    \\c Host platforms only.
+    Host platforms only.
 
     Typical Use Cases
     
@@ -105,7 +105,7 @@ def sdk(ctx, version_filter):
 
         • Stopping or removing SDK containers and cached images
 
-        • Launching MPK, model, Yocto, Neat, or eLxr shells
+        • Launching MPK, model, Yocto, Neat, ROS 2, or eLxr shells
 
     """
     ctx.ensure_object(dict)

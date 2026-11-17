@@ -9,7 +9,7 @@ Command reference: [`sima-cli update`](../commands/sima-cli-update.md)
 For the legacy eLxr OTA path, selecting the latest public release resolves the
 published GA version from Developer Portal release metadata, then passes that
 exact version to `simaai-ota`. A newer APT candidate does not override GA.
-Explicit `ga`, `beta`, `alpha`, and `qa` selectors use the same metadata.
+Explicit `ga`, `beta`, and `alpha` selectors use the same metadata.
 Missing release metadata or a GA version absent from APT stops the update.
 Internal and forced prerelease latest updates retain their existing behavior.
 

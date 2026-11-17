@@ -537,8 +537,11 @@ def update_elxr(
         click.echo("ℹ️  Not an ELXR devkit, skipping update")
         return
 
+    if version_or_url and version_or_url.strip().lower() == "qa":
+        raise click.ClickException("QA release selector is not supported. Use ga, beta, or alpha.")
+
     release_tag = bool(
-        version_or_url and version_or_url.strip().lower() in {"ga", "beta", "alpha", "qa"}
+        version_or_url and version_or_url.strip().lower() in {"ga", "beta", "alpha"}
     )
     if release_tag:
         # Release metadata is hosted on the Developer Portal, including when

@@ -32,7 +32,7 @@ def ota(monkeypatch):
         assert url == 'https://docs.sima.ai/pkg_downloads/releases.json'
         assert internal is False
         path = Path(dest_folder) / 'releases.json'
-        path.write_text(json.dumps({'ga': '3.0.1', 'beta': '3.0.2'}))
+        path.write_text(json.dumps({'ga': '3.0.1', 'beta': '3.0.2', 'alpha': '3.0.2'}))
         return str(path)
 
     monkeypatch.setattr(tag, 'download_file_from_url', download)
@@ -53,7 +53,7 @@ def test_interactive_latest_pins_ga(ota, monkeypatch, capsys):
     assert 'Would run: sudo simaai-ota -f -o -v 3.0.1' in capsys.readouterr().out
 
 
-@pytest.mark.parametrize('selector,version', [('GA', '3.0.1'), ('beta', '3.0.2')])
+@pytest.mark.parametrize('selector,version', [('GA', '3.0.1'), ('beta', '3.0.2'), ('alpha', '3.0.2')])
 def test_explicit_tag_resolves_release(ota, selector, version):
     elxr.update_elxr(selector, auto_confirm=True)
     assert ota.call_args.args[0][-2:] == ['-v', version]
@@ -120,3 +120,12 @@ def test_cli_reports_release_failure_without_applying_ota(ota, monkeypatch, fail
     # APT metadata refresh is allowed; the OTA installer must never run.
     assert ota.call_count == 1
     assert ota.call_args.args[0] == ['sudo', '-n', 'apt', 'update']
+
+
+@pytest.mark.parametrize('selector', ['qa', 'QA', ' qa '])
+def test_qa_selector_is_not_supported(ota, selector):
+    with pytest.raises(click.ClickException, match='QA release selector is not supported'):
+        tag.resolve_version(selector)
+    with pytest.raises(click.ClickException, match='QA release selector is not supported'):
+        elxr.update_elxr(selector, auto_confirm=True)
+    ota.assert_not_called()

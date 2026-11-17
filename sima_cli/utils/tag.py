@@ -41,6 +41,9 @@ def tag_resolver(tag: str, internal: bool = False) -> str:
                 raise ValueError(f"❌ Tag '{tag}' not found in releases.json.")
 
             version = data[tag]
+            if not isinstance(version, str) or not version.strip():
+                raise ValueError(f"❌ Tag '{tag}' has no valid version in releases.json.")
+            version = version.strip()
             print(f"✅ Resolved tag '{tag}' → version {version}")
             return version
 
@@ -71,8 +74,7 @@ def resolve_version(ver: Optional[str], internal: bool = False) -> str:
         if ver in {"ga", "beta", "alpha", "qa"}:
             return tag_resolver(ver, internal=internal)
     except Exception as e:
-        click.secho(f"❌ Failed to resolve tag: {e}", fg="red")
-        exit(0)
+        raise click.ClickException(f"Failed to resolve tag: {e}") from e
 
     print(f"✅ Using explicit version: {ver}")
     return ver

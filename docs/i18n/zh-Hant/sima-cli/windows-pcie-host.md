@@ -7,8 +7,9 @@
 請先安裝支援的 Platform PCIe 套件與 x64 GStreamer MSVC 執行階段，
 再從 PowerShell 執行命令。已簽署的驅動程式、主機程式庫和
 `SiMaMlaDaemon` 服務由 Platform 套件管理；Neat 不會替換或更新它們。
-Windows 可能會要求管理員核准安裝於整台電腦的 Scheduler 與 Core MSI 套件。
-只有這些原生安裝程式會提升權限；CLI、受管理的 Python 環境與客戶技能仍留在
+對於安裝於整台電腦的 Scheduler 與 Core MSI 套件，標準使用者只需核准一次 Windows
+管理員提示：一個提升權限的步驟會先安裝 Scheduler，再安裝 Core；若 Scheduler 失敗，
+便不會啟動 Core。只有這個步驟會提升權限；CLI、受管理的 Python 環境與客戶技能仍留在
 目前使用者的工作階段與設定檔中。標準使用者必須從互動式 PowerShell 視窗執行
 命令，Windows 才能顯示核准提示。
 
@@ -47,21 +48,30 @@ Windows Installer。只有當 Python 套件是從此版本的 wheel 安裝且仍
 再執行相同命令；安裝程式會列出失敗前已完成的原生套件。Windows Installer 錯誤 `1625`
 表示主機的應用程式控制原則拒絕了套件。首次發行的 Neat MSI 套件、DLL 與 Python
 擴充模組皆未經程式碼簽署。`sima-cli` 透過 HTTPS 從發行通道下載這些檔案，在下載後
-驗證每個套件的 SHA-256 檢查碼，並在啟動 Windows Installer 或 pip 前再次驗證；若套件不再相符便會停止。
+驗證每個套件的 SHA-256 檢查碼，並在啟動 Windows Installer 或 pip 前再次驗證（標準使用者
+會在核准提示之前與提升權限的步驟之中各驗證一次）；若套件不再相符便會停止。
 企業的應用程式控制原則可能會封鎖未簽署的二進位檔；請 Windows 管理員檢視該原則。
 `sima-cli` 不會停用任何 Windows 安全性控制。若無法啟動 Windows Installer，
 `sima-cli` 會顯示嘗試安裝的套件、權限指引，以及預定的安裝記錄位置。
 
-透過 Windows「已安裝的應用程式」或 `msiexec` 移除 Scheduler 和 Core。
-這些 MSI 不負責目前使用者的 Python 套件、已同步的客戶技能或 CLI 登錄記錄；
-請從 PowerShell 分別移除：
+`sima-cli` 安裝發行版本時，會將每個 MSI 的產品代碼記錄在登錄記錄中。一個命令會使用
+這些代碼，在一次管理員核准提示下，於一個提升權限的步驟中先解除安裝 Core，再解除安裝
+Scheduler，然後移除該記錄：
 
 ```powershell
-& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
-sima-cli playbooks remove neat-pcie-application-builder --yes
 sima-cli packages list
 sima-cli packages remove gh:sima-neat/core/pciehost/windows/amd64 --version INSTALLED_VERSION --yes
 ```
 
-請將 `INSTALLED_VERSION` 替換為 `packages list` 顯示的精確值。最後一個命令只會
-移除本機 CLI 記錄，不會解除安裝檔案，因此應在上述各安裝程式完成移除後執行。
+請將 `INSTALLED_VERSION` 替換為 `packages list` 顯示的精確值。已不存在的套件視為已移除。
+若 Windows Installer 失敗，只要 Core 仍在，就不會移除 Scheduler；記錄會以
+`remove-failed` 狀態保留，可再次執行同一命令。結束代碼 `3010` 表示兩個套件皆已移除，
+且必須重新啟動 Windows 才能完成。
+
+此命令不會刪除目前使用者的 Python 套件、受管理的 Python 環境或已同步的客戶技能；
+它會顯示移除這些項目的命令：
+
+```powershell
+& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
+sima-cli playbooks remove neat-pcie-application-builder --yes
+```

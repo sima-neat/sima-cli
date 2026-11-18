@@ -8,8 +8,10 @@ Windows PCIe 호스트 릴리스는 `sima-cli` 명령 하나로 설치할 수 �
 지원되는 Platform PCIe 패키지와 x64 GStreamer MSVC 런타임을 설치한 뒤
 PowerShell에서 명령을 실행하세요. 서명된 드라이버, 호스트 라이브러리,
 `SiMaMlaDaemon` 서비스는 Platform 패키지가 관리하며 Neat는 이를 교체하거나 업데이트하지 않습니다.
-컴퓨터 전체에 설치되는 Scheduler 및 Core MSI 패키지에 대해 Windows가 관리자 승인을
-요청할 수 있습니다. 권한이 상승하는 것은 이 네이티브 설치 프로그램뿐입니다. CLI,
+컴퓨터 전체에 설치되는 Scheduler 및 Core MSI 패키지에 대해 표준 사용자는 Windows
+관리자 승인 프롬프트를 한 번만 승인합니다. 권한이 상승된 하나의 단계에서 Scheduler를
+설치한 뒤 Core를 설치하며, Scheduler가 실패하면 Core를 시작하지 않습니다. 권한이
+상승하는 것은 이 단계뿐입니다. CLI,
 관리형 Python 환경 및 고객 스킬은 현재 사용자의 세션과 프로필에 그대로 유지됩니다.
 표준 사용자는 Windows가 승인 프롬프트를 표시할 수 있도록 대화형 PowerShell 창에서
 명령을 실행해야 합니다.
@@ -54,24 +56,33 @@ pip 단계가 실패하면 표시된 문제를 해결하고 같은 명령을 다
 Windows Installer 오류 `1625`는 호스트의 애플리케이션 제어 정책이 패키지를
 거부했다는 뜻입니다. 첫 릴리스의 Neat MSI 패키지, DLL, Python 확장 모듈은
 코드 서명되지 않았습니다. `sima-cli`는 릴리스 채널에서 HTTPS로 이를 다운로드하고,
-각 패키지의 SHA-256 체크섬을 다운로드 후와 Windows Installer 또는 pip를 시작하기 전에 다시 검증하며, 더 이상
-일치하지 않는 패키지가 있으면 중단합니다. 기업의 애플리케이션 제어 정책이 서명되지
+각 패키지의 SHA-256 체크섬을 다운로드 후와 Windows Installer 또는 pip를 시작하기 전에
+다시 검증하며(표준 사용자의 경우 승인 프롬프트 전과 권한이 상승된 단계 안에서 모두
+검증합니다), 더 이상 일치하지 않는 패키지가 있으면 중단합니다. 기업의 애플리케이션 제어 정책이 서명되지
 않은 바이너리를 차단할 수 있습니다. Windows 관리자에게 정책 검토를 요청하세요.
 `sima-cli`는 Windows 보안 제어를 비활성화하지 않습니다.
 Windows Installer를 시작할 수 없으면 `sima-cli`는 시도한 패키지, 권한 안내,
 예정된 설치 로그 위치를 표시합니다.
 
-Scheduler와 Core는 Windows의 설치된 앱 또는 `msiexec`로 제거합니다.
-이 MSI들은 현재 사용자의 Python 패키지, 동기화된 고객 스킬 또는 CLI 레지스트리
-기록을 관리하지 않습니다. PowerShell에서 각각 제거하세요.
+`sima-cli`는 릴리스를 설치할 때 각 MSI의 제품 코드를 레지스트리 기록에 저장합니다.
+하나의 명령이 이 코드를 사용해 한 번의 관리자 승인 프롬프트로, 권한이 상승된 하나의
+단계에서 Core를 제거한 뒤 Scheduler를 제거하고, 이후 기록을 삭제합니다.
 
 ```powershell
-& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
-sima-cli playbooks remove neat-pcie-application-builder --yes
 sima-cli packages list
 sima-cli packages remove gh:sima-neat/core/pciehost/windows/amd64 --version INSTALLED_VERSION --yes
 ```
 
-`INSTALLED_VERSION`을 `packages list`에 표시된 정확한 값으로 바꾸세요.
-마지막 명령은 로컬 CLI 기록만 제거하며 파일을 제거하지 않습니다. 따라서 위의
-각 설치 프로그램에서 패키지를 제거한 뒤 실행하세요.
+`INSTALLED_VERSION`을 `packages list`에 표시된 정확한 값으로 바꾸세요. 이미 없는
+패키지는 제거된 것으로 간주합니다. Windows Installer가 실패하면 Core가 남아 있는 동안
+Scheduler는 제거하지 않고, 기록은 `remove-failed` 상태로 유지되므로 같은 명령을 다시
+실행할 수 있습니다. 종료 코드 `3010`은 두 패키지가 모두 제거되었으며 완료하려면
+Windows를 다시 시작해야 한다는 뜻입니다.
+
+이 명령은 현재 사용자의 Python 패키지, 관리형 Python 환경 또는 동기화된 고객 스킬을
+삭제하지 않으며, 이를 제거하는 명령을 출력합니다.
+
+```powershell
+& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
+sima-cli playbooks remove neat-pcie-application-builder --yes
+```

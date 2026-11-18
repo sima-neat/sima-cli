@@ -6,8 +6,7 @@ Windows PCIe ホストのリリースは、1 つの `sima-cli` コマンドで�
 一式をダウンロードして検証してから、各ネイティブパッケージを Windows Installer に渡します。
 
 対応する Platform PCIe パッケージと x64 GStreamer MSVC ランタイムをインストールした後、
-PowerShell から実行してください。署名済みドライバー、ホストライブラリ、
-`SiMaMlaDaemon` サービスは Platform パッケージが提供します。Neat はこれらを置換・更新しません。
+PowerShell から実行してください。
 マシン全体にインストールする Scheduler と Core の MSI パッケージについて、標準ユーザーは
 Windows の管理者承認プロンプトを 1 回だけ承認します。1 つの昇格された手順で Scheduler、
 続いて Core をインストールし、Scheduler が失敗した場合は Core を開始しません。昇格される
@@ -16,7 +15,7 @@ Windows の管理者承認プロンプトを 1 回だけ承認します。1 つ�
 ウィンドウからコマンドを実行してください。
 
 ```powershell
-sima-cli neat install core/pciehost/windows/amd64@3.0
+sima-cli neat install core/pciehost/windows/amd64@v<Neat version>
 ```
 
 MSI の実行前に、`sima-cli` は Windows OpenSSH ツール、稼働中の Platform サービス、
@@ -34,19 +33,6 @@ CLI は、このスキル ID が未使用であるか、同じインストール
 登録済みであることも確認します。別のソースからのスキル、または同じ ID を持つ
 未登録のスキルディレクトリには手を加えず、インストールを中止します。パッケージを
 再インストールする場合は、同じパッケージのパスに登録されたスキルだけを置き換えます。
-初回はカードへのパスワードなし SSH 接続を設定してください。
-
-```powershell
-& "C:\Program Files\SimaPCIeHost\bin\pcie-setup.cmd"
-```
-
-このコマンドはローカルの `10.0.N.1` 管理リンクからカードのアドレスを検出します。
-自動検出できない場合は `-Hosts 10.0.0.2` を指定してください。公開鍵が未登録の
-場合にのみ OpenSSH がカードのパスワードを要求し、コマンドはパスワードを保存しません。
-ラッパーは、初回リリースの未署名ユーティリティを Windows PowerShell の標準ローカル
-ポリシーで実行できるよう、そのインストール済みスクリプトのプロセスだけに
-`ExecutionPolicy Bypass` を適用します。ユーザーやコンピューターの実行ポリシーは
-変更せず、管理者が強制したポリシーが優先されます。
 
 同じコマンドを再実行すると、同じチェックを行い、各 MSI を同じ順序で再び
 Windows Installer に渡します。Python パッケージは、このリリースの wheel から

@@ -5,8 +5,7 @@
 `sima-cli` 會先下載並驗證整組套件，再將各個原生套件交給 Windows Installer。
 
 請先安裝支援的 Platform PCIe 套件與 x64 GStreamer MSVC 執行階段，
-再從 PowerShell 執行命令。已簽署的驅動程式、主機程式庫和
-`SiMaMlaDaemon` 服務由 Platform 套件管理；Neat 不會替換或更新它們。
+再從 PowerShell 執行命令。
 對於安裝於整台電腦的 Scheduler 與 Core MSI 套件，標準使用者只需核准一次 Windows
 管理員提示：一個提升權限的步驟會先安裝 Scheduler，再安裝 Core；若 Scheduler 失敗，
 便不會啟動 Core。只有這個步驟會提升權限；CLI、受管理的 Python 環境與客戶技能仍留在
@@ -14,7 +13,7 @@
 命令，Windows 才能顯示核准提示。
 
 ```powershell
-sima-cli neat install core/pciehost/windows/amd64@3.0
+sima-cli neat install core/pciehost/windows/amd64@v<Neat version>
 ```
 
 啟動任一 MSI 前，`sima-cli` 會檢查 Windows OpenSSH 工具、執行中的 Platform
@@ -29,18 +28,7 @@ Windows Installer 完成後，CLI 會執行已安裝的主機診斷工具，並�
 技能目錄。在執行任一 MSI 前，CLI 也會檢查此技能 ID 尚未使用，或已登錄至相同的
 已安裝套件路徑。若技能來自其他來源，或存在具有相同 ID 但未登錄的技能目錄，CLI
 不會變更該技能或目錄，並會停止安裝。再次安裝套件時，只能取代登錄至相同套件
-路徑的技能。首次安裝時，請設定免密碼 SSH 卡片連線：
-
-```powershell
-& "C:\Program Files\SimaPCIeHost\bin\pcie-setup.cmd"
-```
-
-設定命令會從本機的 `10.0.N.1` 管理連線探索卡片位址。無法探索時，請使用
-`-Hosts 10.0.0.2`。只有在公開金鑰尚未註冊時，OpenSSH 才會提示輸入卡片密碼，
-命令不會儲存密碼。包裝程式僅對該已安裝指令碼的處理程序套用
-`ExecutionPolicy Bypass`，讓首次發行的未簽署工具能在 Windows PowerShell
-預設本機原則下執行。這不會變更使用者或電腦的執行原則；管理員強制套用的
-原則仍有優先權。
+路徑的技能。
 
 再次執行相同命令會重新進行相同的檢查，並依相同順序再次將各個 MSI 交給
 Windows Installer。只有當 Python 套件是從此版本的 wheel 安裝且仍可匯入時才會保留；

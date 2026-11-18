@@ -278,6 +278,15 @@ class WindowsPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(MetadataValidationError, "safe relative Windows path"):
             validate_metadata(self.metadata)
 
+    def test_metadata_rejects_a_python_distribution_that_is_a_path(self):
+        for distribution in ("..\\..\\x", "C:\\x", "/x", "a/b"):
+            with self.subTest(distribution=distribution):
+                self.metadata["installation"]["python"]["distribution"] = distribution
+                with self.assertRaisesRegex(
+                    MetadataValidationError, r"installation\.python\.distribution"
+                ):
+                    validate_metadata(self.metadata)
+
     def test_metadata_requires_customer_skill_id(self):
         self.metadata["installation"]["skills"] = [{
             "environment": "ProgramFiles",

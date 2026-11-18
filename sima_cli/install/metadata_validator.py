@@ -15,6 +15,8 @@ class MetadataValidationError(Exception):
     pass
 
 VALID_DEVKIT_SW = {"yocto", "elxr"}
+# Customer skill IDs and Python distribution names; both become path components.
+_SAFE_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 
 
 def _validate_windows_path_spec(value, field_name: str):
@@ -346,6 +348,10 @@ def validate_metadata(data: dict):
                         raise MetadataValidationError(
                             f"'installation.python.{field}' must be a non-empty string"
                         )
+                if not re.fullmatch(_SAFE_NAME, python_package["distribution"]):
+                    raise MetadataValidationError(
+                        "'installation.python.distribution' must be a valid distribution name"
+                    )
                 if not python_package["wheel"].lower().endswith(".whl"):
                     raise MetadataValidationError(
                         "'installation.python.wheel' must name a wheel resource"
@@ -389,9 +395,7 @@ def validate_metadata(data: dict):
                     prefix = f"installation.skills[{index}]"
                     _validate_windows_path_spec(skill, prefix)
                     skill_id = skill.get("id") if isinstance(skill, dict) else None
-                    if not isinstance(skill_id, str) or not re.fullmatch(
-                        r"[A-Za-z0-9][A-Za-z0-9._-]*", skill_id
-                    ):
+                    if not isinstance(skill_id, str) or not re.fullmatch(_SAFE_NAME, skill_id):
                         raise MetadataValidationError(
                             f"'{prefix}.id' must be a valid customer skill ID"
                         )

@@ -312,14 +312,17 @@ class WindowsPackageTests(unittest.TestCase):
             validate_metadata(self.metadata)
 
     def test_native_only_invokes_msiexec_and_does_not_invoke_pip(self):
+        self.metadata["installation"]["python"]["distribution"] = "other-package"
+        output = io.StringIO()
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
-        ) as run:
+        ) as run, redirect_stdout(output):
             result = install_windows_package(
                 self.metadata, str(self.root), native_only=True
             )
 
         self.assertEqual(result["python"], "not-requested")
+        self.assertIn("other-package will not be installed.", output.getvalue())
         self.assertEqual(run.call_count, 1)
         command = run.call_args.args[0]
         self.assertEqual(command[:3], ["msiexec.exe", "/i", str(self.msi)])

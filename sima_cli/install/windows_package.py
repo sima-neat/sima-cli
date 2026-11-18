@@ -718,7 +718,9 @@ def _prepare_python_executable(
     if not python_package:
         return None
     if native_only:
-        click.echo("Native-only installation requested; pyneatpcie will not be installed.")
+        click.echo(
+            f"Native-only installation requested; {python_package['distribution']} will not be installed."
+        )
         return None
     if python_executable:
         _preflight_python(metadata, python_executable)

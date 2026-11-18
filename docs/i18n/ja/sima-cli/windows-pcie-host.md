@@ -5,6 +5,9 @@ Windows PCIe ホストのリリースは、1 つの `sima-cli` コマンドで�
 インストール順序、バージョン、チェックサムが記録されています。`sima-cli` は
 一式をダウンロードして検証してから、各ネイティブパッケージを Windows Installer に渡します。
 
+このページでは `sima-cli` コマンドのみを説明します。前提条件、カードの登録、検証、
+復旧については、[PCIe ホストのインストール](/getting-started/neat-library/pcie-host) の手順に従ってください。
+
 対応する Platform PCIe パッケージと x64 GStreamer MSVC ランタイムをインストールした後、
 PowerShell から実行してください。
 マシン全体にインストールする Scheduler と Core の MSI パッケージについて、標準ユーザーは
@@ -18,8 +21,12 @@ Windows の管理者承認プロンプトを 1 回だけ承認します。1 つ�
 sima-cli neat install core/pciehost/windows/amd64@v<Neat version>
 ```
 
+`<Neat version>` は、Windows ホストパッケージを公開している Neat リリースに
+置き換えてください。Ubuntu ホストパッケージと同じリリースタグです。
+
 MSI の実行前に、`sima-cli` は Windows OpenSSH ツール、稼働中の Platform サービス、
-GStreamer、互換性のある Python のバージョンとアーキテクチャ、pip を確認します。
+GStreamer、互換性のある Python のバージョンとアーキテクチャ、pip、wheel タグ
+（フリースレッド版 Python は wheel を受け付けません）を確認します。
 前提条件を満たさない場合、ネイティブのインストール状態を変更せず停止します。
 デフォルトでは `%USERPROFILE%\pyneatpcie` を作成または再利用し、対応する
 `pyneatpcie` wheel をインストールして、バージョンとインポートを確認します。
@@ -38,8 +45,11 @@ CLI は、このスキル ID が未使用であるか、同じインストール
 Windows Installer に渡します。Python パッケージは、このリリースの wheel から
 インストールされ、引き続きインポートできる場合にのみそのまま使用します。それ以外の
 場合、`sima-cli` は wheel を再インストールします。
-ネイティブパッケージや pip の処理が失敗した場合は、表示された問題を修正して
-再実行してください。失敗前に完了したネイティブパッケージは報告されます。
+ネイティブパッケージや pip の処理が失敗した場合は、表示された問題を修正してください。
+Windows Installer が再起動を要求した場合、コマンドは終了コード `3010` で終了するため、
+Windows を再起動してください。その後、`sima-cli` が表示する再試行コマンドを実行して
+ください。このコマンドは今回の実行で解決された正確なリリースを指定するため、再試行で
+別のリリースが選ばれることはありません。失敗前に完了したネイティブパッケージは報告されます。
 Windows Installer のエラー `1625` は、ホストのアプリケーション制御ポリシーが
 パッケージを拒否したことを示します。初回リリースの Neat MSI パッケージ、DLL、
 Python 拡張モジュールはコード署名されていません。`sima-cli` はこれらをリリース

@@ -5,6 +5,9 @@ Windows PCIe 호스트 릴리스는 `sima-cli` 명령 하나로 설치할 수 �
 설치 순서, 버전, 체크섬이 기록됩니다. `sima-cli`는 전체 패키지를 다운로드하고
 검증한 다음 각 네이티브 패키지를 Windows Installer에 전달합니다.
 
+이 페이지에서는 `sima-cli` 명령만 설명합니다. 필수 조건, 카드 등록, 확인, 복구는
+[PCIe 호스트 설치](/getting-started/neat-library/pcie-host)를 따르세요.
+
 지원되는 Platform PCIe 패키지와 x64 GStreamer MSVC 런타임을 설치한 뒤
 PowerShell에서 명령을 실행하세요.
 컴퓨터 전체에 설치되는 Scheduler 및 Core MSI 패키지에 대해 표준 사용자는 Windows
@@ -19,8 +22,12 @@ PowerShell에서 명령을 실행하세요.
 sima-cli neat install core/pciehost/windows/amd64@v<Neat version>
 ```
 
+`<Neat version>`은 Windows 호스트 패키지를 게시하는 Neat 릴리스로 바꾸세요.
+Ubuntu 호스트 패키지와 같은 릴리스 태그입니다.
+
 MSI를 실행하기 전에 `sima-cli`는 Windows OpenSSH 도구, 실행 중인 Platform 서비스,
-GStreamer, 호환되는 Python 버전과 아키텍처, pip를 확인합니다. 필수 조건이
+GStreamer, 호환되는 Python 버전과 아키텍처, pip, wheel 태그(프리 스레드
+Python은 wheel을 받아들이지 않음)를 확인합니다. 필수 조건이
 충족되지 않으면 네이티브 설치 상태를 변경하지 않고 중단합니다. 기본적으로
 `%USERPROFILE%\pyneatpcie`를 만들거나 재사용하고, 해당 `pyneatpcie` wheel을
 설치한 다음 버전과 가져오기를 확인합니다. 다른 애플리케이션 환경을 선택하려면
@@ -38,7 +45,10 @@ Claude 스킬 디렉터리에 동기화합니다. 두 MSI 중 하나를 실행�
 Windows Installer에 다시 전달합니다. Python 패키지는 이 릴리스의 wheel로
 설치되었고 여전히 import할 수 있을 때만 그대로 둡니다. 그렇지 않으면 `sima-cli`가
 wheel을 다시 설치합니다. 네이티브 패키지나
-pip 단계가 실패하면 표시된 문제를 해결하고 같은 명령을 다시 실행하세요.
+pip 단계가 실패하면 표시된 문제를 해결하세요. Windows Installer가 다시 시작을
+요청하면 명령은 종료 코드 `3010`으로 끝나며, Windows를 다시 시작해야 합니다. 그런 다음
+`sima-cli`가 표시하는 재시도 명령을 실행하세요. 이 명령은 이번 실행에서 확인된 정확한
+릴리스를 지정하므로 재시도 시 다른 릴리스가 선택되지 않습니다.
 설치 프로그램은 실패 전에 설치가 완료된 네이티브 패키지를 알려줍니다.
 Windows Installer 오류 `1625`는 호스트의 애플리케이션 제어 정책이 패키지를
 거부했다는 뜻입니다. 첫 릴리스의 Neat MSI 패키지, DLL, Python 확장 모듈은

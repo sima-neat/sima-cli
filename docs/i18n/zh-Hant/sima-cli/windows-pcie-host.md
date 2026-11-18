@@ -4,6 +4,9 @@
 相互配對的 Scheduler 和 Core MSI 套件、安裝順序、版本與檢查碼。
 `sima-cli` 會先下載並驗證整組套件，再將各個原生套件交給 Windows Installer。
 
+本頁僅說明 `sima-cli` 命令。關於必要條件、卡片註冊、驗證與復原，請依照
+[安裝 PCIe 主機](/getting-started/neat-library/pcie-host)操作。
+
 請先安裝支援的 Platform PCIe 套件與 x64 GStreamer MSVC 執行階段，
 再從 PowerShell 執行命令。
 對於安裝於整台電腦的 Scheduler 與 Core MSI 套件，標準使用者只需核准一次 Windows
@@ -16,8 +19,12 @@
 sima-cli neat install core/pciehost/windows/amd64@v<Neat version>
 ```
 
+請將 `<Neat version>` 替換為有提供 Windows 主機套件的 Neat 發行版本；它與 Ubuntu
+主機套件使用的發行標籤相同。
+
 啟動任一 MSI 前，`sima-cli` 會檢查 Windows OpenSSH 工具、執行中的 Platform
-服務、GStreamer，以及相容的 Python 版本、架構與 pip。若缺少必要條件，
+服務、GStreamer，以及相容的 Python 版本、架構、pip 與 wheel 標籤（free-threaded
+Python 不接受此 wheel）。若缺少必要條件，
 便會停止，不更動原生安裝。預設會建立或重複使用 `%USERPROFILE%\pyneatpcie`，
 將配對的 `pyneatpcie` wheel 安裝至該環境，再檢查版本與匯入是否正常。
 使用 `--python-executable <path>` 可指定其他應用程式環境；
@@ -32,8 +39,10 @@ Windows Installer 完成後，CLI 會執行已安裝的主機診斷工具，並�
 
 再次執行相同命令會重新進行相同的檢查，並依相同順序再次將各個 MSI 交給
 Windows Installer。只有當 Python 套件是從此版本的 wheel 安裝且仍可匯入時才會保留；
-否則 `sima-cli` 會重新安裝 wheel。若原生套件或 pip 步驟失敗，請修正顯示的問題後
-再執行相同命令；安裝程式會列出失敗前已完成的原生套件。Windows Installer 錯誤 `1625`
+否則 `sima-cli` 會重新安裝 wheel。若原生套件或 pip 步驟失敗，請修正顯示的問題；
+若 Windows Installer 要求重新啟動，命令會以結束代碼 `3010` 結束，請重新啟動 Windows。
+接著執行 `sima-cli` 顯示的重試命令：它指定本次執行所解析的確切發行版本，因此重試不會
+選到其他版本。安裝程式會列出失敗前已完成的原生套件。Windows Installer 錯誤 `1625`
 表示主機的應用程式控制原則拒絕了套件。首次發行的 Neat MSI 套件、DLL 與 Python
 擴充模組皆未經程式碼簽署。`sima-cli` 透過 HTTPS 從發行通道下載這些檔案，在下載後
 驗證每個套件的 SHA-256 檢查碼，並在啟動 Windows Installer 或 pip 前再次驗證（標準使用者

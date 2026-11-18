@@ -222,11 +222,13 @@ def test_install_routing_uses_container_arch(tmp_path, monkeypatch, local, yes, 
         assert not commands
         return
     scripts = [cmd[-1] for cmd in commands if "bash" in cmd]
-    assert len(scripts) == 1
-    script = scripts[0]
-    assert "su -s /bin/bash developer -c" in script
-    assert "trap cleanup_model_sdk_install EXIT" in script
-    assert "chown -R 123:456" in script
+    assert len(scripts) == 2
+    script = scripts[-1]
+    assert "sudo -n true" in script
+    install_command = next(cmd for cmd in commands if "bash" in cmd and cmd[3] == "developer")
+    assert install_command[-1] == script
+    assert all("chown" not in candidate and "trap " not in candidate and "su -s" not in candidate
+               for candidate in scripts)
     if expected == "local":
         assert "bash ./install_modelsdk_wheels.sh" in script
         assert "sima-cli login" not in script and "neat install" not in script
@@ -244,7 +246,7 @@ def test_local_install_failure_never_falls_back(tmp_path, monkeypatch):
 
     def run(command, **kwargs):
         commands.append(command)
-        if "bash" in command:
+        if "bash" in command and command[3] == "developer":
             raise SystemExit(1)
     with patch("sima_cli.sdk.utils._get_container_image_ref", return_value="ghcr.io/sima-neat/sdk:2.1.3"), \
          patch("sima_cli.sdk.utils.subprocess.run", side_effect=[
@@ -303,14 +305,14 @@ def test_sdk_300_installs_matching_compiler(tmp_path, monkeypatch, arch, machine
         ensure_model_sdk_extension_installed("container", "developer", auto_install=True)
 
     scripts = [call.args[0][-1] for call in run.call_args_list if "bash" in call.args[0]]
-    assert len(scripts) == 1
+    assert len(scripts) == 2
     if local_version == "3.0.0":
-        assert "bash ./install_modelsdk_wheels.sh" in scripts[0]
-        assert "neat install" not in scripts[0]
+        assert "bash ./install_modelsdk_wheels.sh" in scripts[-1]
+        assert "neat install" not in scripts[-1]
     else:
-        assert f'"$SIMA_CLI_BIN" neat install model-compiler/{arch}@v3.0.0' in scripts[0]
-        assert "@v2.1.3.1" not in scripts[0]
-        assert "install_modelsdk_wheels.sh" not in scripts[0]
+        assert f'"$SIMA_CLI_BIN" neat install model-compiler/{arch}@v3.0.0' in scripts[-1]
+        assert "@v2.1.3.1" not in scripts[-1]
+        assert "install_modelsdk_wheels.sh" not in scripts[-1]
 
 
 @pytest.mark.parametrize("arch,machine", [("amd64", "x86_64"), ("arm64", "aarch64")])
@@ -327,10 +329,10 @@ def test_legacy_four_component_sdk_uses_three_component_compiler(tmp_path, monke
         ensure_model_sdk_extension_installed("container", "developer", auto_install=True)
 
     scripts = [call.args[0][-1] for call in run.call_args_list if "bash" in call.args[0]]
-    assert len(scripts) == 1
+    assert len(scripts) == 2
     if local:
-        assert "bash ./install_modelsdk_wheels.sh" in scripts[0]
-        assert "tools/model-compiler" not in scripts[0]
+        assert "bash ./install_modelsdk_wheels.sh" in scripts[-1]
+        assert "tools/model-compiler" not in scripts[-1]
     else:
-        assert f'"$SIMA_CLI_BIN" install -v 2.1.2 tools/model-compiler/{arch}' in scripts[0]
-        assert "install -v 2.1.2.3" not in scripts[0]
+        assert f'"$SIMA_CLI_BIN" install -v 2.1.2 tools/model-compiler/{arch}' in scripts[-1]
+        assert "install -v 2.1.2.3" not in scripts[-1]

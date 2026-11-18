@@ -500,18 +500,17 @@ def _normalize_python_arch(value: str) -> str:
     return normalized
 
 
-def _python_compatibility_script() -> str:
-    return (
-        "import json, platform, sys; import pip; "
-        "print(json.dumps({'version': f'{sys.version_info.major}.{sys.version_info.minor}', "
-        "'arch': platform.machine()}))"
-    )
+_PYTHON_COMPATIBILITY_SCRIPT = (
+    "import json, platform, sys; import pip; "
+    "print(json.dumps({'version': f'{sys.version_info.major}.{sys.version_info.minor}', "
+    "'arch': platform.machine()}))"
+)
 
 
 def _inspect_python(command: List[str]) -> Tuple[Optional[Dict[str, str]], str]:
     try:
         result = _run(
-            [*command, "-c", _python_compatibility_script()],
+            [*command, "-c", _PYTHON_COMPATIBILITY_SCRIPT],
             text=True,
             capture_output=True,
             timeout=15,

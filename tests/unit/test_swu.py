@@ -642,6 +642,25 @@ def test_artifactory_daily_prefix_is_not_part_of_on_device_build_identity(family
         swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected=f'3.0.0_{family}_{branch}_B1211')
 
 
+def test_bare_release_version_accepts_full_on_device_build_name():
+    state = parse_state(STATE.replace('active slot : A', 'active slot : B').replace('running slot: A', 'running slot: B'))
+    state['active version'] = '3.0.1_master_B2798'
+    target, peer = MagicMock(), MagicMock()
+    with patch.object(swu, 'Target', return_value=peer), patch.object(swu, 'inspect_target', return_value=state), \
+            patch.object(swu.time, 'sleep'), patch.object(swu.time, 'monotonic', side_effect=[0, 1]):
+        swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.1')
+
+
+def test_bare_release_version_rejects_a_different_version_build():
+    state = parse_state(STATE.replace('active slot : A', 'active slot : B').replace('running slot: A', 'running slot: B'))
+    state['active version'] = '3.0.2_master_B2798'
+    target, peer = MagicMock(), MagicMock()
+    with patch.object(swu, 'Target', return_value=peer), patch.object(swu, 'inspect_target', return_value=state), \
+            patch.object(swu.time, 'sleep'), patch.object(swu.time, 'monotonic', side_effect=[0, 1]):
+        with pytest.raises(click.ClickException, match='expected 3.0.1'):
+            swu._reboot_and_verify(target, parse_state(STATE), '192.0.2.1', 'test', expected='3.0.1')
+
+
 @pytest.mark.parametrize('local', [False, True])
 @pytest.mark.parametrize('requested', [
     '3.0', '/tmp/bundle.swu', './bundle.swu', 'bundle.swu',

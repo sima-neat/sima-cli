@@ -77,8 +77,10 @@ def direct_url(wheel_sha256):
     return completed(stdout=json.dumps({"archive_info": {"hashes": {"sha256": wheel_sha256}}}))
 
 
-def python_facts(version="3.14", arch="AMD64"):
-    return completed(stdout=f'{{"version": "{version}", "arch": "{arch}"}}\n')
+def python_facts(version="3.14", arch="AMD64", tag="cp314-cp314-win_amd64", wheel_supported=True):
+    return completed(stdout=json.dumps({
+        "version": version, "arch": arch, "tag": tag, "wheel_supported": wheel_supported,
+    }) + "\n")
 
 
 def elevated_request(environment):
@@ -1688,6 +1690,60 @@ class WindowsPackageTests(unittest.TestCase):
                 registry.update_state.assert_called_once_with(
                     self.metadata["name"], self.metadata["version"], "prerequisite-failed"
                 )
+
+    def test_free_threaded_python_is_rejected_before_download_and_msi(self):
+        self.use_scheduler_and_core()
+        with patch(
+            "sima_cli.install.windows_package._run",
+            return_value=python_facts(tag="cp314-cp314t-win_amd64", wheel_supported=False),
+        ) as run:
+            registry, output = self.install_from_windows_metadata(
+                fails=True, python_executable=str(self.python)
+            )
+
+        self.download_assets.assert_not_called()
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][-1], self.wheel.name)
+        self.assertIn(
+            "Python 3.14 amd64 (cp314-cp314t-win_amd64) cannot install "
+            "pyneatpcie-0.6.1-cp314-cp314-win_amd64.whl",
+            output,
+        )
+        self.assertIn("No MSI was started.", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "prerequisite-failed"
+        )
+
+    def test_python_accepting_the_wheel_tags_installs_both_msis_and_the_wheel(self):
+        self.use_scheduler_and_core()
+        responses = [
+            python_facts(),  # preflight before download
+            python_facts(),  # check again before the MSIs
+            completed(),
+            completed(),
+            completed(returncode=3),
+            completed(),
+            completed(stdout="0.6.1\n"),
+            completed(),
+        ]
+        with patch(
+            "sima_cli.install.windows_package._run", side_effect=responses
+        ) as run:
+            registry, _output = self.install_from_windows_metadata(
+                python_executable=str(self.python)
+            )
+
+        commands = [entry.args[0] for entry in run.call_args_list]
+        for command in commands[:2]:
+            self.assertEqual(command[:2], [str(self.python), "-c"])
+            self.assertEqual(command[-1], self.wheel.name)
+        self.assertEqual(
+            [command[2] for command in commands[2:4]], [str(self.scheduler_msi), str(self.msi)]
+        )
+        self.assertEqual(commands[5][1:4], ["-m", "pip", "install"])
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "installed"
+        )
 
     def test_invalid_managed_python_environment_is_reported_before_download(self):
         (self.root / "home" / "pyneatpcie").mkdir(parents=True)

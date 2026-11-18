@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 import click
@@ -500,17 +500,31 @@ def _normalize_python_arch(value: str) -> str:
     return normalized
 
 
-_PYTHON_COMPATIBILITY_SCRIPT = (
-    "import json, platform, sys; import pip; "
-    "print(json.dumps({'version': f'{sys.version_info.major}.{sys.version_info.minor}', "
-    "'arch': platform.machine()}))"
-)
+# Reports whether the interpreter accepts the wheel filename passed as its argument,
+# using pip's own tag logic (a free-threaded CPython rejects a cp314-cp314 wheel).
+_PYTHON_COMPATIBILITY_SCRIPT = """
+import json, platform, sys
+import pip
+try:
+    from pip._vendor.packaging.tags import sys_tags
+    from pip._vendor.packaging.utils import parse_wheel_filename
+except ImportError:
+    from packaging.tags import sys_tags
+    from packaging.utils import parse_wheel_filename
+supported = list(sys_tags())
+print(json.dumps({
+    'version': f'{sys.version_info.major}.{sys.version_info.minor}',
+    'arch': platform.machine(),
+    'tag': str(supported[0]),
+    'wheel_supported': not parse_wheel_filename(sys.argv[1])[3].isdisjoint(supported),
+}))
+"""
 
 
-def _inspect_python(command: List[str]) -> Tuple[Optional[Dict[str, str]], str]:
+def _inspect_python(command: List[str], wheel: str) -> Tuple[Optional[Dict[str, str]], str]:
     try:
         result = _run(
-            [*command, "-c", _PYTHON_COMPATIBILITY_SCRIPT],
+            [*command, "-c", _PYTHON_COMPATIBILITY_SCRIPT, wheel],
             text=True,
             capture_output=True,
             timeout=15,
@@ -529,6 +543,10 @@ def _inspect_python(command: List[str]) -> Tuple[Optional[Dict[str, str]], str]:
     return facts, ""
 
 
+def _wheel_name(python_package: Dict) -> str:
+    return PurePosixPath(python_package["wheel"]).name
+
+
 def _python_compatibility_error(python_package: Dict, facts: Dict[str, str]) -> Optional[str]:
     required_version = python_package.get("requires-python")
     if required_version and facts.get("version") != required_version:
@@ -542,6 +560,12 @@ def _python_compatibility_error(python_package: Dict, facts: Dict[str, str]) -> 
         return (
             f"Python architecture {actual_arch or 'unknown'} was found; this package requires "
             f"{required_arch}."
+        )
+    if not facts.get("wheel_supported"):
+        return (
+            f"Python {facts.get('version')} {actual_arch} ({facts.get('tag') or 'unknown tag'}) "
+            f"cannot install {_wheel_name(python_package)}; a free-threaded or other-ABI "
+            "build does not accept this wheel."
         )
     return None
 
@@ -562,7 +586,7 @@ def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
         raise WindowsPrerequisiteError(
             f"Selected Python executable does not exist; no MSI was started: '{executable}'."
         )
-    facts, detail = _inspect_python([str(executable)])
+    facts, detail = _inspect_python([str(executable)], _wheel_name(python_package))
     if facts is None:
         raise WindowsPrerequisiteError(
             f"Selected Python environment cannot run pip; no MSI was started: {detail}. "
@@ -621,7 +645,7 @@ def _python_bootstrap_candidates(required_version: Optional[str]) -> List[List[s
 def _bootstrap_python(python_package: Dict, environment: Path) -> List[str]:
     required_version = python_package.get("requires-python")
     for command in _python_bootstrap_candidates(required_version):
-        facts, _ = _inspect_python(command)
+        facts, _ = _inspect_python(command, _wheel_name(python_package))
         if facts is not None and _python_compatibility_error(python_package, facts) is None:
             return command
     required_arch = python_package.get("arch", "the required architecture")

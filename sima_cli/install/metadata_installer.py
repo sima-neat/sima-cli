@@ -1587,6 +1587,7 @@ def install_from_metadata(
     download_only: bool = False,
     python_executable: str = None,
     native_only: bool = False,
+    retry_command: str = None,
 ):
     _ensure_install_dir_writable(install_dir, command_name=command_name)
 
@@ -1642,6 +1643,7 @@ def install_from_metadata(
                                         metadata.get("name"), metadata.get("version"), fields
                                     ),
                                     check_prerequisites=False,
+                                    retry_command=retry_command,
                                 )
                                 registry.update_state(
                                     metadata.get("name"), metadata.get("version"), "installed"

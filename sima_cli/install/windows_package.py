@@ -80,7 +80,17 @@ def _declared_sha256(metadata: Dict, resource: str) -> str:
     return str(metadata.get("resources-checksum", {}).get(resource, "")).strip().lower()
 
 
-def _verify_sha256(resource: str, path: Path, expected: str, error_type) -> None:
+_RERUN_SAME_COMMAND = "rerun the same command."
+
+
+def _rerun(retry_command: Optional[str]) -> str:
+    """End a recovery message with the exact command when the caller knows it."""
+    return f"rerun this exact release: {retry_command}" if retry_command else _RERUN_SAME_COMMAND
+
+
+def _verify_sha256(
+    resource: str, path: Path, expected: str, error_type, rerun: str = _RERUN_SAME_COMMAND
+) -> None:
     from sima_cli.install.metadata_installer import _compute_sha256
 
     try:
@@ -89,18 +99,20 @@ def _verify_sha256(resource: str, path: Path, expected: str, error_type) -> None
         raise error_type(
             f"Windows package resource '{resource}' could not be read for SHA-256 "
             f"verification at '{path}': {error}; it was not started. "
-            "Close any program using the file, then rerun the same command."
+            f"Close any program using the file, then {rerun}"
         ) from error
     if actual != expected:
         raise error_type(
             f"Windows package resource '{resource}' no longer matches its declared SHA-256 "
             f"(expected {expected}, found {actual}); it was not started. "
-            "Rerun the same command to download a verified copy."
+            f"To download a verified copy, {rerun}"
         )
 
 
-def _verify_declared_checksum(metadata: Dict, resource: str, path: Path, error_type) -> None:
-    _verify_sha256(resource, path, _declared_sha256(metadata, resource), error_type)
+def _verify_declared_checksum(
+    metadata: Dict, resource: str, path: Path, error_type, rerun: str = _RERUN_SAME_COMMAND
+) -> None:
+    _verify_sha256(resource, path, _declared_sha256(metadata, resource), error_type, rerun)
 
 
 def _run(command, **kwargs) -> subprocess.CompletedProcess:
@@ -265,7 +277,11 @@ def _run_elevated_msi_batch(
 
 
 def _run_msi_operations(
-    items: List[Dict], continue_codes: List[int], handle_result, nothing_done: str
+    items: List[Dict],
+    continue_codes: List[int],
+    handle_result,
+    nothing_done: str,
+    rerun: str = _RERUN_SAME_COMMAND,
 ) -> None:
     """Run ordered msiexec steps, calling handle_result(item, exit_code, detail) for each.
 
@@ -276,7 +292,9 @@ def _run_msi_operations(
     if _is_windows_administrator():
         for item in items:
             if "msi" in item:
-                _verify_sha256(item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError)
+                _verify_sha256(
+                    item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError, rerun
+                )
             try:
                 result = _run(["msiexec.exe", *item["args"]])
             except OSError as error:
@@ -297,7 +315,9 @@ def _run_msi_operations(
         )
     for item in items:
         if "msi" in item:
-            _verify_sha256(item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError)
+            _verify_sha256(
+                item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError, rerun
+            )
     try:
         launched, results = _run_elevated_msi_batch(items, continue_codes)
     except OSError as error:
@@ -783,6 +803,7 @@ def _install_python_wheel(
     metadata: Dict,
     install_dir: str,
     python_executable: Optional[str],
+    rerun: str = _RERUN_SAME_COMMAND,
 ) -> str:
     python_package = metadata["installation"].get("python")
     if not python_package:
@@ -836,7 +857,9 @@ def _install_python_wheel(
         pip_options.append("--force-reinstall")
     if no_deps:
         pip_options.append("--no-deps")
-    _verify_declared_checksum(metadata, python_package["wheel"], wheel, WindowsPythonInstallError)
+    _verify_declared_checksum(
+        metadata, python_package["wheel"], wheel, WindowsPythonInstallError, rerun
+    )
     result = _run(
         [str(executable), "-m", "pip", "install", *pip_options, str(wheel)],
         text=True,
@@ -844,7 +867,8 @@ def _install_python_wheel(
     if result.returncode != 0:
         raise WindowsPythonInstallError(
             f"Native MSI installation succeeded, but pip failed with exit code {result.returncode}. "
-            "The native installation was kept; retry the Python step with the same environment."
+            "The native installation was kept; to retry the Python step with the same "
+            f"environment, {rerun}"
         )
     installed = _python_distribution_version(str(executable), distribution)
     if installed != version:
@@ -874,6 +898,7 @@ def _install_native_packages(
     installed: List[Dict[str, str]],
     record_receipt=None,
     python_executable: Optional[str] = None,
+    rerun: str = _RERUN_SAME_COMMAND,
 ) -> List[Dict[str, str]]:
     root = Path(install_dir).resolve()
     packages = _native_packages(metadata["installation"])
@@ -923,8 +948,8 @@ def _install_native_packages(
                 f"Windows Installer completed {owner} with restart code {returncode}. "
                 f"Native packages installed in this run: {completed_owners}. "
                 f"Not yet run: {remaining_text} verification, customer skill, and Python steps. "
-                "Restart Windows, then rerun the same command to continue the coordinated "
-                f"installation. Installer log: {log_path}"
+                f"Installer log: {log_path}. To continue the coordinated installation, restart "
+                f"Windows, then {rerun}"
             )
         if returncode == ELEVATED_INSTALLER_LAUNCH_FAILED:
             detail = detail.strip() or "Windows did not report a reason"
@@ -933,20 +958,19 @@ def _install_native_packages(
                 f"{detail}. No later native package or Python package was installed. Check that "
                 "Windows PowerShell and msiexec.exe are available, the current account's "
                 "permissions, and Windows application-control policy; do not disable security "
-                f"controls. Then rerun the same command. Intended installer log: {log_path}"
+                f"controls. Intended installer log: {log_path}. Then {rerun}"
             )
         if returncode == ELEVATED_INSTALLER_EXIT_CODE_MISSING:
             raise WindowsNativeInstallError(
                 f"Windows Installer for {owner} ended without reporting an exit code, so its "
-                "result is unknown. The release remains incomplete; check the installer log, "
-                f"then rerun the same command. Installer log: {log_path}"
+                f"result is unknown. The release remains incomplete. Installer log: {log_path}. "
+                f"Check the installer log, then {rerun}"
             )
         if returncode == ELEVATED_INSTALLER_HASH_MISMATCH:
             raise WindowsNativeInstallError(
                 f"Windows package resource '{item['resource']}' no longer matched its declared "
                 f"SHA-256 when the elevated installer checked it (expected {item['sha256']}, "
-                f"{detail}); it was not started. Rerun the same command to download a "
-                "verified copy."
+                f"{detail}); it was not started. To download a verified copy, {rerun}"
             )
         if returncode != 0:
             installed_owners = ", ".join(entry["owner"] for entry in installed) or "none"
@@ -960,8 +984,8 @@ def _install_native_packages(
                 f"Windows Installer failed for {owner} with exit code {returncode}. "
                 f"{policy_detail}"
                 f"Packages completed earlier in this run: {installed_owners}. "
-                "The release remains incomplete; correct the failure and rerun the same command. "
-                f"Installer log: {log_path}"
+                f"The release remains incomplete. Installer log: {log_path}. "
+                f"Correct the failure, then {rerun}"
             )
         installed.append(
             {
@@ -975,12 +999,14 @@ def _install_native_packages(
         click.echo(f"{owner} native package installed successfully.")
 
     _run_msi_operations(
-        items, [0], handle_result, "No native package or Python package was installed."
+        items, [0], handle_result, "No native package or Python package was installed.", rerun
     )
     return installed
 
 
-def _verify_native_installation(metadata: Dict) -> Dict[str, str]:
+def _verify_native_installation(
+    metadata: Dict, rerun: str = _RERUN_SAME_COMMAND
+) -> Dict[str, str]:
     verification = metadata["installation"].get("verification")
     if not verification:
         return {"status": "not-requested"}
@@ -1006,8 +1032,7 @@ def _verify_native_installation(metadata: Dict) -> Dict[str, str]:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
         raise WindowsNativeInstallError(
             "Native MSI installation completed, but installed-runtime verification failed: "
-            f"{detail}. The native installation was kept; correct the prerequisite and rerun "
-            "the same command."
+            f"{detail}. The native installation was kept; correct the prerequisite, then {rerun}"
         )
     click.echo("Installed native runtime verified.")
     return {"status": "passed", "command": str(command)}
@@ -1127,12 +1152,14 @@ def install_windows_package(
     native_only: bool = False,
     record_receipt=None,
     check_prerequisites: bool = True,
+    retry_command: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Install the ordered native package cohort and its Python wheel.
 
     record_receipt, when given, receives the package product codes and selected Python
     before any MSI starts. check_prerequisites=False skips host prerequisites that
-    preflight_windows_package already verified.
+    preflight_windows_package already verified. retry_command, when given, is the
+    command pinned to this release that recovery messages print.
     """
     if not _is_windows():
         raise click.ClickException("The windows-msi installation type can only run on Windows.")
@@ -1140,18 +1167,19 @@ def install_windows_package(
         raise click.ClickException("--native-only cannot be combined with --python-executable.")
 
     installed: List[Dict[str, str]] = []
+    rerun = _rerun(retry_command)
     try:
         if check_prerequisites:
             _check_prerequisites(metadata)
         skill_manager = _preflight_customer_skills(metadata)
         selected_python = _prepare_python_executable(metadata, python_executable, native_only)
         _install_native_packages(
-            metadata, install_dir, installed, record_receipt, selected_python
+            metadata, install_dir, installed, record_receipt, selected_python, rerun
         )
         click.echo("Coordinated native installation completed successfully.")
-        verification = _verify_native_installation(metadata)
+        verification = _verify_native_installation(metadata, rerun)
         skills = _install_customer_skills(metadata, skill_manager)
-        python_status = _install_python_wheel(metadata, install_dir, selected_python)
+        python_status = _install_python_wheel(metadata, install_dir, selected_python, rerun)
     except BaseException as error:
         # The caller records whether any native package completed before the failure
         # or interruption.

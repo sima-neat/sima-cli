@@ -76,6 +76,28 @@ def _ensure_available_environment(environment):
         )
 
 
+def _pinned_install_command(
+    result, base_url, package_type, python_executable, native_only
+):
+    """Return the neat install command for exactly the release this run resolved."""
+    package = f"/{result.package_path}" if result.package_path else ""
+    parts = [
+        "sima-cli neat install",
+        f"{result.repository}{package}@{result.ref}:{result.resolved_spec}",
+    ]
+    if result.environment != "production":
+        parts.append(f"--env {result.environment}")
+    if base_url:
+        parts.append(f"--base-url {base_url}")
+    if package_type:
+        parts.append(f"-t {package_type}")
+    if native_only:
+        parts.append("--native-only")
+    if python_executable:
+        parts.append(f'--python-executable "{python_executable}"')
+    return " ".join(parts)
+
+
 def install_vulcan_package(
     *,
     target,
@@ -132,6 +154,9 @@ def install_vulcan_package(
         install_dir=install_dir,
         force=force,
         command_name=command_name,
+        retry_command=_pinned_install_command(
+            result, base_url, package_type, python_executable, native_only
+        ),
     )
     if python_executable is not None:
         install_kwargs["python_executable"] = python_executable

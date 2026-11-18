@@ -120,6 +120,12 @@ def fake_elevation(exit_codes, wrapper_code=0, errors=None):
     return run, requests
 
 
+PINNED_RETRY = (
+    'sima-cli neat install core/pciehost/windows/amd64@v0.6.1:0123456789ab '
+    '--python-executable "C:\\Program Files\\Python314\\python.exe"'
+)
+
+
 class WindowsPackageTests(unittest.TestCase):
     def setUp(self):
         self.administrator = patch(
@@ -1552,6 +1558,7 @@ class WindowsPackageTests(unittest.TestCase):
                     native_only=True,
                     record_receipt=ANY,
                     check_prerequisites=False,
+                    retry_command=None,
                 )
                 registry.update_state.assert_called_once_with(
                     self.metadata["name"], self.metadata["version"], state
@@ -1776,6 +1783,54 @@ class WindowsPackageTests(unittest.TestCase):
             self.metadata["name"], self.metadata["version"], "restart-required"
         )
 
+    def test_restart_required_prints_the_command_pinned_to_the_release(self):
+        self.use_scheduler_and_core()
+        with patch(
+            "sima_cli.install.windows_package._run", return_value=completed(returncode=3010)
+        ):
+            _registry, output = self.install_from_windows_metadata(
+                fails=True, exit_code=3010, native_only=True, retry_command=PINNED_RETRY
+            )
+
+        self.assertIn(
+            f"To continue the coordinated installation, restart Windows, then rerun this "
+            f"exact release: {PINNED_RETRY}",
+            output,
+        )
+        self.assertNotIn("same command", output)
+
+    def test_partial_install_failures_print_the_command_pinned_to_the_release(self):
+        self.use_scheduler_and_core()
+        cases = [
+            (
+                "core MSI fails after Scheduler",
+                {"native_only": True},
+                [completed(), completed(returncode=1603)],
+                "Packages completed earlier in this run: scheduler. The release remains "
+                "incomplete. Installer log: {log}. Correct the failure, then rerun this "
+                "exact release: {retry}",
+            ),
+            (
+                "pip fails after both MSIs",
+                {"python_executable": str(self.python)},
+                [python_facts(), python_facts(), completed(), completed(),
+                 completed(returncode=3), completed(returncode=1)],
+                "The native installation was kept; to retry the Python step with the same "
+                "environment, rerun this exact release: {retry}",
+            ),
+        ]
+        for case, options, responses, message in cases:
+            with self.subTest(case), patch(
+                "sima_cli.install.windows_package._run", side_effect=responses
+            ):
+                _registry, output = self.install_from_windows_metadata(
+                    fails=True, retry_command=PINNED_RETRY, **options
+                )
+
+                log = self.root / "sima-cli-msi-install-02-core.log"
+                self.assertIn(message.format(log=log, retry=PINNED_RETRY), output)
+                self.assertNotIn("same command", output)
+
     def assert_windows_option_rejected(self, option, **options):
         metadata = {"name": "linux-package", "version": "1", "installation": {"type": "script"}}
         with patch.object(
@@ -1859,11 +1914,16 @@ class WindowsPackageTests(unittest.TestCase):
                 "ref": "3.0",
                 "ref_key": "3.0",
                 "requested_spec": "latest",
-                "resolved_spec": "a" * 40,
+                "resolved_spec": "a" * 12,
                 "metadata_url": "https://example.invalid/metadata.json",
             },
         )()
-        for options in ({"python_executable": str(self.python)}, {"native_only": True}):
+        pinned = "sima-cli neat install core/pciehost/windows/amd64@3.0:" + "a" * 12
+        cases = [
+            ({"python_executable": str(self.python)}, f'--python-executable "{self.python}"'),
+            ({"native_only": True}, "--native-only"),
+        ]
+        for options, option_text in cases:
             with self.subTest(options=options), patch(
                 "sima_cli.vulcan.commands.resolve_install_metadata_url", return_value=resolved
             ), patch("sima_cli.vulcan.commands.install_from_metadata") as install:
@@ -1875,6 +1935,9 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertEqual(
                     {key: forwarded.get(key) for key in ("python_executable", "native_only")},
                     {"python_executable": None, "native_only": None, **options},
+                )
+                self.assertEqual(
+                    forwarded["retry_command"], f"{pinned} --env dev {option_text}"
                 )
 
 

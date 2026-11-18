@@ -8,11 +8,13 @@ set before passing each native package to Windows Installer.
 Run the command from PowerShell after installing the supported Platform PCIe
 package and x64 GStreamer MSVC runtime. The Platform package owns the signed
 driver, host libraries, and `SiMaMlaDaemon` service; Neat does not replace or
-update them. Windows may request administrator approval for the machine-wide
-Scheduler and Core MSI packages. Only those native installers are elevated;
-the CLI, managed Python environment, and customer skills remain in the current
-user's session and profile. A standard user must run the command from an
-interactive PowerShell window so Windows can present that approval prompt.
+update them. A standard user approves one Windows administrator prompt for the
+machine-wide Scheduler and Core MSI packages: one elevated step installs
+Scheduler and then Core, and does not start Core if Scheduler fails. Only that
+step is elevated; the CLI, managed Python environment, and customer skills
+remain in the current user's session and profile. A standard user must run the
+command from an interactive PowerShell window so Windows can present that
+approval prompt.
 
 ```powershell
 sima-cli neat install core/pciehost/windows/amd64@3.0
@@ -58,24 +60,34 @@ Windows Installer error `1625` means the package was rejected by the host's
 application-control policy. The Neat MSI packages and the DLLs and Python
 extension module in the first release are not code-signed. `sima-cli` downloads
 them over HTTPS from the release channel, verifies each package's SHA-256
-checksum after download and again before starting Windows Installer or pip, and
-stops if a package no longer matches. A corporate application-control policy may block
+checksum after download and again before starting Windows Installer or pip
+(for a standard user, both before the approval prompt and inside the elevated
+step), and stops if a package no longer matches. A corporate application-control policy may block
 unsigned binaries; ask the Windows administrator to review that policy.
 `sima-cli` does not disable any Windows security control.
 If Windows Installer cannot be started, `sima-cli` reports the attempted package,
 permissions guidance, and the intended installer-log location.
 
-Remove Scheduler and Core through Windows Installed apps or `msiexec`. Their
-MSIs do not own the current user's Python package, synced customer skill, or
-CLI registry receipt. Remove those separately from PowerShell:
+When it installs the release, `sima-cli` records each MSI's product code in its
+registry receipt. One command uses those codes to uninstall Core and then
+Scheduler in one elevated step, under one administrator prompt, and then removes
+the receipt:
 
 ```powershell
-& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
-sima-cli playbooks remove neat-pcie-application-builder --yes
 sima-cli packages list
 sima-cli packages remove gh:sima-neat/core/pciehost/windows/amd64 --version INSTALLED_VERSION --yes
 ```
 
-Replace `INSTALLED_VERSION` with the exact value shown by `packages list`.
-The final command removes only the local CLI receipt; it does not uninstall
-files and should run after the owning installers above.
+Replace `INSTALLED_VERSION` with the exact value shown by `packages list`. A
+package that is already absent counts as removed. If Windows Installer fails,
+Scheduler is not removed while Core remains, the receipt is kept with the state
+`remove-failed`, and the same command can be run again. Exit code `3010` means
+both packages were removed and Windows must restart to finish.
+
+The command does not delete the current user's Python package, managed Python
+environment, or synced customer skill; it prints the commands that remove them:
+
+```powershell
+& "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
+sima-cli playbooks remove neat-pcie-application-builder --yes
+```

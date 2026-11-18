@@ -376,31 +376,6 @@ def _check_windows_service(name: str) -> bool:
     return result.returncode == 0 and result.stdout.strip().lower() == "running"
 
 
-def _windows_product_version(name: str) -> Optional[str]:
-    script = r"""
-$paths = @(
-  'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-  'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
-)
-$matches = @(Get-ItemProperty $paths -ErrorAction SilentlyContinue |
-  Where-Object { $_.DisplayName -eq $env:SIMA_CLI_PREREQ_PRODUCT })
-if ($matches.Count -ne 1 -or -not $matches[0].DisplayVersion) { exit 3 }
-[Console]::Out.Write([string]$matches[0].DisplayVersion)
-"""
-    environment = os.environ.copy()
-    environment["SIMA_CLI_PREREQ_PRODUCT"] = name
-    try:
-        result = _run(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-            text=True,
-            capture_output=True,
-            env=environment,
-        )
-    except OSError:
-        return None
-    return result.stdout.strip() if result.returncode == 0 else None
-
-
 def _windows_pnp_driver_version(device_name: str) -> Optional[str]:
     script = r"""
 $matches = @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
@@ -498,9 +473,6 @@ def _check_prerequisites(metadata: Dict) -> List[Dict[str, str]]:
             passed = shutil.which(prerequisite["value"]) is not None
         elif kind == "windows-service":
             passed = _check_windows_service(prerequisite["value"])
-        elif kind == "windows-product":
-            actual = _windows_product_version(prerequisite["value"])
-            passed = actual == prerequisite["version"]
         elif kind == "windows-pnp-driver":
             try:
                 actual = _windows_pnp_driver_version(prerequisite["value"])

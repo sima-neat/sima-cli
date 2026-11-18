@@ -107,6 +107,16 @@ def _run(command, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, **kwargs)
 
 
+def _run_powershell(script: str, variables: Optional[Dict[str, str]] = None, **kwargs):
+    """Run a Windows PowerShell script; values reach it as environment variables."""
+    return _run(
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        env={**os.environ, **(variables or {})},
+        text=True,
+        **kwargs,
+    )
+
+
 def _is_windows_administrator() -> bool:
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -239,24 +249,15 @@ def _run_elevated_msi_batch(
         }
         encoded_request = base64.b64encode(json.dumps(request).encode("utf-8")).decode("ascii")
         script = _ELEVATED_MSI_SCRIPT.replace("@REQUEST@", encoded_request)
-        environment = os.environ.copy()
-        environment["SIMA_CLI_ELEVATED_ARGUMENTS"] = (
+        elevated_arguments = (
             "-NoLogo -NoProfile -NonInteractive -EncodedCommand "
             + base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         )
         click.echo("Requesting Windows administrator approval once for the native packages.")
-        launched = _run(
-            [
-                "powershell.exe",
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                _ELEVATION_WRAPPER_SCRIPT,
-            ],
-            env=environment,
+        launched = _run_powershell(
+            _ELEVATION_WRAPPER_SCRIPT,
+            {"SIMA_CLI_ELEVATED_ARGUMENTS": elevated_arguments},
             stderr=subprocess.PIPE,
-            text=True,
         )
         return launched, _read_elevated_results(result_path, items)
     finally:
@@ -333,15 +334,8 @@ $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $n
 [Console]::Out.Write(
   $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1))
 """
-    environment = os.environ.copy()
-    environment["SIMA_CLI_MSI_PATH"] = str(msi)
     try:
-        result = _run(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-            text=True,
-            capture_output=True,
-            env=environment,
-        )
+        result = _run_powershell(script, {"SIMA_CLI_MSI_PATH": str(msi)}, capture_output=True)
     except OSError as error:
         result = subprocess.CompletedProcess([], 1, stdout="", stderr=str(error))
     code = (result.stdout or "").strip()
@@ -361,16 +355,11 @@ def _path_from_spec(spec: Dict[str, str]) -> Optional[Path]:
 
 
 def _check_windows_service(name: str) -> bool:
-    command = [
-        "powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        f"(Get-Service -Name '{name}' -ErrorAction Stop).Status.ToString()",
-    ]
     try:
-        result = _run(command, text=True, capture_output=True)
+        result = _run_powershell(
+            f"(Get-Service -Name '{name}' -ErrorAction Stop).Status.ToString()",
+            capture_output=True,
+        )
     except OSError:
         return False
     return result.returncode == 0 and result.stdout.strip().lower() == "running"
@@ -410,14 +399,9 @@ if ($versions.Count -ne 1) {
 }
 [Console]::Out.Write([string]$versions[0])
 """
-    environment = os.environ.copy()
-    environment["SIMA_CLI_PREREQ_DEVICE"] = device_name
     try:
-        result = _run(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-            text=True,
-            capture_output=True,
-            env=environment,
+        result = _run_powershell(
+            script, {"SIMA_CLI_PREREQ_DEVICE": device_name}, capture_output=True
         )
     except OSError as error:
         raise _WindowsPnpDriverVersionError(

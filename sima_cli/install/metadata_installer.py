@@ -1620,27 +1620,18 @@ def install_from_metadata(
                 
             if _check_whether_disk_is_big_enough(metadata, force) or force:
                 if download_only or force or _is_platform_compatible(metadata, force):
-                    if install_type == "windows-msi" and not download_only:
-                        try:
+                    try:
+                        if install_type == "windows-msi" and not download_only:
                             preflight_windows_package(metadata, python_executable, native_only)
-                        except BaseException as error:
-                            registry.update_state(
-                                metadata.get("name"),
-                                metadata.get("version"),
-                                "prerequisite-failed"
-                                if isinstance(error, WindowsPrerequisiteError) else "failed",
-                            )
-                            raise
-                    local_paths = _download_assets(metadata, metadata_url, install_dir, internal, tag=tag)
-                    if download_only:
-                        click.echo(f"✅ Download complete. {len(local_paths)} resource(s) saved to: {install_dir}")
-                        return local_paths
-                    if len(local_paths) > 0:
-                        _mark_install_script_executable(metadata, install_dir)
-                        _combine_multipart_files(install_dir, local_paths=local_paths)
-                        _extract_archives_in_folder(install_dir, local_paths)
-                        _mark_install_script_executable(metadata, install_dir)
-                        try:
+                        local_paths = _download_assets(metadata, metadata_url, install_dir, internal, tag=tag)
+                        if download_only:
+                            click.echo(f"✅ Download complete. {len(local_paths)} resource(s) saved to: {install_dir}")
+                            return local_paths
+                        if len(local_paths) > 0:
+                            _mark_install_script_executable(metadata, install_dir)
+                            _combine_multipart_files(install_dir, local_paths=local_paths)
+                            _extract_archives_in_folder(install_dir, local_paths)
+                            _mark_install_script_executable(metadata, install_dir)
                             if install_type == "windows-msi":
                                 result = install_windows_package(
                                     metadata=metadata,
@@ -1658,37 +1649,37 @@ def install_from_metadata(
                                 return result
                             _run_installation_script(
                                 metadata=metadata, extract_path=install_dir, force=force)
-                        except WindowsPackageRestartRequired as error:
-                            registry.update_state(
-                                metadata.get("name"),
-                                metadata.get("version"),
-                                "restart-required",
-                            )
-                            click.echo(f"⚠️  Restart required to finish installing from metadata URL {metadata_url}: {error}")
-                            sys.exit(error.exit_code)
-                        except WindowsPrerequisiteError:
-                            registry.update_state(
-                                metadata.get("name"),
-                                metadata.get("version"),
-                                "prerequisite-failed",
-                            )
+                    except WindowsPackageRestartRequired as error:
+                        registry.update_state(
+                            metadata.get("name"),
+                            metadata.get("version"),
+                            "restart-required",
+                        )
+                        click.echo(f"⚠️  Restart required to finish installing from metadata URL {metadata_url}: {error}")
+                        sys.exit(error.exit_code)
+                    except WindowsPrerequisiteError:
+                        registry.update_state(
+                            metadata.get("name"),
+                            metadata.get("version"),
+                            "prerequisite-failed",
+                        )
+                        raise
+                    except BaseException as error:
+                        # A failed or interrupted download or MSI must not leave the receipt at installing.
+                        if install_type != "windows-msi" or download_only:
                             raise
-                        except BaseException as error:
-                            # Ctrl+C during an MSI must not leave the receipt at installing.
-                            if install_type != "windows-msi":
-                                raise
-                            if not getattr(error, "native_packages_installed", None):
-                                state = "failed"
-                            elif isinstance(error, WindowsPythonInstallError):
-                                state = "partial-python-failed"
-                            else:
-                                state = "partial-native-failed"
-                            registry.update_state(
-                                metadata.get("name"),
-                                metadata.get("version"),
-                                state,
-                            )
-                            raise
+                        if not getattr(error, "native_packages_installed", None):
+                            state = "failed"
+                        elif isinstance(error, WindowsPythonInstallError):
+                            state = "partial-python-failed"
+                        else:
+                            state = "partial-native-failed"
+                        registry.update_state(
+                            metadata.get("name"),
+                            metadata.get("version"),
+                            state,
+                        )
+                        raise
 
     except (MetadataAccessForbidden, click.UsageError):
         raise

@@ -1615,7 +1615,7 @@ class WindowsPackageTests(unittest.TestCase):
                 )
         self.assertEqual(run.call_count, 2)
 
-    def install_from_windows_metadata(self, fails=False, exit_code=1, **options):
+    def install_from_windows_metadata(self, fails=False, exit_code=1, download_error=None, **options):
         # install_from_metadata records the receipt state, then reports any
         # install error as "Failed to install" and exits with status 1; a
         # restart-required result exits with the Windows Installer restart code.
@@ -1632,7 +1632,10 @@ class WindowsPackageTests(unittest.TestCase):
         ), patch.object(
             metadata_installer, "_is_platform_compatible", return_value=True
         ), patch.object(
-            metadata_installer, "_download_assets", return_value=[str(self.msi)]
+            metadata_installer,
+            "_download_assets",
+            return_value=[str(self.msi)],
+            side_effect=download_error,
         ) as self.download_assets, patch.object(
             metadata_installer, "_print_post_install_message"
         ):
@@ -1729,6 +1732,24 @@ class WindowsPackageTests(unittest.TestCase):
 
                 used["registry"].update_state.assert_called_once_with(
                     self.metadata["name"], self.metadata["version"], state
+                )
+
+    def test_failed_or_interrupted_download_records_a_terminal_receipt(self):
+        for error, raised in ((RuntimeError("network down"), SystemExit), (KeyboardInterrupt, KeyboardInterrupt)):
+            used = {}
+
+            def fail_download(*_args, **_kwargs):
+                used["registry"] = metadata_installer.registry
+                raise error
+
+            with self.subTest(error=error):
+                with patch(
+                    "sima_cli.install.windows_package._is_windows", return_value=True
+                ), self.assertRaises(raised):
+                    self.install_from_windows_metadata(download_error=fail_download)
+
+                used["registry"].update_state.assert_called_once_with(
+                    self.metadata["name"], self.metadata["version"], "failed"
                 )
 
     def test_missing_wheel_after_msi_records_partial_python_failure(self):

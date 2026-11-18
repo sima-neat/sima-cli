@@ -222,12 +222,12 @@ class WindowsPackageTests(unittest.TestCase):
                 returncode=3,
                 stderr=(
                     "Windows PnP devices named 'SiMa.ai MLA Device' report mixed "
-                    "DriverVersion values: 2.1.3.0, 3.0.0.2."
+                    "DriverVersion values: 3.0.0.1, 3.0.0.2."
                 ),
             ),
         ), self.assertRaisesRegex(
             _WindowsPnpDriverVersionError,
-            "mixed DriverVersion values: 2.1.3.0, 3.0.0.2",
+            "mixed DriverVersion values: 3.0.0.1, 3.0.0.2",
         ):
             _windows_pnp_driver_version("SiMa.ai MLA Device")
 
@@ -1022,10 +1022,10 @@ class WindowsPackageTests(unittest.TestCase):
         }]
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
             "sima_cli.install.windows_package._windows_pnp_driver_version",
-            return_value="2.1.3.0",
+            return_value="3.0.0.1",
         ), patch("sima_cli.install.windows_package._run") as run:
             with self.assertRaisesRegex(
-                WindowsPrerequisiteError, "found 2.1.3.0, expected 3.0.0.2"
+                WindowsPrerequisiteError, "found 3.0.0.1, expected 3.0.0.2"
             ):
                 install_windows_package(self.metadata, str(self.root))
         run.assert_not_called()
@@ -1046,13 +1046,13 @@ class WindowsPackageTests(unittest.TestCase):
                 returncode=3,
                 stderr=(
                     "Windows PnP devices named 'SiMa.ai MLA Device' report mixed "
-                    "DriverVersion values: 2.1.3.0, 3.0.0.2."
+                    "DriverVersion values: 3.0.0.1, 3.0.0.2."
                 ),
             ),
         ) as run:
             with self.assertRaisesRegex(
                 WindowsPrerequisiteError,
-                "mixed DriverVersion values: 2.1.3.0, 3.0.0.2",
+                "mixed DriverVersion values: 3.0.0.1, 3.0.0.2",
             ):
                 install_windows_package(self.metadata, str(self.root))
 

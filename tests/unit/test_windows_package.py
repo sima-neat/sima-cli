@@ -1690,6 +1690,7 @@ class WindowsPackageTests(unittest.TestCase):
                     python_executable=None,
                     native_only=True,
                     record_receipt=ANY,
+                    check_prerequisites=False,
                 )
                 registry.update_state.assert_called_once_with(
                     self.metadata["name"], self.metadata["version"], state
@@ -1760,6 +1761,21 @@ class WindowsPackageTests(unittest.TestCase):
                 used["registry"].update_state.assert_called_once_with(
                     self.metadata["name"], self.metadata["version"], "failed"
                 )
+
+    def test_prerequisites_are_checked_once_per_install(self):
+        self.metadata["installation"]["prerequisites"] = [{
+            "name": "Windows OpenSSH client",
+            "type": "executable",
+            "value": "ssh.exe",
+            "guidance": "Install Windows OpenSSH Client.",
+        }]
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package.shutil.which", return_value="ssh.exe"
+        ) as which, patch("sima_cli.install.windows_package._run", return_value=completed()):
+            _registry, output = self.install_from_windows_metadata()
+
+        self.assertEqual(which.call_count, 1)
+        self.assertEqual(output.count("Windows host prerequisites verified."), 1)
 
     def test_missing_wheel_after_msi_records_partial_python_failure(self):
         # The selected Python is checked before download and again before the MSI.

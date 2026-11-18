@@ -1138,11 +1138,13 @@ def install_windows_package(
     python_executable: Optional[str] = None,
     native_only: bool = False,
     record_receipt=None,
+    check_prerequisites: bool = True,
 ) -> Dict[str, Any]:
     """Install the ordered native package cohort and its Python wheel.
 
     record_receipt, when given, receives the package product codes and selected Python
-    before any MSI starts.
+    before any MSI starts. check_prerequisites=False skips host prerequisites that
+    preflight_windows_package already verified.
     """
     if not _is_windows():
         raise click.ClickException("The windows-msi installation type can only run on Windows.")
@@ -1151,7 +1153,8 @@ def install_windows_package(
 
     installed: List[Dict[str, str]] = []
     try:
-        _check_prerequisites(metadata)
+        if check_prerequisites:
+            _check_prerequisites(metadata)
         skill_manager = _preflight_customer_skills(metadata)
         selected_python = _prepare_python_executable(metadata, python_executable, native_only)
         _install_native_packages(

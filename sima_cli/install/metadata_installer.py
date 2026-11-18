@@ -1641,6 +1641,7 @@ def install_from_metadata(
                                     record_receipt=lambda fields: registry.update_fields(
                                         metadata.get("name"), metadata.get("version"), fields
                                     ),
+                                    check_prerequisites=False,
                                 )
                                 registry.update_state(
                                     metadata.get("name"), metadata.get("version"), "installed"

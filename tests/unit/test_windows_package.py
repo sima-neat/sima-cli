@@ -1920,6 +1920,18 @@ class WindowsPackageTests(unittest.TestCase):
     def test_native_only_is_rejected_for_non_windows_package(self):
         self.assert_windows_option_rejected("--native-only", native_only=True)
 
+    def test_component_install_reports_completion_once(self):
+        with patch(
+            "sima_cli.cli.metadata_resolver", return_value="https://example.invalid/metadata.json"
+        ), patch("sima_cli.cli.install_from_metadata", return_value={"native": "installed"}):
+            result = CliRunner().invoke(
+                main, ["install", "pciehost/windows", "-v", "3.0.0"],
+                env={"SIMA_CLI_CHECK_FOR_UPDATE": "0"},
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.output.count("Installation complete."), 1)
+
     def test_cli_exposes_managed_python_and_native_only_options(self):
         runner = CliRunner()
         result = runner.invoke(

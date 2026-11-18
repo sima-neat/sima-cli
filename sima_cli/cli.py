@@ -1085,15 +1085,14 @@ def install_cmd(
         try:
             metadata_url = metadata_resolver(component, version, tag)
             click.echo(f"🔧 Installing '{component}' from resolved metadata: {metadata_url}")
-            if install_from_metadata(
+            install_from_metadata(
                 metadata_url=metadata_url,
                 internal=internal,
                 install_dir=install_dir,
                 force=force,
                 command_name="sima-cli install",
                 **python_install_options,
-            ):
-                click.echo("✅ Installation complete.")
+            )
         except MetadataAccessForbidden:
             if not _is_neat_install_target(component):
                 raise

@@ -1054,6 +1054,16 @@ def install_cmd(
         )
         return None
     
+    if python_install_options and (
+        component.startswith(("cr:", "ghcr:"))
+        or component.lower() in {"palette", "hostdriver", "optiview"}
+    ):
+        option = "--native-only" if native_only else "--python-executable"
+        raise click.UsageError(
+            f"{option} applies only to Windows MSI packages; "
+            f"'{component}' is not installed from package metadata."
+        )
+
     # if the user specified cr: or ghcr: as component, install from container registry
     if component.startswith("cr:") or component.startswith("ghcr:"):
         install_from_cr(resource_spec=component, internal=internal)

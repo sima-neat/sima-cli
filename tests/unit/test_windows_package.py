@@ -1923,6 +1923,30 @@ class WindowsPackageTests(unittest.TestCase):
     def test_native_only_is_rejected_for_non_windows_package(self):
         self.assert_windows_option_rejected("--native-only", native_only=True)
 
+    def test_python_options_are_rejected_for_components_without_metadata(self):
+        cases = [
+            ("cr:sima/tool", ["--native-only"], "--native-only"),
+            ("ghcr:sima/tool", ["--python-executable", str(self.python)], "--python-executable"),
+            ("hostdriver", ["--native-only"], "--native-only"),
+            ("OptiView", ["--python-executable", str(self.python)], "--python-executable"),
+            ("palette", ["--native-only"], "--native-only"),
+        ]
+        for component, options, option in cases:
+            with self.subTest(component=component), patch(
+                "sima_cli.cli.install_from_cr"
+            ) as from_cr, patch("sima_cli.cli.install_hostdriver") as hostdriver, patch(
+                "sima_cli.cli.install_optiview"
+            ) as optiview, patch("sima_cli.cli.resolve_version", return_value="3.0.0"):
+                result = CliRunner().invoke(
+                    main, ["install", component, *options],
+                    env={"SIMA_CLI_CHECK_FOR_UPDATE": "0"},
+                )
+
+                self.assertEqual(result.exit_code, 2, result.output)
+                self.assertIn(f"{option} applies only to Windows MSI packages", result.output)
+                for installer in (from_cr, hostdriver, optiview):
+                    installer.assert_not_called()
+
     def test_component_install_reports_completion_once(self):
         with patch(
             "sima_cli.cli.metadata_resolver", return_value="https://example.invalid/metadata.json"

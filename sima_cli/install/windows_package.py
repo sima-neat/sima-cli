@@ -1,5 +1,6 @@
 """Install a declarative Windows MSI and optional Python wheel."""
 
+import base64
 import ctypes
 import json
 import os
@@ -7,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,6 +23,9 @@ MSI_INSTALL_REJECTED_BY_POLICY = 1625
 WINDOWS_ELEVATION_CANCELLED = 1223
 ELEVATED_INSTALLER_EXIT_CODE_MISSING = 9001
 ELEVATED_INSTALLER_LAUNCH_FAILED = 9002
+ELEVATED_INSTALLER_HASH_MISMATCH = 9003
+MSI_UNKNOWN_PRODUCT = 1605
+_PRODUCT_CODE = re.compile(r"\{[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}\}", re.IGNORECASE)
 PYTHON_WINDOWS_DOWNLOAD_URL = "https://www.python.org/downloads/windows/"
 
 
@@ -75,10 +80,9 @@ def _declared_sha256(metadata: Dict, resource: str) -> str:
     return str(metadata.get("resources-checksum", {}).get(resource, "")).strip().lower()
 
 
-def _verify_declared_checksum(metadata: Dict, resource: str, path: Path, error_type) -> None:
+def _verify_sha256(resource: str, path: Path, expected: str, error_type) -> None:
     from sima_cli.install.metadata_installer import _compute_sha256
 
-    expected = _declared_sha256(metadata, resource)
     try:
         actual = _compute_sha256(path)
     except OSError as error:
@@ -95,6 +99,10 @@ def _verify_declared_checksum(metadata: Dict, resource: str, path: Path, error_t
         )
 
 
+def _verify_declared_checksum(metadata: Dict, resource: str, path: Path, error_type) -> None:
+    _verify_sha256(resource, path, _declared_sha256(metadata, resource), error_type)
+
+
 def _run(command, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, **kwargs)
 
@@ -106,26 +114,62 @@ def _is_windows_administrator() -> bool:
         return False
 
 
-def _run_native_installer(command: List[str], log_path: Path) -> subprocess.CompletedProcess:
-    if _is_windows_administrator():
-        return _run(command)
-    if not sys.stdin.isatty():
-        raise WindowsNativeInstallError(
-            "Installing the machine-wide Windows packages requires administrator approval, "
-            "but this standard-user session is not interactive. Rerun the same command in an "
-            "interactive PowerShell window so Windows can request approval, or ask an "
-            f"administrator to install the native packages. Intended installer log: {log_path}"
-        )
+# Runs in the elevated process. It receives the whole ordered request on its command
+# line, refuses an MSI whose bytes differ from the hash the CLI verified (holding a
+# read lock so the file cannot change before msiexec reads it), stops at the first
+# exit code outside continue_codes, and rewrites the CLI's result file after each
+# package so a result survives a later crash.
+_ELEVATED_MSI_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$request = [Text.Encoding]::UTF8.GetString(
+  [Convert]::FromBase64String('@REQUEST@')) | ConvertFrom-Json
+$msiexec = Join-Path ([Environment]::SystemDirectory) 'msiexec.exe'
+$results = @()
+foreach ($package in $request.packages) {
+  $result = [ordered]@{ owner = $package.owner; exit_code = 9001; error = '' }
+  $lock = $null
+  try {
+    if ($package.msi) {
+      $lock = [IO.File]::Open($package.msi, [IO.FileMode]::Open,
+        [IO.FileAccess]::Read, [IO.FileShare]::Read)
+      $actual = [BitConverter]::ToString(
+        [Security.Cryptography.SHA256]::Create().ComputeHash($lock)
+      ).Replace('-', '').ToLowerInvariant()
+      if ($actual -ne $package.sha256) {
+        $result.exit_code = 9003
+        $result.error = "found $actual"
+      }
+    }
+    if ($result.exit_code -ne 9003) {
+      $info = New-Object System.Diagnostics.ProcessStartInfo $msiexec, $package.arguments
+      $info.UseShellExecute = $false
+      $process = [System.Diagnostics.Process]::Start($info)
+      $process.WaitForExit()
+      $result.exit_code = $process.ExitCode
+    }
+  } catch {
+    $result.exit_code = 9002
+    $result.error = $_.Exception.Message
+  } finally {
+    if ($null -ne $lock) { $lock.Dispose() }
+  }
+  $results += New-Object PSObject -Property $result
+  [IO.File]::WriteAllText($request.result,
+    (ConvertTo-Json -InputObject @{ packages = $results } -Depth 4 -Compress))
+  if ($request.continue_codes -notcontains $result.exit_code) { break }
+}
+"""
 
-    # Start-Process drops the Win32 error code, so only Process.Start can tell a
-    # declined approval prompt (1223) apart from any other launch failure.
-    script = r"""
+# Runs unelevated. Start-Process drops the Win32 error code, so only Process.Start
+# can tell a declined approval prompt (1223) apart from any other launch failure.
+_ELEVATION_WRAPPER_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 try {
   $startInfo = New-Object System.Diagnostics.ProcessStartInfo `
-    'msiexec.exe', $env:SIMA_CLI_MSI_ARGUMENTS
+    (Join-Path $PSHOME 'powershell.exe'), $env:SIMA_CLI_ELEVATED_ARGUMENTS
   $startInfo.Verb = 'runas'
   $startInfo.UseShellExecute = $true
+  $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
   $process = [System.Diagnostics.Process]::Start($startInfo)
 } catch {
   $exception = $_.Exception
@@ -146,22 +190,166 @@ if ($null -eq $process) {
 $process.WaitForExit()
 exit $process.ExitCode
 """
+
+
+def _read_elevated_results(path: Path, items: List[Dict]) -> List[Tuple[int, str]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig") or "null")
+    except (OSError, ValueError):
+        return []
+    entries = data.get("packages") if isinstance(data, dict) else None
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return []
+    results = []
+    for item, entry in zip(items, entries):
+        if (
+            not isinstance(entry, dict)
+            or entry.get("owner") != item["owner"]
+            or type(entry.get("exit_code")) is not int
+        ):
+            break
+        results.append((entry["exit_code"], str(entry.get("error") or "")))
+    return results
+
+
+def _run_elevated_msi_batch(
+    items: List[Dict], continue_codes: List[int]
+) -> Tuple[subprocess.CompletedProcess, List[Tuple[int, str]]]:
+    """Run every msiexec step in one elevated process; return each step's result."""
+    work = Path(tempfile.mkdtemp(prefix="sima-cli-msi-"))
+    try:
+        # The CLI creates the result file so the current user keeps owning it; the
+        # elevated process only overwrites its contents.
+        result_path = work / "result.json"
+        result_path.write_bytes(b"")
+        request = {
+            "result": str(result_path),
+            "continue_codes": sorted(continue_codes),
+            "packages": [
+                {
+                    "owner": item["owner"],
+                    "arguments": subprocess.list2cmdline(item["args"]),
+                    "msi": str(item["msi"]) if "msi" in item else None,
+                    "sha256": item.get("sha256"),
+                }
+                for item in items
+            ],
+        }
+        encoded_request = base64.b64encode(json.dumps(request).encode("utf-8")).decode("ascii")
+        script = _ELEVATED_MSI_SCRIPT.replace("@REQUEST@", encoded_request)
+        environment = os.environ.copy()
+        environment["SIMA_CLI_ELEVATED_ARGUMENTS"] = (
+            "-NoLogo -NoProfile -NonInteractive -EncodedCommand "
+            + base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        )
+        click.echo("Requesting Windows administrator approval once for the native packages.")
+        launched = _run(
+            [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                _ELEVATION_WRAPPER_SCRIPT,
+            ],
+            env=environment,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return launched, _read_elevated_results(result_path, items)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _run_msi_operations(
+    items: List[Dict], continue_codes: List[int], handle_result, nothing_done: str
+) -> None:
+    """Run ordered msiexec steps, calling handle_result(item, exit_code, detail) for each.
+
+    handle_result raises for every exit code outside continue_codes, so the steps stop
+    at the first failure. A standard user approves all steps with one prompt.
+    """
+    first_log = items[0]["log"]
+    if _is_windows_administrator():
+        for item in items:
+            if "msi" in item:
+                _verify_sha256(item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError)
+            try:
+                result = _run(["msiexec.exe", *item["args"]])
+            except OSError as error:
+                raise WindowsNativeInstallError(
+                    f"Could not start Windows Installer for {item['owner']}: {error}. "
+                    "Check the current account's permissions and Windows application-control "
+                    f"policy; do not disable security controls. Intended installer log: {item['log']}"
+                ) from error
+            handle_result(item, result.returncode, "")
+        return
+    if not sys.stdin.isatty():
+        raise WindowsNativeInstallError(
+            "Changing the machine-wide Windows packages requires administrator approval, "
+            "but this standard-user session is not interactive. Rerun the same command in an "
+            "interactive PowerShell window so Windows can request approval, or ask an "
+            f"administrator to run it. Intended installer log: {first_log}"
+        )
+    for item in items:
+        if "msi" in item:
+            _verify_sha256(item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError)
+    try:
+        launched, results = _run_elevated_msi_batch(items, continue_codes)
+    except OSError as error:
+        raise WindowsNativeInstallError(
+            f"Could not start Windows Installer for {items[0]['owner']}: {error}. "
+            "Check the current account's permissions and Windows application-control "
+            f"policy; do not disable security controls. Intended installer log: {first_log}"
+        ) from error
+    if launched.returncode == WINDOWS_ELEVATION_CANCELLED:
+        raise WindowsNativeInstallError(
+            f"Windows administrator approval was cancelled. {nothing_done} Rerun the same "
+            f"command when approval is available. Intended installer log: {first_log}"
+        )
+    if launched.returncode == ELEVATED_INSTALLER_LAUNCH_FAILED:
+        handle_result(items[0], ELEVATED_INSTALLER_LAUNCH_FAILED, launched.stderr or "")
+    for index, item in enumerate(items):
+        code, detail = (
+            results[index] if index < len(results) else (ELEVATED_INSTALLER_EXIT_CODE_MISSING, "")
+        )
+        handle_result(item, code, detail)
+
+
+def _msi_product_code(msi: Path) -> str:
+    """Read an MSI's ProductCode so the receipt can drive msiexec /x later."""
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$installer = New-Object -ComObject WindowsInstaller.Installer
+$database = $installer.GetType().InvokeMember(
+  'OpenDatabase', 'InvokeMethod', $null, $installer, @($env:SIMA_CLI_MSI_PATH, 0))
+$view = $database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $database,
+  @("SELECT Value FROM Property WHERE Property = 'ProductCode'"))
+$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+$record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+[Console]::Out.Write(
+  $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1))
+"""
     environment = os.environ.copy()
-    environment["SIMA_CLI_MSI_ARGUMENTS"] = subprocess.list2cmdline(command[1:])
-    click.echo("Requesting Windows administrator approval for the native package.")
-    return _run(
-        [
-            "powershell.exe",
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ],
-        env=environment,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    environment["SIMA_CLI_MSI_PATH"] = str(msi)
+    try:
+        result = _run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+    except OSError as error:
+        result = subprocess.CompletedProcess([], 1, stdout="", stderr=str(error))
+    code = (result.stdout or "").strip()
+    if result.returncode != 0 or not _PRODUCT_CODE.fullmatch(code):
+        detail = (result.stderr or "").strip() or f"unexpected value '{code}'"
+        raise WindowsNativeInstallError(
+            f"Could not read the ProductCode of '{msi.name}': {detail}. No MSI was started."
+        )
+    return code.upper()
 
 
 def _path_from_spec(spec: Dict[str, str]) -> Optional[Path]:
@@ -695,81 +883,95 @@ def _safe_log_label(owner: str) -> str:
 
 
 def _install_native_packages(
-    metadata: Dict, install_dir: str, installed: List[Dict[str, str]]
+    metadata: Dict,
+    install_dir: str,
+    installed: List[Dict[str, str]],
+    record_receipt=None,
+    python_executable: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     root = Path(install_dir).resolve()
     packages = _native_packages(metadata["installation"])
+    items = []
     for index, package in enumerate(packages, start=1):
-        owner = package["owner"]
         msi = _declared_resource(metadata, install_dir, package["msi"])
-        log_path = root / f"sima-cli-msi-install-{index:02d}-{_safe_log_label(owner)}.log"
-        command = [
-            "msiexec.exe",
-            "/i",
-            str(msi),
-            "/passive",
-            "/norestart",
-            "/L*v",
-            str(log_path),
-        ]
+        log_path = root / f"sima-cli-msi-install-{index:02d}-{_safe_log_label(package['owner'])}.log"
+        items.append({
+            "index": index,
+            "owner": package["owner"],
+            "version": package["version"],
+            "resource": package["msi"],
+            "msi": msi,
+            "sha256": _declared_sha256(metadata, package["msi"]),
+            "log": log_path,
+            "args": ["/i", str(msi), "/passive", "/norestart", "/L*v", str(log_path)],
+        })
+    for item in items:
+        item["product_code"] = _msi_product_code(item["msi"])
+    if record_receipt is not None:
+        # Recorded before any MSI starts, so a later uninstall can find every package.
+        record_receipt({
+            "native_packages": [
+                {key: item[key] for key in ("owner", "version", "product_code")}
+                for item in items
+            ],
+            "python_executable": python_executable,
+        })
+    for item in items:
         click.echo(
-            f"Installing {owner} native package {index}/{len(packages)}: {msi.name}"
+            f"Installing {item['owner']} native package {item['index']}/{len(items)}: "
+            f"{item['msi'].name}"
         )
-        _verify_declared_checksum(metadata, package["msi"], msi, WindowsNativeInstallError)
-        try:
-            result = _run_native_installer(command, log_path)
-        except OSError as error:
-            raise WindowsNativeInstallError(
-                f"Could not start Windows Installer for {owner}: {error}. "
-                "Check the current account's permissions and Windows application-control policy; "
-                f"do not disable security controls. Intended installer log: {log_path}"
-            ) from error
-        if result.returncode in {MSI_RESTART_INITIATED, MSI_RESTART_REQUIRED}:
-            completed_owners = ", ".join([item["owner"] for item in installed] + [owner])
-            remaining = [item["owner"] for item in packages[index:]]
+
+    def handle_result(item: Dict, returncode: int, detail: str) -> None:
+        owner = item["owner"]
+        log_path = item["log"]
+        if returncode in {MSI_RESTART_INITIATED, MSI_RESTART_REQUIRED}:
+            completed_owners = ", ".join([entry["owner"] for entry in installed] + [owner])
+            remaining = [entry["owner"] for entry in items[item["index"]:]]
             remaining_text = (
                 "native packages " + ", ".join(remaining) + " and any"
                 if remaining
                 else "any"
             )
             raise WindowsPackageRestartRequired(
-                f"Windows Installer completed {owner} with restart code {result.returncode}. "
+                f"Windows Installer completed {owner} with restart code {returncode}. "
                 f"Native packages installed in this run: {completed_owners}. "
                 f"Not yet run: {remaining_text} verification, customer skill, and Python steps. "
                 "Restart Windows, then rerun the same command to continue the coordinated "
                 f"installation. Installer log: {log_path}"
             )
-        if result.returncode == WINDOWS_ELEVATION_CANCELLED:
-            raise WindowsNativeInstallError(
-                f"Windows administrator approval was cancelled for {owner}. "
-                "No later native package or Python package was installed. Rerun the same "
-                f"command when approval is available. Intended installer log: {log_path}"
-            )
-        if result.returncode == ELEVATED_INSTALLER_LAUNCH_FAILED:
-            detail = (result.stderr or "").strip() or "Windows did not report a reason"
+        if returncode == ELEVATED_INSTALLER_LAUNCH_FAILED:
+            detail = detail.strip() or "Windows did not report a reason"
             raise WindowsNativeInstallError(
                 f"Could not start Windows Installer for {owner} with administrator approval: "
                 f"{detail}. No later native package or Python package was installed. Check that "
-                "msiexec.exe is available, the current account's permissions, and Windows "
-                "application-control policy; do not disable security controls. Then rerun the "
-                f"same command. Intended installer log: {log_path}"
+                "Windows PowerShell and msiexec.exe are available, the current account's "
+                "permissions, and Windows application-control policy; do not disable security "
+                f"controls. Then rerun the same command. Intended installer log: {log_path}"
             )
-        if result.returncode == ELEVATED_INSTALLER_EXIT_CODE_MISSING:
+        if returncode == ELEVATED_INSTALLER_EXIT_CODE_MISSING:
             raise WindowsNativeInstallError(
                 f"Windows Installer for {owner} ended without reporting an exit code, so its "
                 "result is unknown. The release remains incomplete; check the installer log, "
                 f"then rerun the same command. Installer log: {log_path}"
             )
-        if result.returncode != 0:
-            installed_owners = ", ".join(item["owner"] for item in installed) or "none"
+        if returncode == ELEVATED_INSTALLER_HASH_MISMATCH:
+            raise WindowsNativeInstallError(
+                f"Windows package resource '{item['resource']}' no longer matched its declared "
+                f"SHA-256 when the elevated installer checked it (expected {item['sha256']}, "
+                f"{detail}); it was not started. Rerun the same command to download a "
+                "verified copy."
+            )
+        if returncode != 0:
+            installed_owners = ", ".join(entry["owner"] for entry in installed) or "none"
             policy_detail = (
                 " Windows Installer rejected this package under system policy; "
                 "use an approved package or ask the Windows administrator to review the policy."
-                if result.returncode == MSI_INSTALL_REJECTED_BY_POLICY
+                if returncode == MSI_INSTALL_REJECTED_BY_POLICY
                 else ""
             )
             raise WindowsNativeInstallError(
-                f"Windows Installer failed for {owner} with exit code {result.returncode}. "
+                f"Windows Installer failed for {owner} with exit code {returncode}. "
                 f"{policy_detail}"
                 f"Packages completed earlier in this run: {installed_owners}. "
                 "The release remains incomplete; correct the failure and rerun the same command. "
@@ -778,12 +980,17 @@ def _install_native_packages(
         installed.append(
             {
                 "owner": owner,
-                "version": package["version"],
-                "msi": str(msi),
+                "version": item["version"],
+                "msi": str(item["msi"]),
                 "log": str(log_path),
+                "product_code": item["product_code"],
             }
         )
         click.echo(f"{owner} native package installed successfully.")
+
+    _run_msi_operations(
+        items, [0], handle_result, "No native package or Python package was installed."
+    )
     return installed
 
 
@@ -930,8 +1137,13 @@ def install_windows_package(
     install_dir: str,
     python_executable: Optional[str] = None,
     native_only: bool = False,
+    record_receipt=None,
 ) -> Dict[str, Any]:
-    """Install the ordered native package cohort and its Python wheel."""
+    """Install the ordered native package cohort and its Python wheel.
+
+    record_receipt, when given, receives the package product codes and selected Python
+    before any MSI starts.
+    """
     if not _is_windows():
         raise click.ClickException("The windows-msi installation type can only run on Windows.")
     if native_only and python_executable:
@@ -942,7 +1154,9 @@ def install_windows_package(
         _check_prerequisites(metadata)
         skill_manager = _preflight_customer_skills(metadata)
         selected_python = _prepare_python_executable(metadata, python_executable, native_only)
-        _install_native_packages(metadata, install_dir, installed)
+        _install_native_packages(
+            metadata, install_dir, installed, record_receipt, selected_python
+        )
         click.echo("Coordinated native installation completed successfully.")
         verification = _verify_native_installation(metadata)
         skills = _install_customer_skills(metadata, skill_manager)
@@ -960,3 +1174,93 @@ def install_windows_package(
         "python": python_status,
         "python_executable": selected_python,
     }
+
+
+def uninstall_windows_package(receipt: Dict) -> bool:
+    """Remove a receipt's native packages in reverse install order.
+
+    Returns True when Windows must restart to finish the removal.
+    """
+    if not _is_windows():
+        raise click.ClickException("Windows MSI packages can only be uninstalled on Windows.")
+    packages = receipt.get("native_packages")
+    if not packages:
+        click.echo(
+            "This receipt records no Windows product codes, so no native package was "
+            "uninstalled. Remove Scheduler or Core through Windows Installed apps if present."
+        )
+        return False
+
+    log_root = Path(tempfile.gettempdir())
+    items = []
+    for index, package in enumerate(reversed(packages), start=1):
+        owner = str(package.get("owner", ""))
+        product_code = str(package.get("product_code", ""))
+        if not _PRODUCT_CODE.fullmatch(product_code):
+            raise click.ClickException(
+                f"The receipt records an invalid product code for {owner or 'a package'}: "
+                f"'{product_code}'. No native package was removed."
+            )
+        log_path = log_root / f"sima-cli-msi-uninstall-{index:02d}-{_safe_log_label(owner)}.log"
+        items.append({
+            "owner": owner,
+            "log": log_path,
+            "args": ["/x", product_code, "/passive", "/norestart", "/L*v", str(log_path)],
+        })
+    click.echo("Removing native packages: " + ", ".join(item["owner"] for item in items))
+
+    removed: List[str] = []
+    restart_required = False
+
+    def handle_result(item: Dict, returncode: int, detail: str) -> None:
+        nonlocal restart_required
+        owner = item["owner"]
+        if returncode == MSI_UNKNOWN_PRODUCT:
+            click.echo(f"{owner} native package is not installed; nothing to remove.")
+            return
+        if returncode in {0, MSI_RESTART_REQUIRED}:
+            removed.append(owner)
+            restart_required = restart_required or returncode == MSI_RESTART_REQUIRED
+            click.echo(f"{owner} native package removed.")
+            return
+        if returncode == ELEVATED_INSTALLER_LAUNCH_FAILED:
+            reason = (
+                f"Could not start Windows Installer to remove {owner} with administrator "
+                f"approval: {detail.strip() or 'Windows did not report a reason'}."
+            )
+        elif returncode == ELEVATED_INSTALLER_EXIT_CODE_MISSING:
+            reason = (
+                f"Windows Installer did not report a result for removing {owner}, so it is "
+                "unknown."
+            )
+        else:
+            reason = f"Windows Installer failed to remove {owner} with exit code {returncode}."
+        later = [entry["owner"] for entry in items[items.index(item) + 1:]]
+        raise WindowsNativeInstallError(
+            f"{reason} Removed in this run: {', '.join(removed) or 'none'}. "
+            f"Not attempted: {', '.join(later) or 'none'}. Correct the failure and rerun the "
+            f"same command. Installer log: {item['log']}"
+        )
+
+    _run_msi_operations(
+        items,
+        [0, MSI_UNKNOWN_PRODUCT, MSI_RESTART_REQUIRED],
+        handle_result,
+        "No native package was removed.",
+    )
+
+    python_executable = receipt.get("python_executable")
+    python_package = receipt.get("metadata", {}).get("installation", {}).get("python")
+    if python_executable and python_package:
+        distribution = python_package["distribution"]
+        click.echo(
+            f"The Python package {distribution} remains in '{python_executable}'; sima-cli "
+            f"does not delete Python environments. To remove it, run: "
+            f'& "{python_executable}" -m pip uninstall -y {distribution}'
+        )
+    for skill in receipt.get("metadata", {}).get("installation", {}).get("skills", []):
+        click.echo(
+            f"The customer skill {skill.get('id')} remains; to remove it, run: "
+            f"sima-cli playbooks remove {skill.get('id')} --yes"
+        )
+    return restart_required

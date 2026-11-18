@@ -1647,6 +1647,9 @@ def install_from_metadata(
                                     install_dir=install_dir,
                                     python_executable=python_executable,
                                     native_only=native_only,
+                                    record_receipt=lambda fields: registry.update_fields(
+                                        metadata.get("name"), metadata.get("version"), fields
+                                    ),
                                 )
                                 registry.update_state(
                                     metadata.get("name"), metadata.get("version"), "installed"

@@ -1,6 +1,6 @@
 # `sima-cli packages remove`
 
-Remove one local registry receipt without uninstalling package files.
+Remove one local registry receipt. A Windows MSI package is uninstalled first; other package files are not touched.
 
 Parent command: [`sima-cli packages`](./sima-cli-packages.md)
 
@@ -28,7 +28,8 @@ sima-cli packages remove [OPTIONS] PACKAGE
 ```text
 Usage: sima-cli packages remove [OPTIONS] PACKAGE
 
-  Remove one local registry receipt without uninstalling package files.
+  Remove one local registry receipt. A Windows MSI package is uninstalled
+  first; other package files are not touched.
 
 Options:
   -v, --version TEXT  Exact installed version whose registry receipt should be

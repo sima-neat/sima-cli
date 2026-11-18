@@ -1,13 +1,15 @@
+import base64
 import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import ANY, call, patch
 
 import click
 from click.testing import CliRunner
@@ -17,6 +19,7 @@ from sima_cli.install import metadata_installer
 from sima_cli.install.metadata_validator import MetadataValidationError, validate_metadata
 from sima_cli.install.windows_package import (
     ELEVATED_INSTALLER_EXIT_CODE_MISSING,
+    ELEVATED_INSTALLER_HASH_MISMATCH,
     ELEVATED_INSTALLER_LAUNCH_FAILED,
     WindowsNativeInstallError,
     WindowsPackageRestartRequired,
@@ -24,11 +27,20 @@ from sima_cli.install.windows_package import (
     WindowsPythonInstallError,
     _WindowsPnpDriverVersionError,
     _managed_python_executable,
+    _msi_product_code,
     _windows_pnp_driver_version,
     install_windows_package,
+    uninstall_windows_package,
 )
+from sima_cli.install.registry import PackageRegistry, packages as packages_group
 from sima_cli.playbooks.manager import SkillError
 from sima_cli.vulcan.commands import install_vulcan_package
+
+
+PRODUCT_CODES = {
+    "simaai": "{11111111-1111-1111-1111-111111111111}",
+    "sima": "{22222222-2222-2222-2222-222222222222}",
+}
 
 
 def completed(returncode=0, stdout="", stderr=""):
@@ -47,6 +59,43 @@ def python_facts(version="3.14", arch="AMD64"):
     return completed(stdout=f'{{"version": "{version}", "arch": "{arch}"}}\n')
 
 
+def elevated_request(environment):
+    """Decode the request the CLI embeds in the elevated PowerShell command line."""
+    encoded = environment["SIMA_CLI_ELEVATED_ARGUMENTS"].split()[-1]
+    script = base64.b64decode(encoded).decode("utf-16-le")
+    request = re.search(r"FromBase64String\('([^']+)'\)", script).group(1)
+    return json.loads(base64.b64decode(request)), script
+
+
+def fake_elevation(exit_codes, wrapper_code=0, errors=None):
+    """Stand in for the one elevated process: report each msiexec result in order.
+
+    Like the elevated script, it stops after the first exit code outside the
+    request's continue_codes and writes the results to the CLI's result file.
+    """
+    requests = []
+
+    def run(command, **kwargs):
+        request, script = elevated_request(kwargs["env"])
+        requests.append({"request": request, "script": script, "command": command})
+        result_path = Path(request["result"])
+        assert result_path.is_file() and result_path.read_bytes() == b""
+        results = []
+        for index, (package, code) in enumerate(zip(request["packages"], exit_codes)):
+            results.append({
+                "owner": package["owner"],
+                "exit_code": code,
+                "error": (errors or {}).get(index, ""),
+            })
+            if code not in request["continue_codes"]:
+                break
+        if wrapper_code == 0:
+            result_path.write_text(json.dumps({"packages": results}), encoding="utf-8")
+        return completed(returncode=wrapper_code)
+
+    return run, requests
+
+
 class WindowsPackageTests(unittest.TestCase):
     def setUp(self):
         self.administrator = patch(
@@ -55,6 +104,12 @@ class WindowsPackageTests(unittest.TestCase):
         )
         self.administrator.start()
         self.addCleanup(self.administrator.stop)
+        product_codes = patch(
+            "sima_cli.install.windows_package._msi_product_code",
+            side_effect=lambda msi: PRODUCT_CODES[msi.name.split("-")[0]],
+        )
+        product_codes.start()
+        self.addCleanup(product_codes.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.msi = self.root / "sima-pcie-host-0.6.1-win64.msi"
@@ -91,6 +146,30 @@ class WindowsPackageTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def use_scheduler_and_core(self):
+        if "native-packages" in self.metadata["installation"]:
+            return
+        self.metadata["resources"].insert(0, self.scheduler_msi.name)
+        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
+        self.metadata["installation"].pop("msi")
+        self.metadata["installation"]["native-packages"] = [
+            {"owner": "scheduler", "msi": self.scheduler_msi.name, "version": "0.6.1"},
+            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
+        ]
+
+    def standard_user(self, run):
+        """Patch a standard interactive user whose elevation is served by run."""
+        stack = ExitStack()
+        stack.enter_context(patch("sima_cli.install.windows_package._is_windows", return_value=True))
+        stack.enter_context(patch(
+            "sima_cli.install.windows_package._is_windows_administrator", return_value=False
+        ))
+        stack.enter_context(patch(
+            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+        ))
+        stack.enter_context(patch("sima_cli.install.windows_package._run", side_effect=run))
+        return stack
 
     def test_metadata_accepts_declarative_msi_and_wheel(self):
         self.assertTrue(validate_metadata(self.metadata))
@@ -238,30 +317,312 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("/norestart", command)
         self.assertIn("/L*v", command)
 
-    def test_standard_user_elevates_only_the_native_installer(self):
-        with patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
-            "sima_cli.install.windows_package._is_windows_administrator",
-            return_value=False,
-        ), patch(
-            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
-        ), patch(
-            "sima_cli.install.windows_package._run", return_value=completed()
-        ) as run:
-            result = install_windows_package(
-                self.metadata, str(self.root), native_only=True
-            )
+    def test_standard_user_installs_both_msis_under_one_elevation(self):
+        self.use_scheduler_and_core()
+        run, requests = fake_elevation([0, 0])
+        with self.standard_user(run):
+            result = install_windows_package(self.metadata, str(self.root), native_only=True)
 
-        self.assertEqual(result["native"], "installed")
-        command = run.call_args.args[0]
+        self.assertEqual(len(requests), 1)
+        command = requests[0]["command"]
         self.assertEqual(command[:4], [
             "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive"
         ])
-        self.assertNotIn(str(self.msi), command)
-        arguments = run.call_args.kwargs["env"]["SIMA_CLI_MSI_ARGUMENTS"]
-        self.assertIn(str(self.msi), arguments)
-        self.assertIn("/passive", arguments)
+        self.assertNotIn(str(self.msi), " ".join(command))
+        self.assertIn("$startInfo.Verb = 'runas'", command[-1])
+        request = requests[0]["request"]
+        self.assertEqual(request["continue_codes"], [0])
+        self.assertEqual(
+            [(package["owner"], package["msi"], package["sha256"]) for package in request["packages"]],
+            [
+                ("scheduler", str(self.scheduler_msi), sha256(self.scheduler_msi)),
+                ("core", str(self.msi), sha256(self.msi)),
+            ],
+        )
+        self.assertTrue(request["packages"][0]["arguments"].startswith(
+            f"/i {self.scheduler_msi} /passive /norestart /L*v "
+        ))
+        self.assertIn("sima-cli-msi-install-02-core.log", request["packages"][1]["arguments"])
+        # The result file lives in a directory the CLI created and removes afterwards.
+        self.assertFalse(Path(request["result"]).parent.exists())
+        script = requests[0]["script"]
+        self.assertIn("[IO.FileShare]::Read", script)
+        self.assertIn("$request.continue_codes -notcontains $result.exit_code) { break }", script)
+        self.assertEqual(
+            [(package["owner"], package["product_code"]) for package in result["native_packages"]],
+            [("scheduler", PRODUCT_CODES["simaai"]), ("core", PRODUCT_CODES["sima"])],
+        )
+
+    def test_elevated_scheduler_failure_stops_before_core(self):
+        self.use_scheduler_and_core()
+        run, requests = fake_elevation([1603, 0])
+        with self.standard_user(run):
+            registry, output = self.install_from_windows_metadata(fails=True)
+
+        self.assertEqual(len(requests), 1)
+        self.assertIn("Windows Installer failed for scheduler with exit code 1603", output)
+        self.assertIn("Packages completed earlier in this run: none", output)
+        self.assertNotIn("core native package installed", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "failed"
+        )
+
+    def test_elevated_core_failure_after_scheduler_records_partial_native_failure(self):
+        self.use_scheduler_and_core()
+        run, requests = fake_elevation([0, 1603])
+        with self.standard_user(run):
+            registry, output = self.install_from_windows_metadata(fails=True)
+
+        self.assertEqual(len(requests), 1)
+        self.assertIn("scheduler native package installed successfully", output)
+        self.assertIn("Windows Installer failed for core with exit code 1603", output)
+        self.assertIn("Packages completed earlier in this run: scheduler", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "partial-native-failed"
+        )
+
+    def test_elevated_restart_result_stops_before_core(self):
+        self.use_scheduler_and_core()
+        run, _requests = fake_elevation([3010, 0])
+        with self.standard_user(run):
+            registry, output = self.install_from_windows_metadata(fails=True, exit_code=3010)
+
+        self.assertIn("Native packages installed in this run: scheduler.", output)
+        self.assertIn("Not yet run: native packages core", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "restart-required"
+        )
+
+    def test_elevated_process_without_core_result_reports_unknown_result(self):
+        # Scheduler reported success, then the elevated process ended without a
+        # Core result; Core's outcome is unknown and Scheduler stays recorded.
+        self.use_scheduler_and_core()
+        run, _requests = fake_elevation([0])
+        with self.standard_user(run):
+            registry, output = self.install_from_windows_metadata(fails=True)
+
+        self.assertIn("Windows Installer for core ended without reporting an exit code", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "partial-native-failed"
+        )
+
+    def test_elevated_hash_mismatch_refuses_the_msi(self):
+        self.use_scheduler_and_core()
+        run, _requests = fake_elevation(
+            [ELEVATED_INSTALLER_HASH_MISMATCH], errors={0: "found " + "0" * 64}
+        )
+        with self.standard_user(run), self.assertRaises(WindowsNativeInstallError) as raised:
+            install_windows_package(self.metadata, str(self.root), native_only=True)
+
+        message = str(raised.exception)
+        self.assertIn(f"'{self.scheduler_msi.name}' no longer matched its declared SHA-256", message)
+        self.assertIn("when the elevated installer checked it", message)
+        self.assertIn("found " + "0" * 64, message)
+        self.assertIn("it was not started", message)
+        self.assertEqual(raised.exception.native_packages_installed, [])
+
+    def test_msi_modified_before_elevation_is_not_elevated(self):
+        self.use_scheduler_and_core()
+        self.msi.write_bytes(b"replaced msi")
+        run, requests = fake_elevation([0, 0])
+        with self.standard_user(run), self.assertRaisesRegex(
+            WindowsNativeInstallError, "declared SHA-256"
+        ):
+            install_windows_package(self.metadata, str(self.root), native_only=True)
+
+        self.assertEqual(requests, [])
+
+    def test_receipt_records_product_codes_before_any_msi_starts(self):
+        self.use_scheduler_and_core()
+        recorded_before_run = []
+
+        def run(command, **kwargs):
+            recorded_before_run.append(metadata_installer.registry.update_fields.called)
+            return completed()
+
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", side_effect=run
+        ):
+            registry, _output = self.install_from_windows_metadata()
+
+        self.assertEqual(recorded_before_run, [True, True])
+        registry.update_fields.assert_called_once_with(
+            self.metadata["name"],
+            self.metadata["version"],
+            {
+                "native_packages": [
+                    {"owner": "scheduler", "version": "0.6.1",
+                     "product_code": PRODUCT_CODES["simaai"]},
+                    {"owner": "core", "version": "0.6.1",
+                     "product_code": PRODUCT_CODES["sima"]},
+                ],
+                "python_executable": None,
+            },
+        )
+
+    def test_unreadable_product_code_blocks_before_msi(self):
+        with patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(returncode=1, stderr="The package could not be opened."),
+        ) as run, self.assertRaisesRegex(
+            WindowsNativeInstallError, "ProductCode of .*could not be opened.*No MSI was started"
+        ):
+            _msi_product_code(self.msi)
+        self.assertEqual(run.call_args.kwargs["env"]["SIMA_CLI_MSI_PATH"], str(self.msi))
+
+        with patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(stdout="{abcdef01-2345-6789-abcd-ef0123456789}"),
+        ):
+            self.assertEqual(
+                _msi_product_code(self.msi), "{ABCDEF01-2345-6789-ABCD-EF0123456789}"
+            )
+
+    def windows_receipt(self, registry_path, native_packages):
+        self.use_scheduler_and_core()
+        registry = PackageRegistry(registry_path)
+        registry.create_entry(self.metadata["name"], "0.6.1", self.metadata, "")
+        registry.update_fields(self.metadata["name"], "0.6.1", {
+            "native_packages": native_packages,
+            "python_executable": str(self.python),
+        })
+        registry.update_state(self.metadata["name"], "0.6.1", "installed")
+        return registry
+
+    def remove_windows_receipt(self, native_packages, run):
+        """Run `packages remove` against a temporary registry; return (exit code, output, receipts)."""
+        registry_path = self.root / "registry.json"
+        registry_path.unlink(missing_ok=True)
+        self.windows_receipt(registry_path, native_packages)
+        output = io.StringIO()
+        # CliRunner replaces sys.stdin, so drive the command directly to keep a TTY.
+        with self.standard_user(run), patch(
+            "sima_cli.install.registry.PackageRegistry",
+            lambda: PackageRegistry(registry_path),
+        ), redirect_stdout(output), redirect_stderr(output), self.assertRaises(
+            SystemExit
+        ) as raised:
+            packages_group.main(
+                ["remove", self.metadata["name"], "--version", "0.6.1", "--yes"],
+                prog_name="packages",
+            )
+        receipts = json.loads(registry_path.read_text(encoding="utf-8"))
+        return raised.exception.code, output.getvalue(), receipts
+
+    def recorded_cohort(self):
+        return [
+            {"owner": "scheduler", "version": "0.6.1", "product_code": PRODUCT_CODES["simaai"]},
+            {"owner": "core", "version": "0.6.1", "product_code": PRODUCT_CODES["sima"]},
+        ]
+
+    def test_uninstall_removes_core_then_scheduler_under_one_elevation(self):
+        run, requests = fake_elevation([0, 0])
+
+        exit_code, output, receipts = self.remove_windows_receipt(self.recorded_cohort(), run)
+
+        self.assertEqual(exit_code, 0, output)
+        self.assertEqual(len(requests), 1)
+        request = requests[0]["request"]
+        self.assertEqual(request["continue_codes"], [0, 1605, 3010])
+        self.assertEqual(
+            [(package["owner"], package["arguments"].split()[:2]) for package in request["packages"]],
+            [
+                ("core", ["/x", PRODUCT_CODES["sima"]]),
+                ("scheduler", ["/x", PRODUCT_CODES["simaai"]]),
+            ],
+        )
+        self.assertEqual([package["msi"] for package in request["packages"]], [None, None])
+        self.assertIn("Removing native packages: core, scheduler", output)
+        self.assertIn(f"& \"{self.python}\" -m pip uninstall -y pyneatpcie", output)
+        self.assertIn("Removed local registry receipt", output)
+        self.assertEqual(receipts, [])
+
+    def test_uninstall_treats_an_absent_package_as_removed(self):
+        run, _requests = fake_elevation([1605, 0])
+
+        exit_code, output, receipts = self.remove_windows_receipt(self.recorded_cohort(), run)
+
+        self.assertEqual(exit_code, 0, output)
+        self.assertIn("core native package is not installed; nothing to remove.", output)
+        self.assertIn("scheduler native package removed.", output)
+        self.assertEqual(receipts, [])
+
+    def test_uninstall_core_failure_keeps_scheduler_and_records_remove_failed(self):
+        run, _requests = fake_elevation([1603, 0])
+
+        exit_code, output, receipts = self.remove_windows_receipt(self.recorded_cohort(), run)
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("Windows Installer failed to remove core with exit code 1603", output)
+        self.assertIn("Not attempted: scheduler", output)
+        self.assertEqual([receipt["state"] for receipt in receipts], ["remove-failed"])
+
+    def test_uninstall_maps_decline_launch_failure_and_unknown_result(self):
+        cases = [
+            (fake_elevation([], wrapper_code=1223)[0], "administrator approval was cancelled"),
+            (
+                lambda *_args, **_kwargs: completed(
+                    returncode=ELEVATED_INSTALLER_LAUNCH_FAILED, stderr="no shell\n"
+                ),
+                "Could not start Windows Installer to remove core with administrator "
+                "approval: no shell.",
+            ),
+            (fake_elevation([0])[0], "did not report a result for removing scheduler"),
+        ]
+        for run, message in cases:
+            with self.subTest(message=message):
+                exit_code, output, receipts = self.remove_windows_receipt(self.recorded_cohort(), run)
+
+                self.assertNotEqual(exit_code, 0)
+                self.assertIn(message, output)
+                self.assertEqual([receipt["state"] for receipt in receipts], ["remove-failed"])
+
+    def test_uninstall_restart_required_removes_both_and_exits_3010(self):
+        run, _requests = fake_elevation([3010, 0])
+
+        exit_code, output, receipts = self.remove_windows_receipt(self.recorded_cohort(), run)
+
+        self.assertEqual(exit_code, 3010, output)
+        self.assertIn("scheduler native package removed.", output)
+        self.assertIn("Restart Windows to finish removing", output)
+        self.assertEqual(receipts, [])
+
+    def test_uninstall_refuses_an_invalid_recorded_product_code(self):
+        cohort = self.recorded_cohort()
+        cohort[1]["product_code"] = "/i \\\\server\\share\\other.msi"
+        run, requests = fake_elevation([0, 0])
+
+        exit_code, output, receipts = self.remove_windows_receipt(cohort, run)
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("invalid product code for core", output)
+        self.assertEqual(requests, [])
+        self.assertEqual([receipt["state"] for receipt in receipts], ["remove-failed"])
+
+    def test_uninstall_without_recorded_product_codes_removes_only_the_receipt(self):
+        run, requests = fake_elevation([0, 0])
+
+        exit_code, output, receipts = self.remove_windows_receipt([], run)
+
+        self.assertEqual(exit_code, 0, output)
+        self.assertIn("records no Windows product codes", output)
+        self.assertEqual(requests, [])
+        self.assertEqual(receipts, [])
+
+    def test_administrator_uninstall_runs_msiexec_in_reverse_install_order(self):
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ) as run:
+            restart = uninstall_windows_package({"native_packages": self.recorded_cohort()})
+
+        self.assertFalse(restart)
+        self.assertEqual(
+            [command.args[0][:3] for command in run.call_args_list],
+            [
+                ["msiexec.exe", "/x", PRODUCT_CODES["sima"]],
+                ["msiexec.exe", "/x", PRODUCT_CODES["simaai"]],
+            ],
+        )
 
     def test_noninteractive_standard_user_fails_before_starting_installer(self):
         with patch(
@@ -348,7 +709,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertNotIn("cancelled", message)
         self.assertIn("Could not start Windows Installer for native", message)
         self.assertIn("The system cannot find the file specified", message)
-        self.assertIn("msiexec.exe is available", message)
+        self.assertIn("msiexec.exe are available", message)
         self.assertIn("sima-cli-msi-install-01-native.log", message)
         powershell = run.call_args.args[0][-1]
         self.assertIn("$exception.NativeErrorCode -eq 1223", powershell)
@@ -1316,6 +1677,7 @@ class WindowsPackageTests(unittest.TestCase):
                     install_dir=str(self.root),
                     python_executable=None,
                     native_only=True,
+                    record_receipt=ANY,
                 )
                 registry.update_state.assert_called_once_with(
                     self.metadata["name"], self.metadata["version"], state

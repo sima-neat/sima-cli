@@ -22,7 +22,7 @@ None.
 
 - [`sima-cli packages build`](./sima-cli-packages-build.md): Build package metadata.json from an artifacts folder.
 - [`sima-cli packages list`](./sima-cli-packages-list.md): List all packages in the local registry.
-- [`sima-cli packages remove`](./sima-cli-packages-remove.md): Remove one local registry receipt without uninstalling package files.
+- [`sima-cli packages remove`](./sima-cli-packages-remove.md): Remove one local registry receipt. A Windows MSI package is uninstalled first; other package files are not touched.
 - [`sima-cli packages show`](./sima-cli-packages-show.md): Show metadata or post-install instructions for a package.
 
 ## Full Help
@@ -38,6 +38,6 @@ Options:
 Commands:
   build   Build package metadata.json from an artifacts folder.
   list    List all packages in the local registry.
-  remove  Remove one local registry receipt without uninstalling package...
+  remove  Remove one local registry receipt.
   show    Show metadata or post-install instructions for a package.
 ```

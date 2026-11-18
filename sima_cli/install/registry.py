@@ -16,6 +16,7 @@ Whenever `sima-cli install <package>` is executed, this registry stores:
 """
 
 import json
+import sys
 import click
 import datetime
 import re
@@ -67,7 +68,10 @@ def list_packages():
 
 @packages.command(
     "remove",
-    help="Remove one local registry receipt without uninstalling package files.",
+    help=(
+        "Remove one local registry receipt. A Windows MSI package is uninstalled first; "
+        "other package files are not touched."
+    ),
 )
 @click.argument("name", metavar="PACKAGE")
 @click.option(
@@ -78,19 +82,35 @@ def list_packages():
 )
 @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt.")
 def remove_package_receipt(name, version, yes):
-    """Forget an installation receipt after its owning installers are removed."""
+    """Forget an installation receipt, uninstalling a Windows MSI package first."""
     reg = PackageRegistry()
-    if not yes and not click.confirm(
-        f"Remove only the local registry receipt for {name}@{version}?",
-        default=False,
-    ):
+    entry = reg._find(name, version)
+    windows_msi = (entry or {}).get("metadata", {}).get("installation", {}).get("type") == "windows-msi"
+    prompt = (
+        f"Uninstall the Windows native packages of {name}@{version} and remove its registry receipt?"
+        if windows_msi
+        else f"Remove only the local registry receipt for {name}@{version}?"
+    )
+    if not yes and not click.confirm(prompt, default=False):
         click.echo("Registry receipt removal cancelled.")
         return
+    restart_required = False
+    if windows_msi:
+        from sima_cli.install.windows_package import uninstall_windows_package
+
+        try:
+            restart_required = uninstall_windows_package(entry)
+        except BaseException:
+            reg.update_state(name, version, "remove-failed")
+            raise
     try:
         reg.remove_entry(name, version)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Removed local registry receipt: {name}@{version}")
+    if restart_required:
+        click.echo("Restart Windows to finish removing the native packages.")
+        sys.exit(3010)
 
 
 @packages.command(
@@ -312,6 +332,15 @@ class PackageRegistry:
         if not pkg:
             raise ValueError(f"Package {name}@{version} not found in registry.")
         pkg["state"] = state
+        pkg["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+        self._save()
+
+    def update_fields(self, name, version, fields):
+        """Record installer-specific details on an existing receipt."""
+        pkg = self._find(name, version)
+        if not pkg:
+            raise ValueError(f"Package {name}@{version} not found in registry.")
+        pkg.update(fields)
         pkg["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
         self._save()
 

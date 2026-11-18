@@ -676,6 +676,14 @@ def _bootstrap_python(python_package: Dict, environment: Path) -> List[str]:
     )
 
 
+def _invalid_managed_environment(environment: Path) -> WindowsPrerequisiteError:
+    return WindowsPrerequisiteError(
+        f"Managed Python path exists but is not a valid environment: '{environment}'. "
+        "Move or remove it, use --python-executable <path>, or use --native-only. "
+        "No MSI was started."
+    )
+
+
 def _managed_python_executable(metadata: Dict) -> str:
     python_package = metadata["installation"]["python"]
     distribution = python_package["distribution"]
@@ -686,11 +694,7 @@ def _managed_python_executable(metadata: Dict) -> str:
         click.echo(f"Using managed Python environment: {environment}")
         return str(executable)
     if environment.exists():
-        raise WindowsPrerequisiteError(
-            f"Managed Python path exists but is not a valid environment: '{environment}'. "
-            "Move or remove it, use --python-executable <path>, or use --native-only. "
-            "No MSI was started."
-        )
+        raise _invalid_managed_environment(environment)
 
     selected = _bootstrap_python(python_package, environment)
     click.echo(f"Creating managed Python environment: {environment}")
@@ -1126,7 +1130,9 @@ def preflight_windows_package(
         try:
             if python_executable or managed.is_file():
                 _preflight_python(metadata, python_executable or str(managed))
-            elif not environment.exists():
+            elif environment.exists():
+                raise _invalid_managed_environment(environment)
+            else:
                 _bootstrap_python(python_package, environment)
         except WindowsPrerequisiteError as error:
             problems.append(error.message)

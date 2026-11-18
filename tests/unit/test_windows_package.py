@@ -1856,6 +1856,20 @@ class WindowsPackageTests(unittest.TestCase):
                     self.metadata["name"], self.metadata["version"], "prerequisite-failed"
                 )
 
+    def test_invalid_managed_python_environment_is_reported_before_download(self):
+        (self.root / "home" / "pyneatpcie").mkdir(parents=True)
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package.Path.home", return_value=self.root / "home"
+        ), patch("sima_cli.install.windows_package._run") as run:
+            registry, output = self.install_from_windows_metadata(fails=True, native_only=False)
+
+        self.download_assets.assert_not_called()
+        run.assert_not_called()
+        self.assertIn("Managed Python path exists but is not a valid environment", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "prerequisite-failed"
+        )
+
     def test_restart_required_is_not_reported_as_failure(self):
         self.metadata["resources"].insert(0, self.scheduler_msi.name)
         self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)

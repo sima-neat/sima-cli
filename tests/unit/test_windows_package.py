@@ -41,6 +41,28 @@ PRODUCT_CODES = {
     "simaai": "{11111111-1111-1111-1111-111111111111}",
     "sima": "{22222222-2222-2222-2222-222222222222}",
 }
+OPENSSH = {
+    "name": "Windows OpenSSH client",
+    "type": "executable",
+    "value": "ssh.exe",
+    "guidance": "Install Windows OpenSSH Client.",
+}
+PLATFORM_DRIVER = {
+    "name": "SiMa Platform MLA driver",
+    "type": "windows-pnp-driver",
+    "value": "SiMa.ai MLA Device",
+    "version": "3.0.0.2",
+    "guidance": "Install the supported Platform package.",
+}
+GSTREAMER = {
+    "name": "GStreamer 1.28.6 MSVC x64 runtime",
+    "type": "command-version",
+    "candidates": [{"environment": "TEST_GSTREAMER", "relative": "bin\\gst-inspect-1.0.exe"}],
+    "arguments": ["--version"],
+    "version": "1.28.6",
+    "version-pattern": r"(?m)^gst-inspect-1\.0 version ([0-9]+(?:\.[0-9]+){2})$",
+    "guidance": "Install GStreamer 1.28.6 MSVC x64.",
+}
 
 
 def completed(returncode=0, stdout="", stderr=""):
@@ -104,6 +126,9 @@ class WindowsPackageTests(unittest.TestCase):
         )
         self.administrator.start()
         self.addCleanup(self.administrator.stop)
+        windows = patch("sima_cli.install.windows_package._is_windows", return_value=True)
+        windows.start()
+        self.addCleanup(windows.stop)
         product_codes = patch(
             "sima_cli.install.windows_package._msi_product_code",
             side_effect=lambda msi: PRODUCT_CODES[msi.name.split("-")[0]],
@@ -161,7 +186,6 @@ class WindowsPackageTests(unittest.TestCase):
     def standard_user(self, run):
         """Patch a standard interactive user whose elevation is served by run."""
         stack = ExitStack()
-        stack.enter_context(patch("sima_cli.install.windows_package._is_windows", return_value=True))
         stack.enter_context(patch(
             "sima_cli.install.windows_package._is_windows_administrator", return_value=False
         ))
@@ -170,6 +194,13 @@ class WindowsPackageTests(unittest.TestCase):
         ))
         stack.enter_context(patch("sima_cli.install.windows_package._run", side_effect=run))
         return stack
+
+    def installed_gstreamer(self):
+        """Create the declared gst-inspect fixture; return the environment that finds it."""
+        gst_inspect = self.root / "gstreamer" / "bin" / "gst-inspect-1.0.exe"
+        gst_inspect.parent.mkdir(parents=True)
+        gst_inspect.write_bytes(b"fixture")
+        return {"TEST_GSTREAMER": str(gst_inspect.parent.parent)}
 
     def test_metadata_accepts_declarative_msi_and_wheel(self):
         self.assertTrue(validate_metadata(self.metadata))
@@ -194,58 +225,30 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("$versions.Count -ne 1", powershell)
         self.assertNotIn("$matches.Count -ne 1", powershell)
 
-    def test_driver_version_query_rejects_zero_matching_devices(self):
-        with patch(
-            "sima_cli.install.windows_package._run",
-            return_value=completed(
-                returncode=3,
-                stderr="No Windows PnP devices named 'SiMa.ai MLA Device' were found.",
+    def test_driver_version_query_rejects_missing_mixed_and_versionless_devices(self):
+        # The query reports each failure on stderr with exit code 3.
+        cases = [
+            (
+                "No Windows PnP devices named 'SiMa.ai MLA Device' were found.",
+                "No Windows PnP devices",
             ),
-        ), self.assertRaisesRegex(
-            _WindowsPnpDriverVersionError, "No Windows PnP devices"
-        ):
-            _windows_pnp_driver_version("SiMa.ai MLA Device")
-
-    def test_driver_version_query_accepts_multiple_devices_at_one_version(self):
-        with patch(
-            "sima_cli.install.windows_package._run",
-            return_value=completed(stdout="3.0.0.2"),
-        ):
-            self.assertEqual(
-                _windows_pnp_driver_version("SiMa.ai MLA Device"), "3.0.0.2"
-            )
-
-    def test_driver_version_query_rejects_mixed_device_versions(self):
-        with patch(
-            "sima_cli.install.windows_package._run",
-            return_value=completed(
-                returncode=3,
-                stderr=(
-                    "Windows PnP devices named 'SiMa.ai MLA Device' report mixed "
-                    "DriverVersion values: 3.0.0.1, 3.0.0.2."
-                ),
+            (
+                "Windows PnP devices named 'SiMa.ai MLA Device' report mixed "
+                "DriverVersion values: 3.0.0.1, 3.0.0.2.",
+                "mixed DriverVersion values: 3.0.0.1, 3.0.0.2",
             ),
-        ), self.assertRaisesRegex(
-            _WindowsPnpDriverVersionError,
-            "mixed DriverVersion values: 3.0.0.1, 3.0.0.2",
-        ):
-            _windows_pnp_driver_version("SiMa.ai MLA Device")
-
-    def test_driver_version_query_rejects_a_missing_device_version(self):
-        with patch(
-            "sima_cli.install.windows_package._run",
-            return_value=completed(
-                returncode=3,
-                stderr=(
-                    "1 of 2 Windows PnP devices named 'SiMa.ai MLA Device' "
-                    "do not report DriverVersion."
-                ),
+            (
+                "1 of 2 Windows PnP devices named 'SiMa.ai MLA Device' "
+                "do not report DriverVersion.",
+                "1 of 2 Windows PnP devices.*do not report DriverVersion",
             ),
-        ), self.assertRaisesRegex(
-            _WindowsPnpDriverVersionError,
-            "1 of 2 Windows PnP devices.*do not report DriverVersion",
-        ):
-            _windows_pnp_driver_version("SiMa.ai MLA Device")
+        ]
+        for stderr, message in cases:
+            with self.subTest(message=message), patch(
+                "sima_cli.install.windows_package._run",
+                return_value=completed(returncode=3, stderr=stderr),
+            ), self.assertRaisesRegex(_WindowsPnpDriverVersionError, message):
+                _windows_pnp_driver_version("SiMa.ai MLA Device")
 
     def test_metadata_rejects_msi_not_in_resources(self):
         self.metadata["resources"].remove(self.msi.name)
@@ -314,7 +317,7 @@ class WindowsPackageTests(unittest.TestCase):
     def test_native_only_invokes_msiexec_and_does_not_invoke_pip(self):
         self.metadata["installation"]["python"]["distribution"] = "other-package"
         output = io.StringIO()
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run, redirect_stdout(output):
             result = install_windows_package(
@@ -452,7 +455,7 @@ class WindowsPackageTests(unittest.TestCase):
             recorded_before_run.append(metadata_installer.registry.update_fields.called)
             return completed()
 
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=run
         ):
             registry, _output = self.install_from_windows_metadata()
@@ -622,7 +625,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(receipts, [])
 
     def test_administrator_uninstall_runs_msiexec_in_reverse_install_order(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run:
             restart = uninstall_windows_package({"native_packages": self.recorded_cohort()})
@@ -638,8 +641,6 @@ class WindowsPackageTests(unittest.TestCase):
 
     def test_noninteractive_standard_user_fails_before_starting_installer(self):
         with patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
@@ -659,8 +660,6 @@ class WindowsPackageTests(unittest.TestCase):
 
     def test_cancelled_standard_user_elevation_stops_the_transaction(self):
         with patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
@@ -677,8 +676,6 @@ class WindowsPackageTests(unittest.TestCase):
 
     def test_missing_elevated_installer_exit_code_fails_the_transaction(self):
         with patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
@@ -702,8 +699,6 @@ class WindowsPackageTests(unittest.TestCase):
         # Only Win32 error 1223 from the approval prompt means the user declined;
         # any other launch error must say what failed.
         with patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
@@ -732,20 +727,10 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertNotIn("Start-Process", powershell)
 
     def test_coordinated_native_packages_install_in_manifest_order(self):
-        self.metadata["resources"].insert(0, self.scheduler_msi.name)
-        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
-        self.metadata["installation"].pop("msi")
-        self.metadata["installation"]["native-packages"] = [
-            {
-                "owner": "scheduler",
-                "msi": self.scheduler_msi.name,
-                "version": "0.6.1",
-            },
-            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
-        ]
+        self.use_scheduler_and_core()
 
         self.assertTrue(validate_metadata(self.metadata))
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run:
             result = install_windows_package(
@@ -760,23 +745,13 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(run.call_args_list[1].args[0][2], str(self.msi))
 
     def test_msi_modified_after_download_is_not_started(self):
-        self.metadata["resources"].insert(0, self.scheduler_msi.name)
-        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
-        self.metadata["installation"].pop("msi")
-        self.metadata["installation"]["native-packages"] = [
-            {
-                "owner": "scheduler",
-                "msi": self.scheduler_msi.name,
-                "version": "0.6.1",
-            },
-            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
-        ]
+        self.use_scheduler_and_core()
 
         def install_scheduler_and_replace_core(*args, **kwargs):
             self.msi.write_bytes(b"replaced msi")
             return completed()
 
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run",
             side_effect=install_scheduler_and_replace_core,
         ) as run:
@@ -789,17 +764,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][2], str(self.scheduler_msi))
 
     def test_unreadable_second_msi_records_partial_native_failure(self):
-        self.metadata["resources"].insert(0, self.scheduler_msi.name)
-        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
-        self.metadata["installation"].pop("msi")
-        self.metadata["installation"]["native-packages"] = [
-            {
-                "owner": "scheduler",
-                "msi": self.scheduler_msi.name,
-                "version": "0.6.1",
-            },
-            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
-        ]
+        self.use_scheduler_and_core()
         compute_sha256 = metadata_installer._compute_sha256
 
         def locked_core_msi(path):
@@ -807,7 +772,7 @@ class WindowsPackageTests(unittest.TestCase):
                 raise PermissionError(13, "The file is locked", str(path))
             return compute_sha256(path)
 
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run, patch.object(
             metadata_installer, "_compute_sha256", side_effect=locked_core_msi
@@ -822,18 +787,8 @@ class WindowsPackageTests(unittest.TestCase):
         )
 
     def test_coordinated_native_failure_reports_completed_packages(self):
-        self.metadata["resources"].insert(0, self.scheduler_msi.name)
-        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
-        self.metadata["installation"].pop("msi")
-        self.metadata["installation"]["native-packages"] = [
-            {
-                "owner": "scheduler",
-                "msi": self.scheduler_msi.name,
-                "version": "0.6.1",
-            },
-            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
-        ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        self.use_scheduler_and_core()
+        with patch(
             "sima_cli.install.windows_package._run",
             side_effect=[completed(), completed(returncode=1603)],
         ):
@@ -843,7 +798,7 @@ class WindowsPackageTests(unittest.TestCase):
                 )
 
     def test_policy_rejected_msi_reports_policy_without_bypass_guidance(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", return_value=completed(returncode=1625)
         ):
             with self.assertRaises(WindowsNativeInstallError) as raised:
@@ -856,39 +811,27 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("approved package", message)
         self.assertNotIn("disable", message.lower())
 
-    def test_missing_selected_python_blocks_before_msi(self):
-        self.python.unlink()
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
-            "sima_cli.install.windows_package._run"
-        ) as run:
-            with self.assertRaisesRegex(WindowsPrerequisiteError, "no MSI was started"):
-                install_windows_package(
-                    self.metadata, str(self.root), python_executable=str(self.python)
-                )
-        run.assert_not_called()
-
-    def test_wrong_python_version_blocks_before_msi(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
-            "sima_cli.install.windows_package._run", return_value=python_facts(version="3.13")
-        ) as run:
-            with self.assertRaisesRegex(WindowsPrerequisiteError, "requires Python 3.14"):
-                install_windows_package(
-                    self.metadata, str(self.root), python_executable=str(self.python)
-                )
-        self.assertEqual(run.call_count, 1)
-
-    def test_selected_python_launch_failure_blocks_before_msi(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
-            "sima_cli.install.windows_package._run", side_effect=OSError("access denied")
-        ) as run:
-            with self.assertRaisesRegex(WindowsPrerequisiteError, "no MSI was started"):
-                install_windows_package(
-                    self.metadata, str(self.root), python_executable=str(self.python)
-                )
-        self.assertEqual(run.call_count, 1)
+    def test_unusable_selected_python_blocks_before_msi(self):
+        cases = [
+            ("old version", {"return_value": python_facts("3.13")}, "requires Python 3.14", 1),
+            ("wrong arch", {"return_value": python_facts(arch="ARM64")}, "requires amd64", 1),
+            ("launch failure", {"side_effect": OSError("access denied")}, "no MSI was started", 1),
+            ("missing executable", {}, "no MSI was started", 0),
+        ]
+        for case, run_result, message, calls in cases:
+            if case == "missing executable":
+                self.python.unlink()
+            with self.subTest(case), patch(
+                "sima_cli.install.windows_package._run", **run_result
+            ) as run:
+                with self.assertRaisesRegex(WindowsPrerequisiteError, message):
+                    install_windows_package(
+                        self.metadata, str(self.root), python_executable=str(self.python)
+                    )
+                self.assertEqual(run.call_count, calls)
 
     def test_selected_python_without_pip_explains_how_to_restore_it(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run",
             return_value=completed(1, stderr="ModuleNotFoundError: No module named 'pip'"),
         ):
@@ -905,27 +848,10 @@ class WindowsPackageTests(unittest.TestCase):
             message,
         )
 
-    def test_wrong_python_architecture_blocks_before_msi(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
-            "sima_cli.install.windows_package._run", return_value=python_facts(arch="ARM64")
-        ) as run:
-            with self.assertRaisesRegex(WindowsPrerequisiteError, "requires amd64"):
-                install_windows_package(
-                    self.metadata, str(self.root), python_executable=str(self.python)
-                )
-        self.assertEqual(run.call_count, 1)
-
     def test_missing_declared_prerequisite_blocks_before_msi(self):
-        self.metadata["installation"]["prerequisites"] = [
-            {
-                "name": "Windows OpenSSH client",
-                "type": "executable",
-                "value": "ssh.exe",
-                "guidance": "Install Windows OpenSSH Client.",
-            }
-        ]
+        self.metadata["installation"]["prerequisites"] = [OPENSSH]
         self.assertTrue(validate_metadata(self.metadata))
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package.shutil.which", return_value=None
         ), patch("sima_cli.install.windows_package._run") as run:
             with self.assertRaisesRegex(WindowsPrerequisiteError, "OpenSSH"):
@@ -954,8 +880,6 @@ class WindowsPackageTests(unittest.TestCase):
         ]
         self.assertTrue(validate_metadata(self.metadata))
         with patch.dict(os.environ, {"TEST_GSTREAMER": str(runtime.parent.parent)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._check_windows_service", return_value=True
         ), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
@@ -967,36 +891,9 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
 
     def test_exact_platform_and_gstreamer_versions_are_checked_before_msi(self):
-        gst_inspect = self.root / "gstreamer" / "bin" / "gst-inspect-1.0.exe"
-        gst_inspect.parent.mkdir(parents=True)
-        gst_inspect.write_bytes(b"fixture")
-        self.metadata["installation"]["prerequisites"] = [
-            {
-                "name": "SiMa Platform MLA driver",
-                "type": "windows-pnp-driver",
-                "value": "SiMa.ai MLA Device",
-                "version": "3.0.0.2",
-                "guidance": "Install the supported Platform package.",
-            },
-            {
-                "name": "GStreamer 1.28.6",
-                "type": "command-version",
-                "candidates": [{
-                    "environment": "TEST_GSTREAMER",
-                    "relative": "bin\\gst-inspect-1.0.exe",
-                }],
-                "arguments": ["--version"],
-                "version": "1.28.6",
-                "version-pattern": (
-                    r"(?m)^gst-inspect-1\.0 version ([0-9]+(?:\.[0-9]+){2})$"
-                ),
-                "guidance": "Install the supported GStreamer package.",
-            },
-        ]
+        self.metadata["installation"]["prerequisites"] = [PLATFORM_DRIVER, GSTREAMER]
         self.assertTrue(validate_metadata(self.metadata))
-        with patch.dict(os.environ, {"TEST_GSTREAMER": str(gst_inspect.parent.parent)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
+        with patch.dict(os.environ, self.installed_gstreamer()), patch(
             "sima_cli.install.windows_package._windows_pnp_driver_version",
             return_value="3.0.0.2",
         ), patch(
@@ -1013,14 +910,8 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
 
     def test_wrong_platform_version_blocks_before_msi(self):
-        self.metadata["installation"]["prerequisites"] = [{
-            "name": "SiMa Platform MLA driver",
-            "type": "windows-pnp-driver",
-            "value": "SiMa.ai MLA Device",
-            "version": "3.0.0.2",
-            "guidance": "Install the supported Platform package.",
-        }]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        self.metadata["installation"]["prerequisites"] = [PLATFORM_DRIVER]
+        with patch(
             "sima_cli.install.windows_package._windows_pnp_driver_version",
             return_value="3.0.0.1",
         ), patch("sima_cli.install.windows_package._run") as run:
@@ -1031,16 +922,8 @@ class WindowsPackageTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_mixed_platform_driver_versions_block_before_msi(self):
-        self.metadata["installation"]["prerequisites"] = [{
-            "name": "SiMa Platform MLA driver",
-            "type": "windows-pnp-driver",
-            "value": "SiMa.ai MLA Device",
-            "version": "3.0.0.2",
-            "guidance": "Install the supported Platform package.",
-        }]
+        self.metadata["installation"]["prerequisites"] = [PLATFORM_DRIVER]
         with patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._run",
             return_value=completed(
                 returncode=3,
@@ -1060,24 +943,8 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][0], "powershell.exe")
 
     def test_wrong_gstreamer_version_blocks_before_msi(self):
-        gst_inspect = self.root / "gstreamer" / "bin" / "gst-inspect-1.0.exe"
-        gst_inspect.parent.mkdir(parents=True)
-        gst_inspect.write_bytes(b"fixture")
-        self.metadata["installation"]["prerequisites"] = [{
-            "name": "GStreamer 1.28.6",
-            "type": "command-version",
-            "candidates": [{
-                "environment": "TEST_GSTREAMER",
-                "relative": "bin\\gst-inspect-1.0.exe",
-            }],
-            "arguments": ["--version"],
-            "version": "1.28.6",
-            "version-pattern": r"version ([0-9]+(?:\.[0-9]+){2})",
-            "guidance": "Install the supported GStreamer package.",
-        }]
-        with patch.dict(os.environ, {"TEST_GSTREAMER": str(gst_inspect.parent.parent)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
+        self.metadata["installation"]["prerequisites"] = [GSTREAMER]
+        with patch.dict(os.environ, self.installed_gstreamer()), patch(
             "sima_cli.install.windows_package._run",
             return_value=completed(stdout="gst-inspect-1.0 version 1.26.0\n"),
         ) as run:
@@ -1102,8 +969,6 @@ class WindowsPackageTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "TEST_PROGRAM_FILES": str(self.root), "COMSPEC": "cmd.exe"
         }), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._run",
             side_effect=[completed(), completed(stdout="doctor pass\n")],
         ) as run:
@@ -1120,8 +985,6 @@ class WindowsPackageTests(unittest.TestCase):
             "command": {"environment": "TEST_ROOT", "relative": "doctor.cmd"}
         }
         with patch.dict(os.environ, {"TEST_ROOT": str(self.root)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._run",
             side_effect=[completed(), completed(returncode=12, stderr="plugin failed")],
         ):
@@ -1137,8 +1000,6 @@ class WindowsPackageTests(unittest.TestCase):
             "command": {"environment": "TEST_ROOT", "relative": "doctor.cmd"}
         }
         with patch.dict(os.environ, {"TEST_ROOT": str(self.root)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._run",
             side_effect=[completed(), OSError("blocked")],
         ):
@@ -1160,8 +1021,6 @@ class WindowsPackageTests(unittest.TestCase):
         ]
         self.assertTrue(validate_metadata(self.metadata))
         with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ), patch(
             "sima_cli.install.windows_package.SkillManager"
@@ -1193,8 +1052,6 @@ class WindowsPackageTests(unittest.TestCase):
             "relative": "installed\\skill",
         }]
         with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run, patch(
             "sima_cli.install.windows_package.SkillManager"
@@ -1231,8 +1088,6 @@ class WindowsPackageTests(unittest.TestCase):
             ),
         }]
         with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run, patch(
             "sima_cli.install.windows_package.SkillManager"
@@ -1261,8 +1116,6 @@ class WindowsPackageTests(unittest.TestCase):
             "relative": "SimaPCIeHost\\skills\\invalid skill",
         }]
         with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run, patch(
             "sima_cli.install.windows_package.SkillManager"
@@ -1286,8 +1139,8 @@ class WindowsPackageTests(unittest.TestCase):
             }
         ]
         with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch("sima_cli.install.windows_package._run", return_value=completed()):
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ):
             with self.assertRaisesRegex(WindowsNativeInstallError, "customer skill is missing"):
                 install_windows_package(
                     self.metadata, str(self.root), native_only=True
@@ -1304,8 +1157,6 @@ class WindowsPackageTests(unittest.TestCase):
             }
         ]
         with patch.dict(os.environ, {"TEST_PROGRAM_FILES": str(self.root)}), patch(
-            "sima_cli.install.windows_package._is_windows", return_value=True
-        ), patch(
             "sima_cli.install.windows_package._run", return_value=completed()
         ) as run, patch(
             "sima_cli.install.windows_package.SkillManager",
@@ -1320,7 +1171,7 @@ class WindowsPackageTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_msiexec_permission_denial_is_reported_with_log_location(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run",
             side_effect=PermissionError("access denied"),
         ):
@@ -1343,7 +1194,7 @@ class WindowsPackageTests(unittest.TestCase):
             completed(stdout="0.6.1\n"),
             completed(),
         ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._managed_python_executable",
             return_value=str(self.python),
         ) as managed, patch(
@@ -1398,7 +1249,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
 
     def test_default_install_blocks_before_msi_without_compatible_python(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._python_bootstrap_candidates", return_value=[]
         ), patch("sima_cli.install.windows_package._run") as run:
             with self.assertRaisesRegex(WindowsPrerequisiteError, "compatible Python 3.14"):
@@ -1407,7 +1258,7 @@ class WindowsPackageTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_native_only_rejects_python_override(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run"
         ) as run:
             with self.assertRaisesRegex(
@@ -1431,7 +1282,7 @@ class WindowsPackageTests(unittest.TestCase):
             direct_url(sha256(self.wheel)),
             completed(),
         ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=responses
         ) as run:
             result = install_windows_package(
@@ -1453,7 +1304,7 @@ class WindowsPackageTests(unittest.TestCase):
             completed(stdout="0.6.1\n"),
             completed(),
         ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=responses
         ) as run:
             result = install_windows_package(
@@ -1484,7 +1335,7 @@ class WindowsPackageTests(unittest.TestCase):
             completed(stdout="0.6.1\n"),
             completed(),
         ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=responses
         ) as run:
             result = install_windows_package(
@@ -1513,7 +1364,7 @@ class WindowsPackageTests(unittest.TestCase):
         responses = [
             python_facts(), completed(), completed(stdout="0.6.1\n"), legacy_record, completed()
         ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=responses
         ) as run:
             result = install_windows_package(
@@ -1533,7 +1384,7 @@ class WindowsPackageTests(unittest.TestCase):
             completed(stdout="0.6.1\n"),
             completed(),
         ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=responses
         ) as run:
             result = install_windows_package(
@@ -1554,7 +1405,7 @@ class WindowsPackageTests(unittest.TestCase):
                 self.wheel.write_bytes(b"replaced wheel")
             return responses.pop(0)
 
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=replace_wheel_during_msi
         ) as run:
             with self.assertRaisesRegex(WindowsPythonInstallError, "declared SHA-256"):
@@ -1574,7 +1425,7 @@ class WindowsPackageTests(unittest.TestCase):
             completed(stdout="0.6.1\n"),
             completed(),
         ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=responses
         ) as run:
             result = install_windows_package(
@@ -1597,7 +1448,7 @@ class WindowsPackageTests(unittest.TestCase):
             completed(stdout="0.6.1\n"),
             completed(),
         ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=responses
         ) as run:
             result = install_windows_package(
@@ -1611,7 +1462,7 @@ class WindowsPackageTests(unittest.TestCase):
         responses = [
             python_facts(), completed(), completed(returncode=3), completed(returncode=1)
         ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=responses
         ):
             with self.assertRaisesRegex(WindowsPythonInstallError, "native installation was kept"):
@@ -1620,7 +1471,7 @@ class WindowsPackageTests(unittest.TestCase):
                 )
 
     def test_restart_result_stops_before_python(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run",
             side_effect=[python_facts(), completed(returncode=3010)],
         ) as run:
@@ -1630,7 +1481,9 @@ class WindowsPackageTests(unittest.TestCase):
                 )
         self.assertEqual(run.call_count, 2)
 
-    def install_from_windows_metadata(self, fails=False, exit_code=1, download_error=None, **options):
+    def install_from_windows_metadata(
+        self, fails=False, exit_code=1, download_error=None, **options
+    ):
         # install_from_metadata records the receipt state, then reports any
         # install error as "Failed to install" and exits with status 1; a
         # restart-required result exits with the Windows Installer restart code.
@@ -1705,7 +1558,7 @@ class WindowsPackageTests(unittest.TestCase):
                     self.assertIn(f"Failed to install from metadata URL metadata: {outcome}", output)
 
     def test_cancelled_first_msi_records_failed_receipt(self):
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
@@ -1723,13 +1576,7 @@ class WindowsPackageTests(unittest.TestCase):
     def test_interrupted_install_records_a_terminal_receipt(self):
         # Ctrl+C reaches the installer as KeyboardInterrupt, which is not an
         # Exception; the receipt must still leave "installing" before it propagates.
-        self.metadata["resources"].insert(0, self.scheduler_msi.name)
-        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
-        self.metadata["installation"].pop("msi")
-        self.metadata["installation"]["native-packages"] = [
-            {"owner": "scheduler", "msi": self.scheduler_msi.name, "version": "0.6.1"},
-            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
-        ]
+        self.use_scheduler_and_core()
         for completed_msis, state in ((0, "failed"), (1, "partial-native-failed")):
             responses = [completed()] * completed_msis
             used = {}
@@ -1741,8 +1588,8 @@ class WindowsPackageTests(unittest.TestCase):
                 raise KeyboardInterrupt
 
             with self.subTest(state=state), patch(
-                "sima_cli.install.windows_package._is_windows", return_value=True
-            ), patch("sima_cli.install.windows_package._run", side_effect=interrupt):
+                "sima_cli.install.windows_package._run", side_effect=interrupt
+            ):
                 with self.assertRaises(KeyboardInterrupt):
                     self.install_from_windows_metadata()
 
@@ -1751,7 +1598,10 @@ class WindowsPackageTests(unittest.TestCase):
                 )
 
     def test_failed_or_interrupted_download_records_a_terminal_receipt(self):
-        for error, raised in ((RuntimeError("network down"), SystemExit), (KeyboardInterrupt, KeyboardInterrupt)):
+        for error, raised in (
+            (RuntimeError("network down"), SystemExit),
+            (KeyboardInterrupt, KeyboardInterrupt),
+        ):
             used = {}
 
             def fail_download(*_args, **_kwargs):
@@ -1759,9 +1609,7 @@ class WindowsPackageTests(unittest.TestCase):
                 raise error
 
             with self.subTest(error=error):
-                with patch(
-                    "sima_cli.install.windows_package._is_windows", return_value=True
-                ), self.assertRaises(raised):
+                with self.assertRaises(raised):
                     self.install_from_windows_metadata(download_error=fail_download)
 
                 used["registry"].update_state.assert_called_once_with(
@@ -1769,13 +1617,8 @@ class WindowsPackageTests(unittest.TestCase):
                 )
 
     def test_prerequisites_are_checked_once_per_install(self):
-        self.metadata["installation"]["prerequisites"] = [{
-            "name": "Windows OpenSSH client",
-            "type": "executable",
-            "value": "ssh.exe",
-            "guidance": "Install Windows OpenSSH Client.",
-        }]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        self.metadata["installation"]["prerequisites"] = [OPENSSH]
+        with patch(
             "sima_cli.install.windows_package.shutil.which", return_value="ssh.exe"
         ) as which, patch("sima_cli.install.windows_package._run", return_value=completed()):
             _registry, output = self.install_from_windows_metadata()
@@ -1792,7 +1635,7 @@ class WindowsPackageTests(unittest.TestCase):
                 self.wheel.unlink()
             return responses.pop(0)
 
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package._run", side_effect=remove_wheel_during_msi
         ):
             registry, output = self.install_from_windows_metadata(
@@ -1807,18 +1650,7 @@ class WindowsPackageTests(unittest.TestCase):
     def test_missing_python_and_gstreamer_are_reported_before_download(self):
         # A clean host learns every missing prerequisite in one run, with the exact
         # versions from the metadata, before any package resource is downloaded.
-        self.metadata["installation"]["prerequisites"] = [{
-            "name": "GStreamer 1.28.6 MSVC x64 runtime",
-            "type": "command-version",
-            "candidates": [{
-                "environment": "TEST_GSTREAMER",
-                "relative": "bin\\gst-inspect-1.0.exe",
-            }],
-            "arguments": ["--version"],
-            "version": "1.28.6",
-            "version-pattern": r"version ([0-9]+(?:\.[0-9]+){2})",
-            "guidance": "Install GStreamer 1.28.6 MSVC x64.",
-        }]
+        self.metadata["installation"]["prerequisites"] = [GSTREAMER]
         self.assertTrue(validate_metadata(self.metadata))
         cases = [
             ({"python_executable": None}, [], "compatible Python 3.14 amd64 installation"),
@@ -1831,8 +1663,6 @@ class WindowsPackageTests(unittest.TestCase):
         for options, responses, python_problem in cases:
             with self.subTest(options=options), patch.dict(
                 os.environ, {"TEST_GSTREAMER": str(self.root / "missing")}
-            ), patch(
-                "sima_cli.install.windows_package._is_windows", return_value=True
             ), patch(
                 "sima_cli.install.windows_package.Path.home", return_value=self.root / "home"
             ), patch(
@@ -1861,7 +1691,7 @@ class WindowsPackageTests(unittest.TestCase):
 
     def test_invalid_managed_python_environment_is_reported_before_download(self):
         (self.root / "home" / "pyneatpcie").mkdir(parents=True)
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        with patch(
             "sima_cli.install.windows_package.Path.home", return_value=self.root / "home"
         ), patch("sima_cli.install.windows_package._run") as run:
             registry, output = self.install_from_windows_metadata(fails=True, native_only=False)
@@ -1874,18 +1704,8 @@ class WindowsPackageTests(unittest.TestCase):
         )
 
     def test_restart_required_is_not_reported_as_failure(self):
-        self.metadata["resources"].insert(0, self.scheduler_msi.name)
-        self.metadata["resources-checksum"][self.scheduler_msi.name] = sha256(self.scheduler_msi)
-        self.metadata["installation"].pop("msi")
-        self.metadata["installation"]["native-packages"] = [
-            {
-                "owner": "scheduler",
-                "msi": self.scheduler_msi.name,
-                "version": "0.6.1",
-            },
-            {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
-        ]
-        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+        self.use_scheduler_and_core()
+        with patch(
             "sima_cli.install.windows_package._run", return_value=completed(returncode=3010)
         ) as run:
             registry, output = self.install_from_windows_metadata(fails=True, exit_code=3010)
@@ -1971,7 +1791,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("managed user environment", result.output)
         self.assertIn("--native-only", result.output)
 
-    def test_vulcan_install_forwards_selected_python_only_when_requested(self):
+    def test_vulcan_install_forwards_selected_python_and_native_only(self):
         resolved = type(
             "Result",
             (),
@@ -1987,43 +1807,19 @@ class WindowsPackageTests(unittest.TestCase):
                 "metadata_url": "https://example.invalid/metadata.json",
             },
         )()
-        with patch(
-            "sima_cli.vulcan.commands.resolve_install_metadata_url", return_value=resolved
-        ), patch("sima_cli.vulcan.commands.install_from_metadata") as install:
-            install_vulcan_package(
-                target="core/pciehost/windows/amd64@3.0",
-                environment="dev",
-                python_executable=str(self.python),
-            )
+        for options in ({"python_executable": str(self.python)}, {"native_only": True}):
+            with self.subTest(options=options), patch(
+                "sima_cli.vulcan.commands.resolve_install_metadata_url", return_value=resolved
+            ), patch("sima_cli.vulcan.commands.install_from_metadata") as install:
+                install_vulcan_package(
+                    target="core/pciehost/windows/amd64@3.0", environment="dev", **options
+                )
 
-        self.assertEqual(install.call_args.kwargs["python_executable"], str(self.python))
-
-    def test_vulcan_install_forwards_native_only(self):
-        resolved = type(
-            "Result",
-            (),
-            {
-                "environment": "dev",
-                "base_url": "https://example.invalid",
-                "repository": "core",
-                "package_path": "pciehost/windows/amd64",
-                "ref": "3.0",
-                "ref_key": "3.0",
-                "requested_spec": "latest",
-                "resolved_spec": "a" * 40,
-                "metadata_url": "https://example.invalid/metadata.json",
-            },
-        )()
-        with patch(
-            "sima_cli.vulcan.commands.resolve_install_metadata_url", return_value=resolved
-        ), patch("sima_cli.vulcan.commands.install_from_metadata") as install:
-            install_vulcan_package(
-                target="core/pciehost/windows/amd64@3.0",
-                environment="dev",
-                native_only=True,
-            )
-
-        self.assertTrue(install.call_args.kwargs["native_only"])
+                forwarded = install.call_args.kwargs
+                self.assertEqual(
+                    {key: forwarded.get(key) for key in ("python_executable", "native_only")},
+                    {"python_executable": None, "native_only": None, **options},
+                )
 
 
 if __name__ == "__main__":

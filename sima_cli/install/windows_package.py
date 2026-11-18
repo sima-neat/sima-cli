@@ -289,9 +289,10 @@ def _run_msi_operations(
     if not sys.stdin.isatty():
         raise WindowsNativeInstallError(
             "Changing the machine-wide Windows packages requires administrator approval, "
-            "but this standard-user session is not interactive. Rerun the same command in an "
-            "interactive PowerShell window so Windows can request approval, or ask an "
-            f"administrator to run it. Intended installer log: {first_log}"
+            "but this session is not elevated and its input is not interactive. Rerun the same "
+            "command in an interactive PowerShell window so Windows can request approval, or "
+            "ask an administrator to run it in a PowerShell window opened with Run as "
+            f"administrator. Intended installer log: {first_log}"
         )
     for item in items:
         if "msi" in item:

@@ -645,14 +645,17 @@ class WindowsPackageTests(unittest.TestCase):
         ), patch(
             "sima_cli.install.windows_package.sys.stdin.isatty", return_value=False
         ), patch("sima_cli.install.windows_package._run") as run:
-            with self.assertRaisesRegex(
-                WindowsNativeInstallError, "interactive PowerShell"
-            ):
+            with self.assertRaises(WindowsNativeInstallError) as raised:
                 install_windows_package(
                     self.metadata, str(self.root), native_only=True
                 )
 
         run.assert_not_called()
+        message = str(raised.exception)
+        self.assertIn("interactive PowerShell", message)
+        # A non-elevated administrator reaches this too, so do not call it a standard user.
+        self.assertIn("this session is not elevated and its input is not interactive", message)
+        self.assertIn("ask an administrator to run it", message)
 
     def test_cancelled_standard_user_elevation_stops_the_transaction(self):
         with patch(

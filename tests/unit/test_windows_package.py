@@ -511,6 +511,24 @@ class WindowsPackageTests(unittest.TestCase):
                 )
         self.assertEqual(run.call_count, 1)
 
+    def test_selected_python_without_pip_explains_how_to_restore_it(self):
+        with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
+            "sima_cli.install.windows_package._run",
+            return_value=completed(1, stderr="ModuleNotFoundError: No module named 'pip'"),
+        ):
+            with self.assertRaises(WindowsPrerequisiteError) as raised:
+                install_windows_package(
+                    self.metadata, str(self.root), python_executable=str(self.python)
+                )
+        message = raised.exception.message
+        self.assertIn("cannot run pip; no MSI was started", message)
+        self.assertIn(f'"{self.python}" -m ensurepip --upgrade', message)
+        self.assertIn(
+            "Install Python 3.14 (amd64) for Windows from "
+            "https://www.python.org/downloads/windows/",
+            message,
+        )
+
     def test_wrong_python_architecture_blocks_before_msi(self):
         with patch("sima_cli.install.windows_package._is_windows", return_value=True), patch(
             "sima_cli.install.windows_package._run", return_value=python_facts(arch="ARM64")

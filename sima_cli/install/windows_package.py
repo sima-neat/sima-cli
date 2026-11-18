@@ -421,7 +421,10 @@ def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
     facts, detail = _inspect_python([str(executable)])
     if facts is None:
         raise WindowsPrerequisiteError(
-            f"Selected Python environment cannot run pip; no MSI was started: {detail}"
+            f"Selected Python environment cannot run pip; no MSI was started: {detail}. "
+            f"Restore pip with \"{executable}\" -m ensurepip --upgrade, or select a working "
+            f"interpreter with --python-executable <path>. "
+            f"{_python_install_guidance(python_package)}."
         )
     compatibility_error = _python_compatibility_error(python_package, facts)
     if compatibility_error:

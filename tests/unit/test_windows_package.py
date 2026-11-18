@@ -1911,14 +1911,14 @@ class WindowsPackageTests(unittest.TestCase):
                 "base_url": "https://example.invalid",
                 "repository": "core",
                 "package_path": "pciehost/windows/amd64",
-                "ref": "3.0",
-                "ref_key": "3.0",
+                "ref": "v0.6.1",
+                "ref_key": "v0.6.1",
                 "requested_spec": "latest",
                 "resolved_spec": "a" * 12,
                 "metadata_url": "https://example.invalid/metadata.json",
             },
         )()
-        pinned = "sima-cli neat install core/pciehost/windows/amd64@3.0:" + "a" * 12
+        pinned = "sima-cli neat install core/pciehost/windows/amd64@v0.6.1:" + "a" * 12
         cases = [
             ({"python_executable": str(self.python)}, f'--python-executable "{self.python}"'),
             ({"native_only": True}, "--native-only"),
@@ -1928,7 +1928,7 @@ class WindowsPackageTests(unittest.TestCase):
                 "sima_cli.vulcan.commands.resolve_install_metadata_url", return_value=resolved
             ), patch("sima_cli.vulcan.commands.install_from_metadata") as install:
                 install_vulcan_package(
-                    target="core/pciehost/windows/amd64@3.0", environment="dev", **options
+                    target="core/pciehost/windows/amd64@v0.6.1", environment="dev", **options
                 )
 
                 forwarded = install.call_args.kwargs

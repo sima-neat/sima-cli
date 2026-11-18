@@ -55,6 +55,19 @@ def _environment_shortcut_options(function):
     return function
 
 
+def _python_install_options(function):
+    function = click.option(
+        "--native-only",
+        is_flag=True,
+        help="Install only the native packages; do not create a managed Python environment or install the wheel.",
+    )(function)
+    return click.option(
+        "--python-executable",
+        type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=str),
+        help="Install the wheel into this Python environment instead of the managed user environment.",
+    )(function)
+
+
 def _ensure_available_environment(environment):
     if environment not in AVAILABLE_ENVIRONMENTS:
         raise click.ClickException(
@@ -291,17 +304,7 @@ def artifacts(ctx, repo, ref, environment, environment_flag, base_url, output, a
 )
 @click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
 @click.option("--download-only", is_flag=True, help="Download metadata resources without running installation.")
-@click.option(
-    "--python-executable",
-    "python_executable",
-    type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=str),
-    help="Install the wheel into this Python environment instead of the managed user environment.",
-)
-@click.option(
-    "--native-only",
-    is_flag=True,
-    help="Install only the native packages; do not create a managed Python environment or install the wheel.",
-)
+@_python_install_options
 @click.pass_context
 def install(
     ctx,

@@ -48,6 +48,7 @@ from sima_cli.vulcan.commands import (
     ENV_METAVAR,
     _environment_shortcut_options,
     _normalize_environment_option,
+    _python_install_options,
     _resolve_environment,
     install_vulcan_package,
 )
@@ -932,16 +933,7 @@ def _show_neat_install_fallback(component: str) -> None:
     default=False,
     help="Force installation even if compatibility checks fail.",
 )
-@click.option(
-    "--python-executable",
-    type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=str),
-    help="Install the wheel into this Python environment instead of the managed user environment.",
-)
-@click.option(
-    "--native-only",
-    is_flag=True,
-    help="Install only native packages; do not create a managed Python environment or install a wheel.",
-)
+@_python_install_options
 @click.pass_context
 def install_cmd(
     ctx,

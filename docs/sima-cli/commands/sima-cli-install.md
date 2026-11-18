@@ -28,7 +28,7 @@ sima-cli install [OPTIONS] [COMPONENT]
 | `--json` | With --neat or --vulcan, print resolved metadata URL and exit. |
 | `-f, --force` | Force installation even if compatibility checks fail. |
 | `--python-executable` | Install the wheel into this Python environment instead of the managed user environment. |
-| `--native-only` | Install only native packages; do not create a managed Python environment or install a wheel. |
+| `--native-only` | Install only the native packages; do not create a managed Python environment or install the wheel. |
 
 ## Arguments
 
@@ -105,8 +105,8 @@ Options:
   --python-executable FILE        Install the wheel into this Python
                                   environment instead of the managed user
                                   environment.
-  --native-only                   Install only native packages; do not create
-                                  a managed Python environment or install a
-                                  wheel.
+  --native-only                   Install only the native packages; do not
+                                  create a managed Python environment or
+                                  install the wheel.
   --help                          Show this message and exit.
 ```

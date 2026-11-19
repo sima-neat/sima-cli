@@ -320,6 +320,9 @@ class PackageRegistry:
 
         existing = self._find(name, version)
         if existing:
+            # Keep installer-recorded fields, such as MSI product codes, until a new
+            # install replaces them, so a failed retry still leaves a removable receipt.
+            entry = {**existing, **entry}
             self._data.remove(existing)
 
         self._data.append(entry)

@@ -23,6 +23,20 @@ def test_remove_entry_removes_only_the_exact_receipt(tmp_path):
     assert installed_file.read_text(encoding="utf-8") == "owned by another installer"
 
 
+def test_create_entry_keeps_installer_fields_of_a_retried_receipt(tmp_path):
+    registry = PackageRegistry(tmp_path / "registry.json")
+    registry.create_entry("example/package", "1.0.0", {}, tmp_path)
+    registry.update_fields("example/package", "1.0.0", {"native_packages": [{"owner": "core"}]})
+    registry.update_state("example/package", "1.0.0", "installed")
+
+    registry.create_entry("example/package", "1.0.0", {"retry": True}, tmp_path)
+
+    receipt = PackageRegistry(tmp_path / "registry.json")._find("example/package", "1.0.0")
+    assert receipt["native_packages"] == [{"owner": "core"}]
+    assert receipt["state"] == "installing"
+    assert receipt["metadata"] == {"retry": True}
+
+
 def test_remove_entry_rejects_an_unknown_receipt(tmp_path):
     registry = PackageRegistry(tmp_path / "registry.json")
 

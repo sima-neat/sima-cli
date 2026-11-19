@@ -654,6 +654,20 @@ def _forwarder_sudo_prefix(progress=None):
     return prefix + ["/usr/bin/env", "PATH=" + MACOS_TUNNEL_PATH]
 
 
+def _own_process_group():
+    """Detach the forwarder from the caller's job, as an interactive shell would.
+
+    When connect is the only command of a terminal session (``bash -lc``,
+    ``wsl -e``, ``ssh -t host cmd``), that session's exit sends SIGHUP to the
+    foreground process group, and sudo relays it to the forwarder. A separate
+    process group avoids that. start_new_session would also drop the
+    controlling terminal that sudo's cached credentials are scoped to.
+    """
+    if sys.version_info >= (3, 11):
+        return {"process_group": 0}
+    return {"preexec_fn": os.setpgrp}
+
+
 def connect(profile, store, progress, attempts=None, transport="auto", *, report_diagnostics=None):
     """Create a session and return its durable local record."""
     from .installer import ensure_forwarder
@@ -737,6 +751,7 @@ def connect(profile, store, progress, attempts=None, transport="auto", *, report
                     stdout=subprocess.DEVNULL,
                     stderr=log,
                     text=True,
+                    **_own_process_group(),
                 )
             log_path.chmod(0o600)
             session.update(status="connecting", forwarder_pid=process.pid)

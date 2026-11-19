@@ -1,6 +1,11 @@
 import base64
 import json
+import os
+import select
+import signal
 import stat
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -12,7 +17,7 @@ from sima_cli.cloudex import client, installer
 @pytest.fixture(autouse=True)
 def host_platform(monkeypatch):
     # Lifecycle tests must not depend on tools installed on the test host.
-    monkeypatch.setattr(client, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(client, "sys", SimpleNamespace(platform="linux", version_info=sys.version_info))
 
 
 def allocation_profile(environment="vulcan-staging"):
@@ -226,12 +231,63 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     else:
         assert command[3] == str(forwarder)
     assert popen.call_args.kwargs["stdin"] is client.subprocess.DEVNULL
+    assert popen.call_args.kwargs.items() >= client._own_process_group().items()
+    # A new session would drop the terminal that sudo -n's cached credentials need.
+    assert "start_new_session" not in popen.call_args.kwargs
     api.call.assert_called_once_with(
         "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]},
         deadline=1060,
     )
     assert result["remote_session_id"] == "d" * 32
     assert wait_forwarder.call_args.args[4] == 1060
+
+
+@pytest.mark.parametrize("version,expected", [
+    ((3, 10, 12), {"preexec_fn": os.setpgrp}),
+    ((3, 11, 0), {"process_group": 0}),
+])
+def test_own_process_group_uses_native_option_when_available(version, expected):
+    client.sys.version_info = version
+    assert client._own_process_group() == expected
+
+
+@pytest.mark.skipif(not hasattr(os, "setpgrp"), reason="needs POSIX process groups")
+@pytest.mark.parametrize("own_group,survives", [(False, False), (True, True)])
+def test_forwarder_survives_exit_of_one_command_terminal_session(own_group, survives):
+    # Issue #425: `wsl -e bash -lc '... cloudex connect'` makes connect the
+    # session leader of its terminal. Its exit sends SIGHUP to the terminal's
+    # foreground process group, which used to include the forwarder.
+    import pty
+
+    read_end, write_end = os.pipe()
+    leader, terminal = pty.fork()
+    if leader == 0:
+        try:
+            options = client._own_process_group() if own_group else {}
+            forwarder = subprocess.Popen(
+                ["sleep", "30"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, pass_fds=(write_end,), **options,
+            )
+            os.write(write_end, b"%d\n" % forwarder.pid)
+        finally:
+            os._exit(0)
+    os.close(write_end)
+    forwarder = None
+    try:
+        forwarder = int(os.read(read_end, 32))
+        os.waitpid(leader, 0)
+        # The pipe reaches EOF only once the forwarder, its last holder, exits.
+        ready, _, _ = select.select([read_end], [], [], 1.0)
+        exited = bool(ready) and os.read(read_end, 1) == b""
+    finally:
+        if forwarder:
+            try:
+                os.kill(forwarder, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        os.close(read_end)
+        os.close(terminal)
+    assert exited is not survives
 
 
 def test_connection_deadline_honors_shorter_server_setup_expiry(monkeypatch):

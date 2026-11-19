@@ -217,6 +217,24 @@ request is never automatically retried with a new allocation ID. Disconnecting
 a tunnel and logging out retain the device lease; `release` ends it and starts
 server-side cleanup. Existing allocation-key connection commands still work.
 
+The tunnel keeps running after `request` or `connect` returns, until
+`cloudex disconnect` or the end of the lease. It does not depend on the shell
+that started it, so it also works when `request` or `connect` is the only
+command of a terminal session, as in the PowerShell example below.
+
+On Windows, run CloudEx in WSL; the forwarder is packaged for Linux and macOS
+only. The tunnel's interface and route are created inside WSL, not in Windows,
+so run SSH in WSL as well. From PowerShell, for example:
+
+```powershell
+wsl -e bash -lc 'sima-cli -i cloudex request'
+wsl ssh sima@DEVKIT_ADDRESS
+```
+
+While the tunnel is up, it keeps the WSL distribution running even with no WSL
+window open (checked on WSL 2.7.10). Once the tunnel ends, WSL can stop the
+distribution as usual.
+
 The paired Vulcan change publishes `/cli-config.json` and registers the exact
 loopback callback on both dashboard OAuth clients. Deploy that change before
 using CLI login; no credential or mutable client ID must be copied into the CLI.

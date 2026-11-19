@@ -321,6 +321,74 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
 
     @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
     @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "windows"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("windows", "11", "amd64"))
+    def test_windows_11_x64_host_matches_native_package(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [{
+                "type": "host",
+                "os": ["windows"],
+                "versions": {"windows": [">=11"]},
+                "arch": ["amd64"],
+            }]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "windows"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("windows", "10", "amd64"))
+    def test_windows_10_host_is_rejected_for_native_package(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [{
+                "type": "host",
+                "os": ["windows"],
+                "versions": {"windows": [">=11"]},
+                "arch": ["amd64"],
+            }]
+        }
+
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible(metadata)
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "windows"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("windows", "11", "arm64"))
+    def test_windows_11_arm64_host_is_rejected_for_x64_package(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [{
+                "type": "host",
+                "os": ["windows"],
+                "versions": {"windows": [">=11"]},
+                "arch": ["amd64"],
+            }]
+        }
+
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible(metadata)
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
     @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
     @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "24.04", "amd64"))
     def test_host_bare_version_preserves_prefix_match(

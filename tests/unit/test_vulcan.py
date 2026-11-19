@@ -567,6 +567,7 @@ class VulcanCommandTests(unittest.TestCase):
             install_dir=".",
             force=False,
             command_name="sima-cli vulcan install",
+            retry_command="sima-cli neat install internals@main:50649e9aa0ba --env dev",
         )
 
     def test_vulcan_install_forwards_metadata_type(self):
@@ -600,6 +601,7 @@ class VulcanCommandTests(unittest.TestCase):
             install_dir=".",
             force=False,
             command_name="sima-cli vulcan install",
+            retry_command="sima-cli neat install internals@main:50649e9aa0ba --env dev -t minimum",
         )
 
     def test_neat_install_prints_subfolder_package_path(self):

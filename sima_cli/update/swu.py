@@ -437,7 +437,12 @@ def _reboot_and_verify(target, before, ip, passwd, expected=None):
                         actual = state.get('active version', '').strip().strip('\"\'')
                         normalized_expected = re.sub(r'^(\d+\.\d+\.\d+)_(?:daily|custom|pre-release|release)_', r'\1_', expected or '')
                         if expected and actual != normalized_expected:
-                            raise click.ClickException(f'Updated slot reports {actual or "unknown"}, expected {expected}. Inspect before retrying.')
+                            # A bare release version from -v (e.g. "3.0.1") has no build
+                            # suffix, while the board reports a full build name
+                            # (e.g. "3.0.1_master_B2798"). Accept any build of that version.
+                            bare_release = re.fullmatch(r'\d+\.\d+\.\d+', expected or '')
+                            if not (bare_release and actual.startswith(expected + '_')):
+                                raise click.ClickException(f'Updated slot reports {actual or "unknown"}, expected {expected}. Inspect before retrying.')
                         inspect_target(peer)
                         click.echo('Updated slot is running and the board health service has committed the boot.')
                         return

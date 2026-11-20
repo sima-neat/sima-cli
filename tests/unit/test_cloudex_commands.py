@@ -55,6 +55,7 @@ def test_connect_prompts_for_backend_key_without_putting_it_in_argv(monkeypatch)
 
     assert result.exit_code == 0, result.output
     assert "encoded" not in result.output
+    assert "Authorizing encrypted tunnel access" in result.output
     assert "Connected to ll2" in result.output
     assert "ssh sima@10.252.1.2" in result.output
     assert connect.call_args.kwargs == {"attempts": None, "transport": "auto"}
@@ -348,6 +349,46 @@ def test_list_shows_relative_and_absolute_allocation_expiry(monkeypatch):
     assert "Expires" in result.output
     assert "in 1h 1m" in result.output
     assert "2033-05-18 03:33 UTC" in result.output
+
+
+def _disconnected(reason, status="disconnected"):
+    return {"connected": False, "status": status, "reason": reason, "path": "direct"}
+
+
+def _list(monkeypatch, statuses):
+    store = Mock()
+    store.list.return_value = [_session(str(index) * 32, "devkit-{}".format(index)) for index in range(len(statuses))]
+    monkeypatch.setattr(commands, "_store", Mock(return_value=store))
+    monkeypatch.setattr(commands, "inspect_session", Mock(side_effect=statuses))
+    # Wide enough that no table cell wraps.
+    monkeypatch.setenv("COLUMNS", "200")
+    return invoke_main(["cloudex", "list"])
+
+
+def test_list_shows_why_a_session_is_not_connected(monkeypatch):
+    result = _list(monkeypatch, [
+        _disconnected("server: [bold]closing[/bold]"),
+        _disconnected("tunnel stopped", status="cleanup pending"),
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "server: [bold]closing[/bold]" in result.output
+    assert "cleanup pending" in result.output
+    assert "tunnel stopped" in result.output
+    assert "cloudex disconnect" not in result.output
+
+
+def test_list_tells_how_to_remove_expired_records(monkeypatch):
+    result = _list(monkeypatch, [
+        _disconnected(commands.LEASE_EXPIRED),
+        {"connected": True, "status": "connected", "reason": commands.LEASE_EXPIRED, "path": "direct"},
+        _disconnected("tunnel stopped"),
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "● connected" in result.output
+    assert result.output.count("lease expired") == 2
+    assert result.output.count("Run sima-cli -i cloudex disconnect to remove expired records.") == 1
 
 
 def test_expiry_text_marks_expired_sessions():

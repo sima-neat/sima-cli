@@ -13,11 +13,13 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from .client import (
     CloudExError,
+    LEASE_EXPIRED,
     SessionStore,
     authorize_admin,
     connect,
@@ -186,6 +188,8 @@ def _session_table(rows, show_benchmark=False):
         table.add_column("D→H", justify="right")
     for session, status, _measurement in rows:
         state = "[green]● connected[/green]" if status["connected"] else "[red]● {}[/red]".format(status["status"])
+        if status.get("reason"):
+            state += "\n[dim]{}[/dim]".format(escape(status["reason"]))
         path = status["path"]
         if path == "direct":
             path = "[green]direct[/green]"
@@ -452,6 +456,8 @@ def list_command(benchmark, duration):
                     progress.warning("Benchmark unavailable for {}".format(device))
         rows.append((session, status, measurement))
     console.print(_session_table(rows, show_benchmark=benchmark))
+    if any(status.get("reason") == LEASE_EXPIRED for _session, status, _measurement in rows):
+        console.print("Run sima-cli -i cloudex disconnect to remove expired records.", markup=False, soft_wrap=True)
     if benchmark:
         console.print("[bold cyan]Allocation expiry[/bold cyan]")
         for session in sessions:
@@ -465,8 +471,11 @@ def register_cloudex_commands(main):
     main.add_command(cloudex_group)
 
 
-def _connect_profile(profile, verbose=False, attempts=None, transport="auto", *, diagnostics_api=None):
-    console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
+def _connect_profile(profile, verbose=False, attempts=None, transport="auto", *, diagnostics_api=None,
+                     announce_authorization=True):
+    if announce_authorization:
+        console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
+    # When the caller already authorized, this only renews sudo's cached credentials.
     _authorize_supported_host()
     with StageProgress("Preparing CloudEx connection", verbose=verbose) as progress:
         options = {"report_diagnostics": diagnostics_api.report_cloudex_diagnostics} if diagnostics_api else {}
@@ -613,13 +622,14 @@ def request_command(device, cluster, duration, environment, verbose):
         else:
             selected = candidates[0]
         # Get local administrator authorization before reserving scarce hardware.
+        console.print("[cyan]→[/cyan] Authorizing encrypted tunnel access")
         _authorize_supported_host()
         allocation_id = uuid.uuid4().hex
         console.print("Allocation {} · {} · {}".format(allocation_id, selected["name"], duration), markup=False)
         api.call("POST", "/devkits/allocations", {"request_id": allocation_id,
                  "cluster_id": selected["cluster_id"], "target_id": selected["id"], "duration_seconds": DURATIONS[duration]})
         profile = _allocation_profile(api, allocation_id)
-        _connect_profile(profile, verbose=verbose, diagnostics_api=api)
+        _connect_profile(profile, verbose=verbose, diagnostics_api=api, announce_authorization=False)
     except CloudExError as exc:
         if allocation_id:
             console.print("Inspect: sima-cli -i cloudex devices --environment {}\nResume: sima-cli -i cloudex connect --allocation {} --environment {}\nRelease: sima-cli -i cloudex release {} --environment {}".format(environment, allocation_id, environment, allocation_id, environment), markup=False, soft_wrap=True)

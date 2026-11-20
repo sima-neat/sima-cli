@@ -27,6 +27,7 @@ RELAY_SETUP_WINDOW_SECONDS = 35
 DIAGNOSTIC_LOG_LINES = 50
 ICE_SELECTION_TIMING = re.compile(r"ICE diagnostics phase=selected elapsed_ms=([0-9]{1,6}) pairs=[0-9]{1,6}")
 MAX_DIAGNOSTIC_TIMING_MS = 900_000
+LEASE_EXPIRED = "lease expired"
 SAFE_FORWARDER_STAGES = {
     "session configuration accepted",
     "joined authenticated signaling session",
@@ -961,23 +962,45 @@ def disconnect_session(session, store, progress, authorize=True, preserve_log=Fa
     return "disconnected"
 
 
-def inspect_session(session, store):
-    """Return a credential-free connection view; remote errors become status."""
-    _runtime, _config, report_path, _log = store.runtime_paths(session["session_id"])
-    report = _read_report(report_path)
-    running = _forwarder_running(session.get("forwarder_pid"))
-    remote_status = "unavailable"
+def _remote_status(session, store):
+    """The service's status for a session, or "not found", "closed" or "unavailable"."""
     try:
         remote_session_id = _remote_session_id(session, store)
         remote = CloudExAPI.from_session(session).call(
             "GET", "/v1/p2p/ice-sessions/" + remote_session_id
         )
-        remote_status = str(remote.get("status", "unknown"))
     except APIError as exc:
         if exc.status == 404:
-            remote_status = "not found"
+            return "not found"
+        return "closed" if _cleanup_pending(exc) else "unavailable"
     except CloudExError:
-        pass
+        return "unavailable"
+    return str(remote.get("status", "unknown"))
+
+
+def _disconnect_reason(*, expired, running, local_status, remote_status):
+    """Name the first failed check, or the expired lease while its tunnel still works."""
+    if expired:
+        return LEASE_EXPIRED
+    if not running:
+        return "tunnel stopped"
+    if local_status != "connected":
+        return "tunnel {}".format(local_status)
+    if remote_status in {"not found", "closed"}:
+        return "closed on server"
+    if remote_status == "unavailable":
+        return "CloudEx unreachable"
+    if not remote_status.startswith("connected_"):
+        return "server: {}".format(remote_status)
+    return None
+
+
+def inspect_session(session, store):
+    """Return a credential-free connection view; remote errors become status."""
+    _runtime, _config, report_path, _log = store.runtime_paths(session["session_id"])
+    report = _read_report(report_path)
+    running = _forwarder_running(session.get("forwarder_pid"))
+    remote_status = _remote_status(session, store)
     local_status = report.get("status", session.get("status", "unknown"))
     connected = running and local_status == "connected" and remote_status.startswith("connected_")
     status = (
@@ -988,6 +1011,12 @@ def inspect_session(session, store):
     return {
         "connected": connected,
         "status": status,
+        "reason": _disconnect_reason(
+            expired=session_expired(session),
+            running=running,
+            local_status=local_status,
+            remote_status=remote_status,
+        ),
         "path": report.get("path", session.get("ice_path", "unknown")),
         "remote_status": remote_status,
     }

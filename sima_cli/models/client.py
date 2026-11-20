@@ -19,6 +19,7 @@ from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 from urllib3.util.retry import Retry
 
+from sima_cli.__version__ import __version__
 from sima_cli.download.parallel import PARALLEL_MIN_SIZE, download_parallel, connection_slot
 
 from .licenses import download_block_reason
@@ -87,7 +88,7 @@ def _new_session() -> requests.Session:
     adapter = HTTPAdapter(max_retries=retries)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
-    session.headers.update({"Accept": "application/json", "User-Agent": "sima-cli-models"})
+    session.headers.update({"Accept": "application/json", "User-Agent": f"sima-cli/{__version__} models"})
     return session
 
 

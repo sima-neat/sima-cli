@@ -6,6 +6,7 @@ Linux Link Local Helper : Ubuntu doesn't default to APIPA so it will not work ou
 
 This is only for Linux host (Ubuntu), as on mac and Windows the fallback to APIPA is default behavior.
 """
+import json
 import os
 import re
 import time
@@ -16,7 +17,7 @@ import sys
 
 import click
 from sima_cli.utils.env import get_environment_type
-from typing import Optional, Dict
+from typing import Dict, List, Optional, Tuple
 
 def ensure_discovery_tools():
     """Provision required Linux discovery tools only after an interactive opt-in."""
@@ -59,9 +60,39 @@ def _has_nmcli() -> bool:
     return shutil.which("nmcli") is not None
 
 
+# `ip -o link` prints stacked links (macvlan, veth, VLAN) as `name@peer`, for example
+# `eth0@if2`. Only `name` exists as a device, so the suffix is dropped before any lookup.
+_IP_LINK_LINE = re.compile(r"\d+:\s+([^:@\s]+)(@[^:\s]+)?:\s+<([^>]*)>")
+
+
+def _parse_ip_link(output: str) -> List[Tuple[str, str, bool]]:
+    """Return (name, flags, has_peer) for each `ip -o link` line."""
+    links = []
+    for line in output.splitlines():
+        m = _IP_LINK_LINE.match(line)
+        if m:
+            links.append((m.group(1), m.group(3), m.group(2) is not None))
+    return links
+
+
 def _iface_has_ipv4(iface: str) -> bool:
     cp = _run(f"ip -4 addr show {iface}")
     return " inet " in cp.stdout
+
+
+# Link kinds that can never be the cable to a DevKit: one end of a container or network
+# namespace veth pair. VLAN and macvlan links stay eligible, since a DevKit can sit behind one.
+_EXCLUDED_LINK_KINDS = frozenset({"veth"})
+
+
+def _link_kind(iface: str) -> str:
+    """Return the kernel link kind (veth, vlan, macvlan, ...), or "" for a plain NIC or on error."""
+    cp = _run(f"ip -j -d link show dev {iface}")
+    try:
+        kind = json.loads(cp.stdout)[0].get("linkinfo", {}).get("info_kind", "")
+    except (ValueError, IndexError, TypeError, AttributeError):
+        return ""
+    return kind if isinstance(kind, str) else ""
 
 def _get_mac(iface: str) -> str:
     try:
@@ -264,14 +295,16 @@ def suggest_and_switch_to_linklocal():
         ensure_discovery_tools()
         cp = _run("ip -o link", capture=True)
         ifaces = []
-        for line in cp.stdout.splitlines():
-            m = re.match(r"\d+:\s+([^:]+):\s+<([^>]+)>", line)
-            if not m:
-                continue
-            iface, flags = m.group(1), m.group(2)
+        for iface, flags, has_peer in _parse_ip_link(cp.stdout):
             if iface.startswith(("lo", "docker", "veth", "br-", "virbr", "tun", "tap")):
                 continue
-            if "UP" in flags and not _iface_has_ipv4(iface):
+            if "UP" not in flags:
+                continue
+            # A stacked link (`name@peer`) is checked by its real name like any other NIC;
+            # only the kinds that cannot lead to a DevKit, such as a container's veth, are skipped.
+            if has_peer and _link_kind(iface) in _EXCLUDED_LINK_KINDS:
+                continue
+            if not _iface_has_ipv4(iface):
                 ifaces.append(iface)
 
         if not ifaces:

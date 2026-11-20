@@ -598,6 +598,7 @@ def test_remote_session_id_migrates_from_forwarder_report(tmp_path):
 
 @pytest.mark.parametrize("expired,running,local_status,remote_status,reason", [
     (True, False, "failed", "not found", client.LEASE_EXPIRED),
+    (True, True, "connected", "connected_relay", client.LEASE_EXPIRED),
     (False, False, "failed", "not found", "tunnel stopped"),
     (False, True, "failed", "not found", "tunnel failed"),
     (False, True, "connected", "not found", "closed on server"),
@@ -656,6 +657,15 @@ def test_inspect_session_reports_an_expired_lease_before_other_failures(tmp_path
     status = _inspect(tmp_path, monkeypatch, session, running=False, report={"status": "failed"}, remote="not found")
 
     assert (status["status"], status["reason"]) == ("disconnected", client.LEASE_EXPIRED)
+
+
+def test_inspect_session_flags_an_expired_lease_whose_tunnel_still_works(tmp_path, monkeypatch):
+    # A local clock running ahead of the service, or a teardown that hasn't happened yet.
+    session = dict(session_record(), expires_at=1)
+
+    status = _inspect(tmp_path, monkeypatch, session, report={"status": "connected", "path": "direct"})
+
+    assert (status["connected"], status["status"], status["reason"]) == (True, "connected", client.LEASE_EXPIRED)
 
 
 def test_inspect_session_keeps_an_unverified_tunnel_disconnected_with_a_reason(tmp_path, monkeypatch):

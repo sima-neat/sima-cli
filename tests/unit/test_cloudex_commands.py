@@ -381,11 +381,13 @@ def test_list_shows_why_a_session_is_not_connected(monkeypatch):
 def test_list_tells_how_to_remove_expired_records(monkeypatch):
     result = _list(monkeypatch, [
         _disconnected(commands.LEASE_EXPIRED),
-        _disconnected(commands.LEASE_EXPIRED),
+        {"connected": True, "status": "connected", "reason": commands.LEASE_EXPIRED, "path": "direct"},
         _disconnected("tunnel stopped"),
     ])
 
     assert result.exit_code == 0, result.output
+    assert "● connected" in result.output
+    assert result.output.count("lease expired") == 2
     assert result.output.count("Run sima-cli -i cloudex disconnect to remove expired records.") == 1
 
 

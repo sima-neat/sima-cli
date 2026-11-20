@@ -979,7 +979,7 @@ def _remote_status(session, store):
 
 
 def _disconnect_reason(*, expired, running, local_status, remote_status):
-    """Name the first check that keeps a session from counting as connected."""
+    """Name the first failed check, or the expired lease while its tunnel still works."""
     if expired:
         return LEASE_EXPIRED
     if not running:
@@ -1011,7 +1011,7 @@ def inspect_session(session, store):
     return {
         "connected": connected,
         "status": status,
-        "reason": None if connected else _disconnect_reason(
+        "reason": _disconnect_reason(
             expired=session_expired(session),
             running=running,
             local_status=local_status,

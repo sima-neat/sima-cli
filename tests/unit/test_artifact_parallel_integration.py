@@ -1,6 +1,7 @@
 """Exercise public consumers against a real range-capable HTTP endpoint."""
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import time
@@ -8,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from sima_cli.__version__ import __version__
 from sima_cli.models.client import RegistryClient, ModelRegistryError
 from sima_cli.vulcan.artifacts import ArtifactClient, VulcanArtifactError, download_artifacts
 
@@ -15,7 +17,7 @@ from sima_cli.vulcan.artifacts import ArtifactClient, VulcanArtifactError, downl
 @pytest.fixture
 def server():
     payload = bytes(range(256)) * 4097
-    state = dict(active=0, maximum=0, ranges=0, expired=0)
+    state = dict(active=0, maximum=0, ranges=0, expired=0, requests=[])
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -24,9 +26,17 @@ def server():
 
         def do_GET(self):
             with lock:
+                state['requests'].append((self.path, self.headers.get('User-Agent'), self.headers.get('Range')))
                 state['active'] += 1
                 state['maximum'] = max(state['maximum'], state['active'])
             try:
+                if self.path.startswith('/v1/'):
+                    data = json.dumps({'run': {'id': 'run'}, 'artifacts': []}).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 time.sleep(.03)
                 if self.path.startswith('/expired'):
                     state['expired'] += 1
@@ -172,3 +182,21 @@ def test_cancellation_while_waiting_for_connection(tmp_path):
     with ExitStack() as stack:
         for _ in range(4):
             stack.enter_context(connection_slot())
+
+
+@pytest.mark.parametrize('parallel', [False, True])
+def test_models_version_agent_reaches_api_and_artifact_server(tmp_path, server, parallel):
+    base, payload, state = server
+    client = RegistryClient(base)
+    try:
+        assert client.run('run')['run']['id'] == 'run'
+        client.artifact_download = Mock(return_value={'download_url': base + '/file'})
+        artifact = {'name': 'file', 'size_bytes': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}
+        with patch('sima_cli.models.client.PARALLEL_MIN_SIZE', 1 if parallel else len(payload) + 1):
+            client.download('run', artifact, tmp_path / 'file')
+        assert (tmp_path / 'file').read_bytes() == payload
+        assert all(agent == f'sima-cli/{__version__} models' for _, agent, _ in state['requests'])
+        assert any(path.startswith('/v1/') for path, _, _ in state['requests'])
+        assert state['ranges'] == (4 if parallel else 0)
+    finally:
+        client.session.close()

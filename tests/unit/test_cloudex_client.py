@@ -596,6 +596,83 @@ def test_remote_session_id_migrates_from_forwarder_report(tmp_path):
     assert client._remote_session_id(session, store) == "e" * 32
 
 
+@pytest.mark.parametrize("expired,running,local_status,remote_status,reason", [
+    (True, False, "failed", "not found", client.LEASE_EXPIRED),
+    (False, False, "failed", "not found", "tunnel stopped"),
+    (False, True, "failed", "not found", "tunnel failed"),
+    (False, True, "connected", "not found", "closed on server"),
+    (False, True, "connected", "closed", "closed on server"),
+    (False, True, "connected", "unavailable", "CloudEx unreachable"),
+    (False, True, "connected", "waiting_for_device", "server: waiting_for_device"),
+    (False, True, "connected", "connected_relay", None),
+])
+def test_disconnect_reason_names_the_first_failed_check(expired, running, local_status, remote_status, reason):
+    assert client._disconnect_reason(
+        expired=expired, running=running, local_status=local_status, remote_status=remote_status,
+    ) == reason
+
+
+@pytest.mark.parametrize("response,expected", [
+    ({"status": "connected_direct"}, "connected_direct"),
+    ({}, "unknown"),
+    (client.APIError(404, "not found"), "not found"),
+    (client.APIError(409, '{"error":"session closed or expired"}'), "closed"),
+    (client.APIError(409, '{"error":"conflict"}'), "unavailable"),
+    (client.APIError(500, "internal error"), "unavailable"),
+    (client.CloudExError("network unreachable"), "unavailable"),
+])
+def test_remote_status_separates_closed_sessions_from_unreachable_service(tmp_path, monkeypatch, response, expected):
+    api = Mock()
+    if isinstance(response, Exception):
+        api.call.side_effect = response
+    else:
+        api.call.return_value = response
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+
+    assert client._remote_status(session_record(), client.SessionStore(tmp_path / "cloudex")) == expected
+
+
+def _inspect(tmp_path, monkeypatch, session, *, running=True, report=None, remote="connected_direct"):
+    store = client.SessionStore(tmp_path / "cloudex")
+    if report is not None:
+        report_path = store.runtime_paths(session["session_id"])[2]
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report))
+    monkeypatch.setattr(client, "_forwarder_running", lambda _pid: running)
+    monkeypatch.setattr(client, "_remote_status", lambda _session, _store: remote)
+    return client.inspect_session(session, store)
+
+
+def test_inspect_session_gives_no_reason_for_a_connected_session(tmp_path, monkeypatch):
+    status = _inspect(tmp_path, monkeypatch, session_record(), report={"status": "connected", "path": "direct"})
+
+    assert status["connected"] is True
+    assert status["reason"] is None
+
+
+def test_inspect_session_reports_an_expired_lease_before_other_failures(tmp_path, monkeypatch):
+    session = dict(session_record(), expires_at=1)
+
+    status = _inspect(tmp_path, monkeypatch, session, running=False, report={"status": "failed"}, remote="not found")
+
+    assert (status["status"], status["reason"]) == ("disconnected", client.LEASE_EXPIRED)
+
+
+def test_inspect_session_keeps_an_unverified_tunnel_disconnected_with_a_reason(tmp_path, monkeypatch):
+    status = _inspect(tmp_path, monkeypatch, session_record(), report={"status": "connected"}, remote="unavailable")
+
+    assert status["connected"] is False
+    assert (status["status"], status["reason"]) == ("disconnected", "CloudEx unreachable")
+
+
+def test_inspect_session_explains_a_cleanup_pending_record(tmp_path, monkeypatch):
+    session = dict(session_record(), status="cleanup-pending")
+
+    status = _inspect(tmp_path, monkeypatch, session, running=False, remote="closed")
+
+    assert (status["status"], status["reason"]) == ("cleanup pending", "tunnel stopped")
+
+
 def test_rejected_create_does_not_disconnect_existing_owner(tmp_path, monkeypatch):
     store = client.SessionStore(tmp_path / "cloudex")
     api = Mock(

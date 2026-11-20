@@ -184,8 +184,42 @@ def test_request_selects_device_allocates_then_connects(command_api, monkeypatch
     command_api.call.assert_any_call("POST", "/devkits/allocations", {"request_id": AID,
         "cluster_id": "appliance-id", "target_id": "device-id", "duration_seconds": 14400})
     profile.assert_called_once_with(command_api, AID)
-    connect.assert_called_once_with(PROFILE, verbose=False, diagnostics_api=command_api)
+    connect.assert_called_once_with(PROFILE, verbose=False, diagnostics_api=command_api, announce_authorization=False)
     assert "allocation_secret" not in result.output
+
+
+def test_request_announces_tunnel_authorization_once_before_the_first_sudo_prompt(command_api, monkeypatch):
+    monkeypatch.setattr(commands.uuid, "uuid4", lambda: Mock(hex=AID))
+    monkeypatch.setattr(commands, "_allocation_profile", lambda *a: PROFILE)
+    monkeypatch.setattr(commands, "_store", Mock())
+    monkeypatch.setattr(commands, "connect", Mock(return_value={
+        "session_id": "b" * 32, "device": "ll2", "target": "10.252.1.2", "ice_path": "direct",
+    }))
+    events = []
+    print_line = commands.console.print
+
+    def record_print(*args, **kwargs):
+        if args and "Authorizing encrypted tunnel access" in str(args[0]):
+            events.append("announce")
+        print_line(*args, **kwargs)
+
+    monkeypatch.setattr(commands.console, "print", record_print)
+    commands._authorize_supported_host.side_effect = lambda: events.append("sudo")
+    api_call = command_api.call.side_effect
+
+    def record_call(method, path, data=None):
+        if method == "POST":
+            events.append("reserve")
+        return api_call(method, path, data)
+
+    command_api.call.side_effect = record_call
+
+    result = CliRunner().invoke(commands.cloudex_group, ["-i", "request", "--device", "device-id"])
+
+    assert result.exit_code == 0, result.output
+    # The second check only renews sudo's cache before the forwarder starts.
+    assert events == ["announce", "sudo", "reserve", "sudo"]
+    assert result.output.count("Authorizing encrypted tunnel access") == 1
 
 
 def test_request_rejects_duration_before_allocating(command_api):

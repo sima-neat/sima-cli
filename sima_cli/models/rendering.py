@@ -38,6 +38,22 @@ def render_branches(branches: Sequence[Dict[str, Any]]) -> None:
     click.echo(tabulate(rows, headers=["Branch", "Latest run", "Runs"], tablefmt="simple"))
 
 
+def render_versions(versions: Sequence[Dict[str, Any]]) -> None:
+    rows = [
+        [
+            version.get("platform_version", ""),
+            version.get("neat_core_version", ""),
+            ", ".join(version.get("toolchain_versions") or []) or "-",
+            "yes" if version.get("is_default") else "",
+        ]
+        for version in versions
+    ]
+    if not rows:
+        click.echo("No model catalog version is published yet.")
+        return
+    click.echo(tabulate(rows, headers=["Platform", "Neat Core", "Compilers", "Default"], tablefmt="simple"))
+
+
 def select_branch(branches: Sequence[Dict[str, Any]]) -> str:
     choices: List[Dict[str, Any]] = [
         {"name": str(branch["name"]), "value": str(branch["name"])}

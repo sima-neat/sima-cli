@@ -145,6 +145,7 @@ pip install sima-cli
 - [`sima-cli models branches`](../../../sima-cli/commands/sima-cli-models-branches.md)
 - [`sima-cli models download`](../../../sima-cli/commands/sima-cli-models-download.md)
 - [`sima-cli models list`](../../../sima-cli/commands/sima-cli-models-list.md)
+- [`sima-cli models versions`](../../../sima-cli/commands/sima-cli-models-versions.md)
 - [`sima-cli modelzoo describe`](../../../sima-cli/commands/sima-cli-modelzoo-describe.md)
 - [`sima-cli modelzoo get`](../../../sima-cli/commands/sima-cli-modelzoo-get.md)
 - [`sima-cli modelzoo list`](../../../sima-cli/commands/sima-cli-modelzoo-list.md)

@@ -34,9 +34,10 @@ TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
 class ModelRegistryError(RuntimeError):
     """A Model Registry failure with a stable, machine-readable ``code``."""
 
-    def __init__(self, message: str, code: str = "registry_error") -> None:
+    def __init__(self, message: str, code: str = "registry_error", status: Optional[int] = None) -> None:
         super().__init__(message)
         self.code = code
+        self.status = status
 
 
 def _io_error_code(exc: BaseException) -> str:
@@ -173,6 +174,28 @@ def _benchmark_fingerprints(
     if not run_ids or set(run_ids) != builds:
         return {}
     return (model.get("benchmark_fingerprints") or {}).get(profile) or {}
+
+
+def _version_label(platform_version: str, core_version: Optional[str]) -> str:
+    label = f"platform version {platform_version!r}"
+    return label if core_version is None else f"{label}, Neat Core version {core_version!r}"
+
+
+def _profiles_built_with(model: Dict[str, Any], compiler_version: str) -> List[str]:
+    """Name the build profiles of a registry model row whose shown build used this Model Compiler."""
+    deployments = {**(model.get("approved_deployments") or {}), **(model.get("branch_deployments") or {})}
+    declared = model.get("build_requirements") or {}
+    profiles = [
+        profile for profile, selection in deployments.items()
+        # Selections older than per-selection requirements match their profile's declared ones.
+        if (selection.get("requirements") or declared.get(profile) or {}).get("compiler_version") == compiler_version
+    ]
+    profiles.extend(
+        build["build_profile_id"] for build in model.get("builds") or []
+        if isinstance(build, dict) and build.get("build_profile_id") not in deployments
+        and build.get("toolchain_version") == compiler_version
+    )
+    return profiles
 
 
 def find_latest_run(
@@ -457,6 +480,8 @@ class RegistryClient:
         self.base_url = normalize_base_url(base_url)
         self.session = session or _new_session()
         self.timeout = timeout
+        # The published version the last catalog read selected; None after a branch read.
+        self.selection: Optional[Dict[str, Any]] = None
 
     def _get_json(
         self,
@@ -487,6 +512,7 @@ class RegistryClient:
             raise ModelRegistryError(
                 f"GET {url} failed with HTTP {response.status_code}: {_api_error_message(response)}",
                 code="http_error",
+                status=response.status_code,
             )
         try:
             payload = response.json()
@@ -511,11 +537,43 @@ class RegistryClient:
                 normalized.append(branch)
         return sorted(normalized, key=lambda item: str(item["name"]).lower())
 
-    def catalog_models(
-        self, branch: str, query: Optional[str] = None, *,
-        model_id: Optional[str] = None, variant_id: Optional[str] = None,
-        for_download: bool = False, hydrate: bool = True,
-    ) -> List[Dict[str, Any]]:
+    def _get_pages(self, path: Sequence[str], params: Dict[str, Any], field: str) -> Iterator[Any]:
+        """Yield the items of every page of a cursor-paginated registry list."""
+        seen_cursors = set()
+        while True:
+            payload = self._get_json(path, params=params)
+            page = payload.get(field) if payload else None
+            if not isinstance(page, list):
+                raise ModelRegistryError(f"The registry did not return a {field} list.")
+            yield from page
+            if not payload.get("has_more"):
+                return
+            cursor = payload.get("next_cursor")
+            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                raise ModelRegistryError("The registry returned an invalid pagination cursor.")
+            seen_cursors.add(cursor)
+            params = {**params, "cursor": cursor}
+
+    def versions(self) -> List[Dict[str, Any]]:
+        """List the published catalog versions that can be read."""
+        payload = self._get_json(
+            ("v1", "repositories", ORGANIZATION, REPOSITORY, "models", "filters"),
+            allow_not_found=True,
+        )
+        if payload is None:
+            raise ModelRegistryError(
+                f"The Model Registry at {self.base_url} does not list published versions (HTTP 404).",
+                code="http_error",
+            )
+        selections = payload.get("selections")
+        if not isinstance(selections, list):
+            raise ModelRegistryError("The registry did not return a list of published versions.")
+        return sorted(
+            (item for item in selections if isinstance(item, dict) and not item.get("retired")),
+            key=lambda item: (str(item.get("platform_version")), str(item.get("neat_core_version"))),
+        )
+
+    def _branch_catalog(self, branch: str) -> Dict[str, Any]:
         if not branch.strip():
             raise ModelRegistryError("Branch is required.")
         payload = self._get_json(
@@ -529,6 +587,69 @@ class RegistryClient:
                 "Use models branches to find available branches; no fallback was attempted.",
                 code="branch_not_found",
             )
+        self.selection = None
+        return payload
+
+    def _version_catalog(self, platform_version: str, core_version: Optional[str]) -> Dict[str, Any]:
+        label = _version_label(platform_version, core_version)
+        params = {"platform_version": platform_version}
+        if core_version is not None:
+            params["neat_core_version"] = core_version
+        try:
+            payload = self._get_json(
+                ("v1", "repositories", ORGANIZATION, REPOSITORY, "catalogs", "current"),
+                params=params,
+                allow_not_found=True,
+            )
+        except ModelRegistryError as exc:
+            if exc.status != 409:
+                raise
+            raise ModelRegistryError(
+                f"Several Neat Core revisions are published as {label} at {self.base_url} (HTTP 409); "
+                "the registry cannot choose one.",
+                code="ambiguous_version",
+            ) from exc
+        if payload is None:
+            raise ModelRegistryError(
+                f"No published model catalog for {label} at {self.base_url} (HTTP 404). "
+                "Run sima-cli models versions to list the published versions.",
+                code="version_not_found",
+            )
+        selection = payload.get("selection")
+        if not isinstance(selection, dict) or not selection.get("id"):
+            raise ModelRegistryError("The registry did not identify the published version it returned.")
+        self.selection = selection
+        return payload
+
+    def _variants_built_with(self, compiler_version: str, branch: Optional[str]) -> set:
+        """Return the (model ID, build profile ID) pairs of the read catalog built with this compiler."""
+        source = (
+            {"selection_id": self.selection["id"]} if self.selection
+            else {"git_ref": f"refs/heads/{branch}"}
+        )
+        models = self._get_pages(
+            ("v1", "repositories", ORGANIZATION, REPOSITORY, "models"),
+            {**source, "toolchain_version": compiler_version, "limit": 200},
+            "models",
+        )
+        return {
+            (model.get("model_id"), profile)
+            for model in models if isinstance(model, dict)
+            for profile in _profiles_built_with(model, compiler_version)
+        }
+
+    def catalog_models(
+        self, branch: Optional[str], query: Optional[str] = None, *,
+        model_id: Optional[str] = None, variant_id: Optional[str] = None,
+        for_download: bool = False, hydrate: bool = True,
+        platform_version: Optional[str] = None, core_version: Optional[str] = None,
+        compiler_version: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List a catalog's models: a published version when platform_version is set, else a branch."""
+        if platform_version is not None:
+            payload = self._version_catalog(platform_version, core_version)
+        else:
+            payload = self._branch_catalog(branch or "")
         catalog = payload.get("catalog") if payload else None
         document = catalog.get("document") if isinstance(catalog, dict) else None
         models = document.get("models") if isinstance(document, dict) else None
@@ -547,9 +668,12 @@ class RegistryClient:
                 raise ModelRegistryError(f"Model {model_id!r} is not downloadable: {reason}")
 
         query_terms = (query or "").strip().lower().split()
+        built = None if compiler_version is None else self._variants_built_with(compiler_version, branch)
 
         def matches(model: Dict[str, Any], profile: str) -> bool:
             if variant_id is not None and profile != variant_id:
+                return False
+            if built is not None and (model["id"], profile) not in built:
                 return False
             searchable = " ".join(str(value) for value in (
                 model["id"], profile, model.get("display_name"), model.get("description"),
@@ -718,26 +842,11 @@ class RegistryClient:
         normalized_query = (query or "").strip()
         if normalized_query:
             params["q"] = normalized_query
-        runs: List[Dict[str, Any]] = []
-        seen_cursors = set()
-        while True:
-            payload = self._get_json(path, params=params)
-            page = payload.get("runs") if payload else None
-            if not isinstance(page, list):
-                raise ModelRegistryError("The registry did not return a runs list.")
-            runs.extend(
-                item
-                for item in page
-                if isinstance(item, dict) and item.get("git_ref") == git_ref
-            )
-            if not payload.get("has_more"):
-                break
-            cursor = payload.get("next_cursor")
-            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
-                raise ModelRegistryError("The registry returned an invalid pagination cursor.")
-            seen_cursors.add(cursor)
-            params["cursor"] = cursor
-        return runs
+        return [
+            item
+            for item in self._get_pages(path, params, "runs")
+            if isinstance(item, dict) and item.get("git_ref") == git_ref
+        ]
 
     def runs(self, branch: str, query: Optional[str] = None) -> List[Dict[str, Any]]:
         return self._repository_runs(
@@ -770,9 +879,13 @@ class RegistryClient:
         """Return the model test result of the newest completed run for a benchmark fingerprint."""
         if not fingerprint:
             return None
+        params = {"run_type": f"model_{stage}", "fingerprint": fingerprint}
+        if self.selection:
+            # A published version pins its own benchmark runs.
+            params["selection_id"] = self.selection["id"]
         resolved = self._get_json(
             ("v1", "repositories", ORGANIZATION, REPOSITORY, "resolve"),
-            params={"run_type": f"model_{stage}", "fingerprint": fingerprint},
+            params=params,
             allow_not_found=True,
         )
         run_id = ((resolved or {}).get("run") or {}).get("id")

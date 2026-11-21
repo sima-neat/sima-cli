@@ -20,6 +20,7 @@ from .rendering import (
     model_card,
     render_branches,
     render_model_card,
+    render_versions,
     select_branch,
     select_run,
 )
@@ -34,6 +35,27 @@ def _staging_option(function):
         default=False,
         help="Use the staging Model Registry unless SIMA_MODELS_REGISTRY_BASE_URL is set.",
     )(function)
+
+
+def _version_options(function):
+    function = click.option(
+        "--core-version",
+        help="Neat Core version of the published catalog (default: the platform's default). "
+             "Requires --platform-version.",
+    )(function)
+    return click.option(
+        "--platform-version",
+        help="Read the published catalog of this SiMa.ai Platform version instead of a branch.",
+    )(function)
+
+
+def _check_version_options(
+    branch: Optional[str], pick_branch: bool, platform_version: Optional[str], core_version: Optional[str],
+) -> None:
+    if core_version is not None and platform_version is None:
+        raise click.UsageError("--core-version requires --platform-version.")
+    if platform_version is not None and (branch is not None or pick_branch):
+        raise click.UsageError("--platform-version cannot be used with --branch or --select-branch.")
 
 
 def _client(ctx: click.Context, staging: bool) -> RegistryClient:
@@ -52,6 +74,28 @@ def _fail(exc: Exception, json_output: bool) -> NoReturn:
         echo_json({"error": {"code": exc.code, "message": str(exc)}})
         raise click.exceptions.Exit(1)
     raise click.ClickException(str(exc)) from exc
+
+
+def _catalog_filters(
+    platform_version: Optional[str], core_version: Optional[str], compiler_version: Optional[str] = None,
+) -> Dict[str, str]:
+    """Name only the requested version filters, so a plain branch read passes none."""
+    filters = {
+        "platform_version": platform_version, "core_version": core_version, "compiler_version": compiler_version,
+    }
+    return {name: value for name, value in filters.items() if value is not None}
+
+
+def _catalog_source(client: RegistryClient, branch: Optional[str]) -> Dict[str, Any]:
+    """Name the catalog a list read: its branch, or the published version the registry selected."""
+    if branch is not None:
+        return {"branch": branch}
+    selection = client.selection or {}
+    return {
+        "platform_version": selection.get("platform_version"),
+        "neat_core_version": selection.get("neat_core_version"),
+        "selection_id": selection.get("id"),
+    }
 
 
 def _is_interactive() -> bool:
@@ -210,6 +254,8 @@ def _selected_model_detail(
     "  sima-cli models branches --json\n"
     "  sima-cli models list --branch BRANCH --json\n"
     "  sima-cli models download --branch BRANCH --id MODEL --variant VARIANT --output ./models --json\n"
+    "  sima-cli models versions --json\n"
+    "  sima-cli models list --platform-version VERSION --json\n"
     "  sima-cli models --stg branches --json\n"
     "  sima-cli models list --staging --branch develop --json"
 ))
@@ -236,6 +282,22 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
         render_branches(branches)
 
 
+@models_group.command("versions")
+@_staging_option
+@click.option("--json", "json_output", is_flag=True, help="Print machine-readable JSON.")
+@click.pass_context
+def versions_command(ctx: click.Context, staging: bool, json_output: bool) -> None:
+    """List published catalog versions by platform and Neat Core version."""
+    try:
+        versions = _client(ctx, staging).versions()
+    except (ModelRegistryError, OSError) as exc:
+        _fail(exc, json_output)
+    if json_output:
+        echo_json({"versions": versions})
+    else:
+        render_versions(versions)
+
+
 @models_group.command("list")
 @click.option(
     "-b",
@@ -243,6 +305,8 @@ def branches_command(ctx: click.Context, staging: bool, json_output: bool) -> No
     help="Models repository branch (default: main).",
 )
 @click.option("--select-branch", "pick_branch", is_flag=True, help="Choose a branch interactively instead of using main.")
+@_version_options
+@click.option("--compiler-version", help="Show only variants built with this Model Compiler version.")
 @click.option(
     "-q",
     "--query",
@@ -267,6 +331,9 @@ def list_command(
     ctx: click.Context,
     branch: Optional[str],
     pick_branch: bool,
+    platform_version: Optional[str],
+    core_version: Optional[str],
+    compiler_version: Optional[str],
     query: Optional[str],
     staging: bool,
     json_output: bool,
@@ -275,6 +342,7 @@ def list_command(
 ) -> None:
     """Browse registered models, or list them with --json."""
     try:
+        _check_version_options(branch, pick_branch, platform_version, core_version)
         client = _client(ctx, staging)
         if pick_branch:
             if branch is not None or json_output:
@@ -282,14 +350,17 @@ def list_command(
             if not _is_interactive():
                 raise ModelRegistryError("--select-branch requires an interactive terminal.")
             branch = select_branch(client.branches())
-        elif branch is None:
+        elif branch is None and platform_version is None:
             branch = "main"
-        runs = client.catalog_models(branch, query=query, hydrate=json_output)
+        filters = _catalog_filters(platform_version, core_version, compiler_version)
+        runs = client.catalog_models(branch, query=query, hydrate=json_output, **filters)
         if json_output:
-            echo_json({"branch": branch, "query": query, "models": runs})
+            compiler = {"compiler_version": compiler_version} if compiler_version is not None else {}
+            echo_json({**_catalog_source(client, branch), **compiler, "query": query, "models": runs})
             return
         if not runs:
-            click.echo(f"No completed model builds match branch {branch!r} and the requested query.")
+            source = f"branch {branch!r}" if branch else f"platform version {platform_version!r}"
+            click.echo(f"No completed model builds match {source} and the requested query.")
             return
         if not _is_interactive():
             raise ModelRegistryError(
@@ -316,10 +387,9 @@ def list_command(
 @click.option(
     "-b",
     "--branch",
-    default="main",
-    show_default=True,
-    help="Models repository branch.",
+    help="Models repository branch (default: main).",
 )
+@_version_options
 @click.option("--id", "model_id", required=True, help="Model ID.")
 @click.option(
     "--variant",
@@ -341,7 +411,9 @@ def list_command(
 @click.pass_context
 def download_command(
     ctx: click.Context,
-    branch: str,
+    branch: Optional[str],
+    platform_version: Optional[str],
+    core_version: Optional[str],
     model_id: str,
     variant_id: str,
     staging: bool,
@@ -349,11 +421,15 @@ def download_command(
     force: bool,
     json_output: bool,
 ) -> None:
-    """Download a model variant from the branch catalog."""
+    """Download a model variant from a branch or published catalog."""
     try:
+        _check_version_options(branch, False, platform_version, core_version)
         client = _client(ctx, staging)
+        if branch is None and platform_version is None:
+            branch = "main"
         runs = client.catalog_models(
             branch, model_id=model_id, variant_id=variant_id, for_download=True, hydrate=False,
+            **_catalog_filters(platform_version, core_version),
         )
         entry = find_latest_run(runs, model_id, variant_id)
         summary = client.run(entry["id"])

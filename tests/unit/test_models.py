@@ -1870,3 +1870,331 @@ def test_artifact_http_failures_keep_http_error_code(tmp_path, size, status):
     assert f"HTTP {status}" in str(caught.value)
     assert signed_url not in str(caught.value)
     assert not (tmp_path / "model.tar.gz").exists()
+
+
+CATALOG_URL = f"{PRODUCTION_BASE_URL}/v1/repositories/sima-neat/models/catalogs/current"
+SELECTION = {
+    "id": "11111111-2222-4333-8444-555555555555", "platform_version": "3.0.0",
+    "neat_core_version": "1.2.0", "neat_core_revision": "a" * 40,
+}
+
+
+def _version_catalog(models=()):
+    return {"catalog": {"document": {"models": list(models)}}, "selection": SELECTION}
+
+
+def _packaged_model(model_id, run_id, **fields):
+    return {
+        "id": model_id, "license": {"spdx": "Apache-2.0"},
+        "packages": [{"run_id": run_id, "package_id": "default", "build_profile_id": "int8"}],
+        **fields,
+    }
+
+
+def _invoke_models(session, args):
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+    with patch("sima_cli.models.commands.RegistryClient", return_value=client):
+        return CliRunner().invoke(models_group, args)
+
+
+@pytest.mark.parametrize("args", [
+    ["list", "--json"],
+    ["download", "--id", "missing", "--variant", "int8", "--json"],
+])
+def test_commands_without_version_options_read_only_the_main_branch(args):
+    session = FakeSession([FakeResponse(payload={"catalog": {"document": {"models": []}}})])
+
+    result = _invoke_models(session, args)
+
+    assert [(url, kwargs["params"]) for url, kwargs in session.calls] == [
+        (CATALOG_URL, {"git_ref": "refs/heads/main"}),
+    ]
+    if args[0] == "list":
+        assert json.loads(result.stdout) == {"branch": "main", "query": None, "models": []}
+
+
+@pytest.mark.parametrize(("options", "params"), [
+    (["--platform-version", "3.0.0"], {"platform_version": "3.0.0"}),
+    (["--platform-version", "3.0.0", "--core-version", "1.2.0"],
+     {"platform_version": "3.0.0", "neat_core_version": "1.2.0"}),
+])
+def test_list_json_reads_a_published_version_and_names_it(options, params):
+    session = FakeSession([FakeResponse(payload=_version_catalog())])
+
+    result = _invoke_models(session, ["list", "--json", *options])
+
+    assert result.exit_code == 0, result.output
+    assert [(url, kwargs["params"]) for url, kwargs in session.calls] == [(CATALOG_URL, params)]
+    assert json.loads(result.stdout) == {
+        "platform_version": "3.0.0", "neat_core_version": "1.2.0", "selection_id": SELECTION["id"],
+        "query": None, "models": [],
+    }
+
+
+def test_list_reports_an_empty_published_version():
+    result = _invoke_models(
+        FakeSession([FakeResponse(payload=_version_catalog())]), ["list", "--platform-version", "3.0.0"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "No completed model builds match platform version '3.0.0'" in result.output
+
+
+def test_download_reads_a_published_version():
+    session = FakeSession([FakeResponse(payload=_version_catalog())])
+    args = ["download", "--platform-version", "3.0.0", "--core-version", "1.2.0",
+            "--id", "missing", "--variant", "int8", "--json"]
+
+    result = _invoke_models(session, args)
+
+    assert json.loads(result.stdout)["error"]["code"] == "build_not_found"
+    assert [(url, kwargs["params"]) for url, kwargs in session.calls] == [
+        (CATALOG_URL, {"platform_version": "3.0.0", "neat_core_version": "1.2.0"}),
+    ]
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    (["list", "--core-version", "1.2.0"], "--core-version requires --platform-version."),
+    (["list", "--platform-version", "3.0.0", "--branch", "main"],
+     "--platform-version cannot be used with --branch or --select-branch."),
+    (["list", "--platform-version", "3.0.0", "--select-branch"],
+     "--platform-version cannot be used with --branch or --select-branch."),
+    (["download", "--id", "m", "--variant", "int8", "--core-version", "1.2.0"],
+     "--core-version requires --platform-version."),
+    (["download", "--id", "m", "--variant", "int8", "--platform-version", "3.0.0", "--branch", "main"],
+     "--platform-version cannot be used with --branch or --select-branch."),
+])
+def test_version_options_reject_conflicting_sources_before_any_request(args, message):
+    session = FakeSession([])
+
+    result = _invoke_models(session, args)
+
+    assert result.exit_code == 2
+    assert message in result.output
+    assert session.calls == []
+
+
+@pytest.mark.parametrize(("options", "requested"), [
+    (["--platform-version", "9.9.9"], "platform version '9.9.9'"),
+    (["--platform-version", "9.9.9", "--core-version", "1.2.0"],
+     "platform version '9.9.9', Neat Core version '1.2.0'"),
+])
+@pytest.mark.parametrize("json_output", [True, False])
+def test_unpublished_version_is_reported_as_version_not_found(options, requested, json_output):
+    session = FakeSession([FakeResponse(
+        status_code=404, payload={"error": {"code": "catalog_selection_not_found", "message": "Unavailable"}},
+    )])
+
+    result = _invoke_models(session, ["list", *options] + (["--json"] if json_output else []))
+
+    assert result.exit_code == 1
+    assert len(session.calls) == 1
+    if json_output:
+        error = json.loads(result.stdout)["error"]
+        assert error["code"] == "version_not_found"
+        message = error["message"]
+    else:
+        message = result.output
+    assert f"No published model catalog for {requested} at {PRODUCTION_BASE_URL}" in message
+    assert "sima-cli models versions" in message
+
+
+def test_ambiguous_version_is_reported_as_ambiguous_version():
+    session = FakeSession([FakeResponse(
+        status_code=409,
+        payload={"error": {"code": "catalog_selection_ambiguous", "message": "Specify neat_core_revision"}},
+    )])
+    args = ["download", "--platform-version", "3.0.0", "--core-version", "1.2.0",
+            "--id", "m", "--variant", "int8", "--json"]
+
+    result = _invoke_models(session, args)
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == "ambiguous_version"
+    assert "platform version '3.0.0', Neat Core version '1.2.0'" in error["message"]
+
+
+def test_version_read_without_a_selection_is_rejected():
+    session = FakeSession([FakeResponse(payload={"catalog": {"document": {"models": []}}})])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+
+    with pytest.raises(ModelRegistryError, match="did not identify the published version"):
+        client.catalog_models(None, platform_version="3.0.0")
+
+
+def test_resolve_after_a_version_read_stays_in_that_version():
+    session = FakeSession([
+        FakeResponse(payload=_version_catalog()),
+        FakeResponse(status_code=404, payload={"error": {"code": "fingerprint_not_found"}}),
+        FakeResponse(payload={"catalog": {"document": {"models": []}}}),
+        FakeResponse(status_code=404, payload={"error": {"code": "fingerprint_not_found"}}),
+    ])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+
+    client.catalog_models(None, platform_version="3.0.0")
+    assert client.whole_model_result("performance", FINGERPRINT) is None
+    client.catalog_models("main")
+    assert client.whole_model_result("performance", FINGERPRINT) is None
+
+    assert session.calls[1][1]["params"] == {
+        "run_type": "model_performance", "fingerprint": FINGERPRINT, "selection_id": SELECTION["id"],
+    }
+    assert session.calls[3][1]["params"] == {"run_type": "model_performance", "fingerprint": FINGERPRINT}
+
+
+@pytest.mark.parametrize(("version", "source"), [
+    (None, {"git_ref": "refs/heads/develop"}),
+    ("3.0.0", {"selection_id": SELECTION["id"]}),
+])
+def test_compiler_version_keeps_only_variants_built_with_it(version, source):
+    catalog = _version_catalog([
+        _packaged_model("built_here", "run-a"),
+        _packaged_model("built_elsewhere", "run-b"),
+        _packaged_model("other_profile", "run-c"),
+    ])
+    session = FakeSession([
+        FakeResponse(payload=catalog),
+        FakeResponse(payload={"has_more": True, "next_cursor": "page-2", "models": [
+            {"model_id": "built_here", "builds": [{"build_profile_id": "int8", "toolchain_version": "3.0.0.2"}]},
+        ]}),
+        FakeResponse(payload={"has_more": False, "models": [
+            {"model_id": "other_profile", "builds": [
+                {"build_profile_id": "int8", "toolchain_version": "3.0.0.1"},
+                {"build_profile_id": "bf16", "toolchain_version": "3.0.0.2"},
+            ]},
+        ]}),
+    ])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+
+    rows = client.catalog_models(
+        None if version else "develop", platform_version=version, compiler_version="3.0.0.2", hydrate=False,
+    )
+
+    assert [row["metadata"]["model_id"] for row in rows] == ["built_here"]
+    filtered = {**source, "toolchain_version": "3.0.0.2", "limit": 200}
+    assert [(url, kwargs["params"]) for url, kwargs in session.calls[1:]] == [
+        (f"{PRODUCTION_BASE_URL}/v1/repositories/sima-neat/models/models", filtered),
+        (f"{PRODUCTION_BASE_URL}/v1/repositories/sima-neat/models/models", {**filtered, "cursor": "page-2"}),
+    ]
+
+
+@pytest.mark.parametrize(("selection", "shown"), [
+    ({"requirements": {"compiler_version": "3.0.0.2"}}, True),
+    ({"requirements": {"compiler_version": "3.0.0.1"}}, False),
+    ({}, True),
+])
+def test_compiler_version_reads_a_selected_deployment_from_its_requirements(selection, shown):
+    deployment = {"int8": {**selection, "artifacts": [
+        {"package_id": "default", "run_id": "selected", "artifact_name": "package"},
+    ]}}
+    session = FakeSession([
+        FakeResponse(payload={"catalog": {"document": {"models": [
+            {"id": "detector", "approved_deployments": deployment},
+        ]}}}),
+        FakeResponse(payload={"has_more": False, "models": [{
+            "model_id": "detector", "approved_deployments": deployment,
+            "build_requirements": {"int8": {"compiler_version": "3.0.0.2"}},
+            # A branch build of a profile is not what its selected deployment ships.
+            "builds": [{"build_profile_id": "int8", "toolchain_version": "3.0.0.2"}],
+        }]}),
+    ])
+    client = RegistryClient(PRODUCTION_BASE_URL, session=session)
+
+    rows = client.catalog_models("main", compiler_version="3.0.0.2", hydrate=False)
+
+    assert [row["id"] for row in rows] == (["selected"] if shown else [])
+
+
+def test_list_json_names_the_requested_compiler_version():
+    session = FakeSession([
+        FakeResponse(payload={"catalog": {"document": {"models": [_packaged_model("detector", "run-a")]}}}),
+        FakeResponse(payload={"has_more": False, "models": []}),
+    ])
+
+    result = _invoke_models(session, ["list", "--compiler-version", "3.0.0.2", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {
+        "branch": "main", "compiler_version": "3.0.0.2", "query": None, "models": [],
+    }
+
+
+VERSIONS_URL = f"{PRODUCTION_BASE_URL}/v1/repositories/sima-neat/models/models/filters"
+
+
+def _published_version(platform, core, compilers, is_default=False, retired=False):
+    return {
+        "selection_id": f"selection-{platform}-{core}", "catalog_id": f"catalog-{platform}-{core}",
+        "platform_version": platform, "neat_core_version": core, "neat_core_revision": "a" * 40,
+        "retired": retired, "is_default": is_default, "toolchain_versions": compilers,
+    }
+
+
+def _filters(*selections):
+    return {
+        "scope": "published", "platform_versions": [], "neat_core_versions": [], "toolchain_versions": [],
+        "selections": list(selections),
+    }
+
+
+def test_versions_prints_a_table_of_published_versions():
+    session = FakeSession([FakeResponse(payload=_filters(
+        _published_version("3.0.0", "1.3.0", ["3.0.0.2"]),
+        _published_version("3.0.0", "1.2.0", ["3.0.0.1", "3.0.0.2"], is_default=True),
+        _published_version("2.1.3", "0.5.0", ["2.1.3.0"], retired=True),
+    ))])
+
+    result = _invoke_models(session, ["versions"])
+
+    assert result.exit_code == 0, result.output
+    assert session.calls[0][0] == VERSIONS_URL
+    lines = result.output.splitlines()
+    assert lines[0].split() == ["Platform", "Neat", "Core", "Compilers", "Default"]
+    assert [line.split() for line in lines[2:]] == [
+        ["3.0.0", "1.2.0", "3.0.0.1,", "3.0.0.2", "yes"],
+        ["3.0.0", "1.3.0", "3.0.0.2"],
+    ]
+
+
+def test_versions_json_returns_the_published_versions():
+    version = _published_version("3.0.0", "1.2.0", ["3.0.0.2"], is_default=True)
+
+    result = _invoke_models(FakeSession([FakeResponse(payload=_filters(version))]), ["versions", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {"versions": [version]}
+
+
+def test_versions_reports_that_none_is_published():
+    result = _invoke_models(FakeSession([FakeResponse(payload=_filters())]), ["versions"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "No model catalog version is published yet.\n"
+
+
+def test_versions_uses_the_staging_registry_on_request():
+    session = FakeSession([FakeResponse(payload=_filters())])
+    with patch("sima_cli.models.commands.RegistryClient", return_value=RegistryClient(
+        STAGING_BASE_URL, session=session,
+    )) as constructor:
+        result = CliRunner().invoke(models_group, ["versions", "--stg", "--json"])
+
+    assert result.exit_code == 0, result.output
+    constructor.assert_called_once_with(STAGING_BASE_URL)
+    assert json.loads(result.stdout) == {"versions": []}
+
+
+@pytest.mark.parametrize("json_output", [True, False])
+def test_versions_reports_a_registry_without_the_route(json_output):
+    session = FakeSession([FakeResponse(status_code=404, payload={"error": {"message": "Not found"}})])
+
+    result = _invoke_models(session, ["versions"] + (["--json"] if json_output else []))
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    expected = f"The Model Registry at {PRODUCTION_BASE_URL} does not list published versions (HTTP 404)."
+    if json_output:
+        assert json.loads(result.stdout) == {"error": {"code": "http_error", "message": expected}}
+    else:
+        assert f"Error: {expected}" in result.output

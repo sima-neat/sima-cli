@@ -23,8 +23,9 @@ None.
 ## Subcommands
 
 - [`sima-cli models branches`](./sima-cli-models-branches.md): List branches containing registered models.
-- [`sima-cli models download`](./sima-cli-models-download.md): Download a model variant from the branch catalog.
+- [`sima-cli models download`](./sima-cli-models-download.md): Download a model variant from a branch or published catalog.
 - [`sima-cli models list`](./sima-cli-models-list.md): Browse registered models, or list them with --json.
+- [`sima-cli models versions`](./sima-cli-models-versions.md): List published catalog versions by platform and Neat Core version.
 
 ## Full Help
 
@@ -53,6 +54,8 @@ Usage: sima-cli models [OPTIONS] COMMAND [ARGS]...
     sima-cli models branches --json
     sima-cli models list --branch BRANCH --json
     sima-cli models download --branch BRANCH --id MODEL --variant VARIANT --output ./models --json
+    sima-cli models versions --json
+    sima-cli models list --platform-version VERSION --json
     sima-cli models --stg branches --json
     sima-cli models list --staging --branch develop --json
 
@@ -63,6 +66,7 @@ Options:
 
 Commands:
   branches  List branches containing registered models.
-  download  Download a model variant from the branch catalog.
+  download  Download a model variant from a branch or published catalog.
   list      Browse registered models, or list them with --json.
+  versions  List published catalog versions by platform and Neat Core...
 ```

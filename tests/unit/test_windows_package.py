@@ -1010,6 +1010,59 @@ class WindowsPackageTests(unittest.TestCase):
                     self.metadata, str(self.root), native_only=True
                 )
 
+    def test_downgrade_refusal_says_to_remove_the_newer_release(self):
+        self.use_scheduler_and_core()
+        core_log = self.root / "sima-cli-msi-install-02-core.log"
+        lines = (
+            "MSI (s) (A4:2C) [10:01:02:345]: PROPERTY CHANGE: Adding WIX_DOWNGRADE_DETECTED "
+            "property. Its value is '{44444444-4444-4444-4444-444444444444}'.\r\n"
+            "Property(S): WIX_DOWNGRADE_DETECTED = {44444444-4444-4444-4444-444444444444}\r\n"
+        )
+        # Windows Installer writes verbose logs as UTF-16 or as ANSI text.
+        for encoded in (b"\xff\xfe" + lines.encode("utf-16-le"), lines.encode("ascii"),
+                        lines.splitlines()[1].encode("utf-16-le")):
+            def run(command, **_kwargs):
+                if command[2] == str(self.msi):
+                    core_log.write_bytes(encoded)
+                    return completed(returncode=1603)
+                return completed()
+
+            with self.subTest(encoded=encoded[:4]), patch(
+                "sima_cli.install.windows_package._run", side_effect=run
+            ):
+                with self.assertRaises(WindowsNativeInstallError) as raised:
+                    install_windows_package(
+                        self.metadata, str(self.root), native_only=True,
+                        retry_command=PINNED_RETRY,
+                    )
+
+            message = raised.exception.message
+            self.assertIn(
+                "Windows Installer refused core 0.6.1 because a newer version of it is already "
+                "installed; Windows Installer does not downgrade a package in place.", message
+            )
+            self.assertIn("Packages completed earlier in this run: scheduler.", message)
+            self.assertIn(
+                f"sima-cli packages remove {self.metadata['name']} --version <installed version>",
+                message,
+            )
+            self.assertTrue(message.endswith(f"then rerun this exact release: {PINNED_RETRY}"))
+
+    def test_other_install_failures_keep_the_generic_message(self):
+        log = self.root / "sima-cli-msi-install-01-native.log"
+        for code, text in ((1603, "Property(S): WIX_UPGRADE_DETECTED = {x}\r\n"), (1618, "")):
+            def run(command, **_kwargs):
+                log.write_text(text, encoding="ascii")
+                return completed(returncode=code)
+
+            with self.subTest(code=code), patch(
+                "sima_cli.install.windows_package._run", side_effect=run
+            ):
+                with self.assertRaisesRegex(
+                    WindowsNativeInstallError, f"failed for native with exit code {code}"
+                ):
+                    install_windows_package(self.metadata, str(self.root), native_only=True)
+
     def test_policy_rejected_msi_reports_policy_without_bypass_guidance(self):
         with patch(
             "sima_cli.install.windows_package._run", return_value=completed(returncode=1625)

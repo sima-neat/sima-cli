@@ -25,6 +25,7 @@ ELEVATED_INSTALLER_EXIT_CODE_MISSING = 9001
 ELEVATED_INSTALLER_LAUNCH_FAILED = 9002
 ELEVATED_INSTALLER_HASH_MISMATCH = 9003
 MSI_UNKNOWN_PRODUCT = 1605
+MSI_INSTALL_FAILURE = 1603
 INSTALLSTATE_DEFAULT = 5
 _PRODUCT_CODE = re.compile(r"\{[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}\}", re.IGNORECASE)
 PYTHON_WINDOWS_DOWNLOAD_URL = "https://www.python.org/downloads/windows/"
@@ -391,6 +392,23 @@ $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $n
             f"Could not read the ProductCode of '{msi.name}': {detail}. No MSI was started."
         )
     return code.upper()
+
+
+# WiX MajorUpgrade sets this property when a newer version of the product is installed;
+# the verbose log records it being added and in the final property dump.
+_MSI_LOG_DOWNGRADE = re.compile(r"WIX_DOWNGRADE_DETECTED(?: property|\s*=\s*\{)")
+
+
+def _msi_log_reports_downgrade(log: Path) -> bool:
+    try:
+        data = log.read_bytes()
+    except OSError:
+        return False
+    if data[:2] == b"\xff\xfe" or b"\x00" in data[:200]:
+        text = data.decode("utf-16", errors="replace")
+    else:
+        text = data.decode("latin-1")
+    return _MSI_LOG_DOWNGRADE.search(text) is not None
 
 
 def _msi_product_installed(product_code: str) -> bool:
@@ -1066,6 +1084,17 @@ def _install_native_packages(
             )
         if returncode != 0:
             installed_owners = ", ".join(entry["owner"] for entry in installed) or "none"
+            if returncode == MSI_INSTALL_FAILURE and _msi_log_reports_downgrade(log_path):
+                raise WindowsNativeInstallError(
+                    f"Windows Installer refused {owner} {item['version']} because a newer "
+                    "version of it is already installed; Windows Installer does not downgrade "
+                    "a package in place. Packages completed earlier in this run: "
+                    f"{installed_owners}. Installer log: {log_path}. To install this release, "
+                    "find the installed version with sima-cli packages list, remove it with "
+                    f"sima-cli packages remove {metadata.get('name')} --version <installed version> "
+                    "(or from Settings > Apps > Installed apps if sima-cli did not install it), "
+                    f"then {rerun}"
+                )
             policy_detail = (
                 " Windows Installer rejected this package under system policy; "
                 "use an approved package or ask the Windows administrator to review the policy."

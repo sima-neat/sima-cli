@@ -51,6 +51,16 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("Where-Object { -not (Same $_) }", machine)
         self.assertEqual(self.script.count("$key.SetValue('Path', ($kept -join ';')"), 1)
 
+    def test_messages_survive_delayed_expansion(self):
+        # Under enabledelayedexpansion a "!" that does not close a !variable! is dropped
+        # with the text up to the next one, so messages must not contain a lone "!".
+        self.assertIn("setlocal enabledelayedexpansion", self.script)
+        for line in self.script.splitlines():
+            if line.strip().lower().startswith("echo"):
+                text = re.sub(r"![A-Za-z_][A-Za-z0-9_]*!", "", line)
+                self.assertNotIn("!", text, line)
+        self.assertIn("echo Done. Open a new Command Prompt or PowerShell and type:", self.script)
+
     def test_ci_runs_script_twice_and_checks_path_scope(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         step = workflow.split("- name: Test repo installer script on native Windows\n", 1)[1]

@@ -98,7 +98,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"
 if errorlevel 1 echo Could not update the user PATH. Add %VENV_PATH% to it manually.
 
 echo.
-echo Done! Open a new Command Prompt or PowerShell and type:
+echo Done. Open a new Command Prompt or PowerShell and type:
 echo     sima-cli
 echo to start using the tool.
 endlocal

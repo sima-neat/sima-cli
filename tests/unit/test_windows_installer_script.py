@@ -51,6 +51,17 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("Where-Object { -not (Same $_) }", machine)
         self.assertEqual(self.script.count("$key.SetValue('Path', ($kept -join ';')"), 1)
 
+    def test_path_update_failure_is_reported(self):
+        # Without Stop, a failed .NET call only ends its statement and the exit code
+        # comes from the last statement, so the failure message never printed.
+        first = re.search(r'^set "PS_PATH=([^"]*)"$', self.script, re.MULTILINE).group(1)
+        self.assertTrue(first.startswith("$ErrorActionPreference = 'Stop'; "), first)
+        run = self.script.index('powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"')
+        self.assertIn(
+            "if errorlevel 1 echo Could not update the user PATH.",
+            self.script[run:].splitlines()[1],
+        )
+
     def test_messages_survive_delayed_expansion(self):
         # Under enabledelayedexpansion a "!" that does not close a !variable! is dropped
         # with the text up to the next one, so messages must not contain a lone "!".

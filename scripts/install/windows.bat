@@ -87,7 +87,8 @@ if errorlevel 1 (
 
 rem The environment is per-user, so persist it to the user PATH only, even when elevated.
 rem Edit the raw registry value so entries that reference variables stay unexpanded.
-set "PS_PATH=$dir = $env:VENV_PATH.TrimEnd('\'); function Same($entry) { $entry.Trim().TrimEnd('\') -ieq $dir }"
+rem Stop on the first error so a failure reaches the exit code and the message below.
+set "PS_PATH=$ErrorActionPreference = 'Stop'; $dir = $env:VENV_PATH.TrimEnd('\'); function Same($entry) { $entry.Trim().TrimEnd('\') -ieq $dir }"
 set "PS_PATH=!PS_PATH!; $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); $raw = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')"
 set "PS_PATH=!PS_PATH!; if ($raw.Split(';') | Where-Object { Same ([Environment]::ExpandEnvironmentVariables($_)) }) { Write-Host 'Already in the user PATH.' } else { $kind = 'ExpandString'; if ($null -ne $key.GetValue('Path')) { $kind = $key.GetValueKind('Path') }; Write-Host ('Persisting ' + $env:VENV_PATH + ' to the user PATH...'); $key.SetValue('Path', ($raw.TrimEnd(';') + ';' + $env:VENV_PATH).TrimStart(';'), $kind) }"
 rem Earlier installers added this exact per-user path to the system PATH when elevated; remove only that.

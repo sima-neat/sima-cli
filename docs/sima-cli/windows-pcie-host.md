@@ -46,7 +46,7 @@ Repeating the package install may replace only the skill registered to that same
 package path.
 
 Last, as the Ubuntu installer runs `pcie-setup.sh`, the CLI runs the installed
-`pcie-setup.cmd` in the same window without elevation, also with
+`pcie-setup.cmd` in the same window, with that window's privileges, also with
 `--native-only`. It sets up passwordless SSH to each card and may ask for the
 card password. To skip it, set `$env:SIMAPCIE_SKIP_SETUP = "1"` before the
 command; a session without interactive input also skips it, because a first

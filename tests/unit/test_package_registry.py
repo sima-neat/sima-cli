@@ -81,3 +81,34 @@ def test_packages_remove_can_be_cancelled(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "removal cancelled" in result.output
     assert len(json.loads(registry_path.read_text(encoding="utf-8"))) == 1
+
+
+def test_packages_remove_reports_an_unknown_receipt_before_prompting(monkeypatch, tmp_path):
+    registry_path = tmp_path / "registry.json"
+    monkeypatch.setattr(
+        "sima_cli.install.registry.PackageRegistry",
+        lambda: PackageRegistry(registry_path),
+    )
+
+    result = CliRunner().invoke(packages, ["remove", "example/package", "--version", "1.0.0"])
+
+    assert result.exit_code == 1
+    assert "?" not in result.output
+    assert "example/package@1.0.0 not found in registry" in result.output
+
+
+def test_packages_remove_honours_the_global_yes_option(monkeypatch, tmp_path):
+    registry_path = tmp_path / "registry.json"
+    PackageRegistry(registry_path).create_entry("example/package", "1.0.0", {}, tmp_path)
+    monkeypatch.setattr(
+        "sima_cli.install.registry.PackageRegistry",
+        lambda: PackageRegistry(registry_path),
+    )
+
+    result = CliRunner().invoke(
+        packages, ["remove", "example/package", "--version", "1.0.0"], obj={"yes": True}
+    )
+
+    assert result.exit_code == 0
+    assert "Removed local registry receipt" in result.output
+    assert json.loads(registry_path.read_text(encoding="utf-8")) == []

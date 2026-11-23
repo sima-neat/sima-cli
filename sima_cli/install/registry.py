@@ -81,11 +81,15 @@ def list_packages():
     help="Exact installed version whose registry receipt should be removed.",
 )
 @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt.")
-def remove_package_receipt(name, version, yes):
+@click.pass_context
+def remove_package_receipt(ctx, name, version, yes):
     """Forget an installation receipt, uninstalling a Windows MSI package first."""
     reg = PackageRegistry()
     entry = reg._find(name, version)
-    windows_msi = (entry or {}).get("metadata", {}).get("installation", {}).get("type") == "windows-msi"
+    if entry is None:
+        raise click.ClickException(f"Package {name}@{version} not found in registry.")
+    yes = yes or bool((ctx.find_root().obj or {}).get("yes"))
+    windows_msi = entry.get("metadata", {}).get("installation", {}).get("type") == "windows-msi"
     prompt = (
         f"Uninstall the Windows native packages of {name}@{version} and remove its registry receipt?"
         if windows_msi

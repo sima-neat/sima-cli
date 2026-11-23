@@ -10,7 +10,8 @@ enrollment, verification, and recovery, follow
 [Install PCIe Host](/getting-started/neat-library/pcie-host).
 
 Run the command from PowerShell after installing the supported Platform PCIe
-package and x64 GStreamer MSVC runtime. From a PowerShell window that is not
+package, the x64 GStreamer MSVC runtime, and, unless you use `--native-only`,
+64-bit Python 3.14. From a PowerShell window that is not
 elevated, you approve one Windows administrator prompt for the machine-wide
 Scheduler and Core MSI packages: one elevated step installs Scheduler and then
 Core, and does not start Core if Scheduler fails. Only that step is elevated;
@@ -44,8 +45,23 @@ directory with the same ID, is left untouched and stops the installation.
 Repeating the package install may replace only the skill registered to that same
 package path.
 
-Repeating the command runs the same checks and passes each MSI to Windows
-Installer again in the same order. The Python package is left in place only when
+Last, as the Ubuntu installer runs `pcie-setup.sh`, the CLI runs the installed
+`pcie-setup.cmd` in the same window without elevation, also with
+`--native-only`. It sets up passwordless SSH to each card and may ask for the
+card password. To skip it, set `$env:SIMAPCIE_SKIP_SETUP = "1"` before the
+command; a session without interactive input also skips it, because a first
+enrollment needs the password. A skipped step prints the command to run later.
+If the step fails, the installed packages are kept, the receipt state is
+`setup-failed`, the command exits with a non-zero code, and it prints the
+command that runs the step again.
+
+Repeating the command runs the same checks and repairs, in the same order,
+each MSI that is already installed: `sima-cli` passes it to Windows Installer
+with `/fa`, which reinstalls the package's files. A newer
+release upgrades the packages in place and replaces the older release's
+registry receipt. Windows Installer does not downgrade a package in place; to
+install an older release, remove the installed one as described below, then
+install the older one. The Python package is left in place only when
 it was installed from this release's wheel and still imports; otherwise
 `sima-cli` reinstalls the wheel. If a native package or pip step fails, correct
 the reported problem; if Windows Installer requests a restart, the command exits

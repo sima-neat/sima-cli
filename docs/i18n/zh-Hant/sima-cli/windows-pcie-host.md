@@ -7,8 +7,8 @@
 本頁僅說明 `sima-cli` 命令。關於必要條件、卡片註冊、驗證與復原，請依照
 [安裝 PCIe 主機](/getting-started/neat-library/pcie-host)操作。
 
-請先安裝支援的 Platform PCIe 套件與 x64 GStreamer MSVC 執行階段，
-再從 PowerShell 執行命令。
+請先安裝支援的 Platform PCIe 套件、x64 GStreamer MSVC 執行階段，以及（未使用
+`--native-only` 時）64 位元 Python 3.14，再從 PowerShell 執行命令。
 在未提升權限的 PowerShell 視窗中，對於安裝於整台電腦的 Scheduler 與 Core MSI 套件，
 只需核准一次 Windows 管理員提示：一個提升權限的步驟會先安裝 Scheduler，再安裝 Core；若 Scheduler 失敗，
 便不會啟動 Core。只有這個步驟會提升權限；CLI、受管理的 Python 環境與客戶技能仍留在
@@ -37,8 +37,17 @@ Windows Installer 完成後，CLI 會執行已安裝的主機診斷工具，並�
 不會變更該技能或目錄，並會停止安裝。再次安裝套件時，只能取代登錄至相同套件
 路徑的技能。
 
-再次執行相同命令會重新進行相同的檢查，並依相同順序再次將各個 MSI 交給
-Windows Installer。只有當 Python 套件是從此版本的 wheel 安裝且仍可匯入時才會保留；
+最後，如同 Ubuntu 安裝程式會執行 `pcie-setup.sh`，CLI 會在同一個視窗中、不提升權限
+執行已安裝的 `pcie-setup.cmd`，使用 `--native-only` 時也一樣。此步驟會設定連到每張卡的
+免密碼 SSH，並可能要求輸入卡的密碼。若要略過，請在命令前設定
+`$env:SIMAPCIE_SKIP_SETUP = "1"`；由於首次註冊需要密碼，沒有互動式輸入的工作階段也會
+略過此步驟。略過時會顯示稍後要執行的命令。若此步驟失敗，已安裝的套件會保留，登錄記錄的
+狀態為 `setup-failed`，命令會以非零結束代碼結束，並顯示重新執行此步驟的命令。
+
+再次執行相同命令會重新進行相同的檢查，並依相同順序修復每個已安裝的 MSI：`sima-cli`
+會以 `/fa` 將其交給 Windows Installer，重新安裝套件的檔案。較新的發行版本會就地升級
+套件，並取代舊發行版本的登錄記錄。Windows Installer 不會就地降級套件；若要安裝較舊的
+發行版本，請依下文移除已安裝的版本，再安裝較舊的版本。只有當 Python 套件是從此版本的 wheel 安裝且仍可匯入時才會保留；
 否則 `sima-cli` 會重新安裝 wheel。若原生套件或 pip 步驟失敗，請修正顯示的問題；
 若 Windows Installer 要求重新啟動，命令會以結束代碼 `3010` 結束，請重新啟動 Windows。
 接著執行 `sima-cli` 顯示的重試命令：它指定本次執行所解析的確切發行版本，因此重試不會

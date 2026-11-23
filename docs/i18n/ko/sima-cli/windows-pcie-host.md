@@ -8,7 +8,8 @@ Windows PCIe 호스트 릴리스는 `sima-cli` 명령 하나로 설치할 수 �
 이 페이지에서는 `sima-cli` 명령만 설명합니다. 필수 조건, 카드 등록, 확인, 복구는
 [PCIe 호스트 설치](/getting-started/neat-library/pcie-host)를 따르세요.
 
-지원되는 Platform PCIe 패키지와 x64 GStreamer MSVC 런타임을 설치한 뒤
+지원되는 Platform PCIe 패키지, x64 GStreamer MSVC 런타임, 그리고
+`--native-only`를 사용하지 않는 경우 64비트 Python 3.14를 설치한 뒤
 PowerShell에서 명령을 실행하세요.
 권한이 상승되지 않은 PowerShell 창에서는 컴퓨터 전체에 설치되는 Scheduler 및 Core MSI
 패키지에 대해 Windows 관리자 승인 프롬프트를 한 번만 승인합니다. 권한이 상승된 하나의 단계에서 Scheduler를
@@ -41,8 +42,21 @@ Claude 스킬 디렉터리에 동기화합니다. 두 MSI 중 하나를 실행�
 변경하지 않고 설치를 중단합니다. 패키지를 다시 설치할 때는 같은 패키지 경로로
 등록된 스킬만 교체할 수 있습니다.
 
-같은 명령을 다시 실행하면 같은 검사를 수행하고 각 MSI를 같은 순서로
-Windows Installer에 다시 전달합니다. Python 패키지는 이 릴리스의 wheel로
+마지막으로, Ubuntu 설치 프로그램이 `pcie-setup.sh`를 실행하는 것처럼 CLI는 설치된
+`pcie-setup.cmd`를 같은 창에서 권한 상승 없이 실행하며, `--native-only`일 때도
+실행합니다. 이 단계는 각 카드에 대한 암호 없는 SSH를 설정하며 카드 암호를 물을 수
+있습니다. 건너뛰려면 명령 전에 `$env:SIMAPCIE_SKIP_SETUP = "1"`을 설정하세요. 처음
+등록할 때는 암호가 필요하므로 대화형 입력이 없는 세션에서도 이 단계를 건너뜁니다.
+단계를 건너뛰면 나중에 실행할 명령을 표시합니다. 이 단계가 실패하면 설치된 패키지는
+유지되고, 기록 상태는 `setup-failed`가 되며, 명령은 0이 아닌 종료 코드로 끝나고
+이 단계를 다시 실행하는 명령을 표시합니다.
+
+같은 명령을 다시 실행하면 같은 검사를 수행하고 이미 설치된 각 MSI를 같은 순서로
+복구합니다. `sima-cli`는 각 MSI를 `/fa`와 함께 Windows Installer에 전달하며, 이는
+패키지 파일을 다시 설치합니다. 더 새로운 릴리스는 패키지를 제자리에서 업그레이드하고
+이전 릴리스의 레지스트리 기록을 대체합니다. Windows Installer는 패키지를 제자리에서
+다운그레이드하지 않습니다. 이전 릴리스를 설치하려면 아래 설명대로 설치된 릴리스를
+제거한 뒤 이전 릴리스를 설치하세요. Python 패키지는 이 릴리스의 wheel로
 설치되었고 여전히 import할 수 있을 때만 그대로 둡니다. 그렇지 않으면 `sima-cli`가
 wheel을 다시 설치합니다. 네이티브 패키지나
 pip 단계가 실패하면 표시된 문제를 해결하세요. Windows Installer가 다시 시작을

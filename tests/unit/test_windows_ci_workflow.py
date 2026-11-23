@@ -20,6 +20,9 @@ class WindowsCiWorkflowTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         job = workflow.split("\n  windows-msi:\n", 1)[1].split("\n  compatibility-test:\n", 1)[0]
         self.assertIn("needs: build", job)
+        # Pinned like the Scheduler's Windows build, so a runner image change cannot
+        # silently change the Windows Installer that gates publication.
+        self.assertIn("    runs-on: windows-2025\n", job)
         self.assertIn("name: sima-cli-dist", job)
         self.assertIn("python -m pip install $wheels[0].FullName", job)
         self.assertIn("needs.build.outputs.version", job)

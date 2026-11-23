@@ -264,7 +264,7 @@ jobs:
   windows-msi:
     name: Test built CLI wheel with Windows Installer
     needs: build
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 20
     permissions:
       contents: read

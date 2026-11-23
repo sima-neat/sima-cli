@@ -1506,6 +1506,67 @@ class WindowsPackageTests(unittest.TestCase):
         )
         self.assertIn("--python-executable <path>, or use --native-only. No MSI was started.", message)
 
+    def test_store_alias_python_is_skipped_for_the_next_candidate(self):
+        store_alias = self.python_install("WindowsApps")
+        per_user = self.python_install("AppData", "Local", "Programs", "Python", "Python314")
+        candidates, sima_cli_python = self.bootstrap_candidates(
+            on_path={"python.exe": store_alias},
+            environment={"LOCALAPPDATA": str(self.root / "AppData" / "Local")},
+        )
+        self.assertEqual(candidates, [[store_alias], [sima_cli_python], [per_user]])
+        with patch("sima_cli.install.windows_package._run", side_effect=self.inspect_by_command({
+            store_alias: completed(returncode=9009, stderr="Python was not found\n"),
+            sima_cli_python: python_facts(version="3.12", tag="cp312-cp312-win_amd64"),
+            per_user: python_facts(),
+        })), patch(
+            "sima_cli.install.windows_package._python_bootstrap_candidates",
+            return_value=candidates,
+        ):
+            selected = _bootstrap_python(self.metadata["installation"]["python"], self.root / "venv")
+        self.assertEqual(selected, [per_user])
+
+    def test_conda_or_pyenv_python_first_on_path_is_used_only_when_compatible(self):
+        conda = self.python_install("miniconda3", "envs", "py314")
+        per_user = self.python_install("AppData", "Local", "Programs", "Python", "Python314")
+        candidates, sima_cli_python = self.bootstrap_candidates(
+            on_path={"python.exe": conda},
+            environment={"LOCALAPPDATA": str(self.root / "AppData" / "Local")},
+        )
+        self.assertEqual(candidates[0], [conda])
+        for conda_facts, expected in (
+            (python_facts(), [conda]),
+            (python_facts(version="3.13", tag="cp313-cp313-win_amd64"), [per_user]),
+        ):
+            with self.subTest(expected=expected), patch(
+                "sima_cli.install.windows_package._run", side_effect=self.inspect_by_command({
+                    conda: conda_facts,
+                    sima_cli_python: python_facts(version="3.12", tag="cp312-cp312-win_amd64"),
+                    per_user: python_facts(),
+                })
+            ), patch(
+                "sima_cli.install.windows_package._python_bootstrap_candidates",
+                return_value=candidates,
+            ):
+                self.assertEqual(
+                    _bootstrap_python(self.metadata["installation"]["python"], self.root / "venv"),
+                    expected,
+                )
+
+    def test_python_313_and_314_side_by_side_selects_314_through_the_launcher(self):
+        python_313 = self.python_install("Python313")
+        launcher = self.python_install("Windows")
+        candidates, _ = self.bootstrap_candidates(
+            on_path={"python.exe": python_313}, launcher=launcher
+        )
+        self.assertEqual(candidates[:2], [[launcher, "-3.14"], [python_313]])
+        with patch("sima_cli.install.windows_package._run", return_value=python_facts()) as run, patch(
+            "sima_cli.install.windows_package._python_bootstrap_candidates",
+            return_value=candidates,
+        ):
+            selected = _bootstrap_python(self.metadata["installation"]["python"], self.root / "venv")
+        self.assertEqual(selected, [launcher, "-3.14"])
+        self.assertEqual(run.call_count, 1)
+
     def test_managed_environment_on_an_unusable_home_points_to_python_executable(self):
         home = Path("\\\\fileserver\\home\\sima")
         with patch("sima_cli.install.windows_package.Path.home", return_value=home), patch(

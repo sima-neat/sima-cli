@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import ANY, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import click
 from click.testing import CliRunner
@@ -37,6 +37,9 @@ from sima_cli.playbooks.manager import SkillError
 from sima_cli.vulcan.commands import install_vulcan_package
 
 
+# Off Windows the system directory falls back to the default installation path.
+MSIEXEC = "C:\\Windows\\System32\\msiexec.exe"
+POWERSHELL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
 PRODUCT_CODES = {
     "simaai": "{11111111-1111-1111-1111-111111111111}",
     "sima": "{22222222-2222-2222-2222-222222222222}",
@@ -336,9 +339,25 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("other-package will not be installed.", output.getvalue())
         self.assertEqual(run.call_count, 1)
         command = run.call_args.args[0]
-        self.assertEqual(command[:3], ["msiexec.exe", "/i", str(self.msi)])
+        self.assertEqual(command[:3], [MSIEXEC, "/i", str(self.msi)])
         self.assertIn("/norestart", command)
         self.assertIn("/L*v", command)
+
+    def test_administrator_runs_msiexec_from_the_windows_system_directory(self):
+        def system_directory(buffer, _size):
+            buffer.value = "D:\\WINNT\\system32"
+            return len(buffer.value)
+
+        windll = MagicMock()
+        windll.kernel32.GetSystemDirectoryW.side_effect = system_directory
+        with patch(
+            "sima_cli.install.windows_package.ctypes.windll", windll, create=True
+        ), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ) as run:
+            install_windows_package(self.metadata, str(self.root), native_only=True)
+
+        self.assertEqual(run.call_args.args[0][0], "D:\\WINNT\\system32\\msiexec.exe")
 
     def test_standard_user_installs_both_msis_under_one_elevation(self):
         self.use_scheduler_and_core()
@@ -349,7 +368,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         command = requests[0]["command"]
         self.assertEqual(command[:4], [
-            "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive"
+            POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive"
         ])
         self.assertNotIn(str(self.msi), " ".join(command))
         self.assertIn("$startInfo.Verb = 'runas'", command[-1])
@@ -642,8 +661,8 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(
             [command.args[0][:3] for command in run.call_args_list],
             [
-                ["msiexec.exe", "/x", PRODUCT_CODES["sima"]],
-                ["msiexec.exe", "/x", PRODUCT_CODES["simaai"]],
+                [MSIEXEC, "/x", PRODUCT_CODES["sima"]],
+                [MSIEXEC, "/x", PRODUCT_CODES["simaai"]],
             ],
         )
 
@@ -948,7 +967,7 @@ class WindowsPackageTests(unittest.TestCase):
                 install_windows_package(self.metadata, str(self.root))
 
         self.assertEqual(run.call_count, 1)
-        self.assertEqual(run.call_args.args[0][0], "powershell.exe")
+        self.assertEqual(run.call_args.args[0][0], POWERSHELL)
 
     def test_wrong_gstreamer_version_blocks_before_msi(self):
         self.metadata["installation"]["prerequisites"] = [GSTREAMER]
@@ -1409,7 +1428,7 @@ class WindowsPackageTests(unittest.TestCase):
         responses = [python_facts(), completed(), completed(returncode=3)]
 
         def replace_wheel_during_msi(command, **kwargs):
-            if command[0] == "msiexec.exe":
+            if command[0] == MSIEXEC:
                 self.wheel.write_bytes(b"replaced wheel")
             return responses.pop(0)
 
@@ -1640,7 +1659,7 @@ class WindowsPackageTests(unittest.TestCase):
         responses = [python_facts(), python_facts(), completed()]
 
         def remove_wheel_during_msi(command, **kwargs):
-            if command[0] == "msiexec.exe":
+            if command[0] == MSIEXEC:
                 self.wheel.unlink()
             return responses.pop(0)
 

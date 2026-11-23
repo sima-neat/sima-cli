@@ -119,10 +119,29 @@ def _run(command, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, **kwargs)
 
 
+def _system_program(*parts: str) -> str:
+    """Return the full path of a program in the Windows system directory.
+
+    Windows searches the Python and current directories before System32 for a bare
+    name, so a planted msiexec.exe or powershell.exe there would run elevated.
+    """
+    directory = r"C:\Windows\System32"
+    try:
+        buffer = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer)):
+            directory = buffer.value
+    except AttributeError:
+        pass
+    return str(PureWindowsPath(directory, *parts))
+
+
 def _run_powershell(script: str, variables: Optional[Dict[str, str]] = None, **kwargs):
     """Run a Windows PowerShell script; values reach it as environment variables."""
     return _run(
-        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        [
+            _system_program("WindowsPowerShell", "v1.0", "powershell.exe"),
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script,
+        ],
         env={**os.environ, **(variables or {})},
         text=True,
         **kwargs,
@@ -296,7 +315,7 @@ def _run_msi_operations(
                     item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError, rerun
                 )
             try:
-                result = _run(["msiexec.exe", *item["args"]])
+                result = _run([_system_program("msiexec.exe"), *item["args"]])
             except OSError as error:
                 raise WindowsNativeInstallError(
                     f"Could not start Windows Installer for {item['owner']}: {error}. "

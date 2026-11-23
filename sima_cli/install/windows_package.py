@@ -25,6 +25,7 @@ ELEVATED_INSTALLER_EXIT_CODE_MISSING = 9001
 ELEVATED_INSTALLER_LAUNCH_FAILED = 9002
 ELEVATED_INSTALLER_HASH_MISMATCH = 9003
 MSI_UNKNOWN_PRODUCT = 1605
+INSTALLSTATE_DEFAULT = 5
 _PRODUCT_CODE = re.compile(r"\{[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}\}", re.IGNORECASE)
 PYTHON_WINDOWS_DOWNLOAD_URL = "https://www.python.org/downloads/windows/"
 # The variable install_pciehost.sh reads on Linux to skip the same setup step.
@@ -390,6 +391,14 @@ $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $n
             f"Could not read the ProductCode of '{msi.name}': {detail}. No MSI was started."
         )
     return code.upper()
+
+
+def _msi_product_installed(product_code: str) -> bool:
+    """Report whether Windows Installer has this exact product installed."""
+    try:
+        return ctypes.windll.msi.MsiQueryProductStateW(product_code) == INSTALLSTATE_DEFAULT
+    except (AttributeError, OSError):
+        return False
 
 
 def _path_from_spec(spec: Dict[str, str]) -> Optional[Path]:
@@ -938,6 +947,11 @@ def _install_native_packages(
         })
     for item in items:
         item["product_code"] = _msi_product_code(item["msi"])
+        # Passing an installed package to /i again only enters maintenance mode and
+        # rewrites nothing, so a rerun of the same release repairs it instead.
+        item["repair"] = _msi_product_installed(item["product_code"])
+        if item["repair"]:
+            item["args"][0] = "/fa"
     if record_receipt is not None:
         # Recorded before any MSI starts, so a later uninstall can find every package.
         record_receipt({
@@ -948,8 +962,9 @@ def _install_native_packages(
             "python_executable": python_executable,
         })
     for item in items:
+        action = "Repairing installed" if item["repair"] else "Installing"
         click.echo(
-            f"Installing {item['owner']} native package {item['index']}/{len(items)}: "
+            f"{action} {item['owner']} native package {item['index']}/{len(items)}: "
             f"{item['msi'].name}"
         )
 
@@ -1016,7 +1031,10 @@ def _install_native_packages(
                 "product_code": item["product_code"],
             }
         )
-        click.echo(f"{owner} native package installed successfully.")
+        click.echo(
+            f"{owner} native package "
+            + ("repaired successfully." if item["repair"] else "installed successfully.")
+        )
 
     _run_msi_operations(
         items, [0], handle_result, "No native package or Python package was installed.", rerun

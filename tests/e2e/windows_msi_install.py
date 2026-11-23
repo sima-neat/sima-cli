@@ -127,6 +127,8 @@ include(CPack)
             payload = install_root / "share" / "payload.txt"
             if payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
                 raise SystemExit("installed MSI payload differs")
+            # Rerunning the same release repairs it: a deleted file comes back.
+            payload.unlink()
             # Stand in for an interactive console so the repeat runs the installed setup
             # step through cmd.exe from a Program Files path that contains a space.
             with mock.patch.object(windows_package.sys, "stdin") as stdin:
@@ -136,8 +138,8 @@ include(CPack)
                 raise SystemExit(f"interactive install did not run setup: {repeated}")
             if repeated["native"] != "installed":
                 raise SystemExit(f"unexpected repeat-install result: {repeated}")
-            if payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
-                raise SystemExit("repeat installation changed the MSI payload")
+            if not payload.is_file() or payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
+                raise SystemExit("repeat installation did not repair the deleted MSI payload")
             if uninstall_windows_package({"native_packages": repeated["native_packages"]}):
                 raise SystemExit("disposable MSI removal unexpectedly requested a restart")
             removed = True
@@ -160,7 +162,7 @@ include(CPack)
         (root / "result.json").write_text(json.dumps({
             "status": "PASS", "msi_sha256": sha256(msi),
             "product_code": product_guid, "install_root": str(install_root),
-            "first_install": "PASS", "repeat_install": "PASS",
+            "first_install": "PASS", "repeat_install_repairs": "PASS",
             "setup_skipped_noninteractive": "PASS", "setup_ran_interactive": "PASS", "uninstall": "PASS",
             "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")

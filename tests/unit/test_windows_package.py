@@ -494,6 +494,40 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("/norestart", command)
         self.assertIn("/L*v", command)
 
+    def test_installed_product_is_repaired_instead_of_passed_to_install_again(self):
+        self.use_scheduler_and_core()
+        installed = {PRODUCT_CODES["simaai"]}
+        output = io.StringIO()
+        with patch(
+            "sima_cli.install.windows_package._msi_product_installed",
+            side_effect=lambda code: code in installed,
+        ), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ) as run, redirect_stdout(output):
+            install_windows_package(self.metadata, str(self.root), native_only=True)
+
+        scheduler, core = (entry.args[0] for entry in run.call_args_list)
+        self.assertEqual(scheduler[1:], [
+            "/fa", str(self.scheduler_msi), "/passive", "/norestart", "/L*v",
+            str(self.root / "sima-cli-msi-install-01-scheduler.log"),
+        ])
+        self.assertEqual(core[1:3], ["/i", str(self.msi)])
+        self.assertIn("Repairing installed scheduler native package 1/2", output.getvalue())
+        self.assertIn("scheduler native package repaired successfully.", output.getvalue())
+        self.assertIn("Installing core native package 2/2", output.getvalue())
+
+    def test_product_state_comes_from_windows_installer(self):
+        from sima_cli.install.windows_package import _msi_product_installed
+
+        windll = MagicMock()
+        for state, expected in ((5, True), (-1, False), (2, False), (1, False)):
+            windll.msi.MsiQueryProductStateW.return_value = state
+            with self.subTest(state=state), patch(
+                "sima_cli.install.windows_package.ctypes.windll", windll, create=True
+            ):
+                self.assertIs(_msi_product_installed(PRODUCT_CODES["sima"]), expected)
+        windll.msi.MsiQueryProductStateW.assert_called_with(PRODUCT_CODES["sima"])
+
     def test_administrator_runs_msiexec_from_the_windows_system_directory(self):
         def system_directory(buffer, _size):
             buffer.value = "D:\\WINNT\\system32"

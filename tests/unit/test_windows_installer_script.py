@@ -91,6 +91,31 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("sys.version_info[:2] == (3, 14) and struct.calcsize('P') == 8", self.script)
         self.assertIn("needs 64-bit Python 3.14 from https://www.python.org/downloads/windows/", self.script)
 
+    def test_environment_that_does_not_run_is_recreated(self):
+        # A leftover environment whose base Python was removed was reused, so pip failed.
+        probe = self.script.index('"%INSTALL_DIR%\\Scripts\\python.exe" -c "import sys" >nul 2>nul\nif errorlevel 1 (')
+        create = self.script.index('"!PYTHON!" -m venv --clear "%INSTALL_DIR%"')
+        self.assertLess(probe, create)
+        self.assertNotIn('if not exist "%INSTALL_DIR%"', self.script)
+        self.assertIn(
+            "    if errorlevel 1 (\n"
+            "        echo Could not create the virtual environment in !INSTALL_DIR!.\n"
+            "        exit /b 1\n",
+            self.script[create:],
+        )
+
+    def test_failed_pip_step_exits_non_zero_before_done(self):
+        done = self.script.index("echo Done.")
+        for step, message in (
+            ("python -m pip install --upgrade pip\n",
+             "Could not upgrade pip in !INSTALL_DIR!. See the pip output above."),
+            ('    python -m pip install --force-reinstall "%WHEEL_PATH%"\n)\n',
+             "Could not install sima-cli into !INSTALL_DIR!. See the pip output above."),
+        ):
+            checked = step + f"if errorlevel 1 (\n    echo {message}\n    exit /b 1\n)\n"
+            self.assertIn(checked, self.script)
+            self.assertLess(self.script.index(checked), done)
+
     def test_persists_environment_to_user_path_only(self):
         self.assertNotIn("setx", self.script.lower())
         self.assertNotIn("/M", self.script)
@@ -129,6 +154,10 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("cmd.exe /c scripts\\install\\windows.bat", step)
         self.assertIn('GetEnvironmentVariable("Path", "User")', step)
         self.assertIn('GetEnvironmentVariable("Path", "Machine")', step)
+        # A broken environment is recreated, and a pip failure fails the script.
+        self.assertIn("'^home = .*', 'home = C:\\sima-cli-missing-python'", step)
+        self.assertIn("cmd.exe /c scripts\\install\\windows.bat $invalidWheel", step)
+        self.assertIn('if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }', step)
 
 
 if __name__ == "__main__":

@@ -75,9 +75,15 @@ if not defined PYTHON (
 if errorlevel 1 echo Note: the Windows PCIe host package needs 64-bit Python 3.14 from https://www.python.org/downloads/windows/
 
 set "INSTALL_DIR=%USERPROFILE%\.sima-cli-env"
-if not exist "%INSTALL_DIR%" (
-    echo Creating virtual environment...
-    "!PYTHON!" -m venv "%INSTALL_DIR%"
+rem Also recreate an environment whose python does not run, such as one whose base Python was removed.
+"%INSTALL_DIR%\Scripts\python.exe" -c "import sys" >nul 2>nul
+if errorlevel 1 (
+    echo Creating virtual environment in !INSTALL_DIR!...
+    "!PYTHON!" -m venv --clear "%INSTALL_DIR%"
+    if errorlevel 1 (
+        echo Could not create the virtual environment in !INSTALL_DIR!.
+        exit /b 1
+    )
 )
 
 if "%INSTALL_FROM_PYPI%"=="1" (
@@ -87,10 +93,18 @@ if "%INSTALL_FROM_PYPI%"=="1" (
 )
 call "%INSTALL_DIR%\Scripts\activate.bat"
 python -m pip install --upgrade pip
+if errorlevel 1 (
+    echo Could not upgrade pip in !INSTALL_DIR!. See the pip output above.
+    exit /b 1
+)
 if "%INSTALL_FROM_PYPI%"=="1" (
     python -m pip install --force-reinstall --index-url https://pypi.org/simple sima-cli
 ) else (
     python -m pip install --force-reinstall "%WHEEL_PATH%"
+)
+if errorlevel 1 (
+    echo Could not install sima-cli into !INSTALL_DIR!. See the pip output above.
+    exit /b 1
 )
 
 set "VENV_PATH=%INSTALL_DIR%\Scripts"

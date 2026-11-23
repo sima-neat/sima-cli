@@ -485,6 +485,18 @@ jobs:
           $userEntries = @([Environment]::GetEnvironmentVariable("Path", "User") -split ";" | Where-Object { $_ -eq $scripts })
           if ($userEntries.Count -ne 1) { throw "Expected $scripts once on the user PATH, found $($userEntries.Count)" }
           if (([Environment]::GetEnvironmentVariable("Path", "Machine") -split ";") -contains $scripts) { throw "$scripts was added to the system PATH" }
+          # An environment whose base Python is gone is recreated, not reused.
+          $config = Join-Path $env:USERPROFILE ".sima-cli-env\pyvenv.cfg"
+          (Get-Content -LiteralPath $config) -replace '^home = .*', 'home = C:\sima-cli-missing-python' | Set-Content -LiteralPath $config
+          cmd.exe /c scripts\install\windows.bat
+          if ($LASTEXITCODE -ne 0) { throw "windows.bat did not recreate a broken environment: exit code $LASTEXITCODE" }
+          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "sima-cli does not run from the recreated environment" }
+          # A failed pip step fails the script.
+          $invalidWheel = Join-Path $env:RUNNER_TEMP "sima_cli-0.0.0-py3-none-any.whl"
+          Set-Content -LiteralPath $invalidWheel -Value "not a wheel"
+          cmd.exe /c scripts\install\windows.bat $invalidWheel
+          if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }
 
       - name: Install candidate on native Windows
         if: runner.os == 'Windows'

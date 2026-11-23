@@ -359,6 +359,21 @@ class PackageRegistry:
         self._data.remove(pkg)
         self._save()
 
+    def remove_other_versions(self, name, version):
+        """Forget receipts of other versions that an installed upgrade replaced.
+
+        Return the forgotten versions. Their native packages were replaced in place,
+        so removing an old receipt later must not uninstall what the new one owns.
+        """
+        replaced = [
+            pkg for pkg in self._data if pkg["package_name"] == name and pkg["version"] != version
+        ]
+        for pkg in replaced:
+            self._data.remove(pkg)
+        if replaced:
+            self._save()
+        return [pkg["version"] for pkg in replaced]
+
     def list_packages(self):
         """Display all registry entries in a Rich-formatted table."""
         console = Console()

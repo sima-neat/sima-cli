@@ -112,3 +112,18 @@ def test_packages_remove_honours_the_global_yes_option(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "Removed local registry receipt" in result.output
     assert json.loads(registry_path.read_text(encoding="utf-8")) == []
+
+
+def test_remove_other_versions_keeps_only_the_installed_version(tmp_path):
+    registry = PackageRegistry(tmp_path / "registry.json")
+    for name, version in (("example/package", "1.0.0"), ("example/package", "2.0.0"),
+                          ("other/package", "1.0.0")):
+        registry.create_entry(name, version, {}, tmp_path)
+
+    assert registry.remove_other_versions("example/package", "2.0.0") == ["1.0.0"]
+
+    receipts = json.loads((tmp_path / "registry.json").read_text(encoding="utf-8"))
+    assert sorted((entry["package_name"], entry["version"]) for entry in receipts) == [
+        ("example/package", "2.0.0"), ("other/package", "1.0.0")
+    ]
+    assert registry.remove_other_versions("example/package", "2.0.0") == []

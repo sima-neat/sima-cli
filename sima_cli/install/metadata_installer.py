@@ -1579,6 +1579,16 @@ def _resolve_github_metadata_url(gh_ref: str) -> Tuple[str, str]:
     except Exception as e:
         raise RuntimeError(f"Failed to resolve GitHub metadata URL {gh_ref}: {e}")
 
+def _forget_replaced_receipts(metadata: Dict) -> None:
+    """After a Windows upgrade, drop receipts whose product codes the new one now owns."""
+    replaced = registry.remove_other_versions(metadata.get("name"), metadata.get("version"))
+    if replaced:
+        click.echo(
+            f"Replaced the registry receipt of {metadata.get('name')} "
+            + ", ".join(replaced) + f" with {metadata.get('version')}."
+        )
+
+
 def install_from_metadata(
     metadata_url: str,
     internal: bool,
@@ -1649,6 +1659,7 @@ def install_from_metadata(
                                 registry.update_state(
                                     metadata.get("name"), metadata.get("version"), "installed"
                                 )
+                                _forget_replaced_receipts(metadata)
                                 _print_post_install_message(metadata=metadata)
                                 return result
                             _run_installation_script(
@@ -1672,6 +1683,7 @@ def install_from_metadata(
                         registry.update_state(
                             metadata.get("name"), metadata.get("version"), "setup-failed"
                         )
+                        _forget_replaced_receipts(metadata)
                         raise
                     except BaseException as error:
                         # A failed or interrupted download or MSI must not leave the receipt at installing.

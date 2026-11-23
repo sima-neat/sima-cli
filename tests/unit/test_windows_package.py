@@ -1724,6 +1724,81 @@ class WindowsPackageTests(unittest.TestCase):
                 if fails:
                     self.assertIn(f"Failed to install from metadata URL metadata: {outcome}", output)
 
+    def test_upgrade_replaces_the_old_receipt_so_removing_it_uninstalls_nothing(self):
+        # Both releases share the Scheduler MSI; the old receipt must not remove it.
+        self.use_scheduler_and_core()
+        registry = PackageRegistry(self.root / "registry.json")
+        old_metadata = {**self.metadata, "version": "0.6.0"}
+        registry.create_entry(self.metadata["name"], "0.6.0", old_metadata, self.root)
+        registry.update_fields(self.metadata["name"], "0.6.0", {"native_packages": [
+            {"owner": "scheduler", "version": "0.6.1", "product_code": PRODUCT_CODES["simaai"]},
+            {"owner": "core", "version": "0.6.0", "product_code": "{33333333-3333-3333-3333-333333333333}"},
+        ]})
+        registry.update_state(self.metadata["name"], "0.6.0", "installed")
+        outcomes = [
+            ({"native": "installed"}, "installed"),
+            (WindowsSetupError("setup failed"), "setup-failed"),
+        ]
+        for outcome, state in outcomes:
+            with self.subTest(state=state):
+                registry.create_entry(self.metadata["name"], "0.6.0", old_metadata, self.root)
+                fails = isinstance(outcome, Exception)
+                output = io.StringIO()
+                with redirect_stdout(output), patch.object(
+                    metadata_installer, "registry", registry
+                ), patch.object(
+                    metadata_installer, "_download_and_validate_metadata",
+                    return_value=(self.metadata, None),
+                ), patch.object(metadata_installer, "print_metadata_summary"), patch.object(
+                    metadata_installer, "_check_whether_disk_is_big_enough", return_value=True
+                ), patch.object(
+                    metadata_installer, "_is_platform_compatible", return_value=True
+                ), patch.object(
+                    metadata_installer, "_download_assets", return_value=[str(self.msi)]
+                ), patch.object(metadata_installer, "_print_post_install_message"), patch.object(
+                    metadata_installer, "install_windows_package",
+                    **({"side_effect": outcome} if fails else {"return_value": outcome}),
+                ):
+                    if fails:
+                        with self.assertRaises(SystemExit):
+                            metadata_installer.install_from_metadata(
+                                "metadata", False, str(self.root), native_only=True
+                            )
+                    else:
+                        metadata_installer.install_from_metadata(
+                            "metadata", False, str(self.root), native_only=True
+                        )
+
+                receipts = PackageRegistry(self.root / "registry.json")._data
+                self.assertEqual(
+                    [(entry["version"], entry["state"]) for entry in receipts], [("0.6.1", state)]
+                )
+                self.assertIn(
+                    f"Replaced the registry receipt of {self.metadata['name']} 0.6.0 with 0.6.1.",
+                    output.getvalue(),
+                )
+                with patch(
+                    "sima_cli.install.registry.PackageRegistry",
+                    return_value=PackageRegistry(self.root / "registry.json"),
+                ), patch(
+                    "sima_cli.install.windows_package.uninstall_windows_package"
+                ) as uninstall:
+                    removed = CliRunner().invoke(
+                        packages_group,
+                        ["remove", self.metadata["name"], "--version", "0.6.0", "--yes"],
+                    )
+                self.assertEqual(removed.exit_code, 1)
+                self.assertIn("not found in registry", removed.output)
+                uninstall.assert_not_called()
+
+    def test_failed_upgrade_keeps_the_old_receipt(self):
+        for outcome in (WindowsNativeInstallError("msi failed"), WindowsPrerequisiteError("x")):
+            with self.subTest(outcome=outcome), patch.object(
+                metadata_installer, "install_windows_package", side_effect=outcome
+            ):
+                registry, _output = self.install_from_windows_metadata(fails=True)
+            registry.remove_other_versions.assert_not_called()
+
     def test_cancelled_first_msi_records_failed_receipt(self):
         with patch(
             "sima_cli.install.windows_package._is_windows_administrator",

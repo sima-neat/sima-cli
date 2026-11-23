@@ -8,6 +8,22 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/install/windows.bat"
 WORKFLOW = ROOT / ".github/workflows/vulcan-ci.yml"
+RUN_INSTALLER = '"!PYTHON_INSTALLER!" /quiet'
+
+
+def parenthesised_blocks(script):
+    """Return the lines of every multi-line ( ... ) block, nested blocks included."""
+    open_blocks, blocks = [], []
+    for line in script.splitlines():
+        text = line.strip()
+        if text.startswith(")") and not text.endswith("("):
+            blocks.append(open_blocks.pop())
+        for block in open_blocks:
+            block.append(text)
+        if text.endswith("(") and not text.startswith(")"):
+            open_blocks.append([text])
+    assert not open_blocks, open_blocks
+    return blocks
 
 
 class WindowsInstallerScriptTests(unittest.TestCase):
@@ -46,7 +62,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
 
     def test_installed_python_is_accepted_from_either_location(self):
         # The installer can keep an existing 3.14's scope, whatever the elevation.
-        run = self.script.index('start "" /wait "!PYTHON_INSTALLER!"')
+        run = self.script.index(RUN_INSTALLER)
         after = self.script[run:]
         self.assertIn(self.LOCATION_PROBE, after.split("echo Python installation failed", 1)[0])
         self.assertNotIn('set "PYTHON=%ProgramFiles%', self.script)
@@ -54,7 +70,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
 
     def test_python_installer_runs_only_after_signature_check(self):
         check = self.script.index("Get-AuthenticodeSignature -LiteralPath $env:PYTHON_INSTALLER")
-        run = self.script.index('start "" /wait "!PYTHON_INSTALLER!"')
+        run = self.script.index(RUN_INSTALLER)
         self.assertLess(check, run)
         self.assertIn("$s.Status -ne 'Valid'", self.script)
         self.assertIn("GetNameInfo('SimpleName', $false) -ne 'Python Software Foundation'", self.script)
@@ -68,7 +84,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
             "(Get-FileHash -LiteralPath $env:PYTHON_INSTALLER -Algorithm SHA256).Hash "
             "-ne $env:PYTHON_SHA256) { exit 1 }"
         )
-        self.assertLess(check, self.script.index('start "" /wait "!PYTHON_INSTALLER!"'))
+        self.assertLess(check, self.script.index(RUN_INSTALLER))
         self.assertIn(f'set "PYTHON_INSTALLER=!PYTHON_DOWNLOAD!\\{url}"', self.script)
 
     def test_python_installer_downloads_into_a_directory_this_run_creates(self):
@@ -80,6 +96,31 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertLess(create, self.script.index("Invoke-WebRequest"))
         self.assertNotIn('del "!PYTHON_INSTALLER!"', self.script)
         self.assertEqual(self.script.count('rmdir /s /q "!PYTHON_DOWNLOAD!"'), 3)
+
+    def test_no_exit_inside_a_block_that_contains_start(self):
+        # On Windows 11, cmd /c returned 0 for an exit /b 1 in a block that also held a
+        # start line, so a refused Python installer looked like a successful install.
+        blocks = parenthesised_blocks(self.script)
+        self.assertTrue(any("exit /b 1" in line for block in blocks for line in block))
+        for block in blocks:
+            if any(re.match(r"(?:.*(?:[(&|]|\bdo)\s*)?start\s", line, re.IGNORECASE) for line in block):
+                exits = [line for line in block if re.search(r"\bexit\s+/b\b", line, re.IGNORECASE)]
+                self.assertEqual(exits, [], block[0])
+
+    def test_failed_python_installer_exits_non_zero(self):
+        run = self.script.index(RUN_INSTALLER)
+        self.assertNotRegex(self.script[run - 20:run], r"start\s")
+        self.assertIn(
+            '    set "PYTHON_INSTALL_EXIT=!errorlevel!"\n'
+            '    rmdir /s /q "!PYTHON_DOWNLOAD!"\n',
+            self.script[run:],
+        )
+        self.assertIn(
+            '    if not "!PYTHON_INSTALL_EXIT!"=="0" if not "!PYTHON_INSTALL_EXIT!"=="3010" (\n'
+            "        echo The Python installer failed with exit code !PYTHON_INSTALL_EXIT!.\n"
+            "        exit /b 1\n",
+            self.script[run:],
+        )
 
     def test_python_installs_for_all_users_only_when_elevated(self):
         self.assertIn("InstallAllUsers=!PYTHON_ALL_USERS! InstallLauncherAllUsers=!PYTHON_ALL_USERS!", self.script)
@@ -158,8 +199,17 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("'^home = .*', 'home = C:\\sima-cli-missing-python'", step)
         self.assertIn("cmd.exe /c scripts\\install\\windows.bat $invalidWheel", step)
         self.assertIn('if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }', step)
+        # A refusal inside the Python bootstrap block fails the script: with no Python to
+        # find, a download directory that cannot be created stops it.
+        refusal = step.split("# A refused Python bootstrap fails the script", 1)[1]
+        self.assertIn('$env:PATH = "$env:SystemRoot\\System32;$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0"', refusal)
+        self.assertIn("$env:TEMP = $blocker", refusal)
+        self.assertIn('if ($code -eq 0) { throw "windows.bat reported success although it refused to install Python" }', refusal)
+        self.assertIn('$env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"\n          $env:ProgramFiles = $env:LOCALAPPDATA', refusal)
+        self.assertIn('($output -match "^Could not create a new download directory: ")', refusal)
         # GitHub ends a PowerShell step with the last native exit code.
         self.assertLess(step.index("although pip failed"), step.index("$global:LASTEXITCODE = 0"))
+        self.assertLess(refusal.index("although it refused"), refusal.index("$global:LASTEXITCODE = 0"))
 
 
 if __name__ == "__main__":

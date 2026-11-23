@@ -497,7 +497,22 @@ jobs:
           Set-Content -LiteralPath $invalidWheel -Value "not a wheel"
           cmd.exe /c scripts\install\windows.bat $invalidWheel
           if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }
-          # The failure above is the expected result; do not let it become the step's exit code.
+          # A refused Python bootstrap fails the script. With no Python on PATH or in the
+          # python.org locations, and TEMP under a file, it cannot create its download directory.
+          $blocker = Join-Path $env:RUNNER_TEMP "not-a-directory"
+          Set-Content -LiteralPath $blocker -Value ""
+          $saved = @{ PATH = $env:PATH; TEMP = $env:TEMP; LOCALAPPDATA = $env:LOCALAPPDATA; ProgramFiles = $env:ProgramFiles }
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          $env:TEMP = $blocker
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"
+          $env:ProgramFiles = $env:LOCALAPPDATA
+          $output = cmd.exe /c scripts\install\windows.bat
+          $code = $LASTEXITCODE
+          foreach ($name in $saved.Keys) { Set-Item -LiteralPath "env:$name" -Value $saved[$name] }
+          $output
+          if (-not ($output -match "^Could not create a new download directory: ")) { throw "windows.bat did not reach the Python download refusal" }
+          if ($code -eq 0) { throw "windows.bat reported success although it refused to install Python" }
+          # The failures above are the expected results; do not let them become the step's exit code.
           $global:LASTEXITCODE = 0
 
       - name: Install candidate on native Windows

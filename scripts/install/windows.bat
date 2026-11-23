@@ -62,8 +62,16 @@ if not defined PYTHON (
         rmdir /s /q "!PYTHON_DOWNLOAD!"
         exit /b 1
     )
-    start "" /wait "!PYTHON_INSTALLER!" /quiet InstallAllUsers=!PYTHON_ALL_USERS! InstallLauncherAllUsers=!PYTHON_ALL_USERS! PrependPath=1 Include_test=0
+    rem A batch file waits for the installer without start; under cmd /c, a start line in this
+    rem block made the exit /b 1 above end the script with exit code 0.
+    "!PYTHON_INSTALLER!" /quiet InstallAllUsers=!PYTHON_ALL_USERS! InstallLauncherAllUsers=!PYTHON_ALL_USERS! PrependPath=1 Include_test=0
+    set "PYTHON_INSTALL_EXIT=!errorlevel!"
     rmdir /s /q "!PYTHON_DOWNLOAD!"
+    rem 3010 means installed, with a restart pending.
+    if not "!PYTHON_INSTALL_EXIT!"=="0" if not "!PYTHON_INSTALL_EXIT!"=="3010" (
+        echo The Python installer failed with exit code !PYTHON_INSTALL_EXIT!.
+        exit /b 1
+    )
     rem An existing 3.14 can keep its own scope, so accept either location.
     for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON ( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )
     if not defined PYTHON (

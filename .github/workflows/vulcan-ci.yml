@@ -474,8 +474,17 @@ jobs:
           $ErrorActionPreference = "Stop"
           $env:USERPROFILE = Join-Path $env:RUNNER_TEMP "repo-installer-home"
           New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
-          cmd.exe /c scripts\install\windows.bat
+          # Run twice: the second run must not add the environment to PATH again.
+          foreach ($run in 1, 2) {
+            cmd.exe /c scripts\install\windows.bat
+            if ($LASTEXITCODE -ne 0) { throw "windows.bat failed with exit code $LASTEXITCODE" }
+          }
           & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" --version
+          # The runner is elevated; the per-user environment still belongs only on the user PATH.
+          $scripts = Join-Path $env:USERPROFILE ".sima-cli-env\Scripts"
+          $userEntries = @([Environment]::GetEnvironmentVariable("Path", "User") -split ";" | Where-Object { $_ -eq $scripts })
+          if ($userEntries.Count -ne 1) { throw "Expected $scripts once on the user PATH, found $($userEntries.Count)" }
+          if (([Environment]::GetEnvironmentVariable("Path", "Machine") -split ";") -contains $scripts) { throw "$scripts was added to the system PATH" }
 
       - name: Install candidate on native Windows
         if: runner.os == 'Windows'

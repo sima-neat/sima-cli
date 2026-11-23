@@ -16,15 +16,11 @@ if "%INSTALL_FROM_PYPI%"=="0" if not exist "%WHEEL_PATH%" (
 
 net session >nul 2>&1
 if %errorlevel% equ 0 (
-    echo Administrator privileges detected. Will modify System PATH.
+    echo Administrator privileges detected.
     set "IS_ADMIN=1"
-    set "REG_KEY=HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
-    set "SETX_FLAG=/M"
 ) else (
-    echo Standard user detected. Will modify User PATH.
+    echo Standard user detected.
     set "IS_ADMIN=0"
-    set "REG_KEY=HKCU\Environment"
-    set "SETX_FLAG="
 )
 
 rem The Microsoft Store alias, or any python that cannot run, counts as no Python.
@@ -89,20 +85,17 @@ if errorlevel 1 (
     set "PATH=%PATH%;%VENV_PATH%"
 )
 
-set "TARGET_PATH="
-for /f "tokens=2*" %%A in ('reg query "!REG_KEY!" /v PATH 2^>nul') do set "TARGET_PATH=%%B"
-
-echo !TARGET_PATH! | findstr /I /C:"%VENV_PATH%" >nul
-if errorlevel 1 (
-    echo Persisting %VENV_PATH% to PATH...
-    if "!TARGET_PATH!"=="" (
-        setx PATH "%VENV_PATH%" !SETX_FLAG! >nul
-    ) else (
-        setx PATH "!TARGET_PATH!;%VENV_PATH%" !SETX_FLAG! >nul
-    )
-) else (
-    echo Already in PATH.
-)
+rem The environment is per-user, so persist it to the user PATH only, even when elevated.
+rem Edit the raw registry value so entries that reference variables stay unexpanded.
+set "PS_PATH=$dir = $env:VENV_PATH.TrimEnd('\'); function Same($entry) { $entry.Trim().TrimEnd('\') -ieq $dir }"
+set "PS_PATH=!PS_PATH!; $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); $raw = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')"
+set "PS_PATH=!PS_PATH!; if ($raw.Split(';') | Where-Object { Same ([Environment]::ExpandEnvironmentVariables($_)) }) { Write-Host 'Already in the user PATH.' } else { $kind = 'ExpandString'; if ($null -ne $key.GetValue('Path')) { $kind = $key.GetValueKind('Path') }; Write-Host ('Persisting ' + $env:VENV_PATH + ' to the user PATH...'); $key.SetValue('Path', ($raw.TrimEnd(';') + ';' + $env:VENV_PATH).TrimStart(';'), $kind) }"
+rem Earlier installers added this exact per-user path to the system PATH when elevated; remove only that.
+set "PS_PATH=!PS_PATH!; if ($env:IS_ADMIN -eq '1') { $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true); $raw = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames'); $kept = @($raw.Split(';') | Where-Object { -not (Same $_) }); if ($kept.Count -lt $raw.Split(';').Count) { Write-Host ('Removing ' + $env:VENV_PATH + ' from the system PATH...'); $key.SetValue('Path', ($kept -join ';'), $key.GetValueKind('Path')) } }"
+rem Setting an unused user variable to null only broadcasts the change, so new windows see the new PATH.
+set "PS_PATH=!PS_PATH!; [Environment]::SetEnvironmentVariable('SIMA_CLI_PATH_REFRESH', $null, 'User')"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"
+if errorlevel 1 echo Could not update the user PATH. Add %VENV_PATH% to it manually.
 
 echo.
 echo Done! Open a new Command Prompt or PowerShell and type:

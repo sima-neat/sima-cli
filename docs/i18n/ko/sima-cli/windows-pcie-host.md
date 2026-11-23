@@ -10,13 +10,13 @@ Windows PCIe 호스트 릴리스는 `sima-cli` 명령 하나로 설치할 수 �
 
 지원되는 Platform PCIe 패키지와 x64 GStreamer MSVC 런타임을 설치한 뒤
 PowerShell에서 명령을 실행하세요.
-컴퓨터 전체에 설치되는 Scheduler 및 Core MSI 패키지에 대해 표준 사용자는 Windows
-관리자 승인 프롬프트를 한 번만 승인합니다. 권한이 상승된 하나의 단계에서 Scheduler를
+권한이 상승되지 않은 PowerShell 창에서는 컴퓨터 전체에 설치되는 Scheduler 및 Core MSI
+패키지에 대해 Windows 관리자 승인 프롬프트를 한 번만 승인합니다. 권한이 상승된 하나의 단계에서 Scheduler를
 설치한 뒤 Core를 설치하며, Scheduler가 실패하면 Core를 시작하지 않습니다. 권한이
 상승하는 것은 이 단계뿐입니다. CLI,
 관리형 Python 환경 및 고객 스킬은 현재 사용자의 세션과 프로필에 그대로 유지됩니다.
-표준 사용자는 Windows가 승인 프롬프트를 표시할 수 있도록 대화형 PowerShell 창에서
-명령을 실행해야 합니다.
+Windows가 승인 프롬프트를 표시할 수 있도록 대화형 PowerShell 창에서 명령을 실행하세요.
+관리자 권한으로 실행으로 연 창에서는 프롬프트가 필요하지 않습니다.
 
 ```powershell
 sima-cli neat install core/pciehost/windows/amd64@v<Neat version>
@@ -54,7 +54,7 @@ Windows Installer 오류 `1625`는 호스트의 애플리케이션 제어 정책
 거부했다는 뜻입니다. 첫 릴리스의 Neat MSI 패키지, DLL, Python 확장 모듈은
 코드 서명되지 않았습니다. `sima-cli`는 릴리스 채널에서 HTTPS로 이를 다운로드하고,
 각 패키지의 SHA-256 체크섬을 다운로드 후와 Windows Installer 또는 pip를 시작하기 전에
-다시 검증하며(표준 사용자의 경우 승인 프롬프트 전과 권한이 상승된 단계 안에서 모두
+다시 검증하며(권한이 상승되지 않은 창에서는 승인 프롬프트 전과 권한이 상승된 단계 안에서 모두
 검증합니다), 더 이상 일치하지 않는 패키지가 있으면 중단합니다. 기업의 애플리케이션 제어 정책이 서명되지
 않은 바이너리를 차단할 수 있습니다. Windows 관리자에게 정책 검토를 요청하세요.
 `sima-cli`는 Windows 보안 제어를 비활성화하지 않습니다.

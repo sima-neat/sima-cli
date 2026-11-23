@@ -305,7 +305,7 @@ def _run_msi_operations(
     """Run ordered msiexec steps, calling handle_result(item, exit_code, detail) for each.
 
     handle_result raises for every exit code outside continue_codes, so the steps stop
-    at the first failure. A standard user approves all steps with one prompt.
+    at the first failure. A non-elevated session approves all steps with one prompt.
     """
     first_log = items[0]["log"]
     if _is_windows_administrator():

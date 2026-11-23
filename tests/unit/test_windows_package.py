@@ -194,8 +194,8 @@ class WindowsPackageTests(unittest.TestCase):
             {"owner": "core", "msi": self.msi.name, "version": "0.6.1"},
         ]
 
-    def standard_user(self, run):
-        """Patch a standard interactive user whose elevation is served by run."""
+    def non_elevated_session(self, run):
+        """Patch an interactive, non-elevated session whose elevation is served by run."""
         stack = ExitStack()
         stack.enter_context(patch(
             "sima_cli.install.windows_package._is_windows_administrator", return_value=False
@@ -369,10 +369,10 @@ class WindowsPackageTests(unittest.TestCase):
 
         self.assertEqual(run.call_args.args[0][0], "D:\\WINNT\\system32\\msiexec.exe")
 
-    def test_standard_user_installs_both_msis_under_one_elevation(self):
+    def test_non_elevated_session_installs_both_msis_under_one_elevation(self):
         self.use_scheduler_and_core()
         run, requests = fake_elevation([0, 0])
-        with self.standard_user(run):
+        with self.non_elevated_session(run):
             result = install_windows_package(self.metadata, str(self.root), native_only=True)
 
         self.assertEqual(len(requests), 1)
@@ -408,7 +408,7 @@ class WindowsPackageTests(unittest.TestCase):
     def test_elevated_scheduler_failure_stops_before_core(self):
         self.use_scheduler_and_core()
         run, requests = fake_elevation([1603, 0])
-        with self.standard_user(run):
+        with self.non_elevated_session(run):
             registry, output = self.install_from_windows_metadata(fails=True)
 
         self.assertEqual(len(requests), 1)
@@ -422,7 +422,7 @@ class WindowsPackageTests(unittest.TestCase):
     def test_elevated_core_failure_after_scheduler_records_partial_native_failure(self):
         self.use_scheduler_and_core()
         run, requests = fake_elevation([0, 1603])
-        with self.standard_user(run):
+        with self.non_elevated_session(run):
             registry, output = self.install_from_windows_metadata(fails=True)
 
         self.assertEqual(len(requests), 1)
@@ -436,7 +436,7 @@ class WindowsPackageTests(unittest.TestCase):
     def test_elevated_restart_result_stops_before_core(self):
         self.use_scheduler_and_core()
         run, _requests = fake_elevation([3010, 0])
-        with self.standard_user(run):
+        with self.non_elevated_session(run):
             registry, output = self.install_from_windows_metadata(fails=True, exit_code=3010)
 
         self.assertIn("Native packages installed in this run: scheduler.", output)
@@ -450,7 +450,7 @@ class WindowsPackageTests(unittest.TestCase):
         # Core result; Core's outcome is unknown and Scheduler stays recorded.
         self.use_scheduler_and_core()
         run, _requests = fake_elevation([0])
-        with self.standard_user(run):
+        with self.non_elevated_session(run):
             registry, output = self.install_from_windows_metadata(fails=True)
 
         self.assertIn("Windows Installer for core ended without reporting an exit code", output)
@@ -463,7 +463,7 @@ class WindowsPackageTests(unittest.TestCase):
         run, _requests = fake_elevation(
             [ELEVATED_INSTALLER_HASH_MISMATCH], errors={0: "found " + "0" * 64}
         )
-        with self.standard_user(run), self.assertRaises(WindowsNativeInstallError) as raised:
+        with self.non_elevated_session(run), self.assertRaises(WindowsNativeInstallError) as raised:
             install_windows_package(self.metadata, str(self.root), native_only=True)
 
         message = str(raised.exception)
@@ -477,7 +477,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.use_scheduler_and_core()
         self.msi.write_bytes(b"replaced msi")
         run, requests = fake_elevation([0, 0])
-        with self.standard_user(run), self.assertRaisesRegex(
+        with self.non_elevated_session(run), self.assertRaisesRegex(
             WindowsNativeInstallError, "declared SHA-256"
         ):
             install_windows_package(self.metadata, str(self.root), native_only=True)
@@ -548,7 +548,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.windows_receipt(registry_path, native_packages)
         output = io.StringIO()
         # CliRunner replaces sys.stdin, so drive the command directly to keep a TTY.
-        with self.standard_user(run), patch(
+        with self.non_elevated_session(run), patch(
             "sima_cli.install.registry.PackageRegistry",
             lambda: PackageRegistry(registry_path),
         ), redirect_stdout(output), redirect_stderr(output), self.assertRaises(
@@ -676,7 +676,7 @@ class WindowsPackageTests(unittest.TestCase):
             ],
         )
 
-    def test_noninteractive_standard_user_fails_before_starting_installer(self):
+    def test_noninteractive_non_elevated_session_fails_before_starting_installer(self):
         with patch(
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
@@ -691,11 +691,10 @@ class WindowsPackageTests(unittest.TestCase):
         run.assert_not_called()
         message = str(raised.exception)
         self.assertIn("interactive PowerShell", message)
-        # A non-elevated administrator reaches this too, so do not call it a standard user.
         self.assertIn("this session is not elevated and its input is not interactive", message)
         self.assertIn("ask an administrator to run it", message)
 
-    def test_cancelled_standard_user_elevation_stops_the_transaction(self):
+    def test_cancelled_elevation_stops_the_transaction(self):
         with patch(
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,

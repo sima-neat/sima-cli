@@ -9,11 +9,11 @@
 
 請先安裝支援的 Platform PCIe 套件與 x64 GStreamer MSVC 執行階段，
 再從 PowerShell 執行命令。
-對於安裝於整台電腦的 Scheduler 與 Core MSI 套件，標準使用者只需核准一次 Windows
-管理員提示：一個提升權限的步驟會先安裝 Scheduler，再安裝 Core；若 Scheduler 失敗，
+在未提升權限的 PowerShell 視窗中，對於安裝於整台電腦的 Scheduler 與 Core MSI 套件，
+只需核准一次 Windows 管理員提示：一個提升權限的步驟會先安裝 Scheduler，再安裝 Core；若 Scheduler 失敗，
 便不會啟動 Core。只有這個步驟會提升權限；CLI、受管理的 Python 環境與客戶技能仍留在
-目前使用者的工作階段與設定檔中。標準使用者必須從互動式 PowerShell 視窗執行
-命令，Windows 才能顯示核准提示。
+目前使用者的工作階段與設定檔中。請從互動式 PowerShell 視窗執行
+命令，Windows 才能顯示核准提示；以「以系統管理員身分執行」開啟的視窗則不需要提示。
 
 ```powershell
 sima-cli neat install core/pciehost/windows/amd64@v<Neat version>
@@ -45,8 +45,8 @@ Windows Installer。只有當 Python 套件是從此版本的 wheel 安裝且仍
 選到其他版本。安裝程式會列出失敗前已完成的原生套件。Windows Installer 錯誤 `1625`
 表示主機的應用程式控制原則拒絕了套件。首次發行的 Neat MSI 套件、DLL 與 Python
 擴充模組皆未經程式碼簽署。`sima-cli` 透過 HTTPS 從發行通道下載這些檔案，在下載後
-驗證每個套件的 SHA-256 檢查碼，並在啟動 Windows Installer 或 pip 前再次驗證（標準使用者
-會在核准提示之前與提升權限的步驟之中各驗證一次）；若套件不再相符便會停止。
+驗證每個套件的 SHA-256 檢查碼，並在啟動 Windows Installer 或 pip 前再次驗證（在未提升權限的
+視窗中，會在核准提示之前與提升權限的步驟之中各驗證一次）；若套件不再相符便會停止。
 企業的應用程式控制原則可能會封鎖未簽署的二進位檔；請 Windows 管理員檢視該原則。
 `sima-cli` 不會停用任何 Windows 安全性控制。若無法啟動 Windows Installer，
 `sima-cli` 會顯示嘗試安裝的套件、權限指引，以及預定的安裝記錄位置。

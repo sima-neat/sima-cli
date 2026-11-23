@@ -10,13 +10,14 @@ enrollment, verification, and recovery, follow
 [Install PCIe Host](/getting-started/neat-library/pcie-host).
 
 Run the command from PowerShell after installing the supported Platform PCIe
-package and x64 GStreamer MSVC runtime. A standard user approves one Windows
-administrator prompt for the machine-wide Scheduler and Core MSI packages: one
-elevated step installs Scheduler and then Core, and does not start Core if
-Scheduler fails. Only that step is elevated; the CLI, managed Python
-environment, and customer skills remain in the current user's session and
-profile. A standard user must run the command from an interactive PowerShell
-window so Windows can present that approval prompt.
+package and x64 GStreamer MSVC runtime. From a PowerShell window that is not
+elevated, you approve one Windows administrator prompt for the machine-wide
+Scheduler and Core MSI packages: one elevated step installs Scheduler and then
+Core, and does not start Core if Scheduler fails. Only that step is elevated;
+the CLI, managed Python environment, and customer skills remain in the current
+user's session and profile. Run the command from an interactive PowerShell window so Windows can
+present that approval prompt; a window opened with Run as administrator needs
+no prompt.
 
 ```powershell
 sima-cli neat install core/pciehost/windows/amd64@v<Neat version>
@@ -57,8 +58,8 @@ application-control policy. The Neat MSI packages and the DLLs and Python
 extension module in the first release are not code-signed. `sima-cli` downloads
 them over HTTPS from the release channel, verifies each package's SHA-256
 checksum after download and again before starting Windows Installer or pip
-(for a standard user, both before the approval prompt and inside the elevated
-step), and stops if a package no longer matches. A corporate application-control policy may block
+(from a window that is not elevated, both before the approval prompt and inside
+the elevated step), and stops if a package no longer matches. A corporate application-control policy may block
 unsigned binaries; ask the Windows administrator to review that policy.
 `sima-cli` does not disable any Windows security control.
 If Windows Installer cannot be started, `sima-cli` reports the attempted package,

@@ -103,7 +103,9 @@ def remove_package_receipt(ctx, name, version, yes):
         from sima_cli.install.windows_package import uninstall_windows_package
 
         try:
-            restart_required = uninstall_windows_package(entry)
+            restart_required = uninstall_windows_package(
+                entry, reg.product_codes_of_other_receipts(name, version)
+            )
         except BaseException:
             reg.update_state(name, version, "remove-failed")
             raise
@@ -373,6 +375,20 @@ class PackageRegistry:
         if replaced:
             self._save()
         return [pkg["version"] for pkg in replaced]
+
+    def product_codes_of_other_receipts(self, name, version):
+        """Map each Windows product code another receipt records to that receipt.
+
+        Every state counts: a receipt that is not marked installed may still be the one
+        whose release uses the package, so only removing its last receipt uninstalls it.
+        """
+        return {
+            package["product_code"]: f"{pkg['package_name']}@{pkg['version']}"
+            for pkg in self._data
+            if (pkg["package_name"], pkg["version"]) != (name, version)
+            for package in pkg.get("native_packages") or []
+            if package.get("product_code")
+        }
 
     def list_packages(self):
         """Display all registry entries in a Rich-formatted table."""

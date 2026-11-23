@@ -723,6 +723,9 @@ class WindowsPackageTests(unittest.TestCase):
         registry_path = self.root / "registry.json"
         registry_path.unlink(missing_ok=True)
         self.windows_receipt(registry_path, native_packages)
+        return self.run_packages_remove(registry_path, "0.6.1", run)
+
+    def run_packages_remove(self, registry_path, version, run):
         output = io.StringIO()
         # CliRunner replaces sys.stdin, so drive the command directly to keep a TTY.
         with self.non_elevated_session(run), patch(
@@ -732,7 +735,7 @@ class WindowsPackageTests(unittest.TestCase):
             SystemExit
         ) as raised:
             packages_group.main(
-                ["remove", self.metadata["name"], "--version", "0.6.1", "--yes"],
+                ["remove", self.metadata["name"], "--version", version, "--yes"],
                 prog_name="packages",
             )
         receipts = json.loads(registry_path.read_text(encoding="utf-8"))
@@ -764,6 +767,44 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("Removing native packages: core, scheduler", output)
         self.assertIn(f"& \"{self.python}\" -m pip uninstall -y pyneatpcie", output)
         self.assertIn("Removed local registry receipt", output)
+        self.assertEqual(receipts, [])
+
+    def test_removing_a_failed_upgrade_keeps_the_scheduler_the_installed_release_uses(self):
+        # Approval for 0.6.2 was cancelled after its receipt recorded the shared Scheduler.
+        registry_path = self.root / "registry.json"
+        registry = self.windows_receipt(registry_path, self.recorded_cohort())
+        new_core = "{33333333-3333-3333-3333-333333333333}"
+        registry.create_entry(self.metadata["name"], "0.6.2", self.metadata, "")
+        registry.update_fields(self.metadata["name"], "0.6.2", {"native_packages": [
+            {"owner": "scheduler", "version": "0.6.1", "product_code": PRODUCT_CODES["simaai"]},
+            {"owner": "core", "version": "0.6.2", "product_code": new_core},
+        ]})
+        registry.update_state(self.metadata["name"], "0.6.2", "failed")
+
+        run, requests = fake_elevation([1605])
+        exit_code, output, receipts = self.run_packages_remove(registry_path, "0.6.2", run)
+
+        self.assertEqual(exit_code, 0, output)
+        self.assertEqual(
+            [package["arguments"].split()[:2] for package in requests[0]["request"]["packages"]],
+            [["/x", new_core]],
+        )
+        self.assertIn(
+            "Keeping native packages another receipt uses: scheduler (still recorded by "
+            f"{self.metadata['name']}@0.6.1)",
+            output,
+        )
+        self.assertEqual([receipt["version"] for receipt in receipts], ["0.6.1"])
+
+        run, requests = fake_elevation([0, 0])
+        exit_code, output, receipts = self.run_packages_remove(registry_path, "0.6.1", run)
+
+        self.assertEqual(exit_code, 0, output)
+        self.assertEqual(
+            [package["arguments"].split()[:2] for package in requests[0]["request"]["packages"]],
+            [["/x", PRODUCT_CODES["sima"]], ["/x", PRODUCT_CODES["simaai"]]],
+        )
+        self.assertNotIn("Keeping native packages", output)
         self.assertEqual(receipts, [])
 
     def test_uninstall_treats_an_absent_package_as_removed(self):
@@ -852,6 +893,21 @@ class WindowsPackageTests(unittest.TestCase):
                 [MSIEXEC, "/x", PRODUCT_CODES["simaai"]],
             ],
         )
+
+    def test_uninstall_starts_no_installer_when_other_receipts_record_every_package(self):
+        shared = {code: "other@0.6.0" for code in PRODUCT_CODES.values()}
+        output = io.StringIO()
+        with patch("sima_cli.install.windows_package._run") as run, redirect_stdout(output):
+            restart = uninstall_windows_package({"native_packages": self.recorded_cohort()}, shared)
+
+        self.assertFalse(restart)
+        run.assert_not_called()
+        self.assertIn(
+            "Keeping native packages another receipt uses: core (still recorded by "
+            "other@0.6.0), scheduler (still recorded by other@0.6.0)",
+            output.getvalue(),
+        )
+        self.assertNotIn("Removing native packages", output.getvalue())
 
     def test_noninteractive_non_elevated_session_fails_before_starting_installer(self):
         with patch(

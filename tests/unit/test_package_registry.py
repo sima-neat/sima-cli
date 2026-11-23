@@ -127,3 +127,18 @@ def test_remove_other_versions_keeps_only_the_installed_version(tmp_path):
         ("example/package", "2.0.0"), ("other/package", "1.0.0")
     ]
     assert registry.remove_other_versions("example/package", "2.0.0") == []
+
+
+def test_product_codes_of_other_receipts_ignores_the_removed_receipt(tmp_path):
+    registry = PackageRegistry(tmp_path / "registry.json")
+    for version, codes in (("1.0.0", ["{S}", "{C1}"]), ("2.0.0", ["{S}", "{C2}"])):
+        registry.create_entry("example/package", version, {}, tmp_path)
+        registry.update_fields("example/package", version, {
+            "native_packages": [{"owner": "x", "product_code": code} for code in codes]
+        })
+    registry.create_entry("other/package", "1.0.0", {}, tmp_path)
+
+    assert registry.product_codes_of_other_receipts("example/package", "2.0.0") == {
+        "{S}": "example/package@1.0.0",
+        "{C1}": "example/package@1.0.0",
+    }

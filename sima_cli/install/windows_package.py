@@ -1375,10 +1375,11 @@ def install_windows_package(
     }
 
 
-def uninstall_windows_package(receipt: Dict) -> bool:
+def uninstall_windows_package(receipt: Dict, shared: Optional[Dict[str, str]] = None) -> bool:
     """Remove a receipt's native packages in reverse install order.
 
-    Returns True when Windows must restart to finish the removal.
+    shared maps product codes that other receipts still record to one such receipt;
+    those packages are kept. Returns True when Windows must restart to finish the removal.
     """
     if not _is_windows():
         raise click.ClickException("Windows MSI packages can only be uninstalled on Windows.")
@@ -1392,6 +1393,7 @@ def uninstall_windows_package(receipt: Dict) -> bool:
 
     log_root = Path(tempfile.gettempdir())
     items = []
+    kept = []
     for index, package in enumerate(reversed(packages), start=1):
         owner = str(package.get("owner", ""))
         product_code = str(package.get("product_code", ""))
@@ -1400,13 +1402,19 @@ def uninstall_windows_package(receipt: Dict) -> bool:
                 f"The receipt records an invalid product code for {owner or 'a package'}: "
                 f"'{product_code}'. No native package was removed."
             )
+        if product_code in (shared or {}):
+            kept.append(f"{owner} (still recorded by {shared[product_code]})")
+            continue
         log_path = log_root / f"sima-cli-msi-uninstall-{index:02d}-{_safe_log_label(owner)}.log"
         items.append({
             "owner": owner,
             "log": log_path,
             "args": ["/x", product_code, "/passive", "/norestart", "/L*v", str(log_path)],
         })
-    click.echo("Removing native packages: " + ", ".join(item["owner"] for item in items))
+    if kept:
+        click.echo("Keeping native packages another receipt uses: " + ", ".join(kept))
+    if items:
+        click.echo("Removing native packages: " + ", ".join(item["owner"] for item in items))
 
     removed: List[str] = []
     restart_required = False
@@ -1441,12 +1449,13 @@ def uninstall_windows_package(receipt: Dict) -> bool:
             f"same command. Installer log: {item['log']}"
         )
 
-    _run_msi_operations(
-        items,
-        [0, MSI_UNKNOWN_PRODUCT, MSI_RESTART_REQUIRED],
-        handle_result,
-        "No native package was removed.",
-    )
+    if items:
+        _run_msi_operations(
+            items,
+            [0, MSI_UNKNOWN_PRODUCT, MSI_RESTART_REQUIRED],
+            handle_result,
+            "No native package was removed.",
+        )
 
     python_executable = receipt.get("python_executable")
     python_package = receipt.get("metadata", {}).get("installation", {}).get("python")

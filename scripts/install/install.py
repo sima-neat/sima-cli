@@ -342,10 +342,42 @@ def _append_line_once(path: Path, line: str) -> None:
         return
 
 
+def _add_to_windows_user_path(directory: str) -> None:
+    """Append directory to the raw user PATH, as windows.bat does, then announce it.
+
+    The raw registry value keeps entries that reference variables unexpanded and
+    leaves the machine PATH alone; setx would rewrite the user PATH instead.
+    """
+    import ctypes
+    import winreg
+
+    def same(entry: str) -> bool:
+        expanded = winreg.ExpandEnvironmentStrings(entry).strip().rstrip("\\")
+        return expanded.lower() == directory.rstrip("\\").lower()
+
+    try:
+        access = winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, "Environment", 0, access) as key:
+            try:
+                raw, kind = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                raw, kind = "", winreg.REG_EXPAND_SZ
+            if any(same(entry) for entry in raw.split(";")):
+                print("Already in the user PATH.")
+                return
+            print(f"Persisting {directory} to the user PATH...")
+            winreg.SetValueEx(key, "Path", 0, kind, (raw.rstrip(";") + ";" + directory).lstrip(";"))
+    except OSError as exc:
+        print(f"Could not update the user PATH ({exc}). Add {directory} to it manually.")
+        return
+    # WM_SETTINGCHANGE "Environment", so windows opened from now on see the new PATH.
+    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x1A, 0, "Environment", 0x0002, 5000, None)
+    print("Open a new PowerShell window to use sima-cli.")
+
+
 def _configure_pypi_shell_path(venv_dir: Path) -> None:
     if platform.system().lower() == "windows":
-        scripts = str(venv_dir / "Scripts")
-        subprocess.run(["setx", "PATH", f"%PATH%;{scripts}"], check=False)
+        _add_to_windows_user_path(str(venv_dir / "Scripts"))
         return
 
     rc_file = Path.home() / (".zshrc" if platform.system().lower() == "darwin" else ".bashrc")

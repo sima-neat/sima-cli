@@ -1,7 +1,8 @@
 import importlib.util
 import urllib.error
-from pathlib import Path
-from unittest.mock import patch
+from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 
 INSTALLER_PATH = Path(__file__).resolve().parents[2] / "scripts" / "install" / "install.py"
@@ -329,3 +330,79 @@ def test_install_artifact_current_env_installs_wheel_without_helper():
 
     install_current.assert_called_once_with(Path("/tmp/package/sima_cli-2.1.5.whl"))
     run_helper.assert_not_called()
+
+
+class FakeUserEnvironment:
+    """Stand in for winreg on HKCU\\Environment, keeping values raw as the registry does."""
+
+    REG_SZ, REG_EXPAND_SZ = 1, 2
+    HKEY_CURRENT_USER = object()
+    KEY_QUERY_VALUE, KEY_SET_VALUE = 1, 2
+
+    def __init__(self, path=None, kind=REG_EXPAND_SZ):
+        self.values = {} if path is None else {"Path": (path, kind)}
+        self.writes = []
+
+    def CreateKeyEx(self, root, subkey, reserved, access):
+        assert (root, subkey) == (self.HKEY_CURRENT_USER, "Environment")
+        key = MagicMock()
+        key.__enter__.return_value = key
+        return key
+
+    def QueryValueEx(self, _key, name):
+        if name not in self.values:
+            raise FileNotFoundError(name)
+        return self.values[name]
+
+    def SetValueEx(self, _key, name, _reserved, kind, value):
+        self.values[name] = (value, kind)
+        self.writes.append((name, value, kind))
+
+    @staticmethod
+    def ExpandEnvironmentStrings(value):
+        return value.replace("%USERPROFILE%", "C:\\Users\\sima")
+
+
+def configure_windows_path(user_path, kind=FakeUserEnvironment.REG_EXPAND_SZ):
+    installer = load_installer()
+    registry = FakeUserEnvironment(user_path, kind)
+    windll = SimpleNamespace(user32=MagicMock())
+    with patch.dict("sys.modules", {"winreg": registry}), \
+         patch.object(installer.platform, "system", return_value="Windows"), \
+         patch("ctypes.windll", windll, create=True), \
+         patch.object(installer.subprocess, "run") as run:
+        installer._configure_pypi_shell_path(PureWindowsPath("C:\\Users\\sima\\.sima-cli-env"))
+    run.assert_not_called()
+    return registry, windll.user32.SendMessageTimeoutW
+
+
+def test_windows_pypi_install_appends_to_the_raw_user_path():
+    # setx PATH "%PATH%;..." replaced the user PATH with a literal %PATH% entry.
+    registry, broadcast = configure_windows_path(
+        "%USERPROFILE%\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Tools;"
+    )
+
+    assert registry.writes == [(
+        "Path",
+        "%USERPROFILE%\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Tools;"
+        "C:\\Users\\sima\\.sima-cli-env\\Scripts",
+        FakeUserEnvironment.REG_EXPAND_SZ,
+    )]
+    assert broadcast.call_args.args[1:4] == (0x1A, 0, "Environment")
+
+
+def test_windows_pypi_install_keeps_the_path_value_kind_and_creates_a_missing_path():
+    registry, _ = configure_windows_path("C:\\Tools", FakeUserEnvironment.REG_SZ)
+    assert registry.writes[-1][2] == FakeUserEnvironment.REG_SZ
+    registry, _ = configure_windows_path(None)
+    assert registry.writes == [(
+        "Path", "C:\\Users\\sima\\.sima-cli-env\\Scripts", FakeUserEnvironment.REG_EXPAND_SZ
+    )]
+
+
+def test_windows_pypi_install_does_not_repeat_an_existing_user_path_entry():
+    registry, broadcast = configure_windows_path(
+        "C:\\Tools;%USERPROFILE%\\.sima-cli-env\\Scripts\\"
+    )
+    assert registry.writes == []
+    broadcast.assert_not_called()

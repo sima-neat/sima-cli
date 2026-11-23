@@ -11,6 +11,11 @@ WORKFLOW = ROOT / ".github/workflows/vulcan-ci.yml"
 
 
 class WindowsInstallerScriptTests(unittest.TestCase):
+    LOCATION_PROBE = (
+        'for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON '
+        '( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )'
+    )
+
     def setUp(self):
         self.script = SCRIPT.read_text(encoding="utf-8")
 
@@ -22,6 +27,30 @@ class WindowsInstallerScriptTests(unittest.TestCase):
     def test_store_alias_or_broken_python_counts_as_missing(self):
         self.assertNotIn("where python", self.script)
         self.assertIn('python -c "import sys" >nul 2>nul', self.script)
+
+    def test_existing_python_is_found_before_installing(self):
+        # The python.org installer leaves Python off PATH by default, so PATH alone
+        # misses the usual per-user install and the script reinstalled over it.
+        probes = [
+            'python -c "import sys" >nul 2>nul\nif not errorlevel 1 set "PYTHON=python"',
+            "('py -3.14 -c \"import sys; print(sys.executable)\" 2^>nul ^<nul') do set \"PYTHON=%%P\"",
+            'set PYTHON_LOCATIONS="%LOCALAPPDATA%\\Programs\\Python\\Python314\\python.exe" '
+            '"%ProgramFiles%\\Python314\\python.exe"',
+            self.LOCATION_PROBE,
+        ]
+        positions = [self.script.index(probe) for probe in probes]
+        self.assertEqual(positions, sorted(positions))
+        install = self.script.index("if not defined PYTHON (\n")
+        self.assertLess(positions[-1], install)
+        self.assertLess(install, self.script.index("Invoke-WebRequest"))
+
+    def test_installed_python_is_accepted_from_either_location(self):
+        # The installer can keep an existing 3.14's scope, whatever the elevation.
+        run = self.script.index('start "" /wait "!PYTHON_INSTALLER!"')
+        after = self.script[run:]
+        self.assertIn(self.LOCATION_PROBE, after.split("echo Python installation failed", 1)[0])
+        self.assertNotIn('set "PYTHON=%ProgramFiles%', self.script)
+        self.assertNotIn('set "PYTHON=%LOCALAPPDATA%', self.script)
 
     def test_python_installer_runs_only_after_signature_check(self):
         check = self.script.index("Get-AuthenticodeSignature -LiteralPath $env:PYTHON_INSTALLER")

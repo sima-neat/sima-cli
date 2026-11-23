@@ -23,10 +23,17 @@ if %errorlevel% equ 0 (
     set "IS_ADMIN=0"
 )
 
+rem Use the first Python that runs: python on PATH, the py launcher's 3.14, then the two
+rem python.org 3.14 locations, because that installer does not add Python to PATH by default.
 rem The Microsoft Store alias, or any python that cannot run, counts as no Python.
-set "PYTHON=python"
+rem The launcher gets no input, so an offer to install a missing version cannot wait for an answer.
+set "PYTHON="
 python -c "import sys" >nul 2>nul
-if errorlevel 1 (
+if not errorlevel 1 set "PYTHON=python"
+if not defined PYTHON for /f "delims=" %%P in ('py -3.14 -c "import sys; print(sys.executable)" 2^>nul ^<nul') do set "PYTHON=%%P"
+set PYTHON_LOCATIONS="%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%ProgramFiles%\Python314\python.exe"
+for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON ( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )
+if not defined PYTHON (
     set "PYTHON_URL=https://www.python.org/ftp/python/3.14.10/python-3.14.10-amd64.exe"
     set "PYTHON_SHA256=92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965"
     rem A directory this run creates, so no earlier file or link can stand in for the download.
@@ -34,10 +41,8 @@ if errorlevel 1 (
     set "PYTHON_INSTALLER=!PYTHON_DOWNLOAD!\python-3.14.10-amd64.exe"
     if "%IS_ADMIN%"=="1" (
         set "PYTHON_ALL_USERS=1"
-        set "PYTHON=%ProgramFiles%\Python314\python.exe"
     ) else (
         set "PYTHON_ALL_USERS=0"
-        set "PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe"
     )
     echo No working Python found. Installing 64-bit Python 3.14.10...
     mkdir "!PYTHON_DOWNLOAD!"
@@ -59,9 +64,10 @@ if errorlevel 1 (
     )
     start "" /wait "!PYTHON_INSTALLER!" /quiet InstallAllUsers=!PYTHON_ALL_USERS! InstallLauncherAllUsers=!PYTHON_ALL_USERS! PrependPath=1 Include_test=0
     rmdir /s /q "!PYTHON_DOWNLOAD!"
-    "!PYTHON!" -c "import sys" >nul 2>nul
-    if errorlevel 1 (
-        echo Python installation failed: !PYTHON! does not run.
+    rem An existing 3.14 can keep its own scope, so accept either location.
+    for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON ( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )
+    if not defined PYTHON (
+        echo Python installation failed: no Python 3.14 runs from !PYTHON_LOCATIONS!
         exit /b 1
     )
 )

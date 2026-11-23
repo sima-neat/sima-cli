@@ -28,7 +28,10 @@ set "PYTHON=python"
 python -c "import sys" >nul 2>nul
 if errorlevel 1 (
     set "PYTHON_URL=https://www.python.org/ftp/python/3.14.10/python-3.14.10-amd64.exe"
-    set "PYTHON_INSTALLER=%TEMP%\python-3.14.10-amd64.exe"
+    set "PYTHON_SHA256=92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965"
+    rem A directory this run creates, so no earlier file or link can stand in for the download.
+    set "PYTHON_DOWNLOAD=%TEMP%\sima-cli-python-%RANDOM%%RANDOM%%RANDOM%"
+    set "PYTHON_INSTALLER=!PYTHON_DOWNLOAD!\python-3.14.10-amd64.exe"
     if "%IS_ADMIN%"=="1" (
         set "PYTHON_ALL_USERS=1"
         set "PYTHON=%ProgramFiles%\Python314\python.exe"
@@ -37,19 +40,25 @@ if errorlevel 1 (
         set "PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe"
     )
     echo No working Python found. Installing 64-bit Python 3.14.10...
+    mkdir "!PYTHON_DOWNLOAD!"
+    if errorlevel 1 (
+        echo Could not create a new download directory: !PYTHON_DOWNLOAD!
+        exit /b 1
+    )
     powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri $env:PYTHON_URL -OutFile $env:PYTHON_INSTALLER"
     if errorlevel 1 (
         echo Failed to download !PYTHON_URL!
+        rmdir /s /q "!PYTHON_DOWNLOAD!"
         exit /b 1
     )
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "$s = Get-AuthenticodeSignature -LiteralPath $env:PYTHON_INSTALLER; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName', $false) -ne 'Python Software Foundation') { exit 1 }"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "if ((Get-FileHash -LiteralPath $env:PYTHON_INSTALLER -Algorithm SHA256).Hash -ne $env:PYTHON_SHA256) { exit 1 }; $s = Get-AuthenticodeSignature -LiteralPath $env:PYTHON_INSTALLER; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName', $false) -ne 'Python Software Foundation') { exit 1 }"
     if errorlevel 1 (
-        echo The downloaded Python installer is not validly signed by the Python Software Foundation. It was not run.
-        del "!PYTHON_INSTALLER!"
+        echo The downloaded Python installer does not match the pinned SHA-256 or is not validly signed by the Python Software Foundation. It was not run.
+        rmdir /s /q "!PYTHON_DOWNLOAD!"
         exit /b 1
     )
     start "" /wait "!PYTHON_INSTALLER!" /quiet InstallAllUsers=!PYTHON_ALL_USERS! InstallLauncherAllUsers=!PYTHON_ALL_USERS! PrependPath=1 Include_test=0
-    del "!PYTHON_INSTALLER!"
+    rmdir /s /q "!PYTHON_DOWNLOAD!"
     "!PYTHON!" -c "import sys" >nul 2>nul
     if errorlevel 1 (
         echo Python installation failed: !PYTHON! does not run.

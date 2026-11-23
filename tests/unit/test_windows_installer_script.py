@@ -32,6 +32,26 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         failure = self.script[check:run]
         self.assertIn("exit /b 1", failure)
 
+    def test_python_installer_matches_pinned_sha256_before_it_runs(self):
+        url = re.search(r"/ftp/python/[^/]+/(python-[^/\s\"]+\.exe)", self.script).group(1)
+        self.assertRegex(self.script, r'set "PYTHON_SHA256=[0-9a-f]{64}"\n')
+        check = self.script.index(
+            "(Get-FileHash -LiteralPath $env:PYTHON_INSTALLER -Algorithm SHA256).Hash "
+            "-ne $env:PYTHON_SHA256) { exit 1 }"
+        )
+        self.assertLess(check, self.script.index('start "" /wait "!PYTHON_INSTALLER!"'))
+        self.assertIn(f'set "PYTHON_INSTALLER=!PYTHON_DOWNLOAD!\\{url}"', self.script)
+
+    def test_python_installer_downloads_into_a_directory_this_run_creates(self):
+        # Not a predictable %TEMP% file another process could plant or replace.
+        self.assertNotIn("%TEMP%\\python-", self.script)
+        self.assertIn('set "PYTHON_DOWNLOAD=%TEMP%\\sima-cli-python-%RANDOM%%RANDOM%%RANDOM%"', self.script)
+        create = self.script.index('mkdir "!PYTHON_DOWNLOAD!"')
+        self.assertIn("exit /b 1", self.script[create:].split("powershell", 1)[0])
+        self.assertLess(create, self.script.index("Invoke-WebRequest"))
+        self.assertNotIn('del "!PYTHON_INSTALLER!"', self.script)
+        self.assertEqual(self.script.count('rmdir /s /q "!PYTHON_DOWNLOAD!"'), 3)
+
     def test_python_installs_for_all_users_only_when_elevated(self):
         self.assertIn("InstallAllUsers=!PYTHON_ALL_USERS! InstallLauncherAllUsers=!PYTHON_ALL_USERS!", self.script)
         elevated, standard = self.script.split('if "%IS_ADMIN%"=="1" (', 1)[1].split(") else (", 1)

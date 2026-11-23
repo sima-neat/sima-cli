@@ -158,6 +158,8 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("'^home = .*', 'home = C:\\sima-cli-missing-python'", step)
         self.assertIn("cmd.exe /c scripts\\install\\windows.bat $invalidWheel", step)
         self.assertIn('if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }', step)
+        # GitHub ends a PowerShell step with the last native exit code.
+        self.assertLess(step.index("although pip failed"), step.index("$global:LASTEXITCODE = 0"))
 
 
 if __name__ == "__main__":

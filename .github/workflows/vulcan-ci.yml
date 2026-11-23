@@ -497,6 +497,8 @@ jobs:
           Set-Content -LiteralPath $invalidWheel -Value "not a wheel"
           cmd.exe /c scripts\install\windows.bat $invalidWheel
           if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }
+          # The failure above is the expected result; do not let it become the step's exit code.
+          $global:LASTEXITCODE = 0
 
       - name: Install candidate on native Windows
         if: runner.os == 'Windows'

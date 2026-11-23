@@ -469,6 +469,25 @@ class WindowsPackageTests(unittest.TestCase):
         )
         self.assertIn("setup step failed with exit code 1", output)
 
+    def test_cancelled_setup_records_setup_failed(self):
+        # Ctrl+C at the card password prompt: the packages are installed, so the receipt
+        # must not say a native package failed.
+        setup = self.declare_setup()
+        with self.setup_environment(), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=[completed(), KeyboardInterrupt()],
+        ):
+            try:
+                registry, output = self.install_from_windows_metadata(fails=True)
+            except KeyboardInterrupt:
+                self.fail("cancelling the setup step escaped as KeyboardInterrupt")
+
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "setup-failed"
+        )
+        self.assertIn("the setup step was cancelled. The installation was kept.", output)
+        self.assertIn(f'enter this in PowerShell:\n  & "{setup}"', output)
+
     def test_missing_setup_command_after_install_is_reported(self):
         setup = self.declare_setup()
         setup.unlink()

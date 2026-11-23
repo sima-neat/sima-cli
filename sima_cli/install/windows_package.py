@@ -1207,6 +1207,12 @@ def _run_setup_step(metadata: Dict, rerun: str = _RERUN_SAME_COMMAND) -> Dict[st
             f"Native packages are installed, but the setup step could not be started: {error}. "
             f"The installation was kept. To run the step, enter this in PowerShell:\n{run_it}"
         ) from error
+    except KeyboardInterrupt as error:
+        # Cancelling the card password prompt still leaves every package installed.
+        raise WindowsSetupError(
+            "Native packages are installed, but the setup step was cancelled. The installation "
+            f"was kept. To run the step, enter this in PowerShell:\n{run_it}"
+        ) from error
     if result.returncode != 0:
         raise WindowsSetupError(
             f"Native packages are installed, but the setup step failed with exit code "

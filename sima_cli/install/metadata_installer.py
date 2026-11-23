@@ -14,7 +14,7 @@ import hashlib
 from urllib.parse import urlparse, quote, urljoin, unquote
 from typing import Dict, List
 from tqdm import tqdm
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import requests
 
@@ -38,6 +38,7 @@ from sima_cli.install.windows_package import (
     WindowsPrerequisiteError,
     WindowsPythonInstallError,
     WindowsSetupError,
+    _is_windows,
     install_windows_package,
     preflight_windows_package,
 )
@@ -77,9 +78,44 @@ def _is_http_forbidden_error(exc: BaseException) -> bool:
     return False
 
 
+def _work_directory_advice(command_name: str) -> str:
+    if _is_windows():
+        return (
+            "Run the command again from a writable work directory, for example in PowerShell:\n"
+            "  mkdir -Force $HOME\\sima-install; cd $HOME\\sima-install\n"
+            f"  {command_name} ...\n\n"
+        )
+    return (
+        "Run the command again from a writable work directory, for example:\n"
+        "  mkdir -p ~/sima-install && cd ~/sima-install\n"
+        f"  {command_name} ...\n\n"
+    )
+
+
+def _inside_windows_directory(path: str) -> bool:
+    system_root = os.environ.get("SystemRoot")
+    if not system_root:
+        return False
+    root, location = PureWindowsPath(system_root), PureWindowsPath(path)
+    return location == root or root in location.parents
+
+
 def _ensure_install_dir_writable(install_dir: str, command_name: str = "sima-cli install") -> None:
     target = Path(install_dir or ".").expanduser()
     display_path = Path.cwd() if str(target) == "." else target
+
+    # A PowerShell window opened with Run as administrator starts in System32.
+    if str(target) == "." and _is_windows() and _inside_windows_directory(str(display_path)):
+        raise InstallationPreflightError(
+            f"Current directory '{display_path}' is inside the Windows directory "
+            f"'{os.environ['SystemRoot']}'.\n\n"
+            "This install downloads package assets and installer logs into the current "
+            "directory, and a PowerShell window opened with Run as administrator starts in "
+            f"'{os.environ['SystemRoot']}\\System32'.\n\n"
+            + _work_directory_advice(command_name)
+            + "Or choose a destination explicitly:\n"
+            f"  {command_name} ... --install-dir <writable-directory>"
+        )
 
     check_dir = target
     if not check_dir.exists():
@@ -98,10 +134,8 @@ def _ensure_install_dir_writable(install_dir: str, command_name: str = "sima-cli
             raise InstallationPreflightError(
                 f"Current directory '{Path.cwd()}' is not writable.\n\n"
                 "This install downloads package assets into the current directory before installation.\n\n"
-                "Run the command again from a writable work directory, for example:\n"
-                "  mkdir -p ~/sima-install && cd ~/sima-install\n"
-                f"  {command_name} ...\n\n"
-                "Or choose a destination explicitly:\n"
+                + _work_directory_advice(command_name)
+                + "Or choose a destination explicitly:\n"
                 f"  {command_name} ... --install-dir <writable-directory>"
             ) from exc
         raise InstallationPreflightError(

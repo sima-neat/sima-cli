@@ -802,6 +802,66 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
             finally:
                 os.chdir(original_cwd)
 
+    def test_unwritable_current_directory_gives_powershell_advice_on_windows(self):
+        with TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                with patch(
+                    "sima_cli.install.metadata_installer.tempfile.NamedTemporaryFile",
+                    side_effect=PermissionError("denied"),
+                ), patch("sima_cli.install.metadata_installer._is_windows", return_value=True):
+                    with self.assertRaises(InstallationPreflightError) as raised:
+                        _ensure_install_dir_writable(".", command_name="sima-cli neat install")
+            finally:
+                os.chdir(original_cwd)
+
+        message = raised.exception.message
+        self.assertIn(
+            "for example in PowerShell:\n"
+            "  mkdir -Force $HOME\\sima-install; cd $HOME\\sima-install\n"
+            "  sima-cli neat install ...",
+            message,
+        )
+        self.assertNotIn("mkdir -p", message)
+        self.assertNotIn("&&", message)
+
+    def test_windows_directory_is_not_used_as_the_work_directory(self):
+        for cwd in ("C:\\Windows\\System32", "c:\\windows", "C:\\WINDOWS\\Temp\\x"):
+            with self.subTest(cwd=cwd), patch.dict(os.environ, {"SystemRoot": "C:\\Windows"}), patch(
+                "sima_cli.install.metadata_installer._is_windows", return_value=True
+            ), patch(
+                "sima_cli.install.metadata_installer.Path.cwd", return_value=cwd
+            ), patch(
+                "sima_cli.install.metadata_installer.tempfile.NamedTemporaryFile"
+            ) as write_test:
+                with self.assertRaises(InstallationPreflightError) as raised:
+                    _ensure_install_dir_writable(".", command_name="sima-cli neat install")
+
+            message = raised.exception.message
+            self.assertIn(f"Current directory '{cwd}' is inside the Windows directory", message)
+            self.assertIn("mkdir -Force $HOME\\sima-install; cd $HOME\\sima-install", message)
+            self.assertIn("--install-dir <writable-directory>", message)
+            write_test.assert_not_called()
+
+    def test_directories_beside_the_windows_directory_are_usable(self):
+        with TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                with patch.dict(os.environ, {"SystemRoot": "C:\\Windows"}), patch(
+                    "sima_cli.install.metadata_installer._is_windows", return_value=True
+                ):
+                    _ensure_install_dir_writable(".")
+            finally:
+                os.chdir(original_cwd)
+        with patch.dict(os.environ, {"SystemRoot": "C:\\Windows"}):
+            from sima_cli.install.metadata_installer import _inside_windows_directory
+
+            self.assertFalse(_inside_windows_directory("C:\\WindowsApps\\work"))
+            self.assertFalse(_inside_windows_directory("C:\\Users\\sima\\Windows"))
+            self.assertTrue(_inside_windows_directory("C:\\Windows\\System32"))
+
     def test_installation_preflight_error_renders_yellow_panel(self):
         error = InstallationPreflightError("Current directory '/' is not writable.")
 

@@ -261,6 +261,16 @@ class WindowsPackageTests(unittest.TestCase):
             ), self.assertRaisesRegex(_WindowsPnpDriverVersionError, message):
                 _windows_pnp_driver_version("SiMa.ai MLA Device")
 
+    def test_metadata_rejects_an_unsupported_prerequisite_type(self):
+        self.metadata["installation"]["prerequisites"] = [{
+            "name": "GStreamer",
+            "type": "file",
+            "candidates": [{"environment": "TEST_GSTREAMER", "relative": "bin\\gst.dll"}],
+            "guidance": "Install GStreamer.",
+        }]
+        with self.assertRaisesRegex(MetadataValidationError, r"prerequisites\[0\]\.type"):
+            validate_metadata(self.metadata)
+
     def test_metadata_rejects_msi_not_in_resources(self):
         self.metadata["resources"].remove(self.msi.name)
         self.metadata["resources-checksum"].pop(self.msi.name)
@@ -885,19 +895,8 @@ class WindowsPackageTests(unittest.TestCase):
                 install_windows_package(self.metadata, str(self.root))
         run.assert_not_called()
 
-    def test_file_and_service_prerequisites_are_checked_before_msi(self):
-        runtime = self.root / "gstreamer" / "bin" / "gstreamer-1.0-0.dll"
-        runtime.parent.mkdir(parents=True)
-        runtime.write_bytes(b"fixture")
+    def test_service_prerequisite_is_checked_before_msi(self):
         self.metadata["installation"]["prerequisites"] = [
-            {
-                "name": "GStreamer",
-                "type": "file",
-                "candidates": [
-                    {"environment": "TEST_GSTREAMER", "relative": "bin\\gstreamer-1.0-0.dll"}
-                ],
-                "guidance": "Install GStreamer.",
-            },
             {
                 "name": "Platform service",
                 "type": "windows-service",
@@ -906,7 +905,7 @@ class WindowsPackageTests(unittest.TestCase):
             },
         ]
         self.assertTrue(validate_metadata(self.metadata))
-        with patch.dict(os.environ, {"TEST_GSTREAMER": str(runtime.parent.parent)}), patch(
+        with patch(
             "sima_cli.install.windows_package._check_windows_service", return_value=True
         ), patch(
             "sima_cli.install.windows_package._run", return_value=completed()

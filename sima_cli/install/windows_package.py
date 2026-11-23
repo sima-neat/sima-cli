@@ -503,13 +503,8 @@ def _check_prerequisites(metadata: Dict) -> List[Dict[str, str]]:
             except _WindowsPnpDriverVersionError as error:
                 passed = False
                 problem = str(error)
-        elif kind == "command-version":
+        else:  # command-version, the remaining type the validator accepts
             passed, actual = _check_command_version(prerequisite)
-        else:
-            passed = any(
-                path is not None and path.is_file()
-                for path in (_path_from_spec(candidate) for candidate in prerequisite["candidates"])
-            )
         if not passed:
             failures.append((prerequisite, actual, problem))
 

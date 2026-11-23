@@ -113,17 +113,9 @@ def _validate_windows_prerequisites(value):
                 raise MetadataValidationError(
                     f"'{prefix}.version-pattern' must contain exactly one capture group"
                 )
-        elif kind == "file":
-            candidates = prerequisite.get("candidates")
-            if not isinstance(candidates, list) or not candidates:
-                raise MetadataValidationError(f"'{prefix}.candidates' must be a non-empty list")
-            for candidate_index, candidate in enumerate(candidates):
-                _validate_windows_path_spec(
-                    candidate, f"{prefix}.candidates[{candidate_index}]"
-                )
         else:
             raise MetadataValidationError(
-                f"'{prefix}.type' must be one of: command-version, executable, file, "
+                f"'{prefix}.type' must be one of: command-version, executable, "
                 "windows-pnp-driver, windows-service"
             )
 

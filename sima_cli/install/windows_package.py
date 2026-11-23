@@ -626,7 +626,30 @@ def _python_install_guidance(python_package: Dict) -> str:
     return f"Install {required} for Windows from {PYTHON_WINDOWS_DOWNLOAD_URL}"
 
 
-def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
+def _venv_base_python(environment: Path) -> Optional[Path]:
+    """Return the interpreter a virtual environment was created from, per pyvenv.cfg."""
+    try:
+        lines = (environment / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    for line in lines:
+        key, separator, value = line.partition("=")
+        if separator and key.strip().lower() == "home" and value.strip():
+            return Path(value.strip()) / "python.exe"
+    return None
+
+
+def _managed_environment_remedy(environment: Path) -> str:
+    return (
+        "Remove it so the next install recreates it with a compatible Python "
+        f'(PowerShell: Remove-Item -Recurse -Force "{environment}"), or select another '
+        "interpreter with --python-executable <path>. No MSI was started."
+    )
+
+
+def _preflight_python(
+    metadata: Dict, python_executable: Optional[str], managed_environment: Optional[Path] = None
+) -> None:
     python_package = metadata["installation"].get("python")
     if not python_package or not python_executable:
         return
@@ -635,7 +658,20 @@ def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
         raise WindowsPrerequisiteError(
             f"Selected Python executable does not exist; no MSI was started: '{executable}'."
         )
+    if managed_environment is not None:
+        base = _venv_base_python(managed_environment)
+        if base is not None and not base.is_file():
+            raise WindowsPrerequisiteError(
+                f"Managed Python environment '{managed_environment}' was created from "
+                f"'{base}', which no longer exists, so the environment cannot run. "
+                + _managed_environment_remedy(managed_environment)
+            )
     facts, detail = _inspect_python([str(executable)], _wheel_name(python_package))
+    if facts is None and managed_environment is not None:
+        raise WindowsPrerequisiteError(
+            f"Managed Python environment '{managed_environment}' cannot run pip: {detail}. "
+            + _managed_environment_remedy(managed_environment)
+        )
     if facts is None:
         raise WindowsPrerequisiteError(
             f"Selected Python environment cannot run pip; no MSI was started: {detail}. "
@@ -644,6 +680,11 @@ def _preflight_python(metadata: Dict, python_executable: Optional[str]) -> None:
             f"{_python_install_guidance(python_package)}."
         )
     compatibility_error = _python_compatibility_error(python_package, facts)
+    if compatibility_error and managed_environment is not None:
+        raise WindowsPrerequisiteError(
+            f"Managed Python environment '{managed_environment}' cannot be reused: "
+            f"{compatibility_error} " + _managed_environment_remedy(managed_environment)
+        )
     if compatibility_error:
         raise WindowsPrerequisiteError(
             f"{compatibility_error} {_python_install_guidance(python_package)}, or select a "
@@ -671,12 +712,17 @@ def _python_bootstrap_candidates(required_version: Optional[str]) -> List[List[s
 
     candidates.append([sys.executable])
     local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data and required_version:
+    program_files = os.environ.get("ProgramFiles")
+    if required_version:
         compact = required_version.replace(".", "")
-        candidates.extend([
-            [str(Path(local_app_data) / "Programs" / "Python" / f"Python{compact}" / "python.exe")],
-            [str(Path(local_app_data) / "Python" / f"pythoncore-{required_version}-64" / "python.exe")],
-        ])
+        if local_app_data:
+            candidates.extend([
+                [str(Path(local_app_data) / "Programs" / "Python" / f"Python{compact}" / "python.exe")],
+                [str(Path(local_app_data) / "Python" / f"pythoncore-{required_version}-64" / "python.exe")],
+            ])
+        if program_files:
+            # The python.org installer's all-users location, used without the py launcher.
+            candidates.append([str(Path(program_files) / f"Python{compact}" / "python.exe")])
 
     unique = []
     seen = set()
@@ -693,14 +739,24 @@ def _python_bootstrap_candidates(required_version: Optional[str]) -> List[List[s
 
 def _bootstrap_python(python_package: Dict, environment: Path) -> List[str]:
     required_version = python_package.get("requires-python")
+    tried = []
     for command in _python_bootstrap_candidates(required_version):
-        facts, _ = _inspect_python(command, _wheel_name(python_package))
-        if facts is not None and _python_compatibility_error(python_package, facts) is None:
-            return command
+        facts, detail = _inspect_python(command, _wheel_name(python_package))
+        if facts is None:
+            lines = [line.strip() for line in detail.splitlines() if line.strip()]
+            reason = (lines[-1] if lines else "it did not run")[:200]
+        else:
+            reason = _python_compatibility_error(python_package, facts)
+            if reason is None:
+                return command
+        tried.append(f"  - {subprocess.list2cmdline(command)}: {reason}")
     required_arch = python_package.get("arch", "the required architecture")
+    found = (
+        "Interpreters tried:\n" + "\n".join(tried) if tried else "No Python interpreter was found."
+    )
     raise WindowsPrerequisiteError(
         f"A compatible Python {required_version or ''} {required_arch} installation is required "
-        f"to create '{environment}'. {_python_install_guidance(python_package)}, use "
+        f"to create '{environment}'. {found}\n{_python_install_guidance(python_package)}, use "
         "--python-executable <path>, or use --native-only. No MSI was started."
     )
 
@@ -719,7 +775,7 @@ def _managed_python_executable(metadata: Dict) -> str:
     environment = Path.home() / distribution
     executable = environment / "Scripts" / "python.exe"
     if executable.is_file():
-        _preflight_python(metadata, str(executable))
+        _preflight_python(metadata, str(executable), environment)
         click.echo(f"Using managed Python environment: {environment}")
         return str(executable)
     if environment.exists():
@@ -736,7 +792,8 @@ def _managed_python_executable(metadata: Dict) -> str:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
         raise WindowsPrerequisiteError(
             f"Could not create managed Python environment '{environment}': {detail}. "
-            "No MSI was started."
+            "Select an existing environment with --python-executable <path>, or use "
+            "--native-only. No MSI was started."
         )
     _preflight_python(metadata, str(executable))
     return str(executable)
@@ -1223,8 +1280,10 @@ def preflight_windows_package(
         environment = Path.home() / python_package["distribution"]
         managed = environment / "Scripts" / "python.exe"
         try:
-            if python_executable or managed.is_file():
-                _preflight_python(metadata, python_executable or str(managed))
+            if python_executable:
+                _preflight_python(metadata, python_executable)
+            elif managed.is_file():
+                _preflight_python(metadata, str(managed), environment)
             elif environment.exists():
                 raise _invalid_managed_environment(environment)
             else:

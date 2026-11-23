@@ -27,8 +27,10 @@ from sima_cli.install.windows_package import (
     WindowsPythonInstallError,
     WindowsSetupError,
     _WindowsPnpDriverVersionError,
+    _bootstrap_python,
     _managed_python_executable,
     _msi_product_code,
+    _python_bootstrap_candidates,
     _windows_pnp_driver_version,
     install_windows_package,
     uninstall_windows_package,
@@ -1447,6 +1449,122 @@ class WindowsPackageTests(unittest.TestCase):
 
         self.assertEqual(result, str(managed_python))
         self.assertEqual(run.call_count, 1)
+
+    def python_install(self, *parts):
+        """Create an interpreter fixture at a path below the test root."""
+        path = self.root.joinpath(*parts, "python.exe")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"python fixture")
+        return str(path)
+
+    def bootstrap_candidates(self, on_path=None, launcher=None, environment=None):
+        """List candidates for a host whose PATH holds on_path and no other Python."""
+        on_path = on_path or {}
+        names = dict(on_path, **({"py.exe": launcher} if launcher else {}))
+        sima_cli_python = self.python_install("sima-cli-env", "Scripts")
+        with patch.dict(os.environ, environment or {}, clear=True), patch(
+            "sima_cli.install.windows_package.shutil.which", side_effect=names.get
+        ), patch("sima_cli.install.windows_package.sys.executable", sima_cli_python):
+            return _python_bootstrap_candidates("3.14"), sima_cli_python
+
+    def inspect_by_command(self, results):
+        """Answer each interpreter inspection by the command's first two parts."""
+        def run(command, **_kwargs):
+            return results[" ".join(command[:2]) if command[1] == "-3.14" else command[0]]
+        return run
+
+    def test_all_users_python_314_is_a_bootstrap_candidate(self):
+        all_users = self.python_install("Program Files", "Python314")
+        candidates, _ = self.bootstrap_candidates(
+            environment={"ProgramFiles": str(self.root / "Program Files")}
+        )
+        self.assertIn([all_users], candidates)
+
+    def test_rejected_interpreters_are_listed_with_their_reasons(self):
+        python_313 = self.python_install("Python313")
+        store_alias = self.python_install("WindowsApps")
+        with patch(
+            "sima_cli.install.windows_package._python_bootstrap_candidates",
+            return_value=[["py.exe", "-3.14"], [store_alias], [python_313]],
+        ), patch("sima_cli.install.windows_package._run", side_effect=self.inspect_by_command({
+            "py.exe -3.14": completed(returncode=103, stderr="No suitable Python runtime found\n"),
+            store_alias: completed(
+                returncode=9009,
+                stderr="Python was not found; run without arguments to install from the "
+                       "Microsoft Store, or disable this shortcut from Settings > Apps.\n",
+            ),
+            python_313: python_facts(version="3.13", tag="cp313-cp313-win_amd64"),
+        })):
+            with self.assertRaises(WindowsPrerequisiteError) as raised:
+                _bootstrap_python(self.metadata["installation"]["python"], self.root / "venv")
+
+        message = raised.exception.message
+        self.assertIn("Interpreters tried:\n  - py.exe -3.14: No suitable Python runtime found\n", message)
+        self.assertIn(f"  - {store_alias}: Python was not found; run without arguments", message)
+        self.assertIn(
+            f"  - {python_313}: Python 3.13 was found; this package requires Python 3.14.\n", message
+        )
+        self.assertIn("--python-executable <path>, or use --native-only. No MSI was started.", message)
+
+    def test_managed_environment_on_an_unusable_home_points_to_python_executable(self):
+        home = Path("\\\\fileserver\\home\\sima")
+        with patch("sima_cli.install.windows_package.Path.home", return_value=home), patch(
+            "sima_cli.install.windows_package._python_bootstrap_candidates",
+            return_value=[[str(self.python)]],
+        ), patch("sima_cli.install.windows_package._run", side_effect=[
+            python_facts(),
+            completed(returncode=1, stderr="Error: [WinError 5] Access is denied"),
+        ]):
+            with self.assertRaises(WindowsPrerequisiteError) as raised:
+                _managed_python_executable(self.metadata)
+
+        message = raised.exception.message
+        self.assertIn("Access is denied", message)
+        self.assertIn("--python-executable <path>, or use --native-only. No MSI was started.", message)
+
+    def managed_environment(self, base_home):
+        home = self.root / "home"
+        environment = home / "pyneatpcie"
+        managed_python = environment / "Scripts" / "python.exe"
+        managed_python.parent.mkdir(parents=True)
+        managed_python.write_bytes(b"managed python fixture")
+        (environment / "pyvenv.cfg").write_text(
+            f"home = {base_home}\ninclude-system-site-packages = false\nversion = 3.13.5\n",
+            encoding="utf-8",
+        )
+        return home, environment
+
+    def test_reused_environment_with_an_old_python_names_the_fix(self):
+        home, environment = self.managed_environment(Path(self.python_install("Python313")).parent)
+        with patch("sima_cli.install.windows_package.Path.home", return_value=home), patch(
+            "sima_cli.install.windows_package._run",
+            return_value=python_facts(version="3.13", tag="cp313-cp313-win_amd64"),
+        ):
+            with self.assertRaises(WindowsPrerequisiteError) as raised:
+                _managed_python_executable(self.metadata)
+
+        message = raised.exception.message
+        self.assertIn(
+            f"Managed Python environment '{environment}' cannot be reused: Python 3.13 was found; "
+            "this package requires Python 3.14.", message,
+        )
+        self.assertIn(f'Remove-Item -Recurse -Force "{environment}"', message)
+        self.assertIn("--python-executable <path>", message)
+
+    def test_reused_environment_whose_base_python_was_removed_skips_ensurepip_advice(self):
+        removed = self.root / "Python313-removed"
+        home, environment = self.managed_environment(removed)
+        with patch("sima_cli.install.windows_package.Path.home", return_value=home), patch(
+            "sima_cli.install.windows_package._run"
+        ) as run:
+            with self.assertRaises(WindowsPrerequisiteError) as raised:
+                _managed_python_executable(self.metadata)
+
+        message = raised.exception.message
+        self.assertIn(f"was created from '{removed / 'python.exe'}', which no longer exists", message)
+        self.assertIn(f'Remove-Item -Recurse -Force "{environment}"', message)
+        self.assertNotIn("ensurepip", message)
+        run.assert_not_called()
 
     def test_default_install_blocks_before_msi_without_compatible_python(self):
         with patch(

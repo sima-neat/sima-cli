@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 from contextlib import contextmanager, nullcontext
@@ -24,6 +25,20 @@ def run(command: list[object], *, cwd: Path | None = None) -> None:
     argv = [str(value) for value in command]
     print("+", subprocess.list2cmdline(argv), flush=True)
     subprocess.run(argv, cwd=cwd, check=True)
+
+
+# Installs the release in a child process, as a qualifier or script that launches
+# sima-cli without input does.
+INSTALL_IN_CHILD = """
+import json, sys
+from sima_cli.install.windows_package import install_windows_package
+metadata, directory, result = sys.argv[1:]
+with open(metadata, encoding="utf-8") as file:
+    outcome = install_windows_package(json.load(file), directory)
+with open(result, "w", encoding="utf-8") as file:
+    json.dump(outcome, file, default=str)
+"""
+CHILD_TIMEOUT_SECONDS = 600
 
 
 def sha256(path: Path) -> str:
@@ -155,15 +170,26 @@ include(CPack)
 
         installed = removed = False
         try:
-            # Without interactive input the install skips the setup step and prints it.
-            with mock.patch.object(windows_package.sys, "stdin") as stdin:
-                stdin.isatty.return_value = False
-                result = install_windows_package(metadata, str(dist))
+            # With stdin=DEVNULL (the NUL device, which isatty() accepts on Windows) the
+            # install skips the setup step, which may prompt for a password, and prints it.
+            child_result = root / "noninteractive-result.json"
+            try:
+                child = subprocess.run(
+                    [sys.executable, "-I", "-c", INSTALL_IN_CHILD,
+                     dist / "metadata.json", dist, child_result],
+                    stdin=subprocess.DEVNULL, timeout=CHILD_TIMEOUT_SECONDS, check=False,
+                )
+            except subprocess.TimeoutExpired:
+                raise SystemExit(
+                    f"install with stdin=DEVNULL did not return within {CHILD_TIMEOUT_SECONDS} s")
             installed = True
+            if child.returncode != 0:
+                raise SystemExit(f"install with stdin=DEVNULL failed with {child.returncode}")
+            result = json.loads(child_result.read_text(encoding="utf-8"))
             if result["native"] != "installed":
                 raise SystemExit(f"unexpected native result: {result}")
             if result["setup"]["status"] != "skipped" or setup_marker.exists():
-                raise SystemExit(f"non-interactive install did not skip setup: {result}")
+                raise SystemExit(f"install with stdin=DEVNULL did not skip setup: {result}")
             payload = install_root / "share" / "payload.txt"
             if payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
                 raise SystemExit("installed MSI payload differs")
@@ -179,9 +205,8 @@ include(CPack)
             winreg.DeleteKeyEx(winreg.HKEY_LOCAL_MACHINE, package_key, winreg.KEY_WOW64_64KEY)
             # Stand in for an interactive console so the repeat runs the installed setup
             # step through cmd.exe from a Program Files path that contains a space.
-            with mock.patch.object(windows_package.sys, "stdin") as stdin, \
+            with mock.patch.object(windows_package, "_interactive_console", return_value=True), \
                     held_open(install_root / "share" / "in-use.txt"):
-                stdin.isatty.return_value = True
                 repeated = install_windows_package(metadata, str(dist))
             if repeated["setup"]["status"] != "passed" or not setup_marker.is_file():
                 raise SystemExit(f"interactive install did not run setup: {repeated}")
@@ -215,7 +240,7 @@ include(CPack)
             "product_code": product_guid, "install_root": str(install_root),
             "first_install": "PASS", "repeat_install_repairs": "PASS",
             "repair_restores_registry": "PASS", "repair_leaves_file_in_use": "PASS",
-            "setup_skipped_noninteractive": "PASS", "setup_ran_interactive": "PASS", "uninstall": "PASS",
+            "setup_skipped_stdin_devnull": "PASS", "setup_ran_interactive": "PASS", "uninstall": "PASS",
             "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")
 

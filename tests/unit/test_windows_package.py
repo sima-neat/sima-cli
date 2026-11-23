@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
@@ -204,7 +205,7 @@ class WindowsPackageTests(unittest.TestCase):
             "sima_cli.install.windows_package._is_windows_administrator", return_value=False
         ))
         stack.enter_context(patch(
-            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+            "sima_cli.install.windows_package._interactive_console", return_value=True
         ))
         stack.enter_context(patch("sima_cli.install.windows_package._run", side_effect=run))
         return stack
@@ -348,7 +349,7 @@ class WindowsPackageTests(unittest.TestCase):
         }
         return setup
 
-    def setup_environment(self, **variables):
+    def setup_environment(self, interactive=True, **variables):
         stack = ExitStack()
         stack.enter_context(patch.dict(os.environ, {
             "ProgramFiles": str(self.root), "COMSPEC": "cmd.exe", **variables
@@ -356,9 +357,26 @@ class WindowsPackageTests(unittest.TestCase):
         if "SIMAPCIE_SKIP_SETUP" not in variables:
             stack.enter_context(patch.dict(os.environ))
             os.environ.pop("SIMAPCIE_SKIP_SETUP", None)
+        if interactive is not None:
+            stack.enter_context(patch(
+                "sima_cli.install.windows_package._interactive_console", return_value=interactive
+            ))
+        return stack
+
+    def windows_stdin(self, is_console, has_window):
+        """Patch a Windows stdin that isatty() accepts: the console, or the NUL device."""
+        windll = MagicMock()
+        windll.kernel32.GetConsoleMode.return_value = 1 if is_console else 0
+        windll.kernel32.GetConsoleWindow.return_value = 0x10010 if has_window else 0
+        msvcrt = MagicMock()
+        msvcrt.get_osfhandle.return_value = 0x1C
+        stack = ExitStack()
         stack.enter_context(patch(
-            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+            "sima_cli.install.windows_package.ctypes.windll", windll, create=True
         ))
+        stack.enter_context(patch.dict(sys.modules, {"msvcrt": msvcrt}))
+        stdin = stack.enter_context(patch("sima_cli.install.windows_package.sys.stdin"))
+        stdin.isatty.return_value = True
         return stack
 
     def test_metadata_accepts_only_the_exact_setup_command_shape(self):
@@ -430,7 +448,7 @@ class WindowsPackageTests(unittest.TestCase):
             with self.subTest(reason=reason, variables=variables), self.setup_environment(
                 **variables
             ), patch(
-                "sima_cli.install.windows_package.sys.stdin.isatty", return_value=interactive
+                "sima_cli.install.windows_package._interactive_console", return_value=interactive
             ), patch(
                 "sima_cli.install.windows_package._run", return_value=completed()
             ) as run, redirect_stdout(output):
@@ -440,6 +458,33 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertEqual(run.call_count, 1)
                 self.assertIn(reason, output.getvalue())
                 self.assertIn(f'interactive PowerShell window:\n  & "{setup}"', output.getvalue())
+
+    def test_setup_runs_only_from_a_console_a_person_can_answer(self):
+        # A caller that passes stdin=subprocess.DEVNULL gives the NUL device, which isatty()
+        # accepts on Windows; the OpenSSH password prompt then waited for ever.
+        setup = self.declare_setup()
+        cases = [
+            ("NUL device", False, True, "skipped"),
+            ("console without a window", True, False, "skipped"),
+            ("console", True, True, "passed"),
+        ]
+        for name, is_console, has_window, status in cases:
+            output = io.StringIO()
+            with self.subTest(name), self.setup_environment(interactive=None), \
+                    self.windows_stdin(is_console, has_window), patch(
+                        "sima_cli.install.windows_package._run", return_value=completed()
+                    ) as run, redirect_stdout(output):
+                result = install_windows_package(self.metadata, str(self.root), native_only=True)
+
+                self.assertEqual(result["setup"]["status"], status)
+                if status == "skipped":
+                    self.assertEqual(run.call_count, 1)
+                    self.assertIn("input is not interactive", output.getvalue())
+                    self.assertIn(
+                        f'interactive PowerShell window:\n  & "{setup}"', output.getvalue()
+                    )
+                else:
+                    self.assertEqual(run.call_args.args[0], ["cmd.exe", "/d", "/c", str(setup)])
 
     def test_setup_failure_keeps_the_install_and_prints_the_command(self):
         setup = self.declare_setup()
@@ -933,7 +978,7 @@ class WindowsPackageTests(unittest.TestCase):
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
-            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=False
+            "sima_cli.install.windows_package._interactive_console", return_value=False
         ), patch("sima_cli.install.windows_package._run") as run:
             with self.assertRaises(WindowsNativeInstallError) as raised:
                 install_windows_package(
@@ -946,12 +991,24 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("this session is not elevated and its input is not interactive", message)
         self.assertIn("ask an administrator to run it", message)
 
+    def test_nul_stdin_non_elevated_session_fails_before_starting_installer(self):
+        with patch(
+            "sima_cli.install.windows_package._is_windows_administrator",
+            return_value=False,
+        ), self.windows_stdin(is_console=False, has_window=True), patch(
+            "sima_cli.install.windows_package._run"
+        ) as run:
+            with self.assertRaisesRegex(WindowsNativeInstallError, "input is not interactive"):
+                install_windows_package(self.metadata, str(self.root), native_only=True)
+
+        run.assert_not_called()
+
     def test_cancelled_elevation_stops_the_transaction(self):
         with patch(
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
-            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+            "sima_cli.install.windows_package._interactive_console", return_value=True
         ), patch(
             "sima_cli.install.windows_package._run", return_value=completed(returncode=1223)
         ):
@@ -967,7 +1024,7 @@ class WindowsPackageTests(unittest.TestCase):
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
-            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+            "sima_cli.install.windows_package._interactive_console", return_value=True
         ), patch(
             "sima_cli.install.windows_package._run",
             return_value=completed(returncode=ELEVATED_INSTALLER_EXIT_CODE_MISSING),
@@ -990,7 +1047,7 @@ class WindowsPackageTests(unittest.TestCase):
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
-            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+            "sima_cli.install.windows_package._interactive_console", return_value=True
         ), patch(
             "sima_cli.install.windows_package._run",
             return_value=completed(
@@ -2145,7 +2202,7 @@ class WindowsPackageTests(unittest.TestCase):
             "sima_cli.install.windows_package._is_windows_administrator",
             return_value=False,
         ), patch(
-            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+            "sima_cli.install.windows_package._interactive_console", return_value=True
         ), patch(
             "sima_cli.install.windows_package._run", return_value=completed(returncode=1223)
         ):

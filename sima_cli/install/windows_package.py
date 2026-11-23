@@ -63,6 +63,32 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
+def _interactive_console() -> bool:
+    """Whether a person can answer a prompt in this process's console.
+
+    isatty() alone is not enough on Windows: the NUL device is a character device, so a
+    caller that starts sima-cli with stdin=subprocess.DEVNULL still reports a terminal.
+    Input must be a console handle, and the console must have a window to type into.
+    """
+    if sys.stdin is None:
+        return False
+    try:
+        if not sys.stdin.isatty():
+            return False
+        if not _is_windows():
+            return True
+        import msvcrt
+
+        kernel32 = ctypes.windll.kernel32
+        handle = ctypes.c_void_p(msvcrt.get_osfhandle(sys.stdin.fileno()))
+        mode = ctypes.c_ulong()
+        return bool(kernel32.GetConsoleMode(handle, ctypes.byref(mode))) and bool(
+            kernel32.GetConsoleWindow()
+        )
+    except (AttributeError, ImportError, OSError, ValueError):
+        return False
+
+
 def _declared_resource(metadata: Dict, install_dir: str, resource: str) -> Path:
     resources = metadata.get("resources", [])
     if resource not in resources:
@@ -332,7 +358,7 @@ def _run_msi_operations(
                 ) from error
             handle_result(item, result.returncode, "")
         return
-    if not sys.stdin.isatty():
+    if not _interactive_console():
         raise WindowsNativeInstallError(
             "Changing the machine-wide Windows packages requires administrator approval, "
             "but this session is not elevated and its input is not interactive. Rerun the same "
@@ -1187,7 +1213,7 @@ def _run_setup_step(metadata: Dict, rerun: str = _RERUN_SAME_COMMAND) -> Dict[st
     skip_reason = None
     if os.environ.get(SETUP_SKIP_ENVIRONMENT, "").strip().lower() in {"1", "true", "yes", "on"}:
         skip_reason = f"{SETUP_SKIP_ENVIRONMENT} is set"
-    elif sys.stdin is None or not sys.stdin.isatty():
+    elif not _interactive_console():
         skip_reason = "this session's input is not interactive and the step may ask for a password"
     if skip_reason:
         click.echo(

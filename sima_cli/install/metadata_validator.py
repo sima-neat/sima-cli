@@ -378,6 +378,18 @@ def validate_metadata(data: dict):
                 _validate_windows_path_spec(
                     verification.get("command"), "installation.verification.command"
                 )
+            setup = install.get("setup")
+            if setup is not None:
+                if not isinstance(setup, dict) or set(setup) != {"command"}:
+                    raise MetadataValidationError(
+                        "'installation.setup' must be an object with only 'command'"
+                    )
+                command = setup["command"]
+                if not isinstance(command, dict) or set(command) != {"environment", "relative"}:
+                    raise MetadataValidationError(
+                        "'installation.setup.command' must have only 'environment' and 'relative'"
+                    )
+                _validate_windows_path_spec(command, "installation.setup.command")
             skills = install.get("skills")
             if skills is not None:
                 if not isinstance(skills, list) or not skills:

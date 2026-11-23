@@ -27,6 +27,8 @@ ELEVATED_INSTALLER_HASH_MISMATCH = 9003
 MSI_UNKNOWN_PRODUCT = 1605
 _PRODUCT_CODE = re.compile(r"\{[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}\}", re.IGNORECASE)
 PYTHON_WINDOWS_DOWNLOAD_URL = "https://www.python.org/downloads/windows/"
+# The variable install_pciehost.sh reads on Linux to skip the same setup step.
+SETUP_SKIP_ENVIRONMENT = "SIMAPCIE_SKIP_SETUP"
 
 
 class WindowsPackageRestartRequired(click.ClickException):
@@ -45,6 +47,10 @@ class WindowsNativeInstallError(click.ClickException):
 
 class WindowsPrerequisiteError(click.ClickException):
     """The host is not ready for the requested Windows package transaction."""
+
+
+class WindowsSetupError(click.ClickException):
+    """The packages installed, but their declared setup step did not complete."""
 
 
 class _WindowsPnpDriverVersionError(RuntimeError):
@@ -1052,6 +1058,58 @@ def _verify_native_installation(
     return {"status": "passed", "command": str(command)}
 
 
+def _run_setup_step(metadata: Dict, rerun: str = _RERUN_SAME_COMMAND) -> Dict[str, str]:
+    """Run the package's declared setup command last, in this console, as on Linux.
+
+    Like install_pciehost.sh, a failure keeps the installed packages and fails the
+    command. Unlike Linux, a session without interactive input skips the step,
+    because a first card enrollment asks for a password and Windows OpenSSH has
+    no sshpass equivalent.
+    """
+    setup = metadata["installation"].get("setup")
+    if not setup:
+        return {"status": "not-requested"}
+    command = _path_from_spec(setup["command"])
+    if command is None or not command.is_file():
+        raise WindowsSetupError(
+            "Native packages are installed, but their setup command is missing: "
+            f"'{command or setup['command']['relative']}'. The installation was kept; "
+            f"to repair it, {rerun}"
+        )
+    run_it = f'  & "{command}"'
+    skip_reason = None
+    if os.environ.get(SETUP_SKIP_ENVIRONMENT, "").strip().lower() in {"1", "true", "yes", "on"}:
+        skip_reason = f"{SETUP_SKIP_ENVIRONMENT} is set"
+    elif sys.stdin is None or not sys.stdin.isatty():
+        skip_reason = "this session's input is not interactive and the step may ask for a password"
+    if skip_reason:
+        click.echo(
+            f"Setup step skipped because {skip_reason}. To run it, enter this in an "
+            f"interactive PowerShell window:\n{run_it}"
+        )
+        return {"status": "skipped", "command": str(command)}
+
+    click.echo(f"Running the setup step:\n{run_it}")
+    invocation = [str(command)]
+    if command.suffix.lower() in {".bat", ".cmd"}:
+        invocation = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(command)]
+    try:
+        result = _run(invocation)
+    except OSError as error:
+        raise WindowsSetupError(
+            f"Native packages are installed, but the setup step could not be started: {error}. "
+            f"The installation was kept. To run the step, enter this in PowerShell:\n{run_it}"
+        ) from error
+    if result.returncode != 0:
+        raise WindowsSetupError(
+            f"Native packages are installed, but the setup step failed with exit code "
+            f"{result.returncode}. The installation was kept. Correct the problem reported "
+            f"above, then run the step again from PowerShell:\n{run_it}"
+        )
+    click.echo("Setup step completed.")
+    return {"status": "passed", "command": str(command)}
+
+
 def _declared_skill_id(spec: Dict[str, str]) -> str:
     skill_id = spec.get("id", "")
     if not skill_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", skill_id):
@@ -1194,6 +1252,7 @@ def install_windows_package(
         verification = _verify_native_installation(metadata, rerun)
         skills = _install_customer_skills(metadata, skill_manager)
         python_status = _install_python_wheel(metadata, install_dir, selected_python, rerun)
+        setup = _run_setup_step(metadata, rerun)
     except BaseException as error:
         # The caller records whether any native package completed before the failure
         # or interruption.
@@ -1206,6 +1265,7 @@ def install_windows_package(
         "skills": skills,
         "python": python_status,
         "python_executable": selected_python,
+        "setup": setup,
     }
 
 

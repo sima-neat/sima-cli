@@ -37,6 +37,7 @@ from sima_cli.install.windows_package import (
     WindowsPackageRestartRequired,
     WindowsPrerequisiteError,
     WindowsPythonInstallError,
+    WindowsSetupError,
     install_windows_package,
     preflight_windows_package,
 )
@@ -1665,6 +1666,11 @@ def install_from_metadata(
                             metadata.get("name"),
                             metadata.get("version"),
                             "prerequisite-failed",
+                        )
+                        raise
+                    except WindowsSetupError:
+                        registry.update_state(
+                            metadata.get("name"), metadata.get("version"), "setup-failed"
                         )
                         raise
                     except BaseException as error:

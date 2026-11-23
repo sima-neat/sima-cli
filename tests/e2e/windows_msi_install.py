@@ -13,8 +13,10 @@ import tempfile
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
+from unittest import mock
 
 from sima_cli.install.metadata_validator import validate_metadata
+from sima_cli.install import windows_package
 from sima_cli.install.windows_package import install_windows_package, uninstall_windows_package
 
 
@@ -62,10 +64,16 @@ def main() -> int:
         source.mkdir()
         dist.mkdir()
         (source / "payload.txt").write_text("sima-cli Windows MSI e2e\n", encoding="utf-8")
+        # The installed setup step records that it ran, as pcie-setup.cmd would enroll a card.
+        (source / "setup.cmd").write_text(
+            '@echo off\r\n>"%SIMA_CLI_E2E_SETUP_MARKER%" echo setup ran\r\n', encoding="utf-8")
+        setup_marker = root / "setup-ran.txt"
+        os.environ["SIMA_CLI_E2E_SETUP_MARKER"] = str(setup_marker)
+        os.environ.pop("SIMAPCIE_SKIP_SETUP", None)
         (source / "CMakeLists.txt").write_text(
             f"""cmake_minimum_required(VERSION 3.20)
 project(SimaCliMsiE2E VERSION 1.0.0 LANGUAGES C)
-install(FILES payload.txt DESTINATION share COMPONENT Runtime)
+install(FILES payload.txt setup.cmd DESTINATION share COMPONENT Runtime)
 set(CPACK_GENERATOR "WIX")
 set(CPACK_PACKAGE_NAME "sima-cli-msi-e2e")
 set(CPACK_PACKAGE_VERSION "1.0.0")
@@ -93,7 +101,13 @@ include(CPack)
             "platforms": [{"type": "host", "os": ["windows"], "arch": ["amd64"]}],
             "resources": [msi.name],
             "resources-checksum": {msi.name: sha256(msi)},
-            "installation": {"type": "windows-msi", "msi": msi.name},
+            "installation": {
+                "type": "windows-msi",
+                "msi": msi.name,
+                "setup": {"command": {
+                    "environment": "ProgramFiles", "relative": f"{install_name}\\share\\setup.cmd",
+                }},
+            },
         }
         (dist / "metadata.json").write_text(
             json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
@@ -101,14 +115,25 @@ include(CPack)
 
         installed = removed = False
         try:
-            result = install_windows_package(metadata, str(dist))
+            # Without interactive input the install skips the setup step and prints it.
+            with mock.patch.object(windows_package.sys, "stdin") as stdin:
+                stdin.isatty.return_value = False
+                result = install_windows_package(metadata, str(dist))
             installed = True
             if result["native"] != "installed":
                 raise SystemExit(f"unexpected native result: {result}")
+            if result["setup"]["status"] != "skipped" or setup_marker.exists():
+                raise SystemExit(f"non-interactive install did not skip setup: {result}")
             payload = install_root / "share" / "payload.txt"
             if payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
                 raise SystemExit("installed MSI payload differs")
-            repeated = install_windows_package(metadata, str(dist))
+            # Stand in for an interactive console so the repeat runs the installed setup
+            # step through cmd.exe from a Program Files path that contains a space.
+            with mock.patch.object(windows_package.sys, "stdin") as stdin:
+                stdin.isatty.return_value = True
+                repeated = install_windows_package(metadata, str(dist))
+            if repeated["setup"]["status"] != "passed" or not setup_marker.is_file():
+                raise SystemExit(f"interactive install did not run setup: {repeated}")
             if repeated["native"] != "installed":
                 raise SystemExit(f"unexpected repeat-install result: {repeated}")
             if payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
@@ -135,7 +160,8 @@ include(CPack)
         (root / "result.json").write_text(json.dumps({
             "status": "PASS", "msi_sha256": sha256(msi),
             "product_code": product_guid, "install_root": str(install_root),
-            "first_install": "PASS", "repeat_install": "PASS", "uninstall": "PASS",
+            "first_install": "PASS", "repeat_install": "PASS",
+            "setup_skipped_noninteractive": "PASS", "setup_ran_interactive": "PASS", "uninstall": "PASS",
             "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")
 

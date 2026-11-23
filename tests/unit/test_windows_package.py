@@ -25,6 +25,7 @@ from sima_cli.install.windows_package import (
     WindowsPackageRestartRequired,
     WindowsPrerequisiteError,
     WindowsPythonInstallError,
+    WindowsSetupError,
     _WindowsPnpDriverVersionError,
     _managed_python_executable,
     _msi_product_code,
@@ -334,6 +335,146 @@ class WindowsPackageTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(MetadataValidationError, "duplicate skill ID"):
             validate_metadata(self.metadata)
+
+    def declare_setup(self):
+        """Declare and create the setup command the Core metadata emits."""
+        setup = self.root / "SimaPCIeHost" / "bin" / "pcie-setup.cmd"
+        setup.parent.mkdir(parents=True)
+        setup.write_text("@exit /b 0\n", encoding="utf-8")
+        self.metadata["installation"]["setup"] = {
+            "command": {"environment": "ProgramFiles", "relative": "SimaPCIeHost\\bin\\pcie-setup.cmd"}
+        }
+        return setup
+
+    def setup_environment(self, **variables):
+        stack = ExitStack()
+        stack.enter_context(patch.dict(os.environ, {
+            "ProgramFiles": str(self.root), "COMSPEC": "cmd.exe", **variables
+        }))
+        if "SIMAPCIE_SKIP_SETUP" not in variables:
+            stack.enter_context(patch.dict(os.environ))
+            os.environ.pop("SIMAPCIE_SKIP_SETUP", None)
+        stack.enter_context(patch(
+            "sima_cli.install.windows_package.sys.stdin.isatty", return_value=True
+        ))
+        return stack
+
+    def test_metadata_accepts_only_the_exact_setup_command_shape(self):
+        self.declare_setup()
+        self.assertTrue(validate_metadata(self.metadata))
+        invalid = [
+            {"command": {"environment": "ProgramFiles", "relative": "bin\\pcie-setup.cmd"},
+             "arguments": ["-Hosts"]},
+            {"command": {"environment": "ProgramFiles", "relative": "bin\\pcie-setup.cmd",
+                         "arguments": "-Hosts"}},
+            {"command": {"environment": "ProgramFiles", "relative": "..\\pcie-setup.cmd"}},
+            {"command": {"environment": "ProgramFiles", "relative": "C:\\pcie-setup.cmd"}},
+            {"command": "pcie-setup.cmd"},
+            "pcie-setup.cmd",
+        ]
+        for setup in invalid:
+            with self.subTest(setup=setup):
+                self.metadata["installation"]["setup"] = setup
+                with self.assertRaisesRegex(MetadataValidationError, "installation.setup"):
+                    validate_metadata(self.metadata)
+
+    def test_setup_runs_last_in_the_console_after_the_wheel(self):
+        setup = self.declare_setup()
+        responses = [
+            python_facts(),
+            completed(),
+            completed(returncode=3),
+            completed(),
+            completed(stdout="0.6.1\n"),
+            completed(),
+            completed(),
+        ]
+        output = io.StringIO()
+        with self.setup_environment(), patch(
+            "sima_cli.install.windows_package._run", side_effect=responses
+        ) as run, redirect_stdout(output):
+            result = install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python)
+            )
+
+        self.assertEqual(result["python"], "installed")
+        self.assertEqual(result["setup"], {"status": "passed", "command": str(setup)})
+        last = run.call_args_list[-1]
+        self.assertEqual(last.args[0], ["cmd.exe", "/d", "/c", str(setup)])
+        # Not captured: OpenSSH prompts and setup output reach the user's console.
+        self.assertEqual(last.kwargs, {})
+        self.assertIn("pip", run.call_args_list[3].args[0])
+        self.assertIn(f'Running the setup step:\n  & "{setup}"', output.getvalue())
+
+    def test_native_only_install_still_runs_setup(self):
+        setup = self.declare_setup()
+        with self.setup_environment(), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ) as run, redirect_stdout(io.StringIO()):
+            result = install_windows_package(self.metadata, str(self.root), native_only=True)
+
+        self.assertEqual(result["setup"]["status"], "passed")
+        self.assertEqual(run.call_args_list[-1].args[0], ["cmd.exe", "/d", "/c", str(setup)])
+
+    def test_setup_is_skipped_with_the_linux_variable_or_without_interactive_input(self):
+        setup = self.declare_setup()
+        cases = [
+            ({"SIMAPCIE_SKIP_SETUP": "1"}, True, "because SIMAPCIE_SKIP_SETUP is set"),
+            ({"SIMAPCIE_SKIP_SETUP": "On"}, True, "because SIMAPCIE_SKIP_SETUP is set"),
+            ({}, False, "input is not interactive"),
+        ]
+        for variables, interactive, reason in cases:
+            output = io.StringIO()
+            with self.subTest(reason=reason, variables=variables), self.setup_environment(
+                **variables
+            ), patch(
+                "sima_cli.install.windows_package.sys.stdin.isatty", return_value=interactive
+            ), patch(
+                "sima_cli.install.windows_package._run", return_value=completed()
+            ) as run, redirect_stdout(output):
+                result = install_windows_package(self.metadata, str(self.root), native_only=True)
+
+                self.assertEqual(result["setup"]["status"], "skipped")
+                self.assertEqual(run.call_count, 1)
+                self.assertIn(reason, output.getvalue())
+                self.assertIn(f'interactive PowerShell window:\n  & "{setup}"', output.getvalue())
+
+    def test_setup_failure_keeps_the_install_and_prints_the_command(self):
+        setup = self.declare_setup()
+        with self.setup_environment(), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=[completed(), completed(returncode=1)],
+        ):
+            with self.assertRaises(WindowsSetupError) as raised:
+                install_windows_package(self.metadata, str(self.root), native_only=True)
+
+        message = raised.exception.message
+        self.assertIn("setup step failed with exit code 1", message)
+        self.assertIn("The installation was kept", message)
+        self.assertTrue(message.endswith(f'from PowerShell:\n  & "{setup}"'))
+        self.assertEqual(raised.exception.native_packages_installed, ["native"])
+
+    def test_setup_failure_records_setup_failed_and_exits_non_zero(self):
+        self.declare_setup()
+        with self.setup_environment(), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=[completed(), completed(returncode=1)],
+        ):
+            registry, output = self.install_from_windows_metadata(fails=True)
+
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "setup-failed"
+        )
+        self.assertIn("setup step failed with exit code 1", output)
+
+    def test_missing_setup_command_after_install_is_reported(self):
+        setup = self.declare_setup()
+        setup.unlink()
+        with self.setup_environment(), patch(
+            "sima_cli.install.windows_package._run", return_value=completed()
+        ):
+            with self.assertRaisesRegex(WindowsSetupError, "setup command is missing"):
+                install_windows_package(self.metadata, str(self.root), native_only=True)
 
     def test_native_only_invokes_msiexec_and_does_not_invoke_pip(self):
         self.metadata["installation"]["python"]["distribution"] = "other-package"

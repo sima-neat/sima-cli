@@ -3,19 +3,19 @@
 
 from __future__ import annotations
 
-import hashlib
 import argparse
-from contextlib import nullcontext
+import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import uuid
+from contextlib import nullcontext
+from pathlib import Path
 
 from sima_cli.install.metadata_validator import validate_metadata
-from sima_cli.install.windows_package import install_windows_package
+from sima_cli.install.windows_package import install_windows_package, uninstall_windows_package
 
 
 def run(command: list[object], *, cwd: Path | None = None) -> None:
@@ -99,7 +99,7 @@ include(CPack)
             json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         validate_metadata(json.loads((dist / "metadata.json").read_text(encoding="utf-8")))
 
-        installed = False
+        installed = removed = False
         try:
             result = install_windows_package(metadata, str(dist))
             installed = True
@@ -113,9 +113,11 @@ include(CPack)
                 raise SystemExit(f"unexpected repeat-install result: {repeated}")
             if payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
                 raise SystemExit("repeat installation changed the MSI payload")
+            if uninstall_windows_package({"native_packages": repeated["native_packages"]}):
+                raise SystemExit("disposable MSI removal unexpectedly requested a restart")
+            removed = True
         finally:
-            installed = installed or install_root.exists()
-            if installed:
+            if not removed and (installed or install_root.exists()):
                 uninstall_log = dist / "msi-uninstall.log"
                 result = subprocess.run(
                     [
@@ -133,7 +135,8 @@ include(CPack)
         (root / "result.json").write_text(json.dumps({
             "status": "PASS", "msi_sha256": sha256(msi),
             "product_code": product_guid, "install_root": str(install_root),
-            "first_install": "PASS", "repeat_install": "PASS", "cleanup": "PASS",
+            "first_install": "PASS", "repeat_install": "PASS", "uninstall": "PASS",
+            "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")
 
     print("WINDOWS_MSI_INSTALL_E2E_PASS")

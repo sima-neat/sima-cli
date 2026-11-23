@@ -14,6 +14,7 @@ class WindowsCiWorkflowTests(unittest.TestCase):
         self.assertIn("project(SimaCliMsiE2E VERSION 1.0.0 LANGUAGES C)", source)
         self.assertIn('"-A", "x64"', source)
         self.assertIn('"--work-directory"', source)
+        self.assertIn("uninstall_windows_package(", source)
 
     def test_msi_job_consumes_built_wheel_without_source_imports(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")

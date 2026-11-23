@@ -11,19 +11,40 @@ WORKFLOW = ROOT / ".github/workflows/vulcan-ci.yml"
 RUN_INSTALLER = '"!PYTHON_INSTALLER!" /quiet'
 
 
-def parenthesised_blocks(script):
-    """Return the lines of every multi-line ( ... ) block, nested blocks included."""
-    open_blocks, blocks = [], []
-    for line in script.splitlines():
-        text = line.strip()
-        if text.startswith(")") and not text.endswith("("):
-            blocks.append(open_blocks.pop())
-        for block in open_blocks:
-            block.append(text)
-        if text.endswith("(") and not text.startswith(")"):
-            open_blocks.append([text])
-    assert not open_blocks, open_blocks
-    return blocks
+def exits_not_last_in_statement(script):
+    """Return each exit /b line that has another command after it in the same statement.
+
+    Run as cmd /c script.bat, an exit /b followed by any command in its ( ... ) block, at any
+    nesting level and even a rem, or after & on its line, ends the script with exit code 0;
+    ERRORLEVEL is still set, so call script.bat sees the code but cmd /c does not.
+    """
+    lines = [line.strip() for line in script.splitlines()]
+    depths, depth = [], 0
+    for text in lines:
+        if text.startswith(")"):
+            depth -= 1
+        depths.append(depth)
+        if text.endswith("("):
+            depth += 1
+    assert depth == 0, depth
+    found = []
+    for index, text in enumerate(lines):
+        match = re.search(r"\bexit\s+/b\b(.*)$", text, re.IGNORECASE)
+        if not match or re.match(r"rem\b", text, re.IGNORECASE):
+            continue
+        if not re.fullmatch(r"\s*[^\s&|()]*\s*", match.group(1)):
+            found.append(text)
+            continue
+        open_blocks = depths[index] + (1 if text.endswith("(") else 0)
+        for after in lines[index + 1:]:
+            if not open_blocks:
+                break
+            if after == ")":
+                open_blocks -= 1
+            elif after:
+                found.append(text)
+                break
+    return found
 
 
 class WindowsInstallerScriptTests(unittest.TestCase):
@@ -75,7 +96,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("$s.Status -ne 'Valid'", self.script)
         self.assertIn("GetNameInfo('SimpleName', $false) -ne 'Python Software Foundation'", self.script)
         failure = self.script[check:run]
-        self.assertIn("exit /b 1", failure)
+        self.assertIn('set "PYTHON_FAILED=1"', failure)
 
     def test_python_installer_matches_pinned_sha256_before_it_runs(self):
         url = re.search(r"/ftp/python/[^/]+/(python-[^/\s\"]+\.exe)", self.script).group(1)
@@ -92,35 +113,52 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertNotIn("%TEMP%\\python-", self.script)
         self.assertIn('set "PYTHON_DOWNLOAD=%TEMP%\\sima-cli-python-%RANDOM%%RANDOM%%RANDOM%"', self.script)
         create = self.script.index('mkdir "!PYTHON_DOWNLOAD!"')
-        self.assertIn("exit /b 1", self.script[create:].split("powershell", 1)[0])
+        # A directory that already existed is not this run's, so it is left alone.
+        self.assertIn(
+            "    if errorlevel 1 (\n"
+            "        echo Could not create a new download directory: !PYTHON_DOWNLOAD!\n"
+            '        set "PYTHON_FAILED=1"\n',
+            self.script[create:],
+        )
+        self.assertIn('        set "PYTHON_DOWNLOAD="\n', self.script[create:].split("powershell", 1)[0])
         self.assertLess(create, self.script.index("Invoke-WebRequest"))
         self.assertNotIn('del "!PYTHON_INSTALLER!"', self.script)
-        self.assertEqual(self.script.count('rmdir /s /q "!PYTHON_DOWNLOAD!"'), 3)
+        self.assertEqual(self.script.count('rmdir /s /q "!PYTHON_DOWNLOAD!"'), 1)
+        self.assertIn('set "PYTHON_DOWNLOAD="\nset "PYTHON_FAILED="\nif not defined PYTHON (\n', self.script)
+        cleanup = self.script.index('if defined PYTHON_DOWNLOAD rmdir /s /q "!PYTHON_DOWNLOAD!"\n')
+        self.assertLess(self.script.index(RUN_INSTALLER), cleanup)
 
-    def test_no_exit_inside_a_block_that_contains_start(self):
-        # On Windows 11, cmd /c returned 0 for an exit /b 1 in a block that also held a
-        # start line, so a refused Python installer looked like a successful install.
-        blocks = parenthesised_blocks(self.script)
-        self.assertTrue(any("exit /b 1" in line for block in blocks for line in block))
-        for block in blocks:
-            if any(re.match(r"(?:.*(?:[(&|]|\bdo)\s*)?start\s", line, re.IGNORECASE) for line in block):
-                exits = [line for line in block if re.search(r"\bexit\s+/b\b", line, re.IGNORECASE)]
-                self.assertEqual(exits, [], block[0])
-
-    def test_failed_python_installer_exits_non_zero(self):
-        run = self.script.index(RUN_INSTALLER)
-        self.assertNotRegex(self.script[run - 20:run], r"start\s")
-        self.assertIn(
-            '    set "PYTHON_INSTALL_EXIT=!errorlevel!"\n'
-            '    rmdir /s /q "!PYTHON_DOWNLOAD!"\n',
-            self.script[run:],
+    def test_every_exit_ends_its_statement(self):
+        # On Windows 11, cmd /c windows.bat returned 0 after the Python bootstrap refused to
+        # continue, because more commands followed each exit /b 1 in that block.
+        self.assertEqual(exits_not_last_in_statement(self.script), [])
+        self.assertEqual(
+            exits_not_last_in_statement("if 1==1 (\n    exit /b 1\n)\nexit /b 1\nif 1==1 exit /b 1\n"), []
         )
+        for script in (
+            "if 1==1 (\n    if 1==1 (\n        exit /b 1\n    )\n    rem more\n)\n",
+            "if 1==1 (\n    exit /b 1\n) else (\n    echo more\n)\n",
+            "if 1==1 exit /b 1 & rem more\n",
+        ):
+            self.assertEqual(len(exits_not_last_in_statement(script)), 1, script)
+
+    def test_failed_python_bootstrap_step_exits_non_zero(self):
+        # Each later step is skipped once one fails, and the script then exits at the top level.
+        gate = "if not defined PYTHON if not defined PYTHON_FAILED (\n"
+        self.assertEqual(self.script.count(gate), 3)
+        self.assertEqual(self.script.count('set "PYTHON_FAILED=1"'), 4)
+        run = self.script.index(RUN_INSTALLER)
+        self.assertLess(self.script.rindex(gate), run)
         self.assertIn(
             '    if not "!PYTHON_INSTALL_EXIT!"=="0" if not "!PYTHON_INSTALL_EXIT!"=="3010" (\n'
             "        echo The Python installer failed with exit code !PYTHON_INSTALL_EXIT!.\n"
-            "        exit /b 1\n",
+            '        set "PYTHON_FAILED=1"\n',
             self.script[run:],
         )
+        failed = self.script.index("\nif defined PYTHON_FAILED exit /b 1\n")
+        self.assertLess(run, failed)
+        self.assertLess(failed, self.script.index("echo Python installation failed"))
+        self.assertLess(failed, self.script.index('-m venv --clear "%INSTALL_DIR%"'))
 
     def test_python_installs_for_all_users_only_when_elevated(self):
         self.assertIn("InstallAllUsers=!PYTHON_ALL_USERS! InstallLauncherAllUsers=!PYTHON_ALL_USERS!", self.script)

@@ -33,6 +33,11 @@ if not errorlevel 1 set "PYTHON=python"
 if not defined PYTHON for /f "delims=" %%P in ('py -3.14 -c "import sys; print(sys.executable)" 2^>nul ^<nul') do set "PYTHON=%%P"
 set PYTHON_LOCATIONS="%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%ProgramFiles%\Python314\python.exe"
 for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON ( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )
+rem Under cmd /c, an exit /b followed by any other command in its ( ... ) block, or after & on its line,
+rem ends the script with exit code 0. So a failed step records the failure, the steps after it are
+rem skipped, and the script exits at the top level.
+set "PYTHON_DOWNLOAD="
+set "PYTHON_FAILED="
 if not defined PYTHON (
     set "PYTHON_URL=https://www.python.org/ftp/python/3.14.10/python-3.14.10-amd64.exe"
     set "PYTHON_SHA256=92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965"
@@ -48,36 +53,42 @@ if not defined PYTHON (
     mkdir "!PYTHON_DOWNLOAD!"
     if errorlevel 1 (
         echo Could not create a new download directory: !PYTHON_DOWNLOAD!
-        exit /b 1
+        set "PYTHON_FAILED=1"
+        rem Not this run's directory, so it is not removed.
+        set "PYTHON_DOWNLOAD="
     )
+)
+if not defined PYTHON if not defined PYTHON_FAILED (
     powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri $env:PYTHON_URL -OutFile $env:PYTHON_INSTALLER"
     if errorlevel 1 (
         echo Failed to download !PYTHON_URL!
-        rmdir /s /q "!PYTHON_DOWNLOAD!"
-        exit /b 1
+        set "PYTHON_FAILED=1"
     )
+)
+if not defined PYTHON if not defined PYTHON_FAILED (
     powershell -NoProfile -ExecutionPolicy Bypass -Command "if ((Get-FileHash -LiteralPath $env:PYTHON_INSTALLER -Algorithm SHA256).Hash -ne $env:PYTHON_SHA256) { exit 1 }; $s = Get-AuthenticodeSignature -LiteralPath $env:PYTHON_INSTALLER; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName', $false) -ne 'Python Software Foundation') { exit 1 }"
     if errorlevel 1 (
         echo The downloaded Python installer does not match the pinned SHA-256 or is not validly signed by the Python Software Foundation. It was not run.
-        rmdir /s /q "!PYTHON_DOWNLOAD!"
-        exit /b 1
+        set "PYTHON_FAILED=1"
     )
-    rem A batch file waits for the installer without start; under cmd /c, a start line in this
-    rem block made the exit /b 1 above end the script with exit code 0.
+)
+if not defined PYTHON if not defined PYTHON_FAILED (
+    rem A batch file waits for the installer to finish.
     "!PYTHON_INSTALLER!" /quiet InstallAllUsers=!PYTHON_ALL_USERS! InstallLauncherAllUsers=!PYTHON_ALL_USERS! PrependPath=1 Include_test=0
     set "PYTHON_INSTALL_EXIT=!errorlevel!"
-    rmdir /s /q "!PYTHON_DOWNLOAD!"
     rem 3010 means installed, with a restart pending.
     if not "!PYTHON_INSTALL_EXIT!"=="0" if not "!PYTHON_INSTALL_EXIT!"=="3010" (
         echo The Python installer failed with exit code !PYTHON_INSTALL_EXIT!.
-        exit /b 1
+        set "PYTHON_FAILED=1"
     )
-    rem An existing 3.14 can keep its own scope, so accept either location.
-    for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON ( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )
-    if not defined PYTHON (
-        echo Python installation failed: no Python 3.14 runs from !PYTHON_LOCATIONS!
-        exit /b 1
-    )
+)
+if defined PYTHON_DOWNLOAD rmdir /s /q "!PYTHON_DOWNLOAD!"
+if defined PYTHON_FAILED exit /b 1
+rem An existing 3.14 can keep its own scope, so accept either location.
+for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON ( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )
+if not defined PYTHON (
+    echo Python installation failed: no Python 3.14 runs from !PYTHON_LOCATIONS!
+    exit /b 1
 )
 "%PYTHON%" -c "import struct, sys; sys.exit(0 if sys.version_info[:2] == (3, 14) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
 if errorlevel 1 echo Note: the Windows PCIe host package needs 64-bit Python 3.14 from https://www.python.org/downloads/windows/

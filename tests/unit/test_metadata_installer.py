@@ -819,7 +819,7 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
         message = raised.exception.message
         self.assertIn(
             "for example in PowerShell:\n"
-            "  mkdir -Force $HOME\\sima-install; cd $HOME\\sima-install\n"
+            "  mkdir -Force $HOME\\neat-pcie; cd $HOME\\neat-pcie\n"
             "  sima-cli neat install ...",
             message,
         )
@@ -840,7 +840,7 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
 
             message = raised.exception.message
             self.assertIn(f"Current directory '{cwd}' is inside the Windows directory", message)
-            self.assertIn("mkdir -Force $HOME\\sima-install; cd $HOME\\sima-install", message)
+            self.assertIn("mkdir -Force $HOME\\neat-pcie; cd $HOME\\neat-pcie", message)
             self.assertIn("--install-dir <writable-directory>", message)
             write_test.assert_not_called()
 

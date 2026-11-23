@@ -82,7 +82,7 @@ def _work_directory_advice(command_name: str) -> str:
     if _is_windows():
         return (
             "Run the command again from a writable work directory, for example in PowerShell:\n"
-            "  mkdir -Force $HOME\\sima-install; cd $HOME\\sima-install\n"
+            "  mkdir -Force $HOME\\neat-pcie; cd $HOME\\neat-pcie\n"
             f"  {command_name} ...\n\n"
         )
     return (

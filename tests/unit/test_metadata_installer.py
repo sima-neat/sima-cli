@@ -862,6 +862,32 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
             self.assertFalse(_inside_windows_directory("C:\\Users\\sima\\Windows"))
             self.assertTrue(_inside_windows_directory("C:\\Windows\\System32"))
 
+    def test_windows_11_is_detected_from_the_build_number(self):
+        from types import SimpleNamespace
+        from sima_cli.install.metadata_installer import _detected_host_platform
+
+        # (build, product type, platform.release() of the interpreter running sima-cli)
+        cases = [
+            (19045, 1, "10", "10"),      # Windows 10 22H2
+            (22631, 1, "10", "11"),      # Windows 11 23H2 seen by an older Python
+            (26100, 1, "10", "11"),      # Windows 11 24H2
+            (26200, 1, "11", "11"),      # Windows 11 25H2
+            (26100, 3, "2025Server", "2025Server"),  # Windows Server 2025 is not Windows 11
+        ]
+        for build, product_type, release, expected in cases:
+            version = SimpleNamespace(major=10, minor=0, build=build, product_type=product_type)
+            with self.subTest(build=build, product_type=product_type), patch(
+                "sima_cli.install.metadata_installer.platform.system", return_value="Windows"
+            ), patch(
+                "sima_cli.install.metadata_installer.platform.release", return_value=release
+            ), patch(
+                "sima_cli.install.metadata_installer.sys.getwindowsversion",
+                return_value=version, create=True,
+            ), patch(
+                "sima_cli.install.metadata_installer.current_host_arch", return_value="amd64"
+            ):
+                self.assertEqual(_detected_host_platform(), ("windows", expected, "amd64"))
+
     def test_installation_preflight_error_renders_yellow_panel(self):
         error = InstallationPreflightError("Current directory '/' is not writable.")
 

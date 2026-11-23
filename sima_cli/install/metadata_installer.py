@@ -1287,6 +1287,18 @@ def _get_palette_sdk_version(release_file: Path = Path("/etc/sdk-release")) -> s
     return match.group(1).split("_", 1)[0].strip()
 
 
+def _windows_release() -> str:
+    """Return the Windows client release, reading Windows 11 from its build number.
+
+    platform.release() reports "10" for Windows 11 on Python versions released
+    before it. Client builds from 22000 are Windows 11; servers keep their release.
+    """
+    version = sys.getwindowsversion()
+    if version.major == 10 and version.product_type == 1 and version.build >= 22000:
+        return "11"
+    return platform.release() or "Unknown"
+
+
 def _detected_host_platform() -> tuple:
     os_name = platform.system().lower()
     os_version = "Unknown"
@@ -1294,7 +1306,7 @@ def _detected_host_platform() -> tuple:
     if os_name == "darwin":
         return "mac", platform.mac_ver()[0] or "Unknown", current_host_arch()
     if os_name == "windows":
-        return "windows", platform.release() or "Unknown", current_host_arch()
+        return "windows", _windows_release(), current_host_arch()
     if os_name != "linux":
         return os_name, os_version, current_host_arch()
 

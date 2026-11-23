@@ -510,7 +510,7 @@ class WindowsPackageTests(unittest.TestCase):
 
         scheduler, core = (entry.args[0] for entry in run.call_args_list)
         self.assertEqual(scheduler[1:], [
-            "/fa", str(self.scheduler_msi), "/passive", "/norestart", "/L*v",
+            "/fomus", str(self.scheduler_msi), "/passive", "/norestart", "/L*v",
             str(self.root / "sima-cli-msi-install-01-scheduler.log"),
         ])
         self.assertEqual(core[1:3], ["/i", str(self.msi)])
@@ -2334,6 +2334,23 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("Native packages installed in this run: scheduler.", output)
         self.assertIn("Not yet run: native packages core", output)
         self.assertIn("rerun the same command", output)
+        registry.update_state.assert_called_once_with(
+            self.metadata["name"], self.metadata["version"], "restart-required"
+        )
+
+    def test_repair_that_needs_a_restart_is_reported_like_an_install(self):
+        # A repair that has to replace a file in use ends with 3010, as an install does.
+        self.use_scheduler_and_core()
+        with patch(
+            "sima_cli.install.windows_package._msi_product_installed", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run", return_value=completed(returncode=3010)
+        ) as run:
+            registry, output = self.install_from_windows_metadata(fails=True, exit_code=3010)
+
+        self.assertEqual(run.call_args.args[0][1], "/fomus")
+        self.assertIn("Restart required", output)
+        self.assertIn("Not yet run: native packages core", output)
         registry.update_state.assert_called_once_with(
             self.metadata["name"], self.metadata["version"], "restart-required"
         )

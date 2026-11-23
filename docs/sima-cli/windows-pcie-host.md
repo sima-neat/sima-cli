@@ -57,7 +57,11 @@ command that runs the step again.
 
 Repeating the command runs the same checks and repairs, in the same order,
 each MSI that is already installed: `sima-cli` passes it to Windows Installer
-with `/fa`, which reinstalls the package's files. A newer
+with `/fomus`, which reinstalls files that are missing or older than the
+release's and rewrites the package's registry entries and shortcuts; files that
+are present and current are left alone. If a file that needs replacing is in
+use, Windows Installer may ask for a restart, so close running PCIe applications
+before you repeat the command. A newer
 release upgrades the packages in place and replaces the older release's
 registry receipt. Windows Installer does not downgrade a package in place; to
 install an older release, remove the installed one as described below, then

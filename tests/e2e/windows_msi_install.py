@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -30,6 +30,42 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@contextmanager
+def held_open(path: Path):
+    """Keep a file open as a running application keeps its DLLs: shared for reading only."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    generic_read, file_share_read, open_existing = 0x80000000, 0x1, 3
+    handle = kernel32.CreateFileW(
+        str(path), generic_read, file_share_read, None, open_existing, 0, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        yield
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def registry_values(key_path: str) -> dict[str, object]:
+    import winreg
+
+    access = winreg.KEY_READ | winreg.KEY_WOW64_64KEY
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, access) as key:
+            count = winreg.QueryInfoKey(key)[1]
+            return {name: value for name, value, _kind in
+                    (winreg.EnumValue(key, index) for index in range(count))}
+    except FileNotFoundError:
+        return {}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-directory", type=Path,
@@ -37,6 +73,8 @@ def main() -> int:
     args = parser.parse_args()
     if os.name != "nt":
         raise SystemExit("this end-to-end test requires native Windows")
+    import winreg
+
     cmake = shutil.which("cmake.exe")
     cpack = shutil.which("cpack.exe")
     if not cmake or not cpack:
@@ -64,6 +102,7 @@ def main() -> int:
         source.mkdir()
         dist.mkdir()
         (source / "payload.txt").write_text("sima-cli Windows MSI e2e\n", encoding="utf-8")
+        (source / "in-use.txt").write_text("held open during the repair\n", encoding="utf-8")
         # The installed setup step records that it ran, as pcie-setup.cmd would enroll a card.
         (source / "setup.cmd").write_text(
             '@echo off\r\n>"%SIMA_CLI_E2E_SETUP_MARKER%" echo setup ran\r\n', encoding="utf-8")
@@ -73,7 +112,7 @@ def main() -> int:
         (source / "CMakeLists.txt").write_text(
             f"""cmake_minimum_required(VERSION 3.20)
 project(SimaCliMsiE2E VERSION 1.0.0 LANGUAGES C)
-install(FILES payload.txt setup.cmd DESTINATION share COMPONENT Runtime)
+install(FILES payload.txt in-use.txt setup.cmd DESTINATION share COMPONENT Runtime)
 set(CPACK_GENERATOR "WIX")
 set(CPACK_PACKAGE_NAME "sima-cli-msi-e2e")
 set(CPACK_PACKAGE_VERSION "1.0.0")
@@ -83,6 +122,7 @@ set(CPACK_WIX_ARCHITECTURE x64)
 set(CPACK_WIX_INSTALL_SCOPE perMachine)
 set(CPACK_WIX_UPGRADE_GUID "{upgrade_guid}")
 set(CPACK_WIX_PRODUCT_GUID "{product_guid}")
+set(CPACK_WIX_CMAKE_PACKAGE_REGISTRY "{install_name}")
 set(CPACK_COMPONENTS_ALL Runtime)
 include(CPack)
 """,
@@ -127,11 +167,20 @@ include(CPack)
             payload = install_root / "share" / "payload.txt"
             if payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
                 raise SystemExit("installed MSI payload differs")
-            # Rerunning the same release repairs it: a deleted file comes back.
+            # The Scheduler and Core MSIs write the same kind of machine registry entry.
+            package_key = f"SOFTWARE\\Kitware\\CMake\\Packages\\{install_name}"
+            package_values = registry_values(package_key)
+            if not package_values:
+                raise SystemExit(f"MSI did not write HKLM\\{package_key}")
+            # Rerunning the same release repairs it: a deleted file and a deleted machine
+            # registry entry come back, and an unchanged file that an application holds
+            # open is left alone instead of requiring a restart.
             payload.unlink()
+            winreg.DeleteKeyEx(winreg.HKEY_LOCAL_MACHINE, package_key, winreg.KEY_WOW64_64KEY)
             # Stand in for an interactive console so the repeat runs the installed setup
             # step through cmd.exe from a Program Files path that contains a space.
-            with mock.patch.object(windows_package.sys, "stdin") as stdin:
+            with mock.patch.object(windows_package.sys, "stdin") as stdin, \
+                    held_open(install_root / "share" / "in-use.txt"):
                 stdin.isatty.return_value = True
                 repeated = install_windows_package(metadata, str(dist))
             if repeated["setup"]["status"] != "passed" or not setup_marker.is_file():
@@ -140,6 +189,8 @@ include(CPack)
                 raise SystemExit(f"unexpected repeat-install result: {repeated}")
             if not payload.is_file() or payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
                 raise SystemExit("repeat installation did not repair the deleted MSI payload")
+            if registry_values(package_key) != package_values:
+                raise SystemExit("repeat installation did not repair the MSI registry entry")
             if uninstall_windows_package({"native_packages": repeated["native_packages"]}):
                 raise SystemExit("disposable MSI removal unexpectedly requested a restart")
             removed = True
@@ -163,6 +214,7 @@ include(CPack)
             "status": "PASS", "msi_sha256": sha256(msi),
             "product_code": product_guid, "install_root": str(install_root),
             "first_install": "PASS", "repeat_install_repairs": "PASS",
+            "repair_restores_registry": "PASS", "repair_leaves_file_in_use": "PASS",
             "setup_skipped_noninteractive": "PASS", "setup_ran_interactive": "PASS", "uninstall": "PASS",
             "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")

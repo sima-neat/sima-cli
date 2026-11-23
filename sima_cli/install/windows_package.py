@@ -1023,10 +1023,13 @@ def _install_native_packages(
     for item in items:
         item["product_code"] = _msi_product_code(item["msi"])
         # Passing an installed package to /i again only enters maintenance mode and
-        # rewrites nothing, so a rerun of the same release repairs it instead.
+        # rewrites nothing, so a rerun of the same release repairs it instead: files that
+        # are missing or older, plus machine and user registry entries and shortcuts.
+        # Unlike /fa, files that are present and current are not rewritten, so a file
+        # in use only requires a restart when it actually needs replacing.
         item["repair"] = _msi_product_installed(item["product_code"])
         if item["repair"]:
-            item["args"][0] = "/fa"
+            item["args"][0] = "/fomus"
     if record_receipt is not None:
         # Recorded before any MSI starts, so a later uninstall can find every package.
         record_receipt({

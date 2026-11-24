@@ -160,45 +160,6 @@ twine upload dist/*
 
 ---
 
-### Windows installer (MSI) and WinGet manifest
-
-`packaging/windows/build_msi.py` turns a built wheel into a per-user MSI that
-carries the python.org embeddable CPython 3.14, the dependencies pinned in
-`packaging/windows/requirements.txt`, and `bin\sima-cli.exe`. Run it with
-CPython 3.14 and the tools in `packaging/windows/build-requirements.txt`:
-
-```bash
-python -m pip install -r packaging/windows/build-requirements.txt
-python -I packaging/windows/build_msi.py --wheel dist/sima_cli-X.Y.Z-py3-none-any.whl \
-  --output-directory out/dist --stage-only
-```
-
-`--stage-only` stops after staging the bundle (download, pinned wheels, dependency
-check, bytecode, launcher), which runs on Linux and macOS too; see
-`out/dist-work/bundle.json`. Without it, on Windows with WiX 3 (`%WIX%`), the script
-also runs the staged `sima-cli.exe --version` and writes `sima-cli-X.Y.Z-x64.msi`,
-its `.sha256` and `installer.json`. `--reuse-bundle --msi-version 0.0.1` links
-another MSI from the same bundle, as CI does for the upgrade test.
-
-Write the three WinGet manifest files for that MSI:
-
-```bash
-python -I packaging/windows/winget_manifest.py --installer-json out/dist/installer.json \
-  --installer-url https://artifacts.neat.sima.ai/sima-cli/windows/X.Y.Z/sima-cli-X.Y.Z-x64.msi \
-  --output-directory out/dist/winget
-```
-
-The package identifier, publisher, product name and upgrade code are in
-`sima_cli/utils/windows_installer.py`; the manifest's other text is in
-`packaging/windows/winget/`. To change a dependency, update
-`packaging/windows/requirements.txt` as a whole from `pip freeze` on Windows x64
-with CPython 3.14; the build fails when the pins do not fit together. The
-`windows-installer` CI job builds, installs, upgrades, removes and installs through
-WinGet on `windows-2025`, and uploads the MSI and manifests as
-`sima-cli-windows-installer`.
-
----
-
 ### 🔗 Related Links
 
 - [SiMa Developer Portal](https://community.sima.ai/)

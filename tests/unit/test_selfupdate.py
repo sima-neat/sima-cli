@@ -58,43 +58,6 @@ def test_selfupdate_branch_requires_vulcan_mode():
     assert "--branch can only be used with --dev" in result.output
 
 
-def test_selfupdate_from_the_windows_installer_prints_winget_upgrade_and_runs_no_pip():
-    runner = CliRunner()
-
-    with patch.object(selfupdate_module, "installed_by_windows_msi", return_value=True), \
-            patch.object(selfupdate_module.subprocess, "run") as run, \
-            patch.object(selfupdate_module, "_update_from_pypi") as update:
-        result = runner.invoke(selfupdate_module.selfupdate, [], obj={})
-
-    assert result.exit_code == 0
-    run.assert_not_called()
-    update.assert_not_called()
-    assert "winget upgrade --id SiMa-ai.sima-cli" in result.output
-    assert "https://artifacts.neat.sima.ai/sima-cli/windows/sima-cli-x64.msi" in result.output
-    assert "pip" not in result.output
-
-
-def test_selfupdate_from_the_windows_installer_refuses_pinned_and_branch_builds():
-    runner = CliRunner()
-
-    for options in (["-v", "2.1.5"], ["-m", "https://example.com/sima_cli-2.1.5-py3-none-any.whl"],
-                    ["--dev", "--branch", "main"], ["--prd"]):
-        with patch.object(selfupdate_module, "installed_by_windows_msi", return_value=True), \
-                patch.object(selfupdate_module.subprocess, "run") as run, \
-                patch.object(selfupdate_module, "_update_from_vulcan") as vulcan, \
-                patch.object(selfupdate_module, "_update_from_url") as from_url, \
-                patch.object(selfupdate_module, "_update_from_pypi") as from_pypi:
-            result = runner.invoke(selfupdate_module.selfupdate, options, obj={})
-
-        assert result.exit_code == 1, options
-        run.assert_not_called()
-        vulcan.assert_not_called()
-        from_url.assert_not_called()
-        from_pypi.assert_not_called()
-        assert "winget upgrade --id SiMa-ai.sima-cli" in result.output
-        assert "Branch and pinned builds are installed with install.py, which needs Python." in result.output
-
-
 def test_update_from_vulcan_downloads_package_and_installs_wheel(tmp_path):
     package_bytes = _zip_bytes({"sima_cli-2.1.7-py3-none-any.whl": b"wheel"})
     base_url = selfupdate_module.SELFUPDATE_ENV_BASE_URLS["dev"]

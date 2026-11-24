@@ -1691,18 +1691,6 @@ class WindowsPackageTests(unittest.TestCase):
         )
         self.assertIn("--python-executable <path>, or use --native-only. No MSI was started.", message)
 
-    def test_windows_installer_runtime_is_not_a_bootstrap_candidate(self):
-        # The MSI's embedded runtime has no pip or venv, so it cannot create the environment.
-        per_user = self.python_install("AppData", "Local", "Programs", "Python", "Python314")
-        environment = {"LOCALAPPDATA": str(self.root / "AppData" / "Local")}
-        for from_msi in (True, False):
-            with self.subTest(from_msi=from_msi), patch(
-                "sima_cli.install.windows_package.installed_by_windows_msi", return_value=from_msi
-            ):
-                candidates, sima_cli_python = self.bootstrap_candidates(environment=environment)
-            expected = [[per_user]] if from_msi else [[sima_cli_python], [per_user]]
-            self.assertEqual(candidates, expected)
-
     def test_store_alias_python_is_skipped_for_the_next_candidate(self):
         store_alias = self.python_install("WindowsApps")
         per_user = self.python_install("AppData", "Local", "Programs", "Python", "Python314")

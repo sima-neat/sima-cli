@@ -87,36 +87,6 @@ class TestPkgUpdateCheck(unittest.TestCase):
         self.assertIn("Failed to update sima-cli", secho.call_args.args[0])
         self.assertFalse(result)
 
-    def test_update_package_from_the_windows_installer_prints_winget_upgrade(self):
-        # The Windows installer's runtime has no pip, so the pip command would fail.
-        with patch("sima_cli.utils.pkg_update_check.sys.platform", "win32"), \
-             patch("sima_cli.utils.pkg_update_check.installed_by_windows_msi", return_value=True), \
-             patch("sima_cli.utils.pkg_update_check.subprocess.run") as run, \
-             patch("sima_cli.utils.pkg_update_check.click.secho") as secho, \
-             patch("sima_cli.utils.pkg_update_check.click.echo") as echo:
-            result = update_package("sima-cli")
-
-        printed = "\n".join(str(c.args[0]) for c in secho.call_args_list + echo.call_args_list)
-        run.assert_not_called()
-        self.assertFalse(result)
-        self.assertIn("A newer sima-cli is available. After this command finishes, run:", printed)
-        self.assertIn("    winget upgrade --id SiMa-ai.sima-cli\n", printed)
-        self.assertIn("https://artifacts.neat.sima.ai/sima-cli/windows/sima-cli-x64.msi", printed)
-        self.assertNotIn("pip", printed)
-
-    def test_update_package_on_windows_without_the_installer_prints_pip(self):
-        with patch("sima_cli.utils.pkg_update_check.sys.platform", "win32"), \
-             patch("sima_cli.utils.pkg_update_check.installed_by_windows_msi", return_value=False), \
-             patch("sima_cli.utils.pkg_update_check.subprocess.run") as run, \
-             patch("sima_cli.utils.pkg_update_check.click.secho"), \
-             patch("sima_cli.utils.pkg_update_check.click.echo") as echo:
-            result = update_package("sima-cli")
-
-        run.assert_not_called()
-        self.assertFalse(result)
-        self.assertIn("-m pip install --isolated --upgrade", echo.call_args.args[0])
-        self.assertNotIn("winget upgrade", echo.call_args.args[0])
-
     def test_check_for_update_skips_when_update_check_is_disabled(self):
         with patch.dict(os.environ, {"SIMA_CLI_CHECK_FOR_UPDATE": "0"}), \
              patch("sima_cli.utils.pkg_update_check.importlib.metadata.version") as version:
@@ -298,24 +268,3 @@ def test_update_subprocess_does_not_contaminate_json_stdout(capfd):
     assert json.loads(captured.out) == {"models": []}
     assert "installer progress" in captured.err
     assert "installer warning" in captured.err
-
-
-def test_installed_by_windows_msi_reads_the_pep_627_installer_file():
-    import importlib.metadata
-
-    from sima_cli.utils import env
-
-    class Distribution:
-        def __init__(self, installer):
-            self.installer = installer
-
-        def read_text(self, name):
-            assert name == "INSTALLER"
-            return self.installer
-
-    for installer, expected in (("sima-cli-msi\n", True), ("pip\n", False), (None, False)):
-        with patch.object(env.importlib.metadata, "distribution", return_value=Distribution(installer)):
-            assert env.installed_by_windows_msi() is expected
-    with patch.object(env.importlib.metadata, "distribution",
-                      side_effect=importlib.metadata.PackageNotFoundError("sima-cli")):
-        assert env.installed_by_windows_msi() is False

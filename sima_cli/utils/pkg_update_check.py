@@ -12,8 +12,6 @@ import re
 import time
 from pathlib import Path
 
-from sima_cli.utils.env import installed_by_windows_msi, windows_msi_update_text
-
 PUBLIC_PYPI_SIMPLE_URL = "https://pypi.org/simple"
 AUTO_ACCEPT_UPDATE_ENV = "SIMA_CLI_AUTO_ACCEPT_UPDATE"
 FORCE_UPDATE_CHECK_RESULT_ENV = "FORCE_UPDATE_CHECK_RESULT"
@@ -71,10 +69,6 @@ def update_package(package_name: str) -> bool:
         PUBLIC_PYPI_SIMPLE_URL,
         package_name,
     ]
-
-    if sys.platform.startswith("win") and installed_by_windows_msi():
-        click.echo(windows_msi_update_text("A newer sima-cli is available. After this command finishes, run:"))
-        return False
 
     if sys.platform.startswith("win"):
         click.secho("⚠️  Automatic self-update is not supported on Windows while the CLI is running.", fg="yellow", bold=True)

@@ -311,30 +311,6 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertLess(self.script.index(refused), self.script.index(removal))
         self.assertLess(self.script.index(unreadable), self.script.index(removal))
 
-    def test_uninstall_goes_ahead_while_the_windows_installer_copy_manages_the_packages(self):
-        # Moving to the WinGet copy: that sima-cli stays and still removes the recorded
-        # packages, so removing this environment needs no --force.
-        msi_copy = 'set "MSI_SIMA_CLI=%LOCALAPPDATA%\\Programs\\sima-cli\\bin\\sima-cli.exe"\n'
-        self.assertIn(msi_copy, self.script)
-        present = 'if defined UNINSTALL if exist "!MSI_SIMA_CLI!" echo '
-        self.assertIn(present + "The sima-cli from the Windows installer, !MSI_SIMA_CLI!, stays and still removes the packages sima-cli installed.", self.script)
-        check = 'if defined UNINSTALL if not exist "!MSI_SIMA_CLI!" (\n'
-        block = self.script.split(check, 1)[1].split("\n)\n", 1)[0]
-        self.assertIn('-Command "!PS_RECEIPTS!"', block)
-        self.assertIn('set "RECEIPTS=!errorlevel!"', block)
-        self.assertLess(self.script.index(msi_copy), self.script.index(check))
-        self.assertLess(self.script.index(check), self.script.index('if "!RECEIPTS!"=="2" (\n'))
-        # CI runs it with a receipt recorded and a stand-in for the installer's copy.
-        step = WORKFLOW.read_text(encoding="utf-8").split(
-            "- name: Test repo installer script on native Windows\n", 1)[1].split("\n      - name:", 1)[0]
-        body = step.split("} finally {\n            foreach ($entry in $saved)", 1)[0]
-        stand_in = body.split("# With the Windows installer's sima-cli present", 1)[1]
-        self.assertIn('Set-Content -LiteralPath (Join-Path $msiBin "sima-cli.exe")', stand_in)
-        self.assertIn("try { Invoke-Installer uninstall } finally { $env:LOCALAPPDATA = $savedAppData }", stand_in)
-        self.assertIn("if ($installerCode -ne 0)", stand_in)
-        self.assertIn('Assert-Output "sima-cli is removed."', stand_in)
-        self.assertLess(body.index("Invoke-Installer uninstall --force"), body.index(stand_in))
-
     def test_system_tools_run_from_the_system_directory(self):
         # cmd looks in the current directory before PATH, so a powershell.exe, net.exe or
         # findstr.exe next to the downloaded windows.bat would otherwise run instead.

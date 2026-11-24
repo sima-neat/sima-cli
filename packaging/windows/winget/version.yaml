@@ -1,7 +1,0 @@
-# yaml-language-server: $$schema=https://aka.ms/winget-manifest.version.${manifest_version}.schema.json
-
-PackageIdentifier: ${identifier}
-PackageVersion: ${version}
-DefaultLocale: en-US
-ManifestType: version
-ManifestVersion: ${manifest_version}

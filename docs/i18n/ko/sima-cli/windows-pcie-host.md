@@ -8,7 +8,7 @@ Windows PCIe 호스트 릴리스는 `sima-cli` 명령 하나로 설치할 수 �
 이 페이지에서는 `sima-cli` 명령만 설명합니다. 필수 조건, 카드 등록, 확인, 복구는
 [PCIe 호스트 설치](/getting-started/neat-library/pcie-host)를 따르세요.
 
-지원되는 Platform PCIe 패키지, x64 GStreamer MSVC 런타임, 그리고
+`sima-cli install drivers/windows`로 설치하는 Platform PCIe 패키지, x64 GStreamer MSVC 런타임, 그리고
 `--native-only`를 사용하지 않는 경우 64비트 Python 3.14를 설치한 뒤
 PowerShell에서 명령을 실행하세요.
 권한이 상승되지 않은 PowerShell 창에서는 컴퓨터 전체에 설치되는 Scheduler 및 Core MSI

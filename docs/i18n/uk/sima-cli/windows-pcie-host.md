@@ -9,8 +9,8 @@
 перевірки та відновлення дотримуйтеся сторінки
 [Встановлення хоста PCIe](/getting-started/neat-library/pcie-host).
 
-Виконайте команду в PowerShell після встановлення підтримуваного пакета
-Platform PCIe, середовища виконання x64 GStreamer MSVC і, якщо ви не використовуєте
+Виконайте команду в PowerShell після встановлення пакета Platform PCIe
+командою `sima-cli install drivers/windows`, середовища виконання x64 GStreamer MSVC і, якщо ви не використовуєте
 `--native-only`, 64-розрядного Python 3.14.
 У вікні PowerShell без підвищених прав ви один раз схвалюєте запит адміністратора Windows
 для системних MSI-пакетів Scheduler і Core: один крок із підвищеними правами встановлює Scheduler, а потім

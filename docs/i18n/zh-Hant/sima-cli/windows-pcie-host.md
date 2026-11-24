@@ -7,7 +7,7 @@
 本頁僅說明 `sima-cli` 命令。關於必要條件、卡片註冊、驗證與復原，請依照
 [安裝 PCIe 主機](/getting-started/neat-library/pcie-host)操作。
 
-請先安裝支援的 Platform PCIe 套件、x64 GStreamer MSVC 執行階段，以及（未使用
+請先使用 `sima-cli install drivers/windows` 安裝 Platform PCIe 套件、x64 GStreamer MSVC 執行階段，以及（未使用
 `--native-only` 時）64 位元 Python 3.14，再從 PowerShell 執行命令。
 在未提升權限的 PowerShell 視窗中，對於安裝於整台電腦的 Scheduler 與 Core MSI 套件，
 只需核准一次 Windows 管理員提示：一個提升權限的步驟會先安裝 Scheduler，再安裝 Core；若 Scheduler 失敗，

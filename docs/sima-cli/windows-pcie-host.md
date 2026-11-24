@@ -9,9 +9,9 @@ This page covers only the `sima-cli` command. For prerequisites, card
 enrollment, verification, and recovery, follow
 [Install PCIe Host](/getting-started/neat-library/pcie-host).
 
-Run the command from PowerShell after installing the supported Platform PCIe
-package, the x64 GStreamer MSVC runtime, and, unless you use `--native-only`,
-64-bit Python 3.14. From a PowerShell window that is not
+Run the command from PowerShell after installing the Platform PCIe package with
+`sima-cli install drivers/windows`, the x64 GStreamer MSVC runtime, and, unless
+you use `--native-only`, 64-bit Python 3.14. From a PowerShell window that is not
 elevated, you approve one Windows administrator prompt for the machine-wide
 Scheduler and Core MSI packages: one elevated step installs Scheduler and then
 Core, and does not start Core if Scheduler fails. Only that step is elevated;

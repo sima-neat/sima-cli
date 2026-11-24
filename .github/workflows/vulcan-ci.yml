@@ -700,7 +700,10 @@ jobs:
             $LASTEXITCODE
           }
           $installer = Join-Path $work "python-installer.exe"
-          $code = Invoke-Lines download ($prepare + $pinned + "set `"PYTHON_INSTALLER=$installer`"" + $download)
+          $downloadLines = $prepare + $pinned + "set `"PYTHON_INSTALLER=$installer`"" + $download
+          $code = Invoke-Lines download $downloadLines
+          # One retry, so a passing python.org or network fault does not fail an unrelated change.
+          if ($code -ne 0) { Start-Sleep -Seconds 15; $code = Invoke-Lines download $downloadLines }
           if ($code -ne 0) { throw "The download line of windows.bat failed with exit code $code" }
           $code = Invoke-Lines verify ($prepare + $pinned + "set `"PYTHON_INSTALLER=$installer`"" + $verify)
           if ($code -ne 0) { throw "The check in windows.bat refused the pinned Python installer: exit code $code" }

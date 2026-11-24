@@ -298,6 +298,15 @@ class WindowsInstallerScriptTests(unittest.TestCase):
             self.assertEqual(len(re.findall(pattern, self.script, re.MULTILINE)), 1, pattern)
         self.assertIn("$prepare = $script[0..([Array]::IndexOf($script, (Get-Line '^set \"WHEEL_PATH=')) - 1)]", step)
         self.assertIn("cmd.exe /c $bat | Out-Host", step)
+        # python.org is outside this repository, so the download alone is tried twice.
+        download = "$code = Invoke-Lines download $downloadLines"
+        self.assertEqual(step.count(download), 2)
+        self.assertIn(
+            download + "\n          # One retry, so a passing python.org or network fault does not fail an unrelated change.\n"
+            "          if ($code -ne 0) { Start-Sleep -Seconds 15; " + download + " }\n"
+            "          if ($code -ne 0) { throw \"The download line of windows.bat failed",
+            step,
+        )
         self.assertIn(
             'if ($code -ne 0) { throw "The check in windows.bat refused the pinned Python installer: exit code $code" }',
             step,

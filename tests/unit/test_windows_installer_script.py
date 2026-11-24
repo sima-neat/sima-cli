@@ -237,6 +237,30 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertEqual(self.script.splitlines()[-1], "exit /b 0")
         self.assertLess(self.script.rindex("\nendlocal\n"), self.script.rindex("\nexit /b 0"))
 
+    def test_warns_when_a_new_window_would_run_another_sima_cli(self):
+        # A new window searches the system PATH, then the user PATH. A sima-cli of another
+        # account on the system PATH ran instead of the one just installed, and the script
+        # still printed Done.
+        broadcast = self.script.index("[Environment]::SetEnvironmentVariable('SIMA_CLI_PATH_REFRESH'")
+        run = self.script.index('powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"')
+        check = self.script[broadcast:run]
+        self.assertIn(
+            "foreach ($scope in 'system', 'user') { $target = 'Machine'; if ($scope -eq 'user') { $target = 'User' }; "
+            "foreach ($entry in ([string][Environment]::GetEnvironmentVariable('Path', $target)).Split(';'))",
+            check,
+        )
+        self.assertIn("foreach ($name in 'sima-cli.exe', 'sima-cli.bat', 'sima-cli.cmd')", check)
+        self.assertIn("if ($first -and -not (Same $first[0])) {", check)
+        self.assertIn("'WARNING: a new window will run another sima-cli, not the one just installed:'", check)
+        self.assertTrue(check.rstrip().endswith("; exit 2 }\""), check[-80:])
+        # Warn only: the entry may belong to another account or program.
+        self.assertNotIn("SetValue", check)
+        outcome = self.script[run:]
+        self.assertIn(
+            'if not "!PATH_RESULT!"=="2" echo Could not update the user PATH.', outcome.split(") else (\n", 1)[1]
+        )
+        self.assertNotIn("Done.", outcome.split(") else (\n", 1)[1])
+
     def test_messages_survive_delayed_expansion(self):
         # Under enabledelayedexpansion a "!" that does not close a !variable! is dropped
         # with the text up to the next one, so messages must not contain a lone "!".

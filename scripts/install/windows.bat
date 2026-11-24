@@ -146,6 +146,12 @@ rem Earlier installers added this exact per-user path to the system PATH when el
 set "PS_PATH=!PS_PATH!; if ($env:IS_ADMIN -eq '1') { $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true); $raw = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames'); $kept = @($raw.Split(';') | Where-Object { -not (Same $_) }); if ($kept.Count -lt $raw.Split(';').Count) { Write-Host ('Removing ' + $env:VENV_PATH + ' from the system PATH...'); $key.SetValue('Path', ($kept -join ';'), $key.GetValueKind('Path')) } }"
 rem Setting an unused user variable to null only broadcasts the change, so new windows see the new PATH.
 set "PS_PATH=!PS_PATH!; [Environment]::SetEnvironmentVariable('SIMA_CLI_PATH_REFRESH', $null, 'User')"
+rem A new window searches the system PATH, then the user PATH, from the registry. When another
+rem sima-cli comes first, name it and exit 2. Only warn: the entry may belong to another account
+rem or program, so this installer never changes it.
+set "PS_PATH=!PS_PATH!; $first = $null; foreach ($scope in 'system', 'user') { $target = 'Machine'; if ($scope -eq 'user') { $target = 'User' }; foreach ($entry in ([string][Environment]::GetEnvironmentVariable('Path', $target)).Split(';')) { $folder = $entry.Trim().Trim([char]34).TrimEnd('\'); foreach ($name in 'sima-cli.exe', 'sima-cli.bat', 'sima-cli.cmd') { if (-not $first -and $folder -and [IO.File]::Exists($folder + '\' + $name)) { $first = @($folder, $name, $scope) } } } }"
+set "PS_PATH=!PS_PATH!; if ($first -and -not (Same $first[0])) { Write-Host ''; Write-Host 'WARNING: a new window will run another sima-cli, not the one just installed:'; Write-Host ('    ' + $first[0] + '\' + $first[1]); if ($first[2] -eq 'system') { Write-Host '  It is on the system PATH, which Windows searches before your user PATH.' } else { Write-Host ('  It is on your user PATH, ahead of ' + $dir + '.') }"
+set "PS_PATH=!PS_PATH!; if ($first[2] -eq 'system' -and $first[0] -like '*\.sima-cli-env\Scripts') { Write-Host '  It is the sima-cli of another account. Running windows.bat in that account from an administrator window moves it to that account''s own user PATH.' } else { Write-Host ('  Uninstall that copy, or remove ' + $first[0] + ' from the ' + $first[2] + ' PATH if nothing else needs it.') }; exit 2 }"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"
 set "PATH_RESULT=!errorlevel!"
 
@@ -155,10 +161,11 @@ if "!PATH_RESULT!"=="0" (
     echo     sima-cli
     echo to start using the tool.
 ) else (
-    echo Could not update the user PATH. Add !VENV_PATH! to it manually.
+    if not "!PATH_RESULT!"=="2" echo Could not update the user PATH. Add !VENV_PATH! to it manually.
     echo sima-cli is installed. Until the PATH is fixed, run it by its full path, in PowerShell:
     echo     ^& "!VENV_PATH!\sima-cli.exe"
 )
 endlocal
-rem sima-cli is installed and runs by its full path even when the PATH step failed, so exit 0.
+rem sima-cli is installed and runs by its full path even when the PATH step failed or another
+rem sima-cli comes first, so exit 0.
 exit /b 0

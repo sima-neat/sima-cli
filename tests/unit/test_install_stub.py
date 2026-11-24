@@ -333,43 +333,55 @@ def test_install_artifact_current_env_installs_wheel_without_helper():
 
 
 class FakeUserEnvironment:
-    """Stand in for winreg on HKCU\\Environment, keeping values raw as the registry does."""
+    """Stand in for winreg on HKCU\\Environment and the system Environment key, keeping values raw."""
 
     REG_SZ, REG_EXPAND_SZ = 1, 2
-    HKEY_CURRENT_USER = object()
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE = "HKCU", "HKLM"
     KEY_QUERY_VALUE, KEY_SET_VALUE = 1, 2
+    SYSTEM_KEY = "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"
 
-    def __init__(self, path=None, kind=REG_EXPAND_SZ):
+    def __init__(self, path=None, kind=REG_EXPAND_SZ, system_path=None):
         self.values = {} if path is None else {"Path": (path, kind)}
+        self.system = {} if system_path is None else {"Path": (system_path, self.REG_EXPAND_SZ)}
         self.writes = []
 
-    def CreateKeyEx(self, root, subkey, reserved, access):
-        assert (root, subkey) == (self.HKEY_CURRENT_USER, "Environment")
+    def _key(self, root, subkey):
+        assert (root, subkey) in ((self.HKEY_CURRENT_USER, "Environment"), (self.HKEY_LOCAL_MACHINE, self.SYSTEM_KEY))
         key = MagicMock()
         key.__enter__.return_value = key
+        key.values = self.values if root == self.HKEY_CURRENT_USER else self.system
         return key
 
-    def QueryValueEx(self, _key, name):
-        if name not in self.values:
-            raise FileNotFoundError(name)
-        return self.values[name]
+    def CreateKeyEx(self, root, subkey, reserved, access):
+        assert root == self.HKEY_CURRENT_USER
+        return self._key(root, subkey)
 
-    def SetValueEx(self, _key, name, _reserved, kind, value):
+    def OpenKey(self, root, subkey):
+        return self._key(root, subkey)
+
+    def QueryValueEx(self, key, name):
+        if name not in key.values:
+            raise FileNotFoundError(name)
+        return key.values[name]
+
+    def SetValueEx(self, key, name, _reserved, kind, value):
+        assert key.values is self.values, "only the user PATH may be written"
         self.values[name] = (value, kind)
         self.writes.append((name, value, kind))
 
     @staticmethod
     def ExpandEnvironmentStrings(value):
-        return value.replace("%USERPROFILE%", "C:\\Users\\sima")
+        return value.replace("%USERPROFILE%", "C:\\Users\\sima").replace("%SystemRoot%", "C:\\Windows")
 
 
-def configure_windows_path(user_path, kind=FakeUserEnvironment.REG_EXPAND_SZ):
+def configure_windows_path(user_path, kind=FakeUserEnvironment.REG_EXPAND_SZ, system_path=None, files=()):
     installer = load_installer()
-    registry = FakeUserEnvironment(user_path, kind)
+    registry = FakeUserEnvironment(user_path, kind, system_path)
     windll = SimpleNamespace(user32=MagicMock())
     with patch.dict("sys.modules", {"winreg": registry}), \
          patch.object(installer.platform, "system", return_value="Windows"), \
          patch("ctypes.windll", windll, create=True), \
+         patch.object(installer.os.path, "isfile", side_effect=lambda path: path in files), \
          patch.object(installer.subprocess, "run") as run:
         installer._configure_pypi_shell_path(PureWindowsPath("C:\\Users\\sima\\.sima-cli-env"))
     run.assert_not_called()
@@ -406,3 +418,51 @@ def test_windows_pypi_install_does_not_repeat_an_existing_user_path_entry():
     )
     assert registry.writes == []
     broadcast.assert_not_called()
+
+
+OWN_CLI = "C:\\Users\\sima\\.sima-cli-env\\Scripts\\sima-cli.exe"
+
+
+def test_windows_pypi_install_names_a_sima_cli_on_the_system_path_that_runs_first(capsys):
+    # A new window searches the system PATH first, so another account's old elevated install
+    # ran instead of the one just installed, and nothing said so.
+    other = "C:\\Users\\other\\.sima-cli-env\\Scripts"
+    registry, _ = configure_windows_path(
+        "C:\\Tools", system_path=f"%SystemRoot%\\system32;{other}\\", files={other + "\\sima-cli.exe", OWN_CLI}
+    )
+    out = capsys.readouterr().out
+    assert "WARNING: a new window will run another sima-cli, not the one just installed:\n" \
+        f"    {other}\\sima-cli.exe\n" \
+        "  It is on the system PATH, which Windows searches before your user PATH.\n" \
+        "  It is the sima-cli of another account. Running windows.bat in that account from an " \
+        "administrator window moves it to that account's own user PATH.\n" in out
+    assert f'run it by its full path, in PowerShell:\n    & "{OWN_CLI}"\n' in out
+    assert "Open a new PowerShell window" not in out
+    # Only warned: the other account's entry is left alone.
+    assert registry.system["Path"][0] == f"%SystemRoot%\\system32;{other}\\"
+    assert [write[0] for write in registry.writes] == ["Path"]
+
+
+def test_windows_pypi_install_names_a_sima_cli_earlier_on_the_user_path(capsys):
+    pip_scripts = "C:\\Python312\\Scripts"
+    configure_windows_path(
+        f"{pip_scripts};%USERPROFILE%\\.sima-cli-env\\Scripts",
+        system_path="%SystemRoot%\\system32",
+        files={pip_scripts + "\\sima-cli.cmd", OWN_CLI},
+    )
+    out = capsys.readouterr().out
+    assert f"    {pip_scripts}\\sima-cli.cmd\n" \
+        "  It is on your user PATH, ahead of C:\\Users\\sima\\.sima-cli-env\\Scripts.\n" \
+        f"  Uninstall that copy, or remove {pip_scripts} from the user PATH if nothing else needs it.\n" in out
+
+
+def test_windows_pypi_install_does_not_warn_when_its_own_copy_runs_first(capsys):
+    # This user's own folder left on the system PATH by an older installer still runs this copy.
+    configure_windows_path(
+        "%USERPROFILE%\\.sima-cli-env\\Scripts;C:\\Python312\\Scripts",
+        system_path="c:\\users\\sima\\.sima-cli-env\\scripts",
+        files={OWN_CLI, "c:\\users\\sima\\.sima-cli-env\\scripts\\sima-cli.exe", "C:\\Python312\\Scripts\\sima-cli.exe"},
+    )
+    out = capsys.readouterr().out
+    assert "WARNING" not in out
+    assert "Open a new PowerShell window to use sima-cli." in out

@@ -1575,6 +1575,28 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(result["verification"]["status"], "passed")
         self.assertEqual(run.call_args_list[1].args[0][:3], ["cmd.exe", "/d", "/c"])
 
+    def test_program_files_paths_resolve_to_the_64_bit_directory_under_32_bit_python(self):
+        # A 32-bit process sees C:\Program Files (x86) as ProgramFiles; the 64-bit MSIs
+        # install under ProgramW6432.
+        program_files = self.root / "Program Files"
+        doctor = program_files / "SimaPCIeHost" / "bin" / "sima-pcie-host-doctor.cmd"
+        doctor.parent.mkdir(parents=True)
+        doctor.write_text("@exit /b 0\n", encoding="utf-8")
+        self.metadata["installation"]["verification"] = {"command": {
+            "environment": "ProgramFiles",
+            "relative": "SimaPCIeHost\\bin\\sima-pcie-host-doctor.cmd",
+        }}
+        with patch.dict(os.environ, {
+            "ProgramFiles": str(self.root / "Program Files (x86)"),
+            "ProgramW6432": str(program_files),
+            "COMSPEC": "cmd.exe",
+        }), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=[completed(), completed(stdout="doctor pass\n")],
+        ):
+            result = install_windows_package(self.metadata, str(self.root), native_only=True)
+        self.assertEqual(result["verification"]["command"], str(doctor))
+
     def test_native_verification_failure_reports_retained_install(self):
         doctor = self.root / "doctor.cmd"
         doctor.write_text("@exit /b 12\n", encoding="utf-8")

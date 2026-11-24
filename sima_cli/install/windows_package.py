@@ -501,7 +501,12 @@ def _msi_product_installed(product_code: str) -> bool:
 
 
 def _path_from_spec(spec: Dict[str, str]) -> Optional[Path]:
-    root = os.environ.get(spec["environment"])
+    root = None
+    if spec["environment"].lower() == "programfiles":
+        # In a 32-bit Python, ProgramFiles is C:\Program Files (x86); 64-bit MSIs install
+        # under ProgramW6432, which Windows sets only on 64-bit systems.
+        root = os.environ.get("ProgramW6432")
+    root = root or os.environ.get(spec["environment"])
     if not root:
         return None
     return Path(root).joinpath(*PureWindowsPath(spec["relative"]).parts)

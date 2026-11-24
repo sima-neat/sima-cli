@@ -1,0 +1,27 @@
+# yaml-language-server: $$schema=https://aka.ms/winget-manifest.installer.${manifest_version}.schema.json
+
+PackageIdentifier: ${identifier}
+PackageVersion: ${version}
+MinimumOSVersion: 10.0.17763.0
+InstallerType: wix
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+InstallerSwitches:
+  InstallLocation: INSTALLFOLDER="<INSTALLPATH>"
+UpgradeBehavior: install
+Commands:
+- sima-cli
+ReleaseDate: ${release_date}
+Installers:
+- Architecture: x64
+  InstallerUrl: ${installer_url}
+  InstallerSha256: ${sha256}
+  ProductCode: '${product_code}'
+  AppsAndFeaturesEntries:
+  - ProductCode: '${product_code}'
+    UpgradeCode: '${upgrade_code}'
+ManifestType: installer
+ManifestVersion: ${manifest_version}

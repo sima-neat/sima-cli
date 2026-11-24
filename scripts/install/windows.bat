@@ -188,7 +188,9 @@ if errorlevel 1 (
     call "%%PYTHON%%" -c "import struct, sys; sys.exit(0 if sys.version_info[:2] == (3, 14) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
     if errorlevel 1 echo Note: the Windows PCIe host package needs 64-bit Python 3.14 from https://www.python.org/downloads/windows/
     echo Creating virtual environment in !INSTALL_DIR!...
+    rem Then require the environment's python to run: a python that only exits 0, such as a shim, creates none.
     call "%%PYTHON%%" -m venv --clear "%%INSTALL_DIR%%"
+    if not errorlevel 1 "%INSTALL_DIR%\Scripts\python.exe" -c "import sys" >nul 2>nul
     if errorlevel 1 (
         echo Could not create the virtual environment in !INSTALL_DIR!.
         exit /b 1

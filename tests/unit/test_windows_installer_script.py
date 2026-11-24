@@ -407,6 +407,20 @@ class WindowsInstallerScriptTests(unittest.TestCase):
             self.script[create:],
         )
 
+    def test_created_environment_must_run_before_pip(self):
+        # A python that exits 0 without running Python, such as a shim that does nothing, created
+        # no environment, and the script failed later with "Could not upgrade pip".
+        created = (
+            '    call "%%PYTHON%%" -m venv --clear "%%INSTALL_DIR%%"\n'
+            '    if not errorlevel 1 "%INSTALL_DIR%\\Scripts\\python.exe" -c "import sys" >nul 2>nul\n'
+            "    if errorlevel 1 (\n"
+            "        echo Could not create the virtual environment in !INSTALL_DIR!.\n"
+            "        exit /b 1\n"
+            "    )\n)\n"
+        )
+        self.assertIn(created, self.script)
+        self.assertLess(self.script.index(created), self.script.index("-m pip install --upgrade pip"))
+
     def test_failed_pip_step_exits_non_zero_before_done(self):
         done = self.script.index("echo Done.")
         for step, message in (

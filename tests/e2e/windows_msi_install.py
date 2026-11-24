@@ -3,7 +3,8 @@
 
 The MSI is built twice, as 1.0.0 and 1.1.0 with the same upgrade code. Through the installed
 sima-cli command it is installed, upgraded, refused as a downgrade and removed; the repair of
-an installed release runs through the package installer in this process.
+an installed release runs through the package installer in this process. Last, it is installed
+and removed once more through the administrator approval a window that is not elevated uses.
 """
 
 from __future__ import annotations
@@ -143,9 +144,29 @@ def served(directory: Path):
         server.server_close()
 
 
-def sima_cli(home: Path, *arguments: object, expect: int = 0) -> str:
+# Runs the installed sima-cli as from a PowerShell window that is not elevated, the default
+# customer path: the approval wrapper, the elevated Windows PowerShell and its result file run
+# for real. The runner is already elevated, so Windows grants the approval without a prompt.
+# -I keeps the checkout off sys.path but ignores PYTHONIOENCODING, so the streams are set here.
+APPROVAL_PATH_CLI = """\
+import sys
+from unittest import mock
+from sima_cli.cli import main
+from sima_cli.install import windows_package
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+with mock.patch.object(windows_package, "_is_windows_administrator", return_value=False), \\
+        mock.patch.object(windows_package, "_interactive_console", return_value=True):
+    main(prog_name="sima-cli")
+"""
+APPROVAL_REQUEST = "Requesting Windows administrator approval once for the native packages."
+
+
+def sima_cli(home: Path, *arguments: object, expect: int = 0, approval: bool = False) -> str:
     """Run the installed sima-cli command without input, with its state under home."""
     command = [str(Path(sysconfig.get_path("scripts")) / "sima-cli.exe"), *map(str, arguments)]
+    if approval:
+        command = [sys.executable, "-I", "-c", APPROVAL_PATH_CLI, *command[1:]]
     environment = dict(os.environ, USERPROFILE=str(home), SIMA_CLI_CHECK_FOR_UPDATE="0",
                        PYTHONIOENCODING="utf-8", NO_PROXY="127.0.0.1")
     print("+", subprocess.list2cmdline(command), flush=True)
@@ -305,6 +326,26 @@ def main() -> int:
                 raise SystemExit("removing the receipt of a package that is not installed did not say so")
             if receipts(home):
                 raise SystemExit(f"receipts remain after removal: {receipts(home)}")
+
+            # Install and remove once more through the administrator approval path.
+            with served(root / "dist") as channel:
+                output = sima_cli(home, "install", "-m", f"{channel}/{new}/metadata.json",
+                                  "-d", root / "downloads-approval", approval=True)
+            if APPROVAL_REQUEST not in output:
+                raise SystemExit("the install did not request administrator approval")
+            if not installed(new):
+                raise SystemExit("the install through administrator approval left 1.1.0 uninstalled")
+            check_payload(new)
+            if [(entry["version"], entry["state"]) for entry in receipts(home)] != [(new, "installed")]:
+                raise SystemExit(f"unexpected receipts after the approved install: {receipts(home)}")
+            output = sima_cli(home, "packages", "remove", PACKAGE, "--version", new, "--yes",
+                              approval=True)
+            if APPROVAL_REQUEST not in output:
+                raise SystemExit("packages remove did not request administrator approval")
+            if installed(new) or install_root.exists():
+                raise SystemExit("packages remove through administrator approval left 1.1.0 installed")
+            if receipts(home):
+                raise SystemExit(f"receipts remain after the approved removal: {receipts(home)}")
             removed = True
         finally:
             if not removed:
@@ -327,7 +368,7 @@ def main() -> int:
             "repeat_install_repairs": "PASS", "repair_restores_registry": "PASS",
             "repair_leaves_file_in_use": "PASS", "setup_ran_interactive": "PASS",
             "upgrade": "PASS", "downgrade_refused": "PASS", "packages_remove": "PASS",
-            "cleanup": "PASS",
+            "approval_install": "PASS", "approval_remove": "PASS", "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")
 
     print("WINDOWS_MSI_INSTALL_E2E_PASS")

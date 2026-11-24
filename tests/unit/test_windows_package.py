@@ -2420,6 +2420,16 @@ class WindowsPackageTests(unittest.TestCase):
         registry.create_entry.assert_not_called()
         registry.update_state.assert_not_called()
 
+    def test_windows_package_downloads_only_on_another_host(self):
+        # --download-only mirrors the package's resources from any host, without a receipt.
+        with patch("sima_cli.install.windows_package._is_windows", return_value=False):
+            registry, output = self.install_from_windows_metadata(download_only=True)
+
+        self.download_assets.assert_called_once()
+        self.assertIn(f"Download complete. 1 resource(s) saved to: {self.root}", output)
+        self.assertNotIn("can only run on Windows", output)
+        registry.create_entry.assert_not_called()
+
     def test_windows_install_records_each_outcome_in_the_package_registry(self):
         # A failure records a partial state only when a native package completed
         # before it; otherwise nothing was installed and the receipt says failed.

@@ -185,6 +185,7 @@ def _run_powershell(script: str, variables: Optional[Dict[str, str]] = None, **k
         ],
         env={**environment, **(variables or {})},
         text=True,
+        errors="replace",
         **kwargs,
     )
 
@@ -540,6 +541,7 @@ def _check_command_version(prerequisite: Dict) -> Tuple[bool, Optional[str]]:
         result = _run(
             [str(command), *prerequisite["arguments"]],
             text=True,
+            errors="replace",
             capture_output=True,
         )
     except OSError:
@@ -1180,7 +1182,7 @@ def _verify_native_installation(
     if command.suffix.lower() in {".bat", ".cmd"}:
         invocation = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(command)]
     try:
-        result = _run(invocation, text=True, capture_output=True)
+        result = _run(invocation, text=True, errors="replace", capture_output=True)
     except OSError as error:
         raise WindowsNativeInstallError(
             "Native MSI installation completed, but its verification command could not be "

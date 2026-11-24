@@ -29,6 +29,7 @@ from sima_cli.install.windows_package import (
     WindowsSetupError,
     _WindowsPnpDriverVersionError,
     _bootstrap_python,
+    _check_command_version,
     _check_windows_service,
     _managed_python_executable,
     _msi_product_code,
@@ -1122,6 +1123,73 @@ class WindowsPackageTests(unittest.TestCase):
                 install_windows_package(
                     self.metadata, str(self.root), native_only=True
                 )
+
+    def localized_child(self, returncode, stdout=b""):
+        """Run a real child whose output has a byte this locale cannot decode.
+
+        Windows PowerShell and cmd write redirected output in the OEM code page, which
+        differs from the code page Python decodes with on most non-English systems.
+        """
+        script = (
+            "import sys; sys.stdout.buffer.write(%r); "
+            "sys.stderr.buffer.write(b'Nie mo\\x88na odnale\\xab\\xa7 us\\x88ugi')" % stdout
+        )
+
+        def run(command, **kwargs):
+            result = subprocess.run([sys.executable, "-c", script], check=False, **kwargs)
+            # Windows exit codes such as 1223 do not fit a POSIX exit status.
+            result.returncode = returncode
+            return result
+
+        return run
+
+    def test_localized_child_output_does_not_replace_the_designed_message(self):
+        # A service that is not installed is a failed prerequisite, not a traceback.
+        self.metadata["installation"]["prerequisites"] = [{
+            "name": "SiMa Platform PCIe service", "type": "windows-service",
+            "value": "SiMaMlaDaemon", "guidance": "Install the Platform package.",
+        }]
+        with patch("sima_cli.install.windows_package._run", side_effect=self.localized_child(1)):
+            with self.assertRaisesRegex(WindowsPrerequisiteError, "Install the Platform package"):
+                install_windows_package(self.metadata, str(self.root), native_only=True)
+
+        self.metadata["installation"]["prerequisites"] = [GSTREAMER]
+        with patch.dict(os.environ, self.installed_gstreamer()), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=self.localized_child(0, b"gst-inspect-1.0 version 1.28.6\n\x88\n"),
+        ):
+            self.assertTrue(_check_command_version(GSTREAMER)[0])
+
+        # A declined approval prints a localized Win32 message on the wrapper's stderr.
+        self.metadata["installation"].pop("prerequisites")
+        with patch(
+            "sima_cli.install.windows_package._is_windows_administrator", return_value=False
+        ), patch(
+            "sima_cli.install.windows_package._interactive_console", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._run", side_effect=self.localized_child(1223)
+        ):
+            with self.assertRaisesRegex(
+                WindowsNativeInstallError, "administrator approval was cancelled"
+            ):
+                install_windows_package(self.metadata, str(self.root), native_only=True)
+
+        doctor = self.root / "doctor.cmd"
+        doctor.write_text("@exit /b 12\n", encoding="utf-8")
+        self.metadata["installation"]["verification"] = {
+            "command": {"environment": "TEST_ROOT", "relative": "doctor.cmd"}
+        }
+        verification = self.localized_child(12)
+        with patch.dict(os.environ, {"TEST_ROOT": str(self.root)}), patch(
+            "sima_cli.install.windows_package._run",
+            side_effect=lambda command, **kwargs: (
+                verification(command, **kwargs) if command[-1] == str(doctor) else completed()
+            ),
+        ):
+            with self.assertRaisesRegex(
+                WindowsNativeInstallError, "verification failed: Nie mo�na"
+            ):
+                install_windows_package(self.metadata, str(self.root), native_only=True)
 
     def test_missing_elevated_installer_exit_code_fails_the_transaction(self):
         with patch(

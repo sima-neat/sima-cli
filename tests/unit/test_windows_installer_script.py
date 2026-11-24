@@ -47,6 +47,13 @@ def exits_not_last_in_statement(script):
     return found
 
 
+PREFIX = re.compile(
+    r"""(?ix)\s+|[@()]|else\b|do\b|call\b|for\b.*?\bin\s*\(.*?\)
+    |if\s+(?:/i\s+)?(?:not\s+)?(?:errorlevel\s+\d+|defined\s+\S+|exist\s+(?:"[^"]*"|\S+)
+        |(?:"[^"]*"|\S+?)\s*==\s*(?:"[^"]*"|\S+)|\S+\s+(?:equ|neq|lss|leq|gtr|geq)\s+\S+)"""
+)
+
+
 def interpreters_run_by_name(script):
     """Return each line that runs python, py or pip by its bare name outside a for /f capture.
 
@@ -57,12 +64,27 @@ def interpreters_run_by_name(script):
     """
     found = []
     for line in script.splitlines():
-        text = line.strip()
-        if re.match(r"(?i)rem\b", text):
-            continue
-        text = re.split(r"(?i)\becho\b", re.sub(r"\('.*?'\)", "", text), maxsplit=1)[0]
-        for match in re.finditer(r"(?i)(?<![^\s(&|])(python3?|py|pip3?)(\.exe)?(?![^\s)&|])", text):
-            if not re.search(r"(?i)(-m|defined)\s+$", text[: match.start()]):
+        text = re.sub(r"\('.*?'\)", "()", line)
+        statements, current, quoted, escaped = [], "", False, False
+        for char in text:
+            if escaped or char == "^":
+                escaped = not escaped
+            elif char == '"':
+                quoted = not quoted
+            elif char in "&|" and not quoted:
+                statements.append(current)
+                current = ""
+                continue
+            current += char
+        for statement in statements + [current]:
+            while True:
+                prefix = PREFIX.match(statement)
+                if not prefix or not prefix.group(0):
+                    break
+                statement = statement[prefix.end():]
+            command = re.match(r'"([^"]*)"|\S*', statement)
+            name = command.group(1) if command.group(1) is not None else command.group(0)
+            if re.fullmatch(r"(?i)(python3?|py|pip3?)(\.exe|\.bat|\.cmd)?", name):
                 found.append(line.strip())
                 break
     return found
@@ -105,10 +127,9 @@ class WindowsInstallerScriptTests(unittest.TestCase):
     def test_python_on_path_runs_in_a_child_cmd_and_then_by_full_path(self):
         # A python.bat or python.cmd, such as pyenv-win's shim or one in the current folder, ended
         # the script at its first Python probe with exit code 0, and nothing was installed.
-        python = self.script.split("\ncall ", 1)[0]
-        self.assertEqual(interpreters_run_by_name(python), [])
+        self.assertEqual(interpreters_run_by_name(self.script), [])
         self.assertNotIn('set "PYTHON=python"', self.script)
-        self.assertIn('"!PYTHON!" -m venv --clear "%INSTALL_DIR%"', python)
+        self.assertIn('"!PYTHON!" -m venv --clear "%INSTALL_DIR%"', self.script)
         # On a runner: a pyenv-win style python.bat first on PATH, and no environment yet.
         step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
         shim = step.split("# A python that is a batch file, as pyenv-win's shim first on PATH", 1)[1]
@@ -122,16 +143,17 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertEqual(
             interpreters_run_by_name(
                 'python -c "import sys" >nul 2>nul\nif 1==1 (\n    py -3.14 -m venv x\n)\ncall python -V\n'
-                "if 1==1 pip install x\nif not defined PYTHON python -V\n"
+                "if 1==1 pip install x\nif not defined PYTHON python -V\nset \"X=1\" & \"python.exe\" -V\n"
             ),
             ['python -c "import sys" >nul 2>nul', "py -3.14 -m venv x", "call python -V", "if 1==1 pip install x",
-             "if not defined PYTHON python -V"],
+             "if not defined PYTHON python -V", 'set "X=1" & "python.exe" -V'],
         )
         self.assertEqual(
             interpreters_run_by_name(
                 "rem python\necho Python 3.14 needs python.exe\n\"!PYTHON!\" -m pip install x\n"
                 "for /f %%P in ('python -c \"print(1)\"') do set \"P=%%P\"\n"
-                '"%VENV_PATH%\\python.exe" -m pip install x\n'
+                '"%VENV_PATH%\\python.exe" -m pip install --upgrade pip\nrem python -V\n'
+                'echo Run it: ^& python -V\nif "%X%"=="1" (\n    "!PYTHON!" -m venv x\n) else (\n    echo pip\n)\n'
             ),
             [],
         )
@@ -305,14 +327,30 @@ class WindowsInstallerScriptTests(unittest.TestCase):
     def test_failed_pip_step_exits_non_zero_before_done(self):
         done = self.script.index("echo Done.")
         for step, message in (
-            ("python -m pip install --upgrade pip\n",
+            ('"%VENV_PATH%\\python.exe" -m pip install --upgrade pip\n',
              "Could not upgrade pip in !INSTALL_DIR!. See the pip output above."),
-            ('    python -m pip install --force-reinstall "%WHEEL_PATH%"\n)\n',
+            ('    "%VENV_PATH%\\python.exe" -m pip install --force-reinstall "%WHEEL_PATH%"\n)\n',
              "Could not install sima-cli into !INSTALL_DIR!. See the pip output above."),
         ):
             checked = step + f"if errorlevel 1 (\n    echo {message}\n    exit /b 1\n)\n"
             self.assertIn(checked, self.script)
             self.assertLess(self.script.index(checked), done)
+
+    def test_pip_runs_with_the_environment_python_by_its_path(self):
+        # After activate.bat, pip ran through python by name, so a python.bat in the current folder
+        # ended the script with exit code 0, and a python.exe there received the install.
+        self.assertEqual(interpreters_run_by_name(self.script), [])
+        self.assertNotIn('\\activate.bat"', self.script)
+        self.assertEqual(self.script.count('"%VENV_PATH%\\python.exe" -m pip install '), 3)
+        self.assertLess(self.script.index('\nset "PYTHONHOME="\n'), self.script.index("-m pip install"))
+        step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
+        shim = step.split("# Run from a folder with a python.bat and a python.cmd that do nothing", 1)[1]
+        shim = shim.split("# A failed pip step fails the script.", 1)[0]
+        self.assertIn('foreach ($name in "python.bat", "python.cmd") { Set-Content', shim)
+        self.assertIn('-Value "@exit /b 0" }\n            Push-Location $cwdShims\n            Invoke-Installer $wheel\n', shim)
+        self.assertIn('Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"', shim)
+        self.assertIn('if ($installerOutput.Contains("No working Python found"))', shim)
+        self.assertIn("if ($LASTEXITCODE -ne 0 -or $version -cne $expected)", shim)
 
     def test_persists_environment_to_user_path_only(self):
         self.assertNotIn("setx", self.script.lower())
@@ -447,7 +485,8 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         step = workflow.split("- name: Test repo installer script on native Windows\n", 1)[1]
         step = step.split("\n      - name:", 1)[0]
-        self.assertIn("cmd.exe /c scripts\\install\\windows.bat @args", step)
+        self.assertIn("$installer = (Resolve-Path scripts\\install\\windows.bat).Path", step)
+        self.assertIn("cmd.exe /c $installer @args", step)
         # The runner's PATH values are restored however the step ends.
         body, restore = step.split("} finally {", 1)
         self.assertIn("try {", body)

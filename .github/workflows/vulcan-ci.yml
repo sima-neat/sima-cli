@@ -488,8 +488,9 @@ jobs:
             $value = $key.GetValue("Path", $null, "DoNotExpandEnvironmentNames")
             if ($null -eq $value) { , @($key, $null, $null) } else { , @($key, $value, $key.GetValueKind("Path")) }
           }
+          $installer = (Resolve-Path scripts\install\windows.bat).Path
           function Invoke-Installer {
-            $global:installerOutput = (cmd.exe /c scripts\install\windows.bat @args) -join "`n"
+            $global:installerOutput = (cmd.exe /c $installer @args) -join "`n"
             $global:installerCode = $LASTEXITCODE
             Write-Host $global:installerOutput
           }
@@ -558,6 +559,20 @@ jobs:
             if ($installerCode -ne 0) { throw "windows.bat failed with exit code $installerCode behind a python.bat on PATH" }
             Assert-Output "Creating virtual environment in $env:USERPROFILE\.sima-cli-env..."
             Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"
+            $version = (& "$scripts\sima-cli.exe" --version) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or $version -cne $expected) { throw "Installed sima-cli reports '$version', expected '$expected'" }
+            # Run from a folder with a python.bat and a python.cmd that do nothing, the script uses the
+            # environment's python by its path: it neither ends early nor looks for another Python.
+            $cwdShims = Join-Path $env:RUNNER_TEMP "cwd-shims"
+            New-Item -ItemType Directory -Force -Path $cwdShims | Out-Null
+            foreach ($name in "python.bat", "python.cmd") { Set-Content -LiteralPath (Join-Path $cwdShims $name) -Value "@exit /b 0" }
+            Push-Location $cwdShims
+            Invoke-Installer $wheel
+            Pop-Location
+            if ($installerCode -ne 0) { throw "windows.bat failed with exit code $installerCode from a folder with python.bat and python.cmd" }
+            Assert-Output "Installing/Upgrading sima-cli from $wheel..."
+            Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"
+            if ($installerOutput.Contains("No working Python found")) { throw "windows.bat looked for another Python although its environment works" }
             $version = (& "$scripts\sima-cli.exe" --version) -join "`n"
             if ($LASTEXITCODE -ne 0 -or $version -cne $expected) { throw "Installed sima-cli reports '$version', expected '$expected'" }
             # A failed pip step fails the script.

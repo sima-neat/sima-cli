@@ -189,16 +189,18 @@ if "%INSTALL_FROM_PYPI%"=="1" (
 ) else (
     echo Installing/Upgrading sima-cli from %WHEEL_PATH%...
 )
-call "%INSTALL_DIR%\Scripts\activate.bat"
-python -m pip install --upgrade pip
+rem Run the environment's python by its path: by name, a python in the current folder would run
+rem instead. Clear PYTHONHOME, as activate.bat does, so it cannot point that python elsewhere.
+set "PYTHONHOME="
+"%VENV_PATH%\python.exe" -m pip install --upgrade pip
 if errorlevel 1 (
     echo Could not upgrade pip in !INSTALL_DIR!. See the pip output above.
     exit /b 1
 )
 if "%INSTALL_FROM_PYPI%"=="1" (
-    python -m pip install --force-reinstall --index-url https://pypi.org/simple sima-cli
+    "%VENV_PATH%\python.exe" -m pip install --force-reinstall --index-url https://pypi.org/simple sima-cli
 ) else (
-    python -m pip install --force-reinstall "%WHEEL_PATH%"
+    "%VENV_PATH%\python.exe" -m pip install --force-reinstall "%WHEEL_PATH%"
 )
 if errorlevel 1 (
     echo Could not install sima-cli into !INSTALL_DIR!. See the pip output above.

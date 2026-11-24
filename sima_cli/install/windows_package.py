@@ -602,9 +602,15 @@ def _normalize_python_arch(value: str) -> str:
     return normalized
 
 
+# Starts every python -c helper. -c puts the current directory, by default the download
+# directory, first on sys.path, so a planted json.py would run in place of the standard
+# library, as administrator in an elevated console. -I would also hide the user
+# site-packages that pip installs into for an all-users Python, so only that entry goes.
+_NO_CURRENT_DIRECTORY = "import sys\nif sys.path and sys.path[0] == '': del sys.path[0]\n"
+
 # Reports whether the interpreter accepts the wheel filename passed as its argument,
 # using pip's own tag logic (a free-threaded CPython rejects a cp314-cp314 wheel).
-_PYTHON_COMPATIBILITY_SCRIPT = """
+_PYTHON_COMPATIBILITY_SCRIPT = _NO_CURRENT_DIRECTORY + """
 import json, platform, sys
 import pip
 try:
@@ -872,7 +878,7 @@ def _prepare_python_executable(
 
 
 def _python_distribution_version(python_executable: str, distribution: str) -> Optional[str]:
-    script = (
+    script = _NO_CURRENT_DIRECTORY + (
         "import importlib.metadata as m, json; "
         f"name={json.dumps(distribution)}; "
         "\ntry: print(m.version(name))"
@@ -894,7 +900,7 @@ def _python_distribution_version(python_executable: str, distribution: str) -> O
 
 
 def _python_distribution_archive_sha256(python_executable: str, distribution: str) -> Optional[str]:
-    script = (
+    script = _NO_CURRENT_DIRECTORY + (
         "import importlib.metadata as m; "
         f"print(m.distribution({json.dumps(distribution)}).read_text('direct_url.json') or '')"
     )
@@ -921,7 +927,7 @@ def _verify_python_import(
     module: str,
     expected_version: str,
 ) -> None:
-    script = (
+    script = _NO_CURRENT_DIRECTORY + (
         "import importlib, importlib.metadata as m; "
         f"importlib.import_module({json.dumps(module)}); "
         f"assert m.version({json.dumps(distribution)}) == {json.dumps(expected_version)}"

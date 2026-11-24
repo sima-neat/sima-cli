@@ -31,9 +31,13 @@ from sima_cli.install.windows_package import (
     _bootstrap_python,
     _check_command_version,
     _check_windows_service,
+    _inspect_python,
     _managed_python_executable,
     _msi_product_code,
     _python_bootstrap_candidates,
+    _python_distribution_archive_sha256,
+    _python_distribution_version,
+    _verify_python_import,
     _windows_pnp_driver_version,
     install_windows_package,
     uninstall_windows_package,
@@ -2132,6 +2136,31 @@ class WindowsPackageTests(unittest.TestCase):
             run.call_args_list[4].args[0][-3:],
             ["--force-reinstall", "--no-deps", str(self.wheel)],
         )
+
+    def test_python_helpers_do_not_import_modules_from_the_current_directory(self):
+        # The download directory is the current directory by default. A module planted
+        # there must not run in place of the standard library or the verified package.
+        planted = self.root / "planted"
+        planted.mkdir()
+        for module in ("json", "csv", "click"):
+            (planted / f"{module}.py").write_text("raise SystemExit(97)\n", encoding="utf-8")
+        results = []
+
+        def run(command, **kwargs):
+            results.append(subprocess.run(command, check=False, **kwargs))
+            return results[-1]
+
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(planted)
+        with patch("sima_cli.install.windows_package._run", side_effect=run):
+            facts, detail = _inspect_python([sys.executable], self.wheel.name)
+            installed = _python_distribution_version(sys.executable, "click")
+            _python_distribution_archive_sha256(sys.executable, "click")
+            _verify_python_import(sys.executable, "click", "click", installed)
+
+        self.assertEqual([result.returncode for result in results], [0, 0, 0, 0])
+        self.assertIsNotNone(facts, detail)
+        self.assertTrue(installed)
 
     def test_wheel_modified_after_download_is_not_installed(self):
         responses = [python_facts(), completed(), completed(returncode=3)]

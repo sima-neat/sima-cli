@@ -433,7 +433,8 @@ class WindowsPackageTests(unittest.TestCase):
     def setup_environment(self, interactive=True, **variables):
         stack = ExitStack()
         stack.enter_context(patch.dict(os.environ, {
-            "ProgramFiles": str(self.root), "COMSPEC": "cmd.exe", **variables
+            "ProgramFiles": str(self.root), "ProgramW6432": str(self.root), "COMSPEC": "cmd.exe",
+            **variables,
         }))
         if "SIMAPCIE_SKIP_SETUP" not in variables:
             stack.enter_context(patch.dict(os.environ))
@@ -675,6 +676,7 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertIs(_msi_product_installed(PRODUCT_CODES["sima"]), expected)
         windll.msi.MsiQueryProductStateW.assert_called_with(PRODUCT_CODES["sima"])
 
+    @unittest.skipIf(os.name == "nt", "click imports ctypes on Windows; a Python without it is a POSIX build")
     def test_cli_starts_on_a_python_built_without_ctypes(self):
         # A Python built without libffi has no ctypes; only the Windows paths use it.
         script = (
@@ -1146,10 +1148,11 @@ class WindowsPackageTests(unittest.TestCase):
                 )
 
     def localized_child(self, returncode, stdout=b""):
-        """Run a real child whose output has a byte this locale cannot decode.
+        """Run a real child whose output has a byte UTF-8 cannot decode.
 
         Windows PowerShell and cmd write redirected output in the OEM code page, which
-        differs from the code page Python decodes with on most non-English systems.
+        differs from the code page Python decodes with on most non-English systems. In a
+        code page that decodes every byte, the output is only shown differently.
         """
         script = (
             "import sys; sys.stdout.buffer.write(%r); "
@@ -1208,7 +1211,7 @@ class WindowsPackageTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(
-                WindowsNativeInstallError, "verification failed: Nie mo�na"
+                WindowsNativeInstallError, "verification failed: Nie mo.na"
             ):
                 install_windows_package(self.metadata, str(self.root), native_only=True)
 

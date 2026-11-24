@@ -1686,8 +1686,9 @@ def install_from_metadata(
     native_only: bool = False,
     retry_command: str = None,
 ):
-    _ensure_install_dir_writable(install_dir, command_name=command_name)
     local_metadata = _is_local_metadata(metadata_url)
+    if not local_metadata:
+        _ensure_install_dir_writable(install_dir, command_name=command_name)
 
     try:
         tag = None
@@ -1716,14 +1717,31 @@ def install_from_metadata(
             # A local Windows package installs the files beside its metadata, as an
             # offline bundle copied to the host provides them, instead of downloading.
             local_bundle = install_type == "windows-msi" and not download_only and local_metadata
+            if local_metadata and not local_bundle:
+                _ensure_install_dir_writable(install_dir, command_name=command_name)
             print_metadata_summary(metadata=metadata)
             if install_type == "windows-msi" and not download_only:
                 # Before the receipt and the download: metadata without platforms, or
                 # --force, gets past the compatibility check on any host.
                 require_windows_host()
             if local_bundle:
+                if install_dir != "." and os.path.realpath(
+                    os.path.expanduser(install_dir)
+                ) != os.path.realpath(metadata_folder):
+                    click.echo(
+                        f"Ignoring --install-dir {install_dir}: a local Windows package "
+                        "installs from the folder of its metadata file."
+                    )
                 install_dir = metadata_folder
-                _ensure_install_dir_writable(install_dir, command_name=command_name)
+                try:
+                    _ensure_install_dir_writable(install_dir, command_name=command_name)
+                except InstallationPreflightError as error:
+                    raise InstallationPreflightError(
+                        f"Bundle folder '{install_dir}' is not writable: Windows Installer "
+                        "writes its logs beside the bundle's packages.\n\n"
+                        "Copy the bundle folder to a local disk, then run the same command "
+                        "with the metadata file in the copy."
+                    ) from error
                 click.echo(f"Installing from the packages in: {install_dir}")
             if not download_only:
                 registry.create_entry(metadata.get('name'), metadata.get('version'), metadata, '')
@@ -1804,7 +1822,7 @@ def install_from_metadata(
                         )
                         raise
 
-    except (MetadataAccessForbidden, click.UsageError):
+    except (MetadataAccessForbidden, InstallationPreflightError, click.UsageError):
         raise
     except Exception as e:
         click.echo(f"❌ Failed to install from metadata URL {metadata_url}: {e}")

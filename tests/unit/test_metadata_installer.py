@@ -3,6 +3,7 @@ import io
 import json
 import os
 import stat
+import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
@@ -1088,6 +1089,59 @@ class LocalWindowsMetadataTests(unittest.TestCase):
         mocks["preflight_windows_package"].assert_not_called()
         mocks["install_windows_package"].assert_not_called()
         self.assertEqual(self.receipts(), [])
+
+    def deny_writes_in(self, folder):
+        """Make the writability probe fail in folder only."""
+        real = tempfile.NamedTemporaryFile
+
+        def probe(*args, **kwargs):
+            if os.path.realpath(kwargs.get("dir", "")) == os.path.realpath(folder):
+                raise PermissionError("denied")
+            return real(*args, **kwargs)
+
+        return patch(
+            "sima_cli.install.metadata_installer.tempfile.NamedTemporaryFile", side_effect=probe
+        )
+
+    def test_local_windows_metadata_needs_a_writable_bundle_folder(self):
+        # --install-dir cannot help: the installer logs are written beside the packages.
+        metadata_path = self.write_metadata()
+        elsewhere = Path(self.temp.name) / "elsewhere"
+        for cwd, install_dir in ((self.bundle, "."), (Path(self.temp.name), str(elsewhere))):
+            with self.subTest(install_dir=install_dir), ExitStack() as stack:
+                stack.callback(os.chdir, os.getcwd())
+                os.chdir(cwd)
+                stack.enter_context(
+                    patch.object(metadata_installer, "_is_platform_compatible", return_value=True)
+                )
+                stack.enter_context(
+                    patch("sima_cli.install.windows_package._is_windows", return_value=True)
+                )
+                stack.enter_context(patch.object(metadata_installer, "registry", self.registry))
+                install = stack.enter_context(
+                    patch.object(metadata_installer, "install_windows_package")
+                )
+                stack.enter_context(self.deny_writes_in(self.bundle))
+                output = stack.enter_context(redirect_stdout(io.StringIO()))
+                with self.assertRaises(InstallationPreflightError) as raised:
+                    metadata_installer.install_from_metadata(str(metadata_path), False, install_dir)
+
+                self.assertEqual(raised.exception.message, (
+                    f"Bundle folder '{os.path.abspath(self.bundle)}' is not writable: Windows "
+                    "Installer writes its logs beside the bundle's packages.\n\n"
+                    "Copy the bundle folder to a local disk, then run the same command with the "
+                    "metadata file in the copy."
+                ))
+                ignored = (
+                    f"Ignoring --install-dir {elsewhere}: a local Windows package installs from "
+                    "the folder of its metadata file."
+                )
+                if install_dir == ".":
+                    self.assertNotIn("Ignoring --install-dir", output.getvalue())
+                else:
+                    self.assertIn(ignored, output.getvalue())
+                install.assert_not_called()
+                self.assertEqual(self.receipts(), [])
 
     def test_local_windows_metadata_download_only_still_downloads(self):
         # --download-only mirrors the resources from any host, without a receipt.

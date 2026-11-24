@@ -24,8 +24,8 @@ sima-cli neat install [OPTIONS] TARGET
 | `-f, --force` | Force installation even if compatibility checks fail. Sets FORCE_INSTALL=1 for the installation script. |
 | `--json` | Print resolved metadata URL and exit. |
 | `--download-only` | Download metadata resources without running installation. |
-| `--python-executable` | Install the wheel into this Python environment instead of the managed user environment. |
-| `--native-only` | Install only the native packages; do not create a managed Python environment or install the wheel. |
+| `--python-executable` | Install the wheel into this Python environment instead of the managed user environment (Windows MSI packages only). |
+| `--native-only` | Install only the native packages; do not create a managed Python environment or install the wheel (Windows MSI packages only). |
 
 ## Arguments
 
@@ -66,9 +66,10 @@ Options:
                                   installation.
   --python-executable FILE        Install the wheel into this Python
                                   environment instead of the managed user
-                                  environment.
+                                  environment (Windows MSI packages only).
   --native-only                   Install only the native packages; do not
                                   create a managed Python environment or
-                                  install the wheel.
+                                  install the wheel (Windows MSI packages
+                                  only).
   --help                          Show this message and exit.
 ```

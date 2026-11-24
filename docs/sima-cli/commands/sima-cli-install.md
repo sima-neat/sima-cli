@@ -27,8 +27,8 @@ sima-cli install [OPTIONS] [COMPONENT]
 | `-d, --install-dir` | Directory where package resources are downloaded and installed. (default: .) |
 | `--json` | With --neat or --vulcan, print resolved metadata URL and exit. |
 | `-f, --force` | Force installation even if compatibility checks fail. |
-| `--python-executable` | Install the wheel into this Python environment instead of the managed user environment. |
-| `--native-only` | Install only the native packages; do not create a managed Python environment or install the wheel. |
+| `--python-executable` | Install the wheel into this Python environment instead of the managed user environment (Windows MSI packages only). |
+| `--native-only` | Install only the native packages; do not create a managed Python environment or install the wheel (Windows MSI packages only). |
 
 ## Arguments
 
@@ -104,9 +104,10 @@ Options:
                                   checks fail.
   --python-executable FILE        Install the wheel into this Python
                                   environment instead of the managed user
-                                  environment.
+                                  environment (Windows MSI packages only).
   --native-only                   Install only the native packages; do not
                                   create a managed Python environment or
-                                  install the wheel.
+                                  install the wheel (Windows MSI packages
+                                  only).
   --help                          Show this message and exit.
 ```

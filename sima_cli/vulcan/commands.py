@@ -59,12 +59,18 @@ def _python_install_options(function):
     function = click.option(
         "--native-only",
         is_flag=True,
-        help="Install only the native packages; do not create a managed Python environment or install the wheel.",
+        help=(
+            "Install only the native packages; do not create a managed Python environment or "
+            "install the wheel (Windows MSI packages only)."
+        ),
     )(function)
     return click.option(
         "--python-executable",
         type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=str),
-        help="Install the wheel into this Python environment instead of the managed user environment.",
+        help=(
+            "Install the wheel into this Python environment instead of the managed user "
+            "environment (Windows MSI packages only)."
+        ),
     )(function)
 
 

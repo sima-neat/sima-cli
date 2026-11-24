@@ -2823,6 +2823,19 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("managed user environment", result.output)
         self.assertIn("--native-only", result.output)
 
+    def test_python_option_help_says_they_apply_to_windows_msi_packages_only(self):
+        # Linux and macOS help shows them too; the Ubuntu PCIe host also installs a wheel.
+        for command in (["install"], ["neat", "install"]):
+            with self.subTest(command=command):
+                result = CliRunner().invoke(
+                    main, [*command, "--help"], env={"SIMA_CLI_CHECK_FOR_UPDATE": "0"}
+                )
+                self.assertEqual(result.exit_code, 0, result.output)
+                help_text = " ".join(result.output.split())
+                for option in ("--python-executable FILE", "--native-only"):
+                    described = help_text.split(option, 1)[1].split(" --", 1)[0]
+                    self.assertIn("(Windows MSI packages only)", described, option)
+
     def test_vulcan_install_forwards_selected_python_and_native_only(self):
         resolved = type(
             "Result",

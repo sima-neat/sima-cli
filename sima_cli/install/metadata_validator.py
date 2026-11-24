@@ -142,6 +142,43 @@ def _validate_windows_prerequisites(value):
                     f"'{prefix}.version-pattern' must contain exactly one capture group"
                 )
 
+def _distribution_key(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _validate_wheelhouse(python_package: dict, resources: list):
+    """Check the exact dependency wheels pip may install, each written into a requirements line."""
+    wheelhouse = python_package["wheelhouse"]
+    if not isinstance(wheelhouse, list) or not wheelhouse:
+        raise MetadataValidationError("'installation.python.wheelhouse' must be a non-empty list")
+    distributions = {_distribution_key(python_package["distribution"])}
+    for index, entry in enumerate(wheelhouse):
+        prefix = f"installation.python.wheelhouse[{index}]"
+        if not isinstance(entry, dict):
+            raise MetadataValidationError(f"'{prefix}' must be an object")
+        _reject_unknown_fields(entry, ("wheel", "distribution", "version"), prefix)
+        for field in ("wheel", "distribution", "version"):
+            if not isinstance(entry.get(field), str) or not entry[field].strip():
+                raise MetadataValidationError(f"'{prefix}.{field}' must be a non-empty string")
+        if not entry["wheel"].lower().endswith(".whl"):
+            raise MetadataValidationError(f"'{prefix}.wheel' must name a wheel resource")
+        if entry["wheel"] not in resources:
+            raise MetadataValidationError(f"'{prefix}.wheel' must be listed in 'resources'")
+        if not re.fullmatch(_SAFE_NAME, entry["distribution"]):
+            raise MetadataValidationError(
+                f"'{prefix}.distribution' must be a valid distribution name"
+            )
+        if not re.fullmatch(r"[0-9][0-9A-Za-z.+!-]*", entry["version"]):
+            raise MetadataValidationError(f"'{prefix}.version' must be an exact version")
+        key = _distribution_key(entry["distribution"])
+        if key in distributions:
+            raise MetadataValidationError(
+                "'installation.python.wheelhouse' must name each distribution once and not "
+                "'installation.python.distribution'"
+            )
+        distributions.add(key)
+
+
 def _validate_sha256_field(value, field_name: str):
     if not isinstance(value, str):
         raise MetadataValidationError(f"'{field_name}' must be a string")
@@ -363,7 +400,10 @@ def validate_metadata(data: dict):
                     raise MetadataValidationError("'installation.python' must be an object")
                 _reject_unknown_fields(
                     python_package,
-                    ("wheel", "distribution", "version", "import", "requires-python", "arch"),
+                    (
+                        "wheel", "distribution", "version", "import", "requires-python",
+                        "arch", "wheelhouse",
+                    ),
                     "installation.python",
                 )
                 for field in ("wheel", "distribution", "version", "import"):
@@ -400,6 +440,8 @@ def validate_metadata(data: dict):
                         raise MetadataValidationError(
                             f"Invalid 'installation.python.arch': {exc}"
                         )
+                if "wheelhouse" in python_package:
+                    _validate_wheelhouse(python_package, data["resources"])
             prerequisites = install.get("prerequisites")
             if prerequisites is not None:
                 _validate_windows_prerequisites(prerequisites)

@@ -126,6 +126,84 @@ class MetadataValidatorTests(unittest.TestCase):
                 ):
                     validate_metadata(with_installation(installation))
 
+    def windows_wheelhouse_metadata(self, wheelhouse):
+        resources = [
+            "core.msi",
+            "pyneatpcie-0.6.1-cp314-cp314-win_amd64.whl",
+            "wheelhouse/numpy-2.5.4-cp314-cp314-win_amd64.whl",
+            "wheelhouse/opencv_python-5.0.0.93-cp37-abi3-win_amd64.whl",
+        ]
+        return {
+            **_base_metadata([{"type": "host", "os": ["windows"], "arch": ["amd64"]}]),
+            "resources": resources,
+            "resources-checksum": {resource: "a" * 64 for resource in resources},
+            "installation": {
+                "type": "windows-msi",
+                "msi": "core.msi",
+                "python": {
+                    "wheel": "pyneatpcie-0.6.1-cp314-cp314-win_amd64.whl",
+                    "distribution": "pyneatpcie",
+                    "version": "0.6.1",
+                    "import": "pyneatpcie",
+                    "wheelhouse": wheelhouse,
+                },
+            },
+        }
+
+    PINNED_WHEELHOUSE = [
+        {"wheel": "wheelhouse/numpy-2.5.4-cp314-cp314-win_amd64.whl",
+         "distribution": "numpy", "version": "2.5.4"},
+        {"wheel": "wheelhouse/opencv_python-5.0.0.93-cp37-abi3-win_amd64.whl",
+         "distribution": "opencv-python", "version": "5.0.0.93"},
+    ]
+
+    def assert_wheelhouse_rejected(self, wheelhouse, message):
+        with self.assertRaisesRegex(MetadataValidationError, message):
+            validate_metadata(self.windows_wheelhouse_metadata(wheelhouse))
+
+    def test_windows_wheelhouse_accepts_pinned_inventory(self):
+        metadata = self.windows_wheelhouse_metadata(self.PINNED_WHEELHOUSE)
+        self.assertTrue(validate_metadata(metadata))
+
+    def test_windows_wheelhouse_rejects_unlisted_wheel(self):
+        entry = {
+            **self.PINNED_WHEELHOUSE[0],
+            "wheel": "wheelhouse/numpy-2.6.0-cp314-cp314-win_amd64.whl",
+        }
+        self.assert_wheelhouse_rejected(
+            [entry], r"wheelhouse\[0\]\.wheel' must be listed in 'resources'"
+        )
+
+    def test_windows_wheelhouse_rejects_unsafe_version(self):
+        # The version is written into a pip requirements line.
+        entry = {**self.PINNED_WHEELHOUSE[0], "version": "1.0 --index-url x"}
+        self.assert_wheelhouse_rejected(
+            [entry], r"wheelhouse\[0\]\.version' must be an exact version"
+        )
+
+    def test_windows_wheelhouse_rejects_duplicate_distribution(self):
+        renamed = {**self.PINNED_WHEELHOUSE[1], "distribution": "OpenCV_Python"}
+        self.assert_wheelhouse_rejected(
+            [self.PINNED_WHEELHOUSE[1], renamed], "must name each distribution once"
+        )
+        itself = {**self.PINNED_WHEELHOUSE[0], "distribution": "PyNeatPCIe"}
+        self.assert_wheelhouse_rejected([itself], "must name each distribution once")
+
+    def test_windows_wheelhouse_rejects_unknown_key(self):
+        entry = {**self.PINNED_WHEELHOUSE[0], "index-url": "https://example.invalid/simple"}
+        self.assert_wheelhouse_rejected(
+            [entry], r"'installation\.python\.wheelhouse\[0\]' has unsupported fields: index-url$"
+        )
+        missing = {"wheel": entry["wheel"], "distribution": "numpy"}
+        self.assert_wheelhouse_rejected(
+            [missing], r"wheelhouse\[0\]\.version' must be a non-empty string"
+        )
+
+    def test_windows_wheelhouse_rejects_empty_list(self):
+        self.assert_wheelhouse_rejected(
+            [], "'installation.python.wheelhouse' must be a non-empty list"
+        )
+
     def test_metadata_fixture_files_match_validator_expectations(self):
         fixture_dir = Path(__file__).parent / "pkg-metadata"
 

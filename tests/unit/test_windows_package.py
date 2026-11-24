@@ -1,5 +1,7 @@
 import base64
 import hashlib
+import http.server
+import importlib.util
 import io
 import json
 import os
@@ -7,7 +9,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+import zipfile
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, call, patch
@@ -35,6 +39,7 @@ from sima_cli.install.windows_package import (
     _install_python_wheel,
     _managed_python_executable,
     _msi_product_code,
+    _pip_install_from_wheelhouse,
     _python_bootstrap_candidates,
     _python_distribution_archive_sha256,
     _python_distribution_version,
@@ -3073,6 +3078,90 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertEqual(
                     forwarded["retry_command"], f"{pinned} --env dev {option_text}"
                 )
+
+
+def write_wheel(folder, name, version, requires=()):
+    """Write a minimal pure-Python wheel; return its path."""
+    dist_info = f"{name}-{version}.dist-info"
+    files = {
+        f"{name}/__init__.py": "",
+        f"{dist_info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+        + "".join(f"Requires-Dist: {requirement}\n" for requirement in requires),
+        f"{dist_info}/WHEEL": (
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+    }
+    files[f"{dist_info}/RECORD"] = "".join(f"{path},,\n" for path in [*files, f"{dist_info}/RECORD"])
+    path = Path(folder) / f"{name}-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(path, "w") as archive:
+        for member, content in files.items():
+            archive.writestr(member, content)
+    return path
+
+
+@unittest.skipUnless(importlib.util.find_spec("pip"), "pip is not installed")
+class WheelhousePipTests(unittest.TestCase):
+    """The wheelhouse install with the real pip of the interpreter running the tests."""
+
+    def setUp(self):
+        self.requests = []
+        requests = self.requests
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                self.send_error(404)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.url = f"http://127.0.0.1:{server.server_address[1]}/links/"
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+
+    def test_pip_configuration_file_is_not_read(self):
+        # A find-links URL in a pip configuration file is not contacted offline.
+        wheel = write_wheel(self.root, "sima_offline_demo", "1.0.0", ["sima_offline_dep==1.0.0"])
+        (self.root / "wheelhouse").mkdir()
+        dependency = write_wheel(self.root / "wheelhouse", "sima_offline_dep", "1.0.0")
+        config = self.root / "pip.ini"
+        config.write_text(f"[global]\nfind-links = {self.url}\n", encoding="utf-8")
+        resources = [wheel.name, f"wheelhouse/{dependency.name}"]
+        metadata = {
+            "resources": resources,
+            "resources-checksum": {
+                resource: sha256(self.root.joinpath(*resource.split("/"))) for resource in resources
+            },
+            "installation": {"python": {"wheel": wheel.name, "wheelhouse": [{
+                "wheel": resources[1], "distribution": "sima_offline_dep", "version": "1.0.0",
+            }]}},
+        }
+        environment = {**os.environ, "PIP_CONFIG_FILE": str(config)}
+        # Control: pip given this file contacts the listener.
+        subprocess.run(
+            [sys.executable, "-m", "pip", "download", "--isolated", "--no-index", "--no-deps",
+             "--dest", str(self.root / "control"), "sima_offline_absent"],
+            env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        self.assertTrue(self.requests, "pip did not read the configuration file")
+        self.requests.clear()
+
+        target = self.root / "target"
+        with patch.dict(os.environ, {"PIP_CONFIG_FILE": str(config)}):
+            result = _pip_install_from_wheelhouse(
+                metadata, str(self.root), Path(sys.executable), wheel,
+                ["--target", str(target)], no_deps=False, rerun="rerun the same command.",
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.requests, [])
+        self.assertTrue((target / "sima_offline_demo").is_dir())
+        self.assertTrue((target / "sima_offline_dep").is_dir())
 
 
 if __name__ == "__main__":

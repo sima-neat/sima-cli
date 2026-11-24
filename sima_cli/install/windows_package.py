@@ -1018,8 +1018,9 @@ def _pip_install_from_wheelhouse(
 ) -> subprocess.CompletedProcess:
     """Install the wheel and its declared dependencies from local files only.
 
-    pip uses no index and no configuration, builds nothing from source, and refuses any
-    file whose SHA-256 is not the declared one, including other versions in the folder.
+    pip uses no index, reads no configuration file and no PIP_ variable, builds nothing
+    from source, and refuses any file whose SHA-256 is not the declared one, including
+    other versions in the folder.
     """
     python_package = metadata["installation"]["python"]
     # A direct file reference, so pip still records the archive hash that a rerun reads.
@@ -1055,6 +1056,8 @@ def _pip_install_from_wheelhouse(
             ],
             text=True,
             cwd=str(executable.parent),
+            # --isolated skips only the user file; this pip value skips every file.
+            env={**os.environ, "PIP_CONFIG_FILE": os.devnull},
         )
     finally:
         shutil.rmtree(work, ignore_errors=True)

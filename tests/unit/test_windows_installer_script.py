@@ -55,12 +55,12 @@ PREFIX = re.compile(
 
 
 def interpreters_run_by_name(script):
-    """Return each line that runs python, py or pip by its bare name outside a for /f capture.
+    """Return each line that runs python, py or pip by its bare name, without call, outside a for /f capture.
 
     cmd looks for a bare name in the current directory, then on PATH, and takes a .bat or .cmd
     as well as an .exe. A batch file started from a batch file without call never returns, so
-    the script ends there with that file's exit code. The command of for /f ('...') runs in a
-    child cmd, which returns.
+    the script ends there with that file's exit code. Through call it returns, and the command
+    of for /f ('...') runs in a child cmd, which returns.
     """
     found = []
     for line in script.splitlines():
@@ -77,14 +77,16 @@ def interpreters_run_by_name(script):
                 continue
             current += char
         for statement in statements + [current]:
+            called = False
             while True:
                 prefix = PREFIX.match(statement)
                 if not prefix or not prefix.group(0):
                     break
+                called = called or prefix.group(0).lower() == "call"
                 statement = statement[prefix.end():]
             command = re.match(r'"([^"]*)"|\S*', statement)
             name = command.group(1) if command.group(1) is not None else command.group(0)
-            if re.fullmatch(r"(?i)(python3?|py|pip3?)(\.exe|\.bat|\.cmd)?", name):
+            if not called and re.fullmatch(r"(?i)(python3?|py|pip3?)(\.exe|\.bat|\.cmd)?", name):
                 found.append(line.strip())
                 break
     return found
@@ -102,9 +104,10 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         '( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )'
     )
 
+    VERIFIED_CAPTURE = 'do ( "%%P" -c "import sys" >nul 2>nul && set "PYTHON=%%P" )'
     PATH_PROBE = (
         "for /f \"delims=\" %%P in ('python -c \"import sys; print(sys.executable)\" 2^>nul ^<nul') "
-        'do set "PYTHON=%%P"'
+        + VERIFIED_CAPTURE
     )
 
     ENVIRONMENT_PROBE = (
@@ -128,7 +131,6 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         # A python.bat or python.cmd, such as pyenv-win's shim or one in the current folder, ended
         # the script at its first Python probe with exit code 0, and nothing was installed.
         self.assertEqual(interpreters_run_by_name(self.script), [])
-        self.assertNotIn('set "PYTHON=python"', self.script)
         self.assertIn('"!PYTHON!" -m venv --clear "%INSTALL_DIR%"', self.script)
         # On a runner: a pyenv-win style python.bat first on PATH, and no environment yet.
         step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
@@ -142,10 +144,10 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("if ($LASTEXITCODE -ne 0 -or $version -cne $expected)", shim)
         self.assertEqual(
             interpreters_run_by_name(
-                'python -c "import sys" >nul 2>nul\nif 1==1 (\n    py -3.14 -m venv x\n)\ncall python -V\n'
+                'python -c "import sys" >nul 2>nul\nif 1==1 (\n    py -3.14 -m venv x\n)\n'
                 "if 1==1 pip install x\nif not defined PYTHON python -V\nset \"X=1\" & \"python.exe\" -V\n"
             ),
-            ['python -c "import sys" >nul 2>nul', "py -3.14 -m venv x", "call python -V", "if 1==1 pip install x",
+            ['python -c "import sys" >nul 2>nul', "py -3.14 -m venv x", "if 1==1 pip install x",
              "if not defined PYTHON python -V", 'set "X=1" & "python.exe" -V'],
         )
         self.assertEqual(
@@ -154,6 +156,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
                 "for /f %%P in ('python -c \"print(1)\"') do set \"P=%%P\"\n"
                 '"%VENV_PATH%\\python.exe" -m pip install --upgrade pip\nrem python -V\n'
                 'echo Run it: ^& python -V\nif "%X%"=="1" (\n    "!PYTHON!" -m venv x\n) else (\n    echo pip\n)\n'
+                'call python -V\nif not defined PYTHON (\n    call python -c "import sys" >nul 2>nul <nul\n)\n'
             ),
             [],
         )
@@ -164,7 +167,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         probes = [
             self.ENVIRONMENT_PROBE,
             self.PATH_PROBE,
-            "('py -3.14 -c \"import sys; print(sys.executable)\" 2^>nul ^<nul') do set \"PYTHON=%%P\"",
+            "('py -3.14 -c \"import sys; print(sys.executable)\" 2^>nul ^<nul') " + self.VERIFIED_CAPTURE,
             'set PYTHON_LOCATIONS="%LOCALAPPDATA%\\Programs\\Python\\Python314\\python.exe" '
             '"%ProgramFiles%\\Python314\\python.exe"',
             self.LOCATION_PROBE,
@@ -174,6 +177,40 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         install = self.script.index("if not defined PYTHON (\n")
         self.assertLess(positions[-1], install)
         self.assertLess(install, self.script.index("Invoke-WebRequest"))
+
+    def test_printed_interpreter_path_is_used_only_if_it_runs(self):
+        # Python prints its path in the ANSI code page and cmd reads it in the console code page, so a
+        # path with, for example, an accented user name came back changed and the venv step failed.
+        captures = [line for line in self.script.splitlines() if "print(sys.executable)" in line]
+        self.assertEqual(len(captures), 2)
+        for line in captures:
+            self.assertTrue(line.endswith(" " + self.VERIFIED_CAPTURE), line)
+        # Last, before the download, a python on PATH is used by name, through call.
+        fallback = (
+            'if not defined PYTHON (\n    call python -c "import sys" >nul 2>nul <nul\n'
+            '    if not errorlevel 1 set "PYTHON=python"\n)\n'
+        )
+        self.assertLess(self.script.index(self.LOCATION_PROBE), self.script.index(fallback))
+        self.assertLess(self.script.index(fallback), self.script.index('set "PYTHON_URL='))
+        # So the interpreter, a full path or that name, always runs through call.
+        self.assertNotRegex(self.script, r'(?m)^\s*"[!%]PYTHON[!%]"')
+        self.assertIn('    call "!PYTHON!" -m venv --clear "%INSTALL_DIR%"\n', self.script)
+        self.assertIn("\ncall \"%PYTHON%\" -c \"import struct, sys;", self.script)
+        # On a runner: a python first on PATH whose path has a character the console code page lacks.
+        step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
+        case = step.split("# A python on PATH whose path has a character", 1)[1].split("# A failed pip step", 1)[0]
+        self.assertIn("[Console]::OutputEncoding.CodePage", case)
+        self.assertIn("(Get-Culture).TextInfo.ANSICodePage", case)
+        self.assertIn("(Get-Culture).TextInfo.OEMCodePage", case)
+        self.assertIn('$accented = Join-Path $env:RUNNER_TEMP "Jos$([char]0xE9)\\python"', case)
+        self.assertIn('Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".sima-cli-env") -Recurse -Force', case)
+        self.assertIn(
+            '$env:PATH = "$accented\\Scripts;$env:SystemRoot\\System32;$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0"',
+            case,
+        )
+        self.assertIn('Assert-Output "Creating virtual environment in $env:USERPROFILE\\.sima-cli-env..."', case)
+        self.assertIn('Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"', case)
+        self.assertIn("if ($LASTEXITCODE -ne 0 -or $version -cne $expected)", case)
 
     def test_working_environment_is_used_before_looking_for_another_python(self):
         # An upgrade on a PC without python on PATH downloaded and installed Python 3.14, which the
@@ -526,7 +563,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         )
         # Every run of the installed sima-cli checks its exit code.
         runs = [match.end() for match in re.finditer(r'& "\$scripts\\sima-cli\.exe" --version\)?[^\n]*\n', body)]
-        self.assertEqual(len(runs), 4)
+        self.assertEqual(len(runs), 5)
         for end in runs:
             self.assertRegex(body[end:].split("\n", 1)[0], r"^\s*if \(\$LASTEXITCODE -ne 0[ )]")
         # A refusal inside the Python bootstrap block fails the script: with no Python to

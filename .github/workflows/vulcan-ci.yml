@@ -576,6 +576,28 @@ jobs:
             if ($installerOutput.Contains("No working Python found")) { throw "windows.bat looked for another Python although its environment works" }
             $version = (& "$scripts\sima-cli.exe" --version) -join "`n"
             if ($LASTEXITCODE -ne 0 -or $version -cne $expected) { throw "Installed sima-cli reports '$version', expected '$expected'" }
+            # A python on PATH whose path has a character the console code page lacks: cmd reads the path it
+            # prints changed. With no environment, no py and no python.org 3.14, the script still installs.
+            Write-Host "Code pages: console output $([Console]::OutputEncoding.CodePage), ANSI $((Get-Culture).TextInfo.ANSICodePage), OEM $((Get-Culture).TextInfo.OEMCodePage)"
+            $accented = Join-Path $env:RUNNER_TEMP "Jos$([char]0xE9)\python"
+            python -m venv $accented
+            if ($LASTEXITCODE -ne 0) { throw "Could not create a Python under $accented" }
+            $readBack = Join-Path $env:RUNNER_TEMP "read-back.bat"
+            Set-Content -LiteralPath $readBack -Value '@for /f "delims=" %%P in (''python -c "import sys; print(sys.executable)" 2^>nul ^<nul'') do @if exist "%%P" (echo Log only: cmd reads back a path that exists: %%P) else (echo Log only: cmd reads back a path that does not exist: %%P)'
+            Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".sima-cli-env") -Recurse -Force
+            $savedVars = @{ PATH = $env:PATH; LOCALAPPDATA = $env:LOCALAPPDATA; ProgramFiles = $env:ProgramFiles }
+            $env:PATH = "$accented\Scripts;$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"
+            $env:ProgramFiles = $env:LOCALAPPDATA
+            cmd.exe /c $readBack
+            Invoke-Installer $wheel
+            foreach ($name in $savedVars.Keys) { Set-Item -LiteralPath "env:$name" -Value $savedVars[$name] }
+            if ($installerCode -ne 0) { throw "windows.bat failed with exit code $installerCode with python under $accented" }
+            Assert-Output "Creating virtual environment in $env:USERPROFILE\.sima-cli-env..."
+            Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"
+            if ($installerOutput.Contains("No working Python found")) { throw "windows.bat did not use the python under $accented" }
+            $version = (& "$scripts\sima-cli.exe" --version) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or $version -cne $expected) { throw "Installed sima-cli reports '$version', expected '$expected'" }
             # A failed pip step fails the script.
             $invalidWheel = Join-Path $env:RUNNER_TEMP "sima_cli-0.0.0-py3-none-any.whl"
             Set-Content -LiteralPath $invalidWheel -Value "not a wheel"

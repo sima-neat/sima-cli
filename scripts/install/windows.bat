@@ -104,15 +104,22 @@ rem because that installer does not add Python to PATH by default.
 rem The Microsoft Store alias, or any python that cannot run, counts as no Python.
 rem python and py run in a child cmd and print the interpreter they ran, which is used by its full path
 rem from then on: a python.bat or python.cmd, such as a version manager's shim, run directly from this
-rem script would end it there with exit code 0.
+rem script would end it there with exit code 0. A printed path is used only if it runs: cmd reads it in
+rem the console code page, so a path with characters that code page lacks, as in some user names, changes.
 rem The launcher gets no input, so an offer to install a missing version cannot wait for an answer.
 set "PYTHON="
 "%INSTALL_DIR%\Scripts\python.exe" -c "import sys" >nul 2>nul
 if not errorlevel 1 set "PYTHON=%INSTALL_DIR%\Scripts\python.exe"
-if not defined PYTHON for /f "delims=" %%P in ('python -c "import sys; print(sys.executable)" 2^>nul ^<nul') do set "PYTHON=%%P"
-if not defined PYTHON for /f "delims=" %%P in ('py -3.14 -c "import sys; print(sys.executable)" 2^>nul ^<nul') do set "PYTHON=%%P"
+if not defined PYTHON for /f "delims=" %%P in ('python -c "import sys; print(sys.executable)" 2^>nul ^<nul') do ( "%%P" -c "import sys" >nul 2>nul && set "PYTHON=%%P" )
+if not defined PYTHON for /f "delims=" %%P in ('py -3.14 -c "import sys; print(sys.executable)" 2^>nul ^<nul') do ( "%%P" -c "import sys" >nul 2>nul && set "PYTHON=%%P" )
 set PYTHON_LOCATIONS="%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%ProgramFiles%\Python314\python.exe"
 for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON ( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )
+rem Last, a python on PATH whose printed path did not run is used by name, always through call, which
+rem returns from a batch file.
+if not defined PYTHON (
+    call python -c "import sys" >nul 2>nul <nul
+    if not errorlevel 1 set "PYTHON=python"
+)
 rem Under cmd /c, an exit /b followed by any other command in its ( ... ) block, or after & on its line,
 rem ends the script with exit code 0. So a failed step records the failure, the steps after it are
 rem skipped, and the script exits at the top level.
@@ -171,14 +178,14 @@ if not defined PYTHON (
     echo Python installation failed: no Python 3.14 runs from !PYTHON_LOCATIONS!
     exit /b 1
 )
-"%PYTHON%" -c "import struct, sys; sys.exit(0 if sys.version_info[:2] == (3, 14) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
+call "%PYTHON%" -c "import struct, sys; sys.exit(0 if sys.version_info[:2] == (3, 14) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
 if errorlevel 1 echo Note: the Windows PCIe host package needs 64-bit Python 3.14 from https://www.python.org/downloads/windows/
 
 rem Also recreate an environment whose python does not run, such as one whose base Python was removed.
 "%INSTALL_DIR%\Scripts\python.exe" -c "import sys" >nul 2>nul
 if errorlevel 1 (
     echo Creating virtual environment in !INSTALL_DIR!...
-    "!PYTHON!" -m venv --clear "%INSTALL_DIR%"
+    call "!PYTHON!" -m venv --clear "%INSTALL_DIR%"
     if errorlevel 1 (
         echo Could not create the virtual environment in !INSTALL_DIR!.
         exit /b 1

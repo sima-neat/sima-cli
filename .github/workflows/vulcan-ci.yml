@@ -598,6 +598,24 @@ jobs:
             if ($installerOutput.Contains("No working Python found")) { throw "windows.bat did not use the python under $accented" }
             $version = (& "$scripts\sima-cli.exe" --version) -join "`n"
             if ($LASTEXITCODE -ne 0 -or $version -cne $expected) { throw "Installed sima-cli reports '$version', expected '$expected'" }
+            # A python whose path has a caret, a percent sign and a space, which call changes if they are
+            # expanded before it parses the line again. With no environment, the script creates one from it.
+            $special = Join-Path $env:RUNNER_TEMP "caret^ and 100% sign\python"
+            python -m venv $special
+            if ($LASTEXITCODE -ne 0) { throw "Could not create a Python under $special" }
+            Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".sima-cli-env") -Recurse -Force
+            $savedVars = @{ PATH = $env:PATH; LOCALAPPDATA = $env:LOCALAPPDATA; ProgramFiles = $env:ProgramFiles }
+            $env:PATH = "$special\Scripts;$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"
+            $env:ProgramFiles = $env:LOCALAPPDATA
+            Invoke-Installer $wheel
+            foreach ($name in $savedVars.Keys) { Set-Item -LiteralPath "env:$name" -Value $savedVars[$name] }
+            if ($installerCode -ne 0) { throw "windows.bat failed with exit code $installerCode with python under $special" }
+            Assert-Output "Creating virtual environment in $env:USERPROFILE\.sima-cli-env..."
+            Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"
+            if ($installerOutput.Contains("No working Python found")) { throw "windows.bat did not use the python under $special" }
+            $version = (& "$scripts\sima-cli.exe" --version) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or $version -cne $expected) { throw "Installed sima-cli reports '$version', expected '$expected'" }
             # A failed pip step fails the script.
             $invalidWheel = Join-Path $env:RUNNER_TEMP "sima_cli-0.0.0-py3-none-any.whl"
             Set-Content -LiteralPath $invalidWheel -Value "not a wheel"

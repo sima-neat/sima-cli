@@ -131,7 +131,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         # A python.bat or python.cmd, such as pyenv-win's shim or one in the current folder, ended
         # the script at its first Python probe with exit code 0, and nothing was installed.
         self.assertEqual(interpreters_run_by_name(self.script), [])
-        self.assertIn('"!PYTHON!" -m venv --clear "%INSTALL_DIR%"', self.script)
+        self.assertIn('call "%%PYTHON%%" -m venv --clear "%%INSTALL_DIR%%"', self.script)
         # On a runner: a pyenv-win style python.bat first on PATH, and no environment yet.
         step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
         shim = step.split("# A python that is a batch file, as pyenv-win's shim first on PATH", 1)[1]
@@ -194,8 +194,8 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertLess(self.script.index(fallback), self.script.index('set "PYTHON_URL='))
         # So the interpreter, a full path or that name, always runs through call.
         self.assertNotRegex(self.script, r'(?m)^\s*"[!%]PYTHON[!%]"')
-        self.assertIn('    call "!PYTHON!" -m venv --clear "%INSTALL_DIR%"\n', self.script)
-        self.assertIn("\ncall \"%PYTHON%\" -c \"import struct, sys;", self.script)
+        self.assertIn('    call "%%PYTHON%%" -m venv --clear "%%INSTALL_DIR%%"\n', self.script)
+        self.assertIn("\ncall \"%%PYTHON%%\" -c \"import struct, sys;", self.script)
         # On a runner: a python first on PATH whose path has a character the console code page lacks.
         step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
         case = step.split("# A python on PATH whose path has a character", 1)[1].split("# A failed pip step", 1)[0]
@@ -208,6 +208,32 @@ class WindowsInstallerScriptTests(unittest.TestCase):
             '$env:PATH = "$accented\\Scripts;$env:SystemRoot\\System32;$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0"',
             case,
         )
+        self.assertIn('Assert-Output "Creating virtual environment in $env:USERPROFILE\\.sima-cli-env..."', case)
+        self.assertIn('Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"', case)
+        self.assertIn("if ($LASTEXITCODE -ne 0 -or $version -cne $expected)", case)
+
+    def test_call_expands_variables_only_when_it_parses_the_line_again(self):
+        # call parses its line a second time: a path expanded before it lost a % and had each ^
+        # doubled, so a profile or Python path with either character broke the venv step.
+        calls = [
+            line for line in self.script.splitlines()
+            if re.search(r"(?i)(^|[\s(&])call\s", line) and not re.match(r"(?i)\s*rem\b", line)
+        ]
+        self.assertEqual(len(calls), 3, calls)
+        for line in calls:
+            self.assertNotRegex(line, r"(?<!%)%[A-Za-z_]\w*%(?!%)|![A-Za-z_]\w*!", line)
+        # On a runner: a python whose path has a caret, a percent sign and a space, and no environment yet.
+        step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
+        case = step.split("# A python whose path has a caret, a percent sign and a space", 1)[1]
+        case = case.split("# A failed pip step", 1)[0]
+        self.assertIn('$special = Join-Path $env:RUNNER_TEMP "caret^ and 100% sign\\python"', case)
+        self.assertIn('Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".sima-cli-env") -Recurse -Force', case)
+        self.assertIn(
+            '$env:PATH = "$special\\Scripts;$env:SystemRoot\\System32;$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0"',
+            case,
+        )
+        self.assertIn("Invoke-Installer $wheel\n", case)
+        self.assertIn("if ($installerCode -ne 0) {", case)
         self.assertIn('Assert-Output "Creating virtual environment in $env:USERPROFILE\\.sima-cli-env..."', case)
         self.assertIn('Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"', case)
         self.assertIn("if ($LASTEXITCODE -ne 0 -or $version -cne $expected)", case)
@@ -344,7 +370,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         failed = self.script.index("\nif defined PYTHON_FAILED exit /b 1\n")
         self.assertLess(run, failed)
         self.assertLess(failed, self.script.index("echo Python installation failed"))
-        self.assertLess(failed, self.script.index('-m venv --clear "%INSTALL_DIR%"'))
+        self.assertLess(failed, self.script.index('-m venv --clear "%%INSTALL_DIR%%"'))
 
     def test_python_installs_for_all_users_only_when_elevated(self):
         self.assertIn("InstallAllUsers=!PYTHON_ALL_USERS! InstallLauncherAllUsers=!PYTHON_ALL_USERS!", self.script)
@@ -359,7 +385,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
     def test_environment_that_does_not_run_is_recreated(self):
         # A leftover environment whose base Python was removed was reused, so pip failed.
         probe = self.script.index('"%INSTALL_DIR%\\Scripts\\python.exe" -c "import sys" >nul 2>nul\nif errorlevel 1 (')
-        create = self.script.index('"!PYTHON!" -m venv --clear "%INSTALL_DIR%"')
+        create = self.script.index('"%%PYTHON%%" -m venv --clear "%%INSTALL_DIR%%"')
         self.assertLess(probe, create)
         self.assertNotIn('if not exist "%INSTALL_DIR%"', self.script)
         self.assertIn(
@@ -563,7 +589,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         )
         # Every run of the installed sima-cli checks its exit code.
         runs = [match.end() for match in re.finditer(r'& "\$scripts\\sima-cli\.exe" --version\)?[^\n]*\n', body)]
-        self.assertEqual(len(runs), 5)
+        self.assertEqual(len(runs), 6)
         for end in runs:
             self.assertRegex(body[end:].split("\n", 1)[0], r"^\s*if \(\$LASTEXITCODE -ne 0[ )]")
         # A refusal inside the Python bootstrap block fails the script: with no Python to

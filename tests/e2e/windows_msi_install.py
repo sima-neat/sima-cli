@@ -3,25 +3,33 @@
 
 The MSI is built twice, as 1.0.0 and 1.1.0 with the same upgrade code. Through the installed
 sima-cli command it is installed, upgraded, refused as a downgrade and removed; the repair of
-an installed release runs through the package installer in this process. Last, it is installed
+an installed release runs through the package installer in this process. Then it is installed
 and removed once more through the administrator approval a window that is not elevated uses.
+
+The same MSIs are then installed from offline bundle folders: each holds a local metadata.json,
+the MSI, a Python package wheel and a wheelhouse with its pinned dependency. Every request
+sent through the proxy variables reaches a local listener, which must record none. Only the
+update check is shown to reach it; a connection that ignores those variables is not seen.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import functools
 import hashlib
 import http.server
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import sysconfig
 import tempfile
 import threading
 import uuid
+import zipfile
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from unittest import mock
@@ -162,13 +170,21 @@ with mock.patch.object(windows_package, "_is_windows_administrator", return_valu
 APPROVAL_REQUEST = "Requesting Windows administrator approval once for the native packages."
 
 
-def sima_cli(home: Path, *arguments: object, expect: int = 0, approval: bool = False) -> str:
-    """Run the installed sima-cli command without input, with its state under home."""
+def sima_cli(home: Path, *arguments: object, expect: int = 0, approval: bool = False,
+             proxy: str | None = None) -> str:
+    """Run the installed sima-cli command without input, with its state under home.
+
+    With proxy, every proxy variable points to it and the update check is left enabled.
+    """
     command = [str(Path(sysconfig.get_path("scripts")) / "sima-cli.exe"), *map(str, arguments)]
     if approval:
         command = [sys.executable, "-I", "-c", APPROVAL_PATH_CLI, *command[1:]]
     environment = dict(os.environ, USERPROFILE=str(home), SIMA_CLI_CHECK_FOR_UPDATE="0",
                        PYTHONIOENCODING="utf-8", NO_PROXY="127.0.0.1")
+    if proxy:
+        for name in ("SIMA_CLI_CHECK_FOR_UPDATE", "NO_PROXY", "no_proxy"):
+            environment.pop(name, None)
+        environment.update(HTTP_PROXY=proxy, HTTPS_PROXY=proxy, ALL_PROXY=proxy)
     print("+", subprocess.list2cmdline(command), flush=True)
     try:
         result = subprocess.run(
@@ -183,6 +199,121 @@ def sima_cli(home: Path, *arguments: object, expect: int = 0, approval: bool = F
     if result.returncode != expect:
         raise SystemExit(f"sima-cli exited with {result.returncode}, expected {expect}")
     return result.stdout
+
+
+def build_wheel(folder: Path, name: str, version: str, requires: tuple[str, ...] = ()) -> Path:
+    """Write a minimal pure-Python wheel."""
+    module = name.replace("-", "_")
+    dist_info = f"{module}-{version}.dist-info"
+    files = {
+        f"{module}/__init__.py": f"__version__ = {version!r}\n",
+        f"{dist_info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+        + "".join(f"Requires-Dist: {requirement}\n" for requirement in requires),
+        f"{dist_info}/WHEEL": "Wheel-Version: 1.0\nGenerator: sima-cli-e2e\n"
+        "Root-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    record = []
+    for path, text in files.items():
+        data = text.encode("utf-8")
+        digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+        record.append(f"{path},sha256={digest},{len(data)}")
+    files[f"{dist_info}/RECORD"] = "\n".join(record + [f"{dist_info}/RECORD,,"]) + "\n"
+    folder.mkdir(parents=True, exist_ok=True)
+    wheel = folder / f"{module}-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for path, text in files.items():
+            archive.writestr(path, text)
+    return wheel
+
+
+OFFLINE_PACKAGE = "sima-cli-e2e-package"
+OFFLINE_DEPENDENCY = "sima-cli-e2e-dependency"
+
+
+def offline_bundle(folder: Path, msi: Path, version: str, install_name: str) -> Path:
+    """Lay out an offline bundle as Core ships one; return its metadata.json.
+
+    The wheelhouse also holds a newer dependency that the metadata does not list.
+    """
+    folder.mkdir(parents=True)
+    shutil.copy2(msi, folder / msi.name)
+    wheel = build_wheel(folder, OFFLINE_PACKAGE, version, (OFFLINE_DEPENDENCY,))
+    dependency = build_wheel(folder / "wheelhouse", OFFLINE_DEPENDENCY, version)
+    build_wheel(folder / "wheelhouse", OFFLINE_DEPENDENCY, "9.0.0")
+    resources = [msi.name, wheel.name, f"wheelhouse/{dependency.name}"]
+    metadata = {
+        "name": PACKAGE,
+        "version": version,
+        "release": "ci",
+        "platforms": [{"type": "host", "os": ["windows"], "arch": ["amd64"]}],
+        "resources": resources,
+        "resources-checksum": {
+            resource: sha256(folder.joinpath(*resource.split("/"))) for resource in resources
+        },
+        "installation": {
+            "type": "windows-msi",
+            "msi": msi.name,
+            "python": {
+                "wheel": wheel.name,
+                "distribution": OFFLINE_PACKAGE,
+                "version": version,
+                "import": OFFLINE_PACKAGE.replace("-", "_"),
+                "requires-python": f"{sys.version_info.major}.{sys.version_info.minor}",
+                "arch": "amd64",
+                "wheelhouse": [{
+                    "wheel": f"wheelhouse/{dependency.name}",
+                    "distribution": OFFLINE_DEPENDENCY,
+                    "version": version,
+                }],
+            },
+            "setup": {"command": {
+                "environment": "ProgramFiles", "relative": f"{install_name}\\share\\setup.cmd",
+            }},
+        },
+    }
+    path = folder / "metadata.json"
+    path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    validate_metadata(json.loads(path.read_text(encoding="utf-8")))
+    return path
+
+
+@contextmanager
+def connection_recorder():
+    """Accept and close every TCP connection on this host; yield its URL and the count."""
+    connections = []
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+
+    def accept():
+        while True:
+            try:
+                client, _address = listener.accept()
+            except OSError:
+                return
+            with client:
+                client.settimeout(5)
+                try:
+                    connections.append(client.recv(200))
+                except OSError as error:
+                    connections.append(repr(error).encode())
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}", connections
+    finally:
+        listener.close()
+        thread.join(timeout=5)
+
+
+def installed_version(home: Path, distribution: str) -> str:
+    """Return a distribution's version in the managed environment sima-cli created."""
+    python = home / OFFLINE_PACKAGE / "Scripts" / "python.exe"
+    return subprocess.run(
+        [str(python), "-I", "-c",
+         f"import importlib.metadata as m; print(m.version({distribution!r}))"],
+        check=True, stdout=subprocess.PIPE, encoding="utf-8").stdout.strip()
 
 
 def receipts(home: Path) -> list[dict]:
@@ -346,6 +477,74 @@ def main() -> int:
                 raise SystemExit("packages remove through administrator approval left 1.1.0 installed")
             if receipts(home):
                 raise SystemExit(f"receipts remain after the approved removal: {receipts(home)}")
+
+            # Offline: the same releases from bundle folders, with no index or update check.
+            offline_home = root / "offline-home"
+            offline_home.mkdir()
+            bundles = {
+                version: offline_bundle(root / "offline bundle" / version, msi, version, install_name)
+                for version, msi in msis.items()
+            }
+            changed = root / "offline bundle" / "1.0.0-changed"
+            shutil.copytree(bundles[old].parent, changed)
+            dependency = f"wheelhouse/sima_cli_e2e_dependency-{old}-py3-none-any.whl"
+            changed_wheel = changed.joinpath(*dependency.split("/"))
+            changed_wheel.write_bytes(changed_wheel.read_bytes() + b"\0")
+            with connection_recorder() as (proxy, connections):
+                # The listener must see what the offline install must not do: the update check.
+                sima_cli(root / "canary-home", "packages", "list", proxy=proxy)
+                if not connections:
+                    raise SystemExit("the update check did not reach the proxy listener")
+                connections.clear()
+
+                def offline(version_folder: Path, expect: int = 0) -> str:
+                    return sima_cli(offline_home, "install", "-m", version_folder / "metadata.json",
+                                    expect=expect, proxy=proxy)
+
+                output = offline(changed, expect=1)
+                if f"{dependency}: SHA-256 differs" not in output or installed(old):
+                    raise SystemExit("a changed bundle file did not stop the install before the MSI")
+
+                output = offline(bundles[old].parent)
+                if f"Installing from the packages in: {bundles[old].parent}" not in output:
+                    raise SystemExit("the install did not use the bundle folder")
+                check_payload(old)
+                if [(entry["version"], entry["state"], [package["product_code"] for package in entry["native_packages"]])
+                        for entry in receipts(offline_home)] != [(old, "installed", [codes[old]])]:
+                    raise SystemExit(f"unexpected offline receipts: {receipts(offline_home)}")
+                if not (bundles[old].parent / "sima-cli-msi-install-01-native.log").is_file():
+                    raise SystemExit("the MSI log is not beside the bundle's packages")
+                # The pinned dependency, not the newer one in the same folder.
+                if (installed_version(offline_home, OFFLINE_PACKAGE), installed_version(
+                        offline_home, OFFLINE_DEPENDENCY)) != (old, old):
+                    raise SystemExit("the offline install did not install the pinned versions")
+
+                output = offline(bundles[old].parent)
+                if ("Repairing installed" not in output
+                        or f"Python package {OFFLINE_PACKAGE} {old} is already installed and verified." not in output):
+                    raise SystemExit("rerunning the offline install did not repair it")
+
+                output = offline(bundles[new].parent)
+                if f"Replaced the registry receipt of {PACKAGE} {old} with {new}." not in output:
+                    raise SystemExit("the offline upgrade did not report the replaced receipt")
+                if installed(old) or not installed(new):
+                    raise SystemExit("the offline upgrade did not replace 1.0.0 with 1.1.0")
+                if installed_version(offline_home, OFFLINE_DEPENDENCY) != new:
+                    raise SystemExit("the offline upgrade did not install the new pinned dependency")
+
+                output = offline(bundles[old].parent, expect=1)
+                if "because a newer version of it is already installed" not in output:
+                    raise SystemExit("the offline downgrade did not print the refusal")
+                if installed(old) or not installed(new):
+                    raise SystemExit("the refused offline downgrade changed the installed product")
+
+                sima_cli(offline_home, "packages", "remove", PACKAGE, "--version", new, "--yes")
+                sima_cli(offline_home, "packages", "remove", PACKAGE, "--version", old, "--yes")
+                if installed(new) or install_root.exists() or receipts(offline_home):
+                    raise SystemExit("packages remove left the offline install behind")
+                if connections:
+                    raise SystemExit(
+                        f"the offline install sent requests through the proxy: {connections}")
             removed = True
         finally:
             if not removed:
@@ -368,7 +567,12 @@ def main() -> int:
             "repeat_install_repairs": "PASS", "repair_restores_registry": "PASS",
             "repair_leaves_file_in_use": "PASS", "setup_ran_interactive": "PASS",
             "upgrade": "PASS", "downgrade_refused": "PASS", "packages_remove": "PASS",
-            "approval_install": "PASS", "approval_remove": "PASS", "cleanup": "PASS",
+            "approval_install": "PASS", "approval_remove": "PASS",
+            "offline_changed_file_refused": "PASS", "offline_install": "PASS",
+            "offline_pinned_dependency": "PASS", "offline_repair": "PASS",
+            "offline_upgrade": "PASS", "offline_downgrade_refused": "PASS",
+            "offline_packages_remove": "PASS", "offline_no_proxied_request": "PASS",
+            "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")
 
     print("WINDOWS_MSI_INSTALL_E2E_PASS")

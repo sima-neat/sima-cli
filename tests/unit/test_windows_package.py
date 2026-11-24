@@ -1,5 +1,7 @@
 import base64
 import hashlib
+import http.server
+import importlib.util
 import io
 import json
 import os
@@ -7,7 +9,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+import zipfile
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, call, patch
@@ -35,6 +39,7 @@ from sima_cli.install.windows_package import (
     _install_python_wheel,
     _managed_python_executable,
     _msi_product_code,
+    _pip_install_from_wheelhouse,
     _python_bootstrap_candidates,
     _python_distribution_archive_sha256,
     _python_distribution_version,
@@ -134,6 +139,8 @@ def fake_elevation(exit_codes, wrapper_code=0, errors=None):
     return run, requests
 
 
+# An online install: the metadata and its resources come from a release channel.
+ONLINE_METADATA = "https://artifacts.example.invalid/core/pciehost/windows/amd64/metadata.json"
 PINNED_RETRY = (
     'sima-cli neat install core/pciehost/windows/amd64@v0.6.1:0123456789ab '
     '--python-executable "C:\\Program Files\\Python314\\python.exe"'
@@ -2349,6 +2356,148 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(result["python"], "installed")
         self.assertEqual(run.call_args_list[3].args[0][-2:], ["--upgrade", str(self.wheel)])
 
+    def use_wheelhouse(self):
+        """Declare one dependency wheel; return its path."""
+        dependency = self.root / "wheelhouse" / "numpy-2.5.4-cp314-cp314-win_amd64.whl"
+        dependency.parent.mkdir()
+        dependency.write_bytes(b"numpy fixture")
+        resource = "wheelhouse/" + dependency.name
+        self.metadata["resources"].append(resource)
+        self.metadata["resources-checksum"][resource] = sha256(dependency)
+        self.metadata["installation"]["python"]["wheelhouse"] = [
+            {"wheel": resource, "distribution": "numpy", "version": "2.5.4"}
+        ]
+        self.assertTrue(validate_metadata(self.metadata))
+        return dependency
+
+    def run_recording_requirements(self, responses):
+        """Serve _run from responses; record each pip command and its requirements file."""
+        pip_calls = []
+        self.pip_cwds = []
+
+        def run(command, **kwargs):
+            if command[1:4] == ["-m", "pip", "install"] and "-r" in command:
+                requirements = Path(command[command.index("-r") + 1])
+                pip_calls.append((command, requirements.read_text(encoding="utf-8")))
+                self.pip_cwds.append(kwargs.get("cwd"))
+            return responses.pop(0)
+
+        return run, pip_calls
+
+    def test_wheelhouse_installs_with_no_index_and_hashes(self):
+        dependency = self.use_wheelhouse()
+        run, pip_calls = self.run_recording_requirements([
+            python_facts(), completed(), completed(returncode=3),
+            completed(), completed(stdout="0.6.1\n"), completed(),
+        ])
+        with patch("sima_cli.install.windows_package._run", side_effect=run):
+            result = install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python)
+            )
+
+        self.assertEqual(result["python"], "installed")
+        [(command, requirements)] = pip_calls
+        requirements_file = command[-1]
+        self.assertEqual(command, [
+            str(self.python), "-m", "pip", "install", "--upgrade",
+            "--isolated", "--no-index", "--only-binary", ":all:", "--require-hashes",
+            "--find-links", str(dependency.parent.resolve()), "-r", requirements_file,
+        ])
+        self.assertEqual(requirements, (
+            f"{self.wheel.resolve().as_uri()} --hash=sha256:{sha256(self.wheel)}\n"
+            f"numpy==2.5.4 --hash=sha256:{sha256(dependency)}\n"
+        ))
+        self.assertFalse(Path(requirements_file).exists())
+        # pip runs from the interpreter's folder, so every path it is given is absolute.
+        self.assertEqual(self.pip_cwds, [str(self.python.parent)])
+        self.assertTrue(Path(requirements_file).is_absolute())
+
+    def test_wheelhouse_reinstall_of_other_wheel_omits_dependencies(self):
+        # The same version from another build replaces only the package itself.
+        self.use_wheelhouse()
+        run, pip_calls = self.run_recording_requirements([
+            python_facts(), completed(), completed(stdout="0.6.1\n"), direct_url("d" * 64),
+            completed(), completed(stdout="0.6.1\n"), completed(),
+        ])
+        with patch("sima_cli.install.windows_package._run", side_effect=run):
+            result = install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python)
+            )
+
+        self.assertEqual(result["python"], "installed")
+        [(command, requirements)] = pip_calls
+        self.assertEqual(command[4:12], [
+            "--upgrade", "--force-reinstall", "--no-deps",
+            "--isolated", "--no-index", "--only-binary", ":all:", "--require-hashes",
+        ])
+        self.assertNotIn("--find-links", command)
+        self.assertEqual(
+            requirements, f"{self.wheel.resolve().as_uri()} --hash=sha256:{sha256(self.wheel)}\n"
+        )
+
+    def test_wheelhouse_modified_dependency_stops_before_pip(self):
+        dependency = self.use_wheelhouse()
+        dependency.write_bytes(b"changed numpy")
+        run, pip_calls = self.run_recording_requirements(
+            [python_facts(), completed(), completed(returncode=3)]
+        )
+        with patch("sima_cli.install.windows_package._run", side_effect=run) as fake_run:
+            with self.assertRaisesRegex(
+                WindowsPythonInstallError,
+                "'wheelhouse/numpy-2.5.4-cp314-cp314-win_amd64.whl' no longer matches its "
+                "declared SHA-256",
+            ):
+                install_windows_package(
+                    self.metadata, str(self.root), python_executable=str(self.python)
+                )
+
+        self.assertEqual(pip_calls, [])
+        self.assertNotIn("pip", [part for call in fake_run.call_args_list for part in call.args[0]])
+
+    def test_local_bundle_recovery_asks_to_copy_the_bundle_again(self):
+        # A bundle file changed or removed after the folder check was copied, not downloaded.
+        copy_again = (
+            "Copy the bundle again from the computer that downloaded it, "
+            "then rerun the same command."
+        )
+        download_again = "To download a verified copy, rerun the same command."
+        self.use_scheduler_and_core()
+        run, _requests = fake_elevation(
+            [ELEVATED_INSTALLER_HASH_MISMATCH], errors={0: "found " + "0" * 64}
+        )
+        with self.non_elevated_session(run), self.assertRaises(WindowsNativeInstallError) as raised:
+            install_windows_package(
+                self.metadata, str(self.root), native_only=True, local_bundle=True
+            )
+        self.assertIn(f"it was not started. {copy_again}", str(raised.exception))
+
+        self.msi.write_bytes(b"replaced msi")
+        for local_bundle, advice in ((True, copy_again), (False, download_again)):
+            run, _requests = fake_elevation([0, 0])
+            with self.subTest(local_bundle=local_bundle), self.non_elevated_session(run), \
+                    self.assertRaises(WindowsNativeInstallError) as raised:
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True, local_bundle=local_bundle
+                )
+            self.assertIn(f"it was not started. {advice}", str(raised.exception))
+
+    def test_local_bundle_missing_dependency_asks_to_copy_the_bundle_again(self):
+        dependency = self.use_wheelhouse()
+        dependency.unlink()
+        responses = [python_facts(), completed(), completed(returncode=3)]
+        with patch("sima_cli.install.windows_package._run", side_effect=responses), \
+                self.assertRaises(WindowsPythonInstallError) as raised:
+            install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python),
+                local_bundle=True,
+            )
+
+        self.assertEqual(str(raised.exception), (
+            f"Windows package resource is missing: '{dependency.resolve()}'. Copy the bundle "
+            "again from the computer that downloaded it, then rerun the same command. "
+            "The native installation was kept."
+        ))
+
     def test_pip_failure_reports_partial_installation(self):
         responses = [
             python_facts(), completed(), completed(returncode=3), completed(returncode=1)
@@ -2400,12 +2549,12 @@ class WindowsPackageTests(unittest.TestCase):
         ):
             if not fails:
                 metadata_installer.install_from_metadata(
-                    "metadata", False, str(self.root), **options
+                    ONLINE_METADATA, False, str(self.root), **options
                 )
             else:
                 with self.assertRaises(SystemExit) as raised:
                     metadata_installer.install_from_metadata(
-                        "metadata", False, str(self.root), **options
+                        ONLINE_METADATA, False, str(self.root), **options
                     )
                 self.assertEqual(raised.exception.code, exit_code)
         return registry, output.getvalue()
@@ -2462,12 +2611,13 @@ class WindowsPackageTests(unittest.TestCase):
                     record_receipt=ANY,
                     check_prerequisites=False,
                     retry_command=None,
+                    local_bundle=False,
                 )
                 registry.update_state.assert_called_once_with(
                     self.metadata["name"], self.metadata["version"], state
                 )
                 if fails:
-                    self.assertIn(f"Failed to install from metadata URL metadata: {outcome}", output)
+                    self.assertIn(f"Failed to install from metadata URL {ONLINE_METADATA}: {outcome}", output)
 
     def test_upgrade_replaces_the_old_receipt_so_removing_it_uninstalls_nothing(self):
         # Both releases share the Scheduler MSI; the old receipt must not remove it.
@@ -2507,11 +2657,11 @@ class WindowsPackageTests(unittest.TestCase):
                     if fails:
                         with self.assertRaises(SystemExit):
                             metadata_installer.install_from_metadata(
-                                "metadata", False, str(self.root), native_only=True
+                                ONLINE_METADATA, False, str(self.root), native_only=True
                             )
                     else:
                         metadata_installer.install_from_metadata(
-                            "metadata", False, str(self.root), native_only=True
+                            ONLINE_METADATA, False, str(self.root), native_only=True
                         )
 
                 receipts = PackageRegistry(self.root / "registry.json")._data
@@ -2973,6 +3123,90 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertEqual(
                     forwarded["retry_command"], f"{pinned} --env dev {option_text}"
                 )
+
+
+def write_wheel(folder, name, version, requires=()):
+    """Write a minimal pure-Python wheel; return its path."""
+    dist_info = f"{name}-{version}.dist-info"
+    files = {
+        f"{name}/__init__.py": "",
+        f"{dist_info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+        + "".join(f"Requires-Dist: {requirement}\n" for requirement in requires),
+        f"{dist_info}/WHEEL": (
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+    }
+    files[f"{dist_info}/RECORD"] = "".join(f"{path},,\n" for path in [*files, f"{dist_info}/RECORD"])
+    path = Path(folder) / f"{name}-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(path, "w") as archive:
+        for member, content in files.items():
+            archive.writestr(member, content)
+    return path
+
+
+@unittest.skipUnless(importlib.util.find_spec("pip"), "pip is not installed")
+class WheelhousePipTests(unittest.TestCase):
+    """The wheelhouse install with the real pip of the interpreter running the tests."""
+
+    def setUp(self):
+        self.requests = []
+        requests = self.requests
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                self.send_error(404)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.url = f"http://127.0.0.1:{server.server_address[1]}/links/"
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+
+    def test_pip_configuration_file_is_not_read(self):
+        # A find-links URL in a pip configuration file is not contacted offline.
+        wheel = write_wheel(self.root, "sima_offline_demo", "1.0.0", ["sima_offline_dep==1.0.0"])
+        (self.root / "wheelhouse").mkdir()
+        dependency = write_wheel(self.root / "wheelhouse", "sima_offline_dep", "1.0.0")
+        config = self.root / "pip.ini"
+        config.write_text(f"[global]\nfind-links = {self.url}\n", encoding="utf-8")
+        resources = [wheel.name, f"wheelhouse/{dependency.name}"]
+        metadata = {
+            "resources": resources,
+            "resources-checksum": {
+                resource: sha256(self.root.joinpath(*resource.split("/"))) for resource in resources
+            },
+            "installation": {"python": {"wheel": wheel.name, "wheelhouse": [{
+                "wheel": resources[1], "distribution": "sima_offline_dep", "version": "1.0.0",
+            }]}},
+        }
+        environment = {**os.environ, "PIP_CONFIG_FILE": str(config)}
+        # Control: pip given this file contacts the listener.
+        subprocess.run(
+            [sys.executable, "-m", "pip", "download", "--isolated", "--no-index", "--no-deps",
+             "--dest", str(self.root / "control"), "sima_offline_absent"],
+            env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        self.assertTrue(self.requests, "pip did not read the configuration file")
+        self.requests.clear()
+
+        target = self.root / "target"
+        with patch.dict(os.environ, {"PIP_CONFIG_FILE": str(config)}):
+            result = _pip_install_from_wheelhouse(
+                metadata, str(self.root), Path(sys.executable), wheel,
+                ["--target", str(target)], no_deps=False, rerun="rerun the same command.",
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.requests, [])
+        self.assertTrue((target / "sima_offline_demo").is_dir())
+        self.assertTrue((target / "sima_offline_dep").is_dir())
 
 
 if __name__ == "__main__":

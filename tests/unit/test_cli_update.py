@@ -1,5 +1,7 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -144,6 +146,41 @@ class TestCliUpdate(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("require -i/--internal", result.output)
         install_host_package.assert_not_called()
+
+    def _invoke_install(self, args):
+        with patch("sima_cli.cli.check_for_update", return_value=False) as check_for_update, \
+             patch("sima_cli.cli.get_environment_type", return_value=("host", "windows")), \
+             patch("sima_cli.cli.install_from_metadata") as install_from_metadata:
+            result = CliRunner().invoke(main, args, obj={})
+        self.assertEqual(result.exit_code, 0, result.output)
+        install_from_metadata.assert_called_once()
+        return check_for_update
+
+    def test_install_from_local_metadata_skips_update_check(self):
+        # An offline bundle is installed from its metadata file without network access.
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = Path(directory) / "metadata.json"
+            metadata.write_text("{}", encoding="utf-8")
+            for args in (
+                ["install", "-m", str(metadata)],
+                ["-y", "install", "--native-only", "--mirror", str(metadata)],
+                ["install", f"--mirror={metadata}"],
+                ["install", f"-m{metadata}"],
+                ["install", "-fm", str(metadata)],
+                ["install", f"-fm{metadata}"],
+            ):
+                with self.subTest(args=args):
+                    self._invoke_install(args).assert_not_called()
+
+    def test_install_from_metadata_url_keeps_update_check(self):
+        for args in (
+            ["install", "-m", "https://example.invalid/metadata.json"],
+            ["install", "-m", "missing-metadata.json"],
+            ["install", "-fm", "https://example.invalid/metadata.json"],
+            ["install", "-mhttps://example.invalid/metadata.json"],
+        ):
+            with self.subTest(args=args):
+                self._invoke_install(args).assert_called_once_with("sima-cli")
 
 
 if __name__ == "__main__":

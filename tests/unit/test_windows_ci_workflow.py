@@ -35,6 +35,28 @@ class WindowsCiWorkflowTests(unittest.TestCase):
         self.assertIn("if installed(old) or not installed(new):", source)
         self.assertNotIn("uninstall_windows_package(", source)
 
+    def test_msi_fixture_installs_offline_bundles_without_any_connection(self):
+        # The offline install runs through the CLI command from bundle folders, with the
+        # update check enabled and every proxy variable pointing at a listener that must
+        # see the canary's connection and none from the install.
+        source = (WORKFLOW.parents[2] / "tests/e2e/windows_msi_install.py").read_text(encoding="utf-8")
+        self.assertIn('environment.pop(name, None)', source)
+        self.assertIn("HTTP_PROXY=proxy, HTTPS_PROXY=proxy, ALL_PROXY=proxy", source)
+        self.assertIn('build_wheel(folder / "wheelhouse", OFFLINE_DEPENDENCY, "9.0.0")', source)
+        order = [
+            'sima_cli(root / "canary-home", "packages", "list", proxy=proxy)',
+            "output = offline(changed, expect=1)\n",
+            "output = offline(bundles[old].parent)\n",
+            "output = offline(bundles[new].parent)\n",
+            "output = offline(bundles[old].parent, expect=1)\n",
+            'sima_cli(offline_home, "packages", "remove", PACKAGE, "--version", new, "--yes")',
+            "if connections:\n",
+            "removed = True\n",
+        ]
+        positions = [source.index(step) for step in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn('"install", "-m", version_folder / "metadata.json"', source)
+
     def test_msi_job_consumes_built_wheel_without_source_imports(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         job = workflow.split("\n  windows-msi:\n", 1)[1].split("\n  compatibility-test:\n", 1)[0]

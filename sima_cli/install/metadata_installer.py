@@ -41,6 +41,7 @@ from sima_cli.install.windows_package import (
     _is_windows,
     install_windows_package,
     preflight_windows_package,
+    require_windows_host,
 )
 
 console = Console()
@@ -1673,6 +1674,10 @@ def install_from_metadata(
                     f"'{metadata.get('name')}' uses the '{install_type}' installation type."
                 )
             print_metadata_summary(metadata=metadata)
+            if install_type == "windows-msi" and not download_only:
+                # Before the receipt and the download: metadata without platforms, or
+                # --force, gets past the compatibility check on any host.
+                require_windows_host()
             if not download_only:
                 registry.create_entry(metadata.get('name'), metadata.get('version'), metadata, '')
                 

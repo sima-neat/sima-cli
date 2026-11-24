@@ -1397,6 +1397,11 @@ def _install_customer_skills(metadata: Dict, manager: Optional[SkillManager]) ->
     return installed
 
 
+def require_windows_host() -> None:
+    if not _is_windows():
+        raise click.ClickException("The windows-msi installation type can only run on Windows.")
+
+
 def preflight_windows_package(
     metadata: Dict,
     python_executable: Optional[str] = None,
@@ -1445,8 +1450,7 @@ def install_windows_package(
     preflight_windows_package already verified. retry_command, when given, is the
     command pinned to this release that recovery messages print.
     """
-    if not _is_windows():
-        raise click.ClickException("The windows-msi installation type can only run on Windows.")
+    require_windows_host()
     if native_only and python_executable:
         raise click.ClickException("--native-only cannot be combined with --python-executable.")
 

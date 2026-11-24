@@ -2356,6 +2356,16 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, exit_code)
         return registry, output.getvalue()
 
+    def test_windows_package_on_another_host_fails_before_download_and_receipt(self):
+        # Reached when metadata declares no platforms, or with --force.
+        with patch("sima_cli.install.windows_package._is_windows", return_value=False):
+            registry, output = self.install_from_windows_metadata(fails=True)
+
+        self.assertIn("The windows-msi installation type can only run on Windows.", output)
+        self.download_assets.assert_not_called()
+        registry.create_entry.assert_not_called()
+        registry.update_state.assert_not_called()
+
     def test_windows_install_records_each_outcome_in_the_package_registry(self):
         # A failure records a partial state only when a native package completed
         # before it; otherwise nothing was installed and the receipt says failed.

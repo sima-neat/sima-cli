@@ -202,7 +202,20 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("'DoNotExpandEnvironmentNames'", self.script)
         machine = self.script.split("[Microsoft.Win32.Registry]::LocalMachine", 1)[1]
         self.assertIn("Where-Object { -not (Same $_) }", machine)
-        self.assertEqual(self.script.count("$key.SetValue('Path', ($kept -join ';')"), 1)
+        self.assertEqual(machine.count("$key.SetValue('Path', ($kept -join ';')"), 1)
+
+    def test_repeated_user_path_entries_keep_the_first(self):
+        # Earlier installers added the environment again on each run. The first entry stays
+        # where it is, so it still wins over later entries, and only its repeats are removed.
+        user = self.script.split("[Microsoft.Win32.Registry]::CurrentUser", 1)[1]
+        user = user.split("[Microsoft.Win32.Registry]::LocalMachine", 1)[0]
+        self.assertIn(
+            "foreach ($entry in $raw.Split(';')) { if (Same ([Environment]::ExpandEnvironmentVariables($entry))) "
+            "{ $count++; if ($count -gt 1) { continue } }; $kept += $entry }",
+            user,
+        )
+        self.assertIn("} elseif ($count -eq 1) { Write-Host 'Already in the user PATH.' } else {", user)
+        self.assertIn("$key.SetValue('Path', ($kept -join ';'), $kind)", user)
 
     def test_path_update_failure_is_reported(self):
         # Without Stop, a failed .NET call only ends its statement and the exit code

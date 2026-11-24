@@ -124,3 +124,32 @@ The receipt belongs to the Windows account that ran the install; the packages
 are installed for the whole machine. Another account runs the same install
 command to get its own receipt, Python environment, skill and card SSH key;
 this repairs the packages instead of installing them again.
+
+## Install from an offline bundle
+
+A host without internet access installs the release from a copy of the Windows
+offline bundle. [Install PCIe Host](/getting-started/neat-library/pcie-host)
+describes how to download the bundle on a connected computer and install its
+prerequisites and `sima-cli` on the host. Copy the bundle to a local disk of the
+host: the installer logs are written beside its packages. Then run, in the
+folder that holds the bundle's `metadata.json`:
+
+```powershell
+sima-cli install -m .\metadata.json
+```
+
+`sima-cli` installs the files in that folder. It downloads nothing and does not
+check for a newer `sima-cli`. Before the first MSI, it runs the prerequisite
+checks described above and checks every file of the bundle against the SHA-256
+in `metadata.json`; if a file is missing or changed, it names the file and
+installs nothing, and you copy the bundle again. pip installs `pyneatpcie` and
+its dependencies from the bundle only, without a package index, at the exact
+versions and checksums the bundle lists; an upgrade sets those dependencies to
+the newer bundle's versions.
+
+Everything else works as described above, with the same receipt:
+`--python-executable`, `--native-only` and the setup step; repeat the command
+to repair, run it from a newer bundle to upgrade, and remove the release with
+`sima-cli packages remove`. Other `sima-cli` commands still try to check for a
+newer `sima-cli` and continue when they cannot; to skip that check, set
+`$env:SIMA_CLI_CHECK_FOR_UPDATE = "0"` first.

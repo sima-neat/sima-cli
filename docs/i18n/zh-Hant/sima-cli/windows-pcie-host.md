@@ -94,3 +94,25 @@ sima-cli playbooks remove neat-pcie-application-builder --yes
 
 記錄屬於執行安裝的 Windows 帳戶，而套件是為整台電腦安裝的。其他帳戶執行相同的安裝命令，
 即可取得自己的記錄、Python 環境、技能與卡片 SSH 金鑰；此時套件會被修復，而不會重新安裝。
+
+## 從離線套件組安裝
+
+無法連線網際網路的主機，可從 Windows 離線套件組的副本安裝發行版本。關於如何在可連線的
+電腦上下載套件組，以及在主機上安裝其必要條件與 `sima-cli`，請參閱
+[安裝 PCIe 主機](/getting-started/neat-library/pcie-host)。請將套件組複製到主機的本機
+磁碟：安裝程式的記錄檔會寫入其套件旁。然後在存放套件組 `metadata.json` 的資料夾中執行：
+
+```powershell
+sima-cli install -m .\metadata.json
+```
+
+`sima-cli` 會安裝該資料夾中的檔案。它不會下載任何內容，也不會檢查是否有較新的
+`sima-cli`。在第一個 MSI 之前，它會執行上述的必要條件檢查，並依據 `metadata.json`
+中的 SHA-256 檢查套件組的每個檔案；若有檔案遺失或已變更，它會列出該檔案且不安裝任何
+項目，請重新複製套件組。pip 只從套件組安裝 `pyneatpcie` 及其相依套件，不使用套件索引，
+並採用套件組列出的確切版本與檢查碼；升級時，這些相依套件會設為較新套件組的版本。
+
+其他一切皆如上述運作，並使用相同的記錄：`--python-executable`、`--native-only` 與設定
+步驟；重新執行命令即可修復，從較新的套件組執行即可升級，並以 `sima-cli packages remove`
+移除發行版本。其他 `sima-cli` 命令仍會嘗試檢查是否有較新的 `sima-cli`，無法檢查時會
+繼續執行；若要略過此檢查，請先設定 `$env:SIMA_CLI_CHECK_FOR_UPDATE = "0"`。

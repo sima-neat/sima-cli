@@ -584,6 +584,18 @@ jobs:
             Invoke-Installer uninstall --force
             if ($installerCode -ne 0) { throw "windows.bat uninstall --force failed with exit code $installerCode" }
             Assert-Output "Remove them later under Settings > Apps > Installed apps."
+            # With the Windows installer's sima-cli present, uninstall goes ahead without --force:
+            # that copy reads the same receipts and still removes the recorded package.
+            $msiAppData = Join-Path $env:RUNNER_TEMP "windows-installer-local-app-data"
+            $msiBin = Join-Path $msiAppData "Programs\sima-cli\bin"
+            New-Item -ItemType Directory -Force -Path $msiBin | Out-Null
+            Set-Content -LiteralPath (Join-Path $msiBin "sima-cli.exe") -Value "stub"
+            $savedAppData = $env:LOCALAPPDATA
+            $env:LOCALAPPDATA = $msiAppData
+            try { Invoke-Installer uninstall } finally { $env:LOCALAPPDATA = $savedAppData }
+            if ($installerCode -ne 0) { throw "windows.bat uninstall refused although the Windows installer's sima-cli manages the receipts: exit code $installerCode" }
+            Assert-Output "The sima-cli from the Windows installer, $msiBin\sima-cli.exe, stays and still removes the packages sima-cli installed."
+            Assert-Output "sima-cli is removed."
           } finally {
             foreach ($entry in $saved) {
               if ($null -eq $entry[1]) { $entry[0].DeleteValue("Path", $false) } else { $entry[0].SetValue("Path", $entry[1], $entry[2]) }

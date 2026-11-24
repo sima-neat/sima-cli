@@ -54,10 +54,13 @@ set "PS_BROADCAST=; [Environment]::SetEnvironmentVariable('SIMA_CLI_PATH_REFRESH
 
 rem Uninstall removes this account's environment and its PATH entries and keeps the sima-cli state
 rem folder of the profile. sima-cli removes the packages it installed with Windows Installer through
-rem the receipts in that folder, so while any is recorded, stop unless --force is given.
+rem the receipts in that folder, so while any is recorded, stop unless --force is given, or unless
+rem the sima-cli from the Windows installer (WinGet) is installed: that copy uses the same receipts.
 set "RECEIPTS=0"
 set "UNINSTALL_FAILED="
-if defined UNINSTALL (
+set "MSI_SIMA_CLI=%LOCALAPPDATA%\Programs\sima-cli\bin\sima-cli.exe"
+if defined UNINSTALL if exist "!MSI_SIMA_CLI!" echo The sima-cli from the Windows installer, !MSI_SIMA_CLI!, stays and still removes the packages sima-cli installed.
+if defined UNINSTALL if not exist "!MSI_SIMA_CLI!" (
     set "PS_RECEIPTS=$ErrorActionPreference = 'Stop'; $file = $env:USERPROFILE + '\.sima-cli\registry.json'; if (-not [IO.File]::Exists($file)) { exit 0 }; $all = Get-Content -Raw -Encoding UTF8 -LiteralPath $file | ConvertFrom-Json; $msi = @($all | Where-Object { $_.metadata.installation.type -eq 'windows-msi' }); if ($msi.Count -eq 0) { exit 0 }"
     set "PS_RECEIPTS=!PS_RECEIPTS!; Write-Host 'These packages were installed with Windows Installer and are removed with sima-cli:'; foreach ($p in $msi) { Write-Host ('    sima-cli packages remove ' + $p.package_name + ' --version ' + $p.version) }; if ($env:UNINSTALL_FORCE) { Write-Host 'With --force they stay installed. Remove them later under Settings > Apps > Installed apps.' }; exit 2"
     "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "!PS_RECEIPTS!"

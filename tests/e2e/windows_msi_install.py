@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import sysconfig
 import tempfile
 import threading
@@ -155,7 +156,9 @@ def sima_cli(home: Path, *arguments: object, expect: int = 0) -> str:
             check=False)
     except subprocess.TimeoutExpired:
         raise SystemExit(f"sima-cli did not return within {CHILD_TIMEOUT_SECONDS} s")
-    print(result.stdout, flush=True)
+    # The job's console is cp1252; the CLI's output has characters it cannot encode.
+    sys.stdout.buffer.write(result.stdout.encode(sys.stdout.encoding or "utf-8", "replace") + b"\n")
+    sys.stdout.flush()
     if result.returncode != expect:
         raise SystemExit(f"sima-cli exited with {result.returncode}, expected {expect}")
     return result.stdout

@@ -474,44 +474,121 @@ jobs:
           $ErrorActionPreference = "Stop"
           $env:USERPROFILE = Join-Path $env:RUNNER_TEMP "repo-installer-home"
           New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
-          # Run twice: the second run must not add the environment to PATH again.
-          foreach ($run in 1, 2) {
-            cmd.exe /c scripts\install\windows.bat
-            if ($LASTEXITCODE -ne 0) { throw "windows.bat failed with exit code $LASTEXITCODE" }
-          }
-          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" --version
-          # The runner is elevated; the per-user environment still belongs only on the user PATH.
           $scripts = Join-Path $env:USERPROFILE ".sima-cli-env\Scripts"
-          $userEntries = @([Environment]::GetEnvironmentVariable("Path", "User") -split ";" | Where-Object { $_ -eq $scripts })
-          if ($userEntries.Count -ne 1) { throw "Expected $scripts once on the user PATH, found $($userEntries.Count)" }
-          if (([Environment]::GetEnvironmentVariable("Path", "Machine") -split ";") -contains $scripts) { throw "$scripts was added to the system PATH" }
-          # An environment whose base Python is gone is recreated, not reused.
-          $config = Join-Path $env:USERPROFILE ".sima-cli-env\pyvenv.cfg"
-          (Get-Content -LiteralPath $config) -replace '^home = .*', 'home = C:\sima-cli-missing-python' | Set-Content -LiteralPath $config
-          cmd.exe /c scripts\install\windows.bat
-          if ($LASTEXITCODE -ne 0) { throw "windows.bat did not recreate a broken environment: exit code $LASTEXITCODE" }
-          & "$env:USERPROFILE\.sima-cli-env\Scripts\sima-cli.exe" --version
-          if ($LASTEXITCODE -ne 0) { throw "sima-cli does not run from the recreated environment" }
-          # A failed pip step fails the script.
-          $invalidWheel = Join-Path $env:RUNNER_TEMP "sima_cli-0.0.0-py3-none-any.whl"
-          Set-Content -LiteralPath $invalidWheel -Value "not a wheel"
-          cmd.exe /c scripts\install\windows.bat $invalidWheel
-          if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }
-          # A refused Python bootstrap fails the script. With no Python on PATH or in the
-          # python.org locations, and TEMP under a file, it cannot create its download directory.
-          $blocker = Join-Path $env:RUNNER_TEMP "not-a-directory"
-          Set-Content -LiteralPath $blocker -Value ""
-          $saved = @{ PATH = $env:PATH; TEMP = $env:TEMP; LOCALAPPDATA = $env:LOCALAPPDATA; ProgramFiles = $env:ProgramFiles }
-          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
-          $env:TEMP = $blocker
-          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"
-          $env:ProgramFiles = $env:LOCALAPPDATA
-          $output = cmd.exe /c scripts\install\windows.bat
-          $code = $LASTEXITCODE
-          foreach ($name in $saved.Keys) { Set-Item -LiteralPath "env:$name" -Value $saved[$name] }
-          $output
-          if (-not ($output -match "^Could not create a new download directory: ")) { throw "windows.bat did not reach the Python download refusal" }
-          if ($code -eq 0) { throw "windows.bat reported success although it refused to install Python" }
+          # Raw PATH values as a new window reads them; the runner's own are restored at the end.
+          $userKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+          $machineKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SYSTEM\CurrentControlSet\Control\Session Manager\Environment", $true)
+          function Get-RawPath($key) { [string]$key.GetValue("Path", "", "DoNotExpandEnvironmentNames") }
+          function Set-RawPath($key, $value) {
+            $kind = "ExpandString"
+            if ($null -ne $key.GetValue("Path")) { $kind = $key.GetValueKind("Path") }
+            $key.SetValue("Path", $value, $kind)
+          }
+          $saved = foreach ($key in $userKey, $machineKey) {
+            $value = $key.GetValue("Path", $null, "DoNotExpandEnvironmentNames")
+            if ($null -eq $value) { , @($key, $null, $null) } else { , @($key, $value, $key.GetValueKind("Path")) }
+          }
+          function Invoke-Installer {
+            $global:installerOutput = (cmd.exe /c scripts\install\windows.bat @args) -join "`n"
+            $global:installerCode = $LASTEXITCODE
+            Write-Host $global:installerOutput
+          }
+          function Assert-Output($text) { if (-not $global:installerOutput.Contains($text)) { throw "windows.bat did not print: $text" } }
+          try {
+            # Set aside any sima-cli the runner image already has on PATH, so the warnings name only the stubs below.
+            function Test-SimaCli($entry) {
+              $folder = [Environment]::ExpandEnvironmentVariables($entry).Trim().Trim('"').TrimEnd('\')
+              $folder -and @("sima-cli.exe", "sima-cli.bat", "sima-cli.cmd" | Where-Object { [IO.File]::Exists("$folder\$_") }).Count
+            }
+            $userBase = (@((Get-RawPath $userKey).Split(";") | Where-Object { -not (Test-SimaCli $_) }) -join ";").TrimEnd(";")
+            $machineBase = @((Get-RawPath $machineKey).Split(";") | Where-Object { -not (Test-SimaCli $_) }) -join ";"
+            # A pip-installed sima-cli earlier in the user PATH, and another account's environment on the system PATH.
+            $userStub = Join-Path $env:RUNNER_TEMP "pip-python\Scripts"
+            $machineStub = Join-Path $env:RUNNER_TEMP "other-account\.sima-cli-env\Scripts"
+            foreach ($stub in $userStub, $machineStub) {
+              New-Item -ItemType Directory -Force -Path $stub | Out-Null
+              Set-Content -LiteralPath (Join-Path $stub "sima-cli.cmd") -Value "@echo stub sima-cli"
+            }
+            # Old installers' state: this user's environment repeated in the user PATH, and on the system PATH.
+            Set-RawPath $userKey "$userBase;$userStub;$scripts;$($scripts.ToUpper())\;$scripts"
+            Set-RawPath $machineKey "$machineBase;$scripts"
+            Invoke-Installer
+            if ($installerCode -ne 0) { throw "windows.bat failed with exit code $installerCode" }
+            Assert-Output "Removing 2 repeated $scripts entries from the user PATH..."
+            Assert-Output "Removing $scripts from the system PATH..."
+            if ((Get-RawPath $userKey) -cne "$userBase;$userStub;$scripts") { throw "Unexpected user PATH: $(Get-RawPath $userKey)" }
+            if ((Get-RawPath $machineKey) -cne $machineBase) { throw "Unexpected system PATH: $(Get-RawPath $machineKey)" }
+            Assert-Output "WARNING: a new window will run another sima-cli, not the one just installed:`n    $userStub\sima-cli.cmd`n  It is on your user PATH, ahead of $scripts.`n  Uninstall that copy, or remove $userStub from the user PATH if nothing else needs it."
+            Assert-Output "run it by its full path, in PowerShell:`n    & `"$scripts\sima-cli.exe`""
+            if ($installerOutput.Contains("Done.")) { throw "windows.bat printed Done. although another sima-cli runs first" }
+            # The system PATH comes first. The other account's entry is named and left in place.
+            Set-RawPath $machineKey "$machineStub;$machineBase"
+            Invoke-Installer
+            if ($installerCode -ne 0) { throw "windows.bat failed with exit code $installerCode" }
+            Assert-Output "Already in the user PATH."
+            Assert-Output "    $machineStub\sima-cli.cmd`n  It is on the system PATH, which Windows searches before your user PATH.`n  It is the sima-cli of another account."
+            if ((Get-RawPath $machineKey) -cne "$machineStub;$machineBase") { throw "windows.bat changed another account's system PATH entry" }
+            Set-RawPath $userKey "$userBase;$scripts"
+            Set-RawPath $machineKey $machineBase
+            & "$scripts\sima-cli.exe" --version
+            # An environment whose base Python is gone is recreated, not reused.
+            $config = Join-Path $env:USERPROFILE ".sima-cli-env\pyvenv.cfg"
+            (Get-Content -LiteralPath $config) -replace '^home = .*', 'home = C:\sima-cli-missing-python' | Set-Content -LiteralPath $config
+            Invoke-Installer
+            if ($installerCode -ne 0) { throw "windows.bat did not recreate a broken environment: exit code $installerCode" }
+            Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"
+            & "$scripts\sima-cli.exe" --version
+            if ($LASTEXITCODE -ne 0) { throw "sima-cli does not run from the recreated environment" }
+            # A failed pip step fails the script.
+            $invalidWheel = Join-Path $env:RUNNER_TEMP "sima_cli-0.0.0-py3-none-any.whl"
+            Set-Content -LiteralPath $invalidWheel -Value "not a wheel"
+            cmd.exe /c scripts\install\windows.bat $invalidWheel
+            if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }
+            # A refused Python bootstrap fails the script. With no Python on PATH or in the
+            # python.org locations, and TEMP under a file, it cannot create its download directory.
+            $blocker = Join-Path $env:RUNNER_TEMP "not-a-directory"
+            Set-Content -LiteralPath $blocker -Value ""
+            $savedEnv = @{ PATH = $env:PATH; TEMP = $env:TEMP; LOCALAPPDATA = $env:LOCALAPPDATA; ProgramFiles = $env:ProgramFiles }
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+            $env:TEMP = $blocker
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"
+            $env:ProgramFiles = $env:LOCALAPPDATA
+            $output = cmd.exe /c scripts\install\windows.bat
+            $code = $LASTEXITCODE
+            foreach ($name in $savedEnv.Keys) { Set-Item -LiteralPath "env:$name" -Value $savedEnv[$name] }
+            $output
+            if (-not ($output -match "^Could not create a new download directory: ")) { throw "windows.bat did not reach the Python download refusal" }
+            if ($code -eq 0) { throw "windows.bat reported success although it refused to install Python" }
+            # Uninstall stops while a package installed with Windows Installer is recorded.
+            $state = Join-Path $env:USERPROFILE ".sima-cli"
+            $registry = Join-Path $state "registry.json"
+            $receipt = '[{"package_name": "gh:sima-neat/tests/windows-msi", "version": "1.0.0", "state": "installed", "metadata": {"installation": {"type": "windows-msi"}}}]'
+            New-Item -ItemType Directory -Force -Path $state | Out-Null
+            Set-Content -LiteralPath $registry -Value $receipt
+            Invoke-Installer uninstall
+            if ($installerCode -ne 1) { throw "windows.bat uninstall returned $installerCode although an MSI receipt is recorded" }
+            Assert-Output "    sima-cli packages remove gh:sima-neat/tests/windows-msi --version 1.0.0"
+            if (-not (Test-Path -LiteralPath $scripts)) { throw "windows.bat uninstall removed the environment although it refused" }
+            # Without receipts, uninstall removes the environment and this user's PATH entries, also on the system PATH.
+            Remove-Item -LiteralPath $registry
+            Set-RawPath $machineKey "$machineBase;$scripts"
+            Invoke-Installer uninstall
+            if ($installerCode -ne 0) { throw "windows.bat uninstall failed with exit code $installerCode" }
+            if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".sima-cli-env")) { throw "windows.bat uninstall left the environment" }
+            if ((Get-RawPath $userKey) -cne $userBase) { throw "Unexpected user PATH after uninstall: $(Get-RawPath $userKey)" }
+            if ((Get-RawPath $machineKey) -cne $machineBase) { throw "Unexpected system PATH after uninstall: $(Get-RawPath $machineKey)" }
+            if (-not (Test-Path -LiteralPath $state)) { throw "windows.bat uninstall removed the sima-cli state folder" }
+            Assert-Output "sima-cli is removed."
+            # --force goes ahead and says where to remove the recorded packages.
+            Set-Content -LiteralPath $registry -Value $receipt
+            Invoke-Installer uninstall --force
+            if ($installerCode -ne 0) { throw "windows.bat uninstall --force failed with exit code $installerCode" }
+            Assert-Output "Remove them later under Settings > Apps > Installed apps."
+          } finally {
+            foreach ($entry in $saved) {
+              if ($null -eq $entry[1]) { $entry[0].DeleteValue("Path", $false) } else { $entry[0].SetValue("Path", $entry[1], $entry[2]) }
+            }
+          }
           # The failures above are the expected results; do not let them become the step's exit code.
           $global:LASTEXITCODE = 0
 

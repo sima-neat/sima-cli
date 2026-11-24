@@ -330,30 +330,47 @@ class WindowsInstallerScriptTests(unittest.TestCase):
                 self.assertNotIn("!", text, line)
         self.assertIn("echo Done. Open a new Command Prompt or PowerShell and type:", self.script)
 
-    def test_ci_runs_script_twice_and_checks_path_scope(self):
+    def test_ci_runs_script_from_old_installer_state_and_uninstalls(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         step = workflow.split("- name: Test repo installer script on native Windows\n", 1)[1]
         step = step.split("\n      - name:", 1)[0]
-        self.assertIn("foreach ($run in 1, 2)", step)
-        self.assertIn("cmd.exe /c scripts\\install\\windows.bat", step)
-        self.assertIn('GetEnvironmentVariable("Path", "User")', step)
-        self.assertIn('GetEnvironmentVariable("Path", "Machine")', step)
+        self.assertIn("cmd.exe /c scripts\\install\\windows.bat @args", step)
+        # The runner's PATH values are restored however the step ends.
+        body, restore = step.split("} finally {", 1)
+        self.assertIn("try {", body)
+        self.assertIn('$entry[0].SetValue("Path", $entry[1], $entry[2])', restore)
+        # Old installers' state: this user's environment repeated in the user PATH and on the
+        # system PATH, a pip sima-cli ahead of it in the user PATH, and another account's
+        # environment on the system PATH, which must stay.
+        self.assertIn('Set-RawPath $userKey "$userBase;$userStub;$scripts;$($scripts.ToUpper())\;$scripts"', body)
+        self.assertIn('Set-RawPath $machineKey "$machineBase;$scripts"', body)
+        self.assertIn('Assert-Output "Removing 2 repeated $scripts entries from the user PATH..."', body)
+        self.assertIn('if ((Get-RawPath $userKey) -cne "$userBase;$userStub;$scripts")', body)
+        self.assertIn('if ((Get-RawPath $machineKey) -cne $machineBase)', body)
+        self.assertIn('Assert-Output "WARNING: a new window will run another sima-cli, not the one just installed:', body)
+        self.assertIn('Set-RawPath $machineKey "$machineStub;$machineBase"', body)
+        self.assertIn('if ((Get-RawPath $machineKey) -cne "$machineStub;$machineBase")', body)
         # A broken environment is recreated, and a pip failure fails the script.
-        self.assertIn("'^home = .*', 'home = C:\\sima-cli-missing-python'", step)
-        self.assertIn("cmd.exe /c scripts\\install\\windows.bat $invalidWheel", step)
-        self.assertIn('if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }', step)
+        self.assertIn("'^home = .*', 'home = C:\\sima-cli-missing-python'", body)
+        self.assertIn("cmd.exe /c scripts\\install\\windows.bat $invalidWheel", body)
+        self.assertIn('if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }', body)
         # A refusal inside the Python bootstrap block fails the script: with no Python to
         # find, a download directory that cannot be created stops it.
-        refusal = step.split("# A refused Python bootstrap fails the script", 1)[1]
+        refusal = body.split("# A refused Python bootstrap fails the script", 1)[1]
         self.assertIn('$env:PATH = "$env:SystemRoot\\System32;$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0"', refusal)
         self.assertIn("$env:TEMP = $blocker", refusal)
         self.assertIn('if ($code -eq 0) { throw "windows.bat reported success although it refused to install Python" }', refusal)
-        self.assertIn('$env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"\n          $env:ProgramFiles = $env:LOCALAPPDATA', refusal)
+        self.assertIn('$env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"\n            $env:ProgramFiles = $env:LOCALAPPDATA', refusal)
         self.assertIn('($output -match "^Could not create a new download directory: ")', refusal)
+        # Uninstall stops on an MSI receipt, then removes the environment and PATH entries.
+        uninstall = refusal.split("# Uninstall stops while", 1)[1]
+        self.assertIn("if ($installerCode -ne 1)", uninstall)
+        self.assertIn('if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".sima-cli-env"))', uninstall)
+        self.assertIn("if ((Get-RawPath $userKey) -cne $userBase)", uninstall)
+        self.assertIn("Invoke-Installer uninstall --force", uninstall)
         # GitHub ends a PowerShell step with the last native exit code.
         self.assertLess(step.index("although pip failed"), step.index("$global:LASTEXITCODE = 0"))
-        self.assertLess(refusal.index("although it refused"), refusal.index("$global:LASTEXITCODE = 0"))
-
+        self.assertLess(step.index("} finally {"), step.index("$global:LASTEXITCODE = 0"))
 
 if __name__ == "__main__":
     unittest.main()

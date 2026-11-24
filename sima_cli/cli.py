@@ -950,6 +950,11 @@ def _show_neat_install_fallback(component: str) -> None:
     default=False,
     help="Force installation even if compatibility checks fail.",
 )
+@click.option(
+    "--download-only",
+    is_flag=True,
+    help="Download the package's resources into the install directory without installing them.",
+)
 @_python_install_options
 @click.pass_context
 def install_cmd(
@@ -966,6 +971,7 @@ def install_cmd(
     install_dir,
     json_output,
     force,
+    download_only,
     python_executable,
     native_only,
 ):
@@ -1000,15 +1006,19 @@ def install_cmd(
         sima-cli install -m https://custom-server/packages/foo/metadata.json
 
         sima-cli install samples/llima -v 1.7.0
+
+        sima-cli install drivers/windows --download-only -d platform
     """
     internal = ctx.obj.get("internal", False)
     if native_only and python_executable:
         raise click.ClickException("--native-only cannot be combined with --python-executable.")
-    python_install_options = {}
+    install_options = {}
     if python_executable is not None:
-        python_install_options["python_executable"] = python_executable
+        install_options["python_executable"] = python_executable
     if native_only:
-        python_install_options["native_only"] = True
+        install_options["native_only"] = True
+    if download_only:
+        install_options["download_only"] = True
 
     use_neat_resolver = use_neat or use_vulcan
     if use_neat_resolver:
@@ -1027,7 +1037,7 @@ def install_cmd(
             force=force,
             json_output=json_output,
             command_name="sima-cli install",
-            **python_install_options,
+            **install_options,
         )
         return None
 
@@ -1042,7 +1052,7 @@ def install_cmd(
             install_dir=install_dir,
             force=force,
             command_name="sima-cli install",
-            **python_install_options,
+            **install_options,
         )
         return None
 
@@ -1059,14 +1069,19 @@ def install_cmd(
             install_dir=install_dir,
             force=force,
             command_name="sima-cli install",
-            **python_install_options,
+            **install_options,
         )
         return None
     
-    if python_install_options and (
+    if install_options and (
         component.startswith(("cr:", "ghcr:"))
         or component.lower() in {"palette", "hostdriver", "optiview"}
     ):
+        if download_only:
+            raise click.UsageError(
+                "--download-only applies only to packages installed from metadata; "
+                f"'{component}' is not."
+            )
         option = "--native-only" if native_only else "--python-executable"
         raise click.UsageError(
             f"{option} applies only to Windows MSI packages; "
@@ -1110,7 +1125,7 @@ def install_cmd(
                 install_dir=install_dir,
                 force=force,
                 command_name="sima-cli install",
-                **python_install_options,
+                **install_options,
             )
         except MetadataAccessForbidden:
             if not _is_neat_install_target(component):
@@ -1124,7 +1139,7 @@ def install_cmd(
                 force=force,
                 json_output=json_output,
                 command_name="sima-cli neat install",
-                **python_install_options,
+                **install_options,
             )
             return None
         except click.ClickException:
@@ -1133,7 +1148,8 @@ def install_cmd(
             click.echo(f"❌ Failed to resolve metadata for component '{component}': {e}")
             ctx.exit(1)
 
-    click.echo("✅ Installation complete.")
+    if not download_only:
+        click.echo("✅ Installation complete.")
     return None
 
 

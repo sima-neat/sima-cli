@@ -27,6 +27,7 @@ sima-cli install [OPTIONS] [COMPONENT]
 | `-d, --install-dir` | Directory where package resources are downloaded and installed. (default: .) |
 | `--json` | With --neat or --vulcan, print resolved metadata URL and exit. |
 | `-f, --force` | Force installation even if compatibility checks fail. |
+| `--download-only` | Download the package's resources into the install directory without installing them. |
 | `--python-executable` | Install the wheel into this Python environment instead of the managed user environment (Windows MSI packages only). |
 | `--native-only` | Install only the native packages; do not create a managed Python environment or install the wheel (Windows MSI packages only). |
 
@@ -77,6 +78,8 @@ Usage: sima-cli install [OPTIONS] [COMPONENT]
 
       sima-cli install samples/llima -v 1.7.0
 
+      sima-cli install drivers/windows --download-only -d platform
+
 Options:
   -v, --version TEXT              SDK version (required for SDK-dependent
                                   components unless --metadata is provided)
@@ -102,6 +105,8 @@ Options:
                                   metadata URL and exit.
   -f, --force                     Force installation even if compatibility
                                   checks fail.
+  --download-only                 Download the package's resources into the
+                                  install directory without installing them.
   --python-executable FILE        Install the wheel into this Python
                                   environment instead of the managed user
                                   environment (Windows MSI packages only).

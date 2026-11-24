@@ -848,6 +848,68 @@ class VulcanCommandTests(unittest.TestCase):
             command_name="sima-cli install",
         )
 
+    def test_top_level_install_download_only_saves_a_windows_driver_package_on_any_host(self):
+        # Format-faithful synthetic copy of the drivers/windows metadata: the package
+        # declares Windows hosts only, and the test runs on Linux.
+        base = "https://docs.sima.ai/pkg_downloads/SDK3.0.1/drivers/windows/"
+        script = b"@echo off\r\nSiMaAIAcceleratorSetup-3.0.1.exe\r\n"
+        metadata = {
+            "name": "modalix-host-driver",
+            "version": "3.0.1_rel_master_B2798",
+            "release": "stable",
+            "description": "Windows Host Driver",
+            "platforms": [{"type": "host", "os": ["windows"]}],
+            "resources": ["SiMaAIAcceleratorSetup-3.0.1.exe", "install.bat"],
+            "resources-checksum": {"install.bat": hashlib.sha256(script).hexdigest()},
+            "selectable-resources": [],
+            "size": {"download": "6MB", "install": "6MB"},
+            "installation": {"script": "install.bat", "post-message": "Driver successfully installed"},
+        }
+        served = {
+            base + "metadata.json": json.dumps(metadata).encode(),
+            base + "SiMaAIAcceleratorSetup-3.0.1.exe": b"MZ installer",
+            base + "install.bat": script,
+        }
+        requested = []
+
+        def download(url, dest_folder, internal=False):
+            requested.append(url)
+            path = Path(dest_folder) / url.rsplit("/", 1)[1]
+            path.write_bytes(served[url])
+            return str(path)
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            metadata_installer, "download_file_from_url", side_effect=download
+        ), patch.object(
+            metadata_installer, "_run_installation_script"
+        ) as script_mock, patch.object(
+            metadata_installer.registry, "create_entry"
+        ) as registry_mock:
+            folder = Path(tmp) / "platform"
+            result = runner.invoke(
+                main,
+                ["install", "drivers/windows", "-v", "3.0.1", "--download-only", "-d", str(folder)],
+            )
+            saved = sorted(path.name for path in folder.iterdir()) if folder.is_dir() else []
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(sorted(requested), sorted(served))
+        self.assertEqual(saved, ["SiMaAIAcceleratorSetup-3.0.1.exe", "install.bat"])
+        self.assertIn(f"Download complete. 2 resource(s) saved to: {folder}", result.output)
+        self.assertNotIn("Installation complete", result.output)
+        script_mock.assert_not_called()
+        registry_mock.assert_not_called()
+
+    def test_top_level_install_download_only_needs_a_metadata_package(self):
+        runner = CliRunner()
+        with patch("sima_cli.cli.install_hostdriver") as hostdriver_mock:
+            result = runner.invoke(main, ["install", "hostdriver", "-v", "3.0.1", "--download-only"])
+
+        self.assertNotEqual(result.exit_code, 0, result.output)
+        self.assertIn("--download-only applies only to packages installed from metadata", result.output)
+        hostdriver_mock.assert_not_called()
+
     def test_top_level_install_preflight_error_is_not_wrapped_as_resolution_failure(self):
         runner = CliRunner()
         with patch(

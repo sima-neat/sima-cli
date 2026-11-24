@@ -306,6 +306,26 @@ class WindowsPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(MetadataValidationError, "safe relative Windows path"):
             validate_metadata(self.metadata)
 
+    def test_metadata_rejects_a_rooted_installed_path_without_a_drive(self):
+        # Joined to C:\Program Files, a rooted path keeps only the drive: C:\Users\Public.
+        for relative in ("\\Users\\Public\\x.cmd", "/Users/Public/x.cmd"):
+            spec = {"environment": "ProgramFiles", "relative": relative}
+            fields = {
+                "verification": {"command": spec},
+                "setup": {"command": spec},
+                "skills": [{"id": "neat-pcie-application-builder", **spec}],
+                "prerequisites": [{**GSTREAMER, "candidates": [spec]}],
+            }
+            for field, value in fields.items():
+                with self.subTest(field=field, relative=relative):
+                    metadata = dict(
+                        self.metadata, installation={**self.metadata["installation"], field: value}
+                    )
+                    with self.assertRaisesRegex(
+                        MetadataValidationError, "safe relative Windows path"
+                    ):
+                        validate_metadata(metadata)
+
     def test_metadata_rejects_a_python_distribution_that_is_a_path(self):
         for distribution in ("..\\..\\x", "C:\\x", "/x", "a/b"):
             with self.subTest(distribution=distribution):

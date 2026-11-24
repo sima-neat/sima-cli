@@ -31,7 +31,7 @@ def _validate_windows_path_spec(value, field_name: str):
     if not isinstance(relative, str) or not relative.strip():
         raise MetadataValidationError(f"'{field_name}.relative' must be a non-empty string")
     path = PureWindowsPath(relative)
-    if path.is_absolute() or path.drive or any(part in {"", ".", ".."} for part in path.parts):
+    if path.anchor or any(part in {"", ".", ".."} for part in path.parts):
         raise MetadataValidationError(
             f"'{field_name}.relative' must be a safe relative Windows path"
         )

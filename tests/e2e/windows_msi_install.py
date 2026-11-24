@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Exercise the real Windows Installer boundary with a disposable MSI."""
+"""Exercise the real Windows Installer boundary with a disposable MSI.
+
+The MSI is built twice, as 1.0.0 and 1.1.0 with the same upgrade code. Through the installed
+sima-cli command it is installed, upgraded, refused as a downgrade and removed; the repair of
+an installed release runs through the package installer in this process.
+"""
 
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
+import http.server
 import json
 import os
 import shutil
 import subprocess
-import sys
+import sysconfig
 import tempfile
+import threading
 import uuid
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -18,7 +26,9 @@ from unittest import mock
 
 from sima_cli.install.metadata_validator import validate_metadata
 from sima_cli.install import windows_package
-from sima_cli.install.windows_package import install_windows_package, uninstall_windows_package
+from sima_cli.install.windows_package import install_windows_package
+
+PACKAGE = "gh:sima-neat/tests/windows-msi"
 
 
 def run(command: list[object], *, cwd: Path | None = None) -> None:
@@ -27,17 +37,6 @@ def run(command: list[object], *, cwd: Path | None = None) -> None:
     subprocess.run(argv, cwd=cwd, check=True)
 
 
-# Installs the release in a child process, as a qualifier or script that launches
-# sima-cli without input does.
-INSTALL_IN_CHILD = """
-import json, sys
-from sima_cli.install.windows_package import install_windows_package
-metadata, directory, result = sys.argv[1:]
-with open(metadata, encoding="utf-8") as file:
-    outcome = install_windows_package(json.load(file), directory)
-with open(result, "w", encoding="utf-8") as file:
-    json.dump(outcome, file, default=str)
-"""
 CHILD_TIMEOUT_SECONDS = 600
 
 
@@ -66,6 +65,106 @@ def held_open(path: Path):
         yield
     finally:
         kernel32.CloseHandle(handle)
+
+
+def build_msi(cmake: str, cpack: str, root: Path, version: str, install_name: str,
+              upgrade_guid: str, product_guid: str) -> Path:
+    """Build the disposable MSI for one version; every version shares the upgrade code."""
+    source = root / f"source-{version}"
+    build = root / f"build-{version}"
+    dist = root / "dist" / version
+    source.mkdir()
+    dist.mkdir(parents=True)
+    (source / "payload.txt").write_text(f"sima-cli Windows MSI e2e {version}\n", encoding="utf-8")
+    (source / "in-use.txt").write_text("held open during the repair\n", encoding="utf-8")
+    # The installed setup step records that it ran, as pcie-setup.cmd would enroll a card.
+    (source / "setup.cmd").write_text(
+        '@echo off\r\n>"%SIMA_CLI_E2E_SETUP_MARKER%" echo setup ran\r\n', encoding="utf-8")
+    (source / "CMakeLists.txt").write_text(
+        f"""cmake_minimum_required(VERSION 3.20)
+project(SimaCliMsiE2E VERSION {version} LANGUAGES C)
+install(FILES payload.txt in-use.txt setup.cmd DESTINATION share COMPONENT Runtime)
+set(CPACK_GENERATOR "WIX")
+set(CPACK_PACKAGE_NAME "sima-cli-msi-e2e")
+set(CPACK_PACKAGE_VERSION "{version}")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "{install_name}")
+set(CPACK_WIX_VERSION 3)
+set(CPACK_WIX_ARCHITECTURE x64)
+set(CPACK_WIX_INSTALL_SCOPE perMachine)
+set(CPACK_WIX_UPGRADE_GUID "{upgrade_guid}")
+set(CPACK_WIX_PRODUCT_GUID "{product_guid}")
+set(CPACK_WIX_CMAKE_PACKAGE_REGISTRY "{install_name}")
+set(CPACK_COMPONENTS_ALL Runtime)
+include(CPack)
+""",
+        encoding="utf-8",
+    )
+    run([cmake, "-S", source, "-B", build, "-A", "x64"])
+    run([cpack, "--config", build / "CPackConfig.cmake", "-G", "WIX", "-B", dist])
+    packages = list(dist.glob("*.msi"))
+    if len(packages) != 1:
+        raise SystemExit(f"expected one disposable {version} MSI, found {len(packages)}")
+    return packages[0]
+
+
+def package_metadata(msi: Path, version: str, install_name: str) -> dict:
+    metadata = {
+        "name": PACKAGE,
+        "version": version,
+        "release": "ci",
+        "platforms": [{"type": "host", "os": ["windows"], "arch": ["amd64"]}],
+        "resources": [msi.name],
+        "resources-checksum": {msi.name: sha256(msi)},
+        "installation": {
+            "type": "windows-msi",
+            "msi": msi.name,
+            "setup": {"command": {
+                "environment": "ProgramFiles", "relative": f"{install_name}\\share\\setup.cmd",
+            }},
+        },
+    }
+    (msi.parent / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    validate_metadata(json.loads((msi.parent / "metadata.json").read_text(encoding="utf-8")))
+    return metadata
+
+
+@contextmanager
+def served(directory: Path):
+    """Serve directory over HTTP on this host, as a release channel serves metadata."""
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(directory))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def sima_cli(home: Path, *arguments: object, expect: int = 0) -> str:
+    """Run the installed sima-cli command without input, with its state under home."""
+    command = [str(Path(sysconfig.get_path("scripts")) / "sima-cli.exe"), *map(str, arguments)]
+    environment = dict(os.environ, USERPROFILE=str(home), SIMA_CLI_CHECK_FOR_UPDATE="0",
+                       PYTHONIOENCODING="utf-8", NO_PROXY="127.0.0.1")
+    print("+", subprocess.list2cmdline(command), flush=True)
+    try:
+        result = subprocess.run(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=environment, encoding="utf-8", errors="replace", timeout=CHILD_TIMEOUT_SECONDS,
+            check=False)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"sima-cli did not return within {CHILD_TIMEOUT_SECONDS} s")
+    print(result.stdout, flush=True)
+    if result.returncode != expect:
+        raise SystemExit(f"sima-cli exited with {result.returncode}, expected {expect}")
+    return result.stdout
+
+
+def receipts(home: Path) -> list[dict]:
+    registry = home / ".sima-cli" / "registry.json"
+    data = json.loads(registry.read_text(encoding="utf-8")) if registry.is_file() else []
+    return [entry for entry in data if entry["package_name"] == PACKAGE]
 
 
 def registry_values(key_path: str) -> dict[str, object]:
@@ -103,7 +202,7 @@ def main() -> int:
 
     namespace = uuid.UUID("9d9b0a84-c52b-4fac-8dd9-12187d5f748e")
     upgrade_guid = str(uuid.uuid5(namespace, "sima-cli-msi-e2e-upgrade")).upper()
-    product_guid = str(uuid.uuid5(namespace, f"sima-cli-msi-e2e-{run_id}")).upper()
+    old, new = "1.0.0", "1.1.0"
 
     if args.work_directory is not None:
         args.work_directory.mkdir(parents=True, exist_ok=False)
@@ -111,136 +210,120 @@ def main() -> int:
                  else tempfile.TemporaryDirectory(prefix="sima-cli-msi-e2e-"))
     with workspace as directory:
         root = Path(directory)
-        source = root / "source"
-        build = root / "build"
-        dist = root / "dist"
-        source.mkdir()
-        dist.mkdir()
-        (source / "payload.txt").write_text("sima-cli Windows MSI e2e\n", encoding="utf-8")
-        (source / "in-use.txt").write_text("held open during the repair\n", encoding="utf-8")
-        # The installed setup step records that it ran, as pcie-setup.cmd would enroll a card.
-        (source / "setup.cmd").write_text(
-            '@echo off\r\n>"%SIMA_CLI_E2E_SETUP_MARKER%" echo setup ran\r\n', encoding="utf-8")
+        home = root / "home"
+        home.mkdir()
         setup_marker = root / "setup-ran.txt"
         os.environ["SIMA_CLI_E2E_SETUP_MARKER"] = str(setup_marker)
         os.environ.pop("SIMAPCIE_SKIP_SETUP", None)
-        (source / "CMakeLists.txt").write_text(
-            f"""cmake_minimum_required(VERSION 3.20)
-project(SimaCliMsiE2E VERSION 1.0.0 LANGUAGES C)
-install(FILES payload.txt in-use.txt setup.cmd DESTINATION share COMPONENT Runtime)
-set(CPACK_GENERATOR "WIX")
-set(CPACK_PACKAGE_NAME "sima-cli-msi-e2e")
-set(CPACK_PACKAGE_VERSION "1.0.0")
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "{install_name}")
-set(CPACK_WIX_VERSION 3)
-set(CPACK_WIX_ARCHITECTURE x64)
-set(CPACK_WIX_INSTALL_SCOPE perMachine)
-set(CPACK_WIX_UPGRADE_GUID "{upgrade_guid}")
-set(CPACK_WIX_PRODUCT_GUID "{product_guid}")
-set(CPACK_WIX_CMAKE_PACKAGE_REGISTRY "{install_name}")
-set(CPACK_COMPONENTS_ALL Runtime)
-include(CPack)
-""",
-            encoding="utf-8",
-        )
-        run([cmake, "-S", source, "-B", build, "-A", "x64"])
-        run([cpack, "--config", build / "CPackConfig.cmake", "-G", "WIX", "-B", dist])
-        packages = list(dist.glob("*.msi"))
-        if len(packages) != 1:
-            raise SystemExit(f"expected one disposable MSI, found {len(packages)}")
-        msi = packages[0]
-        metadata = {
-            "name": "gh:sima-neat/tests/windows-msi",
-            "version": "1.0.0",
-            "release": "ci",
-            "platforms": [{"type": "host", "os": ["windows"], "arch": ["amd64"]}],
-            "resources": [msi.name],
-            "resources-checksum": {msi.name: sha256(msi)},
-            "installation": {
-                "type": "windows-msi",
-                "msi": msi.name,
-                "setup": {"command": {
-                    "environment": "ProgramFiles", "relative": f"{install_name}\\share\\setup.cmd",
-                }},
-            },
+        msis = {
+            version: build_msi(
+                cmake, cpack, root, version, install_name, upgrade_guid,
+                str(uuid.uuid5(namespace, f"sima-cli-msi-e2e-{run_id}-{version}")).upper())
+            for version in (old, new)
         }
-        (dist / "metadata.json").write_text(
-            json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-        validate_metadata(json.loads((dist / "metadata.json").read_text(encoding="utf-8")))
+        metadata = {version: package_metadata(msi, version, install_name) for version, msi in msis.items()}
+        codes = {version: windows_package._msi_product_code(msi) for version, msi in msis.items()}
+        if codes[old] == codes[new]:
+            raise SystemExit(f"both versions have product code {codes[old]}")
+        payload = install_root / "share" / "payload.txt"
 
-        installed = removed = False
+        def installed(version: str) -> bool:
+            return windows_package._msi_product_installed(codes[version])
+
+        def check_payload(version: str) -> None:
+            if not payload.is_file() or payload.read_text(encoding="utf-8") != f"sima-cli Windows MSI e2e {version}\n":
+                raise SystemExit(f"installed MSI payload is not the {version} one")
+
+        removed = False
         try:
-            # With stdin=DEVNULL (the NUL device, which isatty() accepts on Windows) the
-            # install skips the setup step, which may prompt for a password, and prints it.
-            child_result = root / "noninteractive-result.json"
-            try:
-                child = subprocess.run(
-                    [sys.executable, "-I", "-c", INSTALL_IN_CHILD,
-                     dist / "metadata.json", dist, child_result],
-                    stdin=subprocess.DEVNULL, timeout=CHILD_TIMEOUT_SECONDS, check=False,
-                )
-            except subprocess.TimeoutExpired:
-                raise SystemExit(
-                    f"install with stdin=DEVNULL did not return within {CHILD_TIMEOUT_SECONDS} s")
-            installed = True
-            if child.returncode != 0:
-                raise SystemExit(f"install with stdin=DEVNULL failed with {child.returncode}")
-            result = json.loads(child_result.read_text(encoding="utf-8"))
-            if result["native"] != "installed":
-                raise SystemExit(f"unexpected native result: {result}")
-            if result["setup"]["status"] != "skipped" or setup_marker.exists():
-                raise SystemExit(f"install with stdin=DEVNULL did not skip setup: {result}")
-            payload = install_root / "share" / "payload.txt"
-            if payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
-                raise SystemExit("installed MSI payload differs")
-            # The Scheduler and Core MSIs write the same kind of machine registry entry.
-            package_key = f"SOFTWARE\\Kitware\\CMake\\Packages\\{install_name}"
-            package_values = registry_values(package_key)
-            if not package_values:
-                raise SystemExit(f"MSI did not write HKLM\\{package_key}")
-            # Rerunning the same release repairs it: a deleted file and a deleted machine
-            # registry entry come back, and an unchanged file that an application holds
-            # open is left alone instead of requiring a restart.
-            payload.unlink()
-            winreg.DeleteKeyEx(winreg.HKEY_LOCAL_MACHINE, package_key, winreg.KEY_WOW64_64KEY)
-            # Stand in for an interactive console so the repeat runs the installed setup
-            # step through cmd.exe from a Program Files path that contains a space.
-            with mock.patch.object(windows_package, "_interactive_console", return_value=True), \
-                    held_open(install_root / "share" / "in-use.txt"):
-                repeated = install_windows_package(metadata, str(dist))
-            if repeated["setup"]["status"] != "passed" or not setup_marker.is_file():
-                raise SystemExit(f"interactive install did not run setup: {repeated}")
-            if repeated["native"] != "installed":
-                raise SystemExit(f"unexpected repeat-install result: {repeated}")
-            if not payload.is_file() or payload.read_text(encoding="utf-8") != "sima-cli Windows MSI e2e\n":
-                raise SystemExit("repeat installation did not repair the deleted MSI payload")
-            if registry_values(package_key) != package_values:
-                raise SystemExit("repeat installation did not repair the MSI registry entry")
-            if uninstall_windows_package({"native_packages": repeated["native_packages"]}):
-                raise SystemExit("disposable MSI removal unexpectedly requested a restart")
+            with served(root / "dist") as channel:
+                def install(version: str, expect: int = 0) -> str:
+                    return sima_cli(home, "install", "-m", f"{channel}/{version}/metadata.json",
+                                    "-d", root / f"downloads-{version}", expect=expect)
+
+                # Without input (stdin is the NUL device, which isatty() accepts on Windows) the
+                # install skips the setup step, which may prompt for a password, and prints it.
+                output = install(old)
+                if "Setup step skipped" not in output or setup_marker.exists():
+                    raise SystemExit("install without input did not skip setup")
+                check_payload(old)
+                if [(entry["version"], entry["state"], [package["product_code"] for package in entry["native_packages"]])
+                        for entry in receipts(home)] != [(old, "installed", [codes[old]])]:
+                    raise SystemExit(f"unexpected receipts after the first install: {receipts(home)}")
+                # The Scheduler and Core MSIs write the same kind of machine registry entry.
+                package_key = f"SOFTWARE\\Kitware\\CMake\\Packages\\{install_name}"
+                package_values = registry_values(package_key)
+                if not package_values:
+                    raise SystemExit(f"MSI did not write HKLM\\{package_key}")
+                # Rerunning the same release repairs it: a deleted file and a deleted machine
+                # registry entry come back, and an unchanged file that an application holds
+                # open is left alone instead of requiring a restart.
+                payload.unlink()
+                winreg.DeleteKeyEx(winreg.HKEY_LOCAL_MACHINE, package_key, winreg.KEY_WOW64_64KEY)
+                # Stand in for an interactive console so the repeat runs the installed setup
+                # step through cmd.exe from a Program Files path that contains a space.
+                with mock.patch.object(windows_package, "_interactive_console", return_value=True), \
+                        held_open(install_root / "share" / "in-use.txt"):
+                    repeated = install_windows_package(metadata[old], str(msis[old].parent))
+                if repeated["setup"]["status"] != "passed" or not setup_marker.is_file():
+                    raise SystemExit(f"interactive install did not run setup: {repeated}")
+                if repeated["native"] != "installed":
+                    raise SystemExit(f"unexpected repeat-install result: {repeated}")
+                check_payload(old)
+                if registry_values(package_key) != package_values:
+                    raise SystemExit("repeat installation did not repair the MSI registry entry")
+
+                # A newer release upgrades in place and replaces the older receipt.
+                output = install(new)
+                if f"Replaced the registry receipt of {PACKAGE} {old} with {new}." not in output:
+                    raise SystemExit("upgrade did not report the replaced receipt")
+                if installed(old) or not installed(new):
+                    raise SystemExit("Windows Installer did not replace 1.0.0 with 1.1.0")
+                check_payload(new)
+                if [(entry["version"], entry["state"]) for entry in receipts(home)] != [(new, "installed")]:
+                    raise SystemExit(f"unexpected receipts after the upgrade: {receipts(home)}")
+
+                # An older release is refused, with the way out, and the newer one stays.
+                output = install(old, expect=1)
+                if ("because a newer version of it is already installed" not in output
+                        or f"sima-cli packages remove {PACKAGE} --version <installed version>" not in output):
+                    raise SystemExit("downgrade did not print the refusal")
+                if installed(old) or not installed(new):
+                    raise SystemExit("the refused downgrade changed the installed product")
+                check_payload(new)
+
+            # Remove through the command, as a customer does: the refused downgrade left a
+            # receipt for 1.0.0, whose package is not installed.
+            sima_cli(home, "packages", "remove", PACKAGE, "--version", new, "--yes")
+            if installed(new) or install_root.exists():
+                raise SystemExit("packages remove left the 1.1.0 MSI installed")
+            output = sima_cli(home, "packages", "remove", PACKAGE, "--version", old, "--yes")
+            if "native package is not installed; nothing to remove." not in output:
+                raise SystemExit("removing the receipt of a package that is not installed did not say so")
+            if receipts(home):
+                raise SystemExit(f"receipts remain after removal: {receipts(home)}")
             removed = True
         finally:
-            if not removed and (installed or install_root.exists()):
-                uninstall_log = dist / "msi-uninstall.log"
-                result = subprocess.run(
-                    [
-                        "msiexec.exe", "/x", str(msi), "/quiet", "/norestart",
-                        "/L*v", str(uninstall_log),
-                    ],
-                    check=False,
-                )
-                if result.returncode != 0:
-                    raise SystemExit(
-                        f"disposable MSI removal failed with {result.returncode}; "
-                        f"see {uninstall_log}")
+            if not removed:
+                for version, code in codes.items():
+                    uninstall_log = root / f"msi-uninstall-{version}.log"
+                    result = subprocess.run(
+                        ["msiexec.exe", "/x", code, "/quiet", "/norestart", "/L*v", str(uninstall_log)],
+                        check=False,
+                    )
+                    if result.returncode not in (0, windows_package.MSI_UNKNOWN_PRODUCT):
+                        raise SystemExit(
+                            f"disposable {version} MSI removal failed with {result.returncode}; "
+                            f"see {uninstall_log}")
         if install_root.exists():
             raise SystemExit(f"disposable MSI left its installation root: {install_root}")
         (root / "result.json").write_text(json.dumps({
-            "status": "PASS", "msi_sha256": sha256(msi),
-            "product_code": product_guid, "install_root": str(install_root),
-            "first_install": "PASS", "repeat_install_repairs": "PASS",
-            "repair_restores_registry": "PASS", "repair_leaves_file_in_use": "PASS",
-            "setup_skipped_stdin_devnull": "PASS", "setup_ran_interactive": "PASS", "uninstall": "PASS",
+            "status": "PASS", "msi_sha256": {version: sha256(msi) for version, msi in msis.items()},
+            "product_codes": codes, "install_root": str(install_root),
+            "first_install": "PASS", "setup_skipped_without_input": "PASS",
+            "repeat_install_repairs": "PASS", "repair_restores_registry": "PASS",
+            "repair_leaves_file_in_use": "PASS", "setup_ran_interactive": "PASS",
+            "upgrade": "PASS", "downgrade_refused": "PASS", "packages_remove": "PASS",
             "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")
 

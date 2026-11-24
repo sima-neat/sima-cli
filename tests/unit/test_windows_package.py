@@ -1914,6 +1914,17 @@ class WindowsPackageTests(unittest.TestCase):
         )
         self.assertIn([all_users], candidates)
 
+    def test_all_users_python_314_is_found_in_64_bit_program_files_under_32_bit_python(self):
+        # A 32-bit process sees C:\Program Files (x86) as ProgramFiles.
+        all_users = self.python_install("Program Files", "Python314")
+        x86 = self.python_install("Program Files (x86)", "Python314")
+        candidates, _ = self.bootstrap_candidates(environment={
+            "ProgramFiles": str(self.root / "Program Files (x86)"),
+            "ProgramW6432": str(self.root / "Program Files"),
+        })
+        self.assertIn([all_users], candidates)
+        self.assertNotIn([x86], candidates)
+
     def test_rejected_interpreters_are_listed_with_their_reasons(self):
         python_313 = self.python_install("Python313")
         store_alias = self.python_install("WindowsApps")

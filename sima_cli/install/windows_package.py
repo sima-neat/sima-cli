@@ -504,12 +504,17 @@ def _msi_product_installed(product_code: str) -> bool:
         return False
 
 
+def _program_files_64() -> Optional[str]:
+    # The 64-bit Program Files directory, where 64-bit MSIs and Python install. In a 32-bit
+    # Python, ProgramFiles is C:\Program Files (x86); Windows sets ProgramW6432 only on
+    # 64-bit systems.
+    return os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles")
+
+
 def _path_from_spec(spec: Dict[str, str]) -> Optional[Path]:
     root = None
     if spec["environment"].lower() == "programfiles":
-        # In a 32-bit Python, ProgramFiles is C:\Program Files (x86); 64-bit MSIs install
-        # under ProgramW6432, which Windows sets only on 64-bit systems.
-        root = os.environ.get("ProgramW6432")
+        root = _program_files_64()
     root = root or os.environ.get(spec["environment"])
     if not root:
         return None
@@ -828,7 +833,7 @@ def _python_bootstrap_candidates(required_version: Optional[str]) -> List[List[s
 
     candidates.append([sys.executable])
     local_app_data = os.environ.get("LOCALAPPDATA")
-    program_files = os.environ.get("ProgramFiles")
+    program_files = _program_files_64()
     if required_version:
         compact = required_version.replace(".", "")
         if local_app_data:

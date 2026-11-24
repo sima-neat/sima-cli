@@ -142,14 +142,17 @@ sima-cli install -m .\metadata.json
 check for a newer `sima-cli`. Before the first MSI, it runs the prerequisite
 checks described above and checks every file of the bundle against the SHA-256
 in `metadata.json`; if a file is missing or changed, it names the file and
-installs nothing, and you copy the bundle again. pip installs `pyneatpcie` and
-its dependencies from the bundle only, without a package index, at the exact
-versions and checksums the bundle lists; an upgrade sets those dependencies to
-the newer bundle's versions.
+installs nothing, and you copy the bundle again. pip installs `pyneatpcie`, and
+each dependency that is missing or at another version, from the bundle only. It
+uses no package index and no pip configuration file, and installs only files
+whose SHA-256 the bundle lists. A dependency already installed at the bundle's
+version is kept as it is, without checking its files. An upgrade sets the
+dependencies to the newer bundle's versions.
 
 Everything else works as described above, with the same receipt:
 `--python-executable`, `--native-only` and the setup step; repeat the command
 to repair, run it from a newer bundle to upgrade, and remove the release with
-`sima-cli packages remove`. Other `sima-cli` commands still try to check for a
+`sima-cli packages remove`. If a step fails, correct the reported problem and
+rerun the same command. Other `sima-cli` commands still try to check for a
 newer `sima-cli` and continue when they cannot; to skip that check, set
 `$env:SIMA_CLI_CHECK_FOR_UPDATE = "0"` first.

@@ -303,6 +303,134 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  windows-installer:
+    name: Build and test the Windows installer
+    # Not a prerequisite of publish-vulcan-artifacts: a python.org or PyPI outage while the
+    # installer is built must not stop the branch's wheel from being published.
+    needs:
+      - build
+      - resolve-vulcan-config
+    runs-on: windows-2025
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.build.outputs.release }}
+      msi_version: ${{ steps.build.outputs.msi_version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          architecture: x64
+      - uses: actions/download-artifact@v8
+        with:
+          name: sima-cli-dist
+          path: candidate-dist
+      - name: Build the installer from the built wheel
+        id: build
+        shell: pwsh
+        env:
+          EXPECTED_CLI_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $wheels = @(Get-ChildItem -LiteralPath candidate-dist -Filter 'sima_cli-*.whl' -File)
+          if ($wheels.Count -ne 1) { throw "Expected exactly one built CLI wheel" }
+          python -m pip install -r packaging/windows/build-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "Installing the installer build tools failed" }
+          $out = Join-Path $env:RUNNER_TEMP "windows-installer"
+          python -I packaging/windows/build_msi.py --wheel $wheels[0].FullName --expected-version $env:EXPECTED_CLI_VERSION --output-directory "$out\dist" --work-directory "$out\build"
+          if ($LASTEXITCODE -ne 0) { throw "Building the installer failed" }
+          # The same bundle as an older version, for the upgrade and downgrade checks.
+          python -I packaging/windows/build_msi.py --reuse-bundle --work-directory "$out\build" --msi-version 0.0.1 --output-directory "$out\older"
+          if ($LASTEXITCODE -ne 0) { throw "Building the older installer failed" }
+          $record = Get-Content -Raw -LiteralPath "$out\dist\installer.json" | ConvertFrom-Json
+          "release=$($record.release.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "msi_version=$($record.msi_version)" >> $env:GITHUB_OUTPUT
+          Get-ChildItem -LiteralPath "$out\dist", "$out\older" -File | Format-Table Name, Length
+      - name: Install, upgrade and remove with Windows Installer
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "windows-installer"
+          python -I tests/e2e/windows_installer.py lifecycle --installer-json "$out\dist\installer.json" --older-installer-json "$out\older\installer.json" --work-directory "$out\lifecycle"
+      - name: Make WinGet available
+        id: winget
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Find-WinGet {
+            $command = Get-Command winget.exe -ErrorAction SilentlyContinue
+            if ($command) { return $command.Source }
+            $alias = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe"
+            if (Test-Path -LiteralPath $alias) { return $alias }
+            return $null
+          }
+          $winget = Find-WinGet
+          if (-not $winget) {
+            Write-Host "WinGet not found; registering App Installer."
+            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
+            $winget = Find-WinGet
+          }
+          if (-not $winget) {
+            Write-Host "WinGet still not found; installing it with Microsoft.WinGet.Client."
+            Install-PackageProvider -Name NuGet -Force | Out-Null
+            Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery
+            Repair-WinGetPackageManager -AllUsers
+            $winget = Find-WinGet
+          }
+          # The WinGet checks are required: no WinGet fails the job instead of skipping them.
+          if (-not $winget) { throw "WinGet is not available on this runner, and registering or installing it failed" }
+          & $winget --version
+          if ($LASTEXITCODE -ne 0) { throw "winget --version failed" }
+          "path=$winget" >> $env:GITHUB_OUTPUT
+      - name: Write and validate the WinGet manifest
+        shell: pwsh
+        env:
+          ARTIFACT_BASE_URL: ${{ needs.resolve-vulcan-config.outputs.artifact_base_url }}
+          MSI_VERSION: ${{ steps.build.outputs.msi_version }}
+          WINGET: ${{ steps.winget.outputs.path }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:RUNNER_TEMP "windows-installer"
+          $base = $env:ARTIFACT_BASE_URL.TrimEnd("/")
+          if (-not $base.StartsWith("https://")) { throw "artifact_base_url is not an https URL: $base" }
+          $url = "$base/sima-cli/windows/$env:MSI_VERSION/sima-cli-$env:MSI_VERSION-x64.msi"
+          python -I packaging/windows/winget_manifest.py --installer-json "$out\dist\installer.json" --installer-url $url --output-directory "$out\dist\winget"
+          if ($LASTEXITCODE -ne 0) { throw "Writing the WinGet manifest failed" }
+          & $env:WINGET validate --manifest "$out\dist\winget"
+          if ($LASTEXITCODE -ne 0) { throw "winget validate rejected the manifest" }
+      - name: Install through WinGet from the local manifest
+        shell: pwsh
+        env:
+          WINGET: ${{ steps.winget.outputs.path }}
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "windows-installer"
+          python -I tests/e2e/windows_installer.py winget --installer-json "$out\dist\installer.json" --winget $env:WINGET --work-directory "$out\winget-e2e"
+      - name: Upload the installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: sima-cli-windows-installer
+          path: |
+            ${{ runner.temp }}/windows-installer/dist/*.msi
+            ${{ runner.temp }}/windows-installer/dist/*.msi.sha256
+            ${{ runner.temp }}/windows-installer/dist/installer.json
+            ${{ runner.temp }}/windows-installer/dist/winget/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain installer logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer-e2e
+          path: |
+            ${{ runner.temp }}/windows-installer/build/bundle.json
+            ${{ runner.temp }}/windows-installer/lifecycle/
+            ${{ runner.temp }}/windows-installer/winget-e2e/
+          if-no-files-found: warn
+          retention-days: 7
+
   compatibility-test:
     name: Compatibility Python ${{ matrix.python-version }}
     # Python 3.8/3.9 builds are unavailable on Ubuntu 26.04 (ubuntu-latest).

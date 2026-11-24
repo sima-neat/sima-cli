@@ -7,8 +7,9 @@ an installed release runs through the package installer in this process. Then it
 and removed once more through the administrator approval a window that is not elevated uses.
 
 The same MSIs are then installed from offline bundle folders: each holds a local metadata.json,
-the MSI, a Python package wheel and a wheelhouse with its pinned dependency. Every connection
-the CLI tries through the proxy variables reaches a local listener, which must record none.
+the MSI, a Python package wheel and a wheelhouse with its pinned dependency. Every request
+sent through the proxy variables reaches a local listener, which must record none. Only the
+update check is shown to reach it; a connection that ignores those variables is not seen.
 """
 
 from __future__ import annotations
@@ -542,7 +543,8 @@ def main() -> int:
                 if installed(new) or install_root.exists() or receipts(offline_home):
                     raise SystemExit("packages remove left the offline install behind")
                 if connections:
-                    raise SystemExit(f"the offline install tried to connect: {connections}")
+                    raise SystemExit(
+                        f"the offline install sent requests through the proxy: {connections}")
             removed = True
         finally:
             if not removed:
@@ -569,7 +571,7 @@ def main() -> int:
             "offline_changed_file_refused": "PASS", "offline_install": "PASS",
             "offline_pinned_dependency": "PASS", "offline_repair": "PASS",
             "offline_upgrade": "PASS", "offline_downgrade_refused": "PASS",
-            "offline_packages_remove": "PASS", "offline_no_connection": "PASS",
+            "offline_packages_remove": "PASS", "offline_no_proxied_request": "PASS",
             "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")
 

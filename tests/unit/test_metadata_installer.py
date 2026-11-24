@@ -3,6 +3,7 @@ import io
 import json
 import os
 import stat
+import tarfile
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stdout
@@ -911,6 +912,15 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _tar_gz(member: str, content: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo(member)
+        info.size = len(content)
+        archive.addfile(info, io.BytesIO(content))
+    return buffer.getvalue()
+
+
 class LocalWindowsMetadataTests(unittest.TestCase):
     """A local windows-msi metadata file installs the files in its own folder."""
 
@@ -924,7 +934,7 @@ class LocalWindowsMetadataTests(unittest.TestCase):
             "sima-pcie-host-0.6.1-win64.msi": b"core msi",
             "pyneatpcie-0.6.1-cp314-cp314-win_amd64.whl": b"wheel",
             "wheelhouse/numpy-2.5.4-cp314-cp314-win_amd64.whl": b"numpy",
-            "card/neat-core-offline-installer.tar.gz": b"card bundle",
+            "card/neat-core-offline-installer.tar.gz": _tar_gz("install.sh", b"card bundle"),
         }
         for resource, content in files.items():
             path = self.bundle.joinpath(*resource.split("/"))
@@ -984,7 +994,10 @@ class LocalWindowsMetadataTests(unittest.TestCase):
                     "install_windows_package": install_windows_package or {
                         "return_value": {"native": "installed"}
                     },
-                    "_extract_archives_in_folder": {},
+                    # Real, so an extracted card archive would show on disk.
+                    "_extract_archives_in_folder": {
+                        "wraps": metadata_installer._extract_archives_in_folder
+                    },
                     "_combine_multipart_files": {},
                     "_print_post_install_message": {},
                 }.items()
@@ -1147,6 +1160,7 @@ class LocalWindowsMetadataTests(unittest.TestCase):
     def test_local_windows_metadata_download_only_still_downloads(self):
         # --download-only mirrors the resources from any host, without a receipt.
         metadata_path = self.write_metadata()
+        downloads = str(Path(self.temp.name) / "downloads")
         with patch.object(
             metadata_installer, "_download_assets", return_value=[]
         ) as download, patch.object(
@@ -1159,10 +1173,12 @@ class LocalWindowsMetadataTests(unittest.TestCase):
             "sima_cli.install.windows_package._is_windows", return_value=False
         ), redirect_stdout(io.StringIO()) as output:
             metadata_installer.install_from_metadata(
-                str(metadata_path), False, ".", download_only=True
+                str(metadata_path), False, downloads, download_only=True
             )
 
-        download.assert_called_once_with(self.metadata, str(metadata_path), ".", False, tag=None)
+        download.assert_called_once_with(
+            self.metadata, str(metadata_path), downloads, False, tag=None
+        )
         verify.assert_not_called()
         self.assertNotIn("Installing from the packages in", output.getvalue())
         self.assertEqual(self.receipts(), [])
@@ -1173,6 +1189,7 @@ class LocalWindowsMetadataTests(unittest.TestCase):
             "resources": ["payload.tar.gz"], "installation": {"script": "echo installed"},
         }
         metadata_path = self.write_metadata(metadata)
+        downloads = str(Path(self.temp.name) / "downloads")
         with patch.object(
             metadata_installer, "_download_assets", return_value=[]
         ) as download, patch.object(
@@ -1180,9 +1197,9 @@ class LocalWindowsMetadataTests(unittest.TestCase):
         ), patch.object(
             metadata_installer, "_check_whether_disk_is_big_enough", return_value=True
         ), redirect_stdout(io.StringIO()) as output:
-            metadata_installer.install_from_metadata(str(metadata_path), False, ".")
+            metadata_installer.install_from_metadata(str(metadata_path), False, downloads)
 
-        download.assert_called_once_with(metadata, str(metadata_path), ".", False, tag=None)
+        download.assert_called_once_with(metadata, str(metadata_path), downloads, False, tag=None)
         self.assertNotIn("Installing from the packages in", output.getvalue())
 
 

@@ -17,11 +17,33 @@ class MetadataValidationError(Exception):
 VALID_DEVKIT_SW = {"yocto", "elxr"}
 # Customer skill IDs and Python distribution names; both become path components.
 _SAFE_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+# Every field a windows-msi object may carry; anything else is refused, not ignored.
+_WINDOWS_INSTALLATION_FIELDS = {
+    "type", "msi", "native-packages", "python", "prerequisites", "verification", "setup",
+    "skills", "post-message",
+}
+_WINDOWS_PREREQUISITE_FIELDS = {
+    "executable": {"name", "type", "value", "guidance"},
+    "windows-service": {"name", "type", "value", "guidance"},
+    "windows-pnp-driver": {"name", "type", "value", "version", "guidance"},
+    "command-version": {
+        "name", "type", "candidates", "arguments", "version", "version-pattern", "guidance",
+    },
+}
 
 
-def _validate_windows_path_spec(value, field_name: str):
+def _reject_unknown_fields(value: dict, allowed, field_name: str):
+    unknown = sorted(set(value) - set(allowed))
+    if unknown:
+        raise MetadataValidationError(
+            f"'{field_name}' has unsupported fields: {', '.join(unknown)}"
+        )
+
+
+def _validate_windows_path_spec(value, field_name: str, allowed=("environment", "relative")):
     if not isinstance(value, dict):
         raise MetadataValidationError(f"'{field_name}' must be an object")
+    _reject_unknown_fields(value, allowed, field_name)
     environment = value.get("environment")
     relative = value.get("relative")
     if not isinstance(environment, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", environment):
@@ -55,6 +77,12 @@ def _validate_windows_prerequisites(value):
         names.add(name)
         if not isinstance(guidance, str) or not guidance.strip():
             raise MetadataValidationError(f"'{prefix}.guidance' must be a non-empty string")
+        if not isinstance(kind, str) or kind not in _WINDOWS_PREREQUISITE_FIELDS:
+            raise MetadataValidationError(
+                f"'{prefix}.type' must be one of: command-version, executable, "
+                "windows-pnp-driver, windows-service"
+            )
+        _reject_unknown_fields(prerequisite, _WINDOWS_PREREQUISITE_FIELDS[kind], prefix)
         if kind in {"executable", "windows-service"}:
             target = prerequisite.get("value")
             if not isinstance(target, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", target):
@@ -113,11 +141,6 @@ def _validate_windows_prerequisites(value):
                 raise MetadataValidationError(
                     f"'{prefix}.version-pattern' must contain exactly one capture group"
                 )
-        else:
-            raise MetadataValidationError(
-                f"'{prefix}.type' must be one of: command-version, executable, "
-                "windows-pnp-driver, windows-service"
-            )
 
 def _validate_sha256_field(value, field_name: str):
     if not isinstance(value, str):
@@ -272,6 +295,7 @@ def validate_metadata(data: dict):
             if not isinstance(install["script"], str):
                 raise MetadataValidationError("'installation.script' must be a string")
         elif install_type == "windows-msi":
+            _reject_unknown_fields(install, _WINDOWS_INSTALLATION_FIELDS, "installation")
             if data.get("selectable-resources"):
                 raise MetadataValidationError(
                     "Windows MSI metadata does not support 'selectable-resources'; "
@@ -313,6 +337,9 @@ def validate_metadata(data: dict):
                     prefix = f"'installation.native-packages[{index}]'"
                     if not isinstance(package, dict):
                         raise MetadataValidationError(f"{prefix} must be an object")
+                    _reject_unknown_fields(
+                        package, ("owner", "msi", "version"), prefix.strip("'")
+                    )
                     for field in ("owner", "msi", "version"):
                         value = package.get(field)
                         if not isinstance(value, str) or not value.strip():
@@ -334,6 +361,11 @@ def validate_metadata(data: dict):
             if python_package is not None:
                 if not isinstance(python_package, dict):
                     raise MetadataValidationError("'installation.python' must be an object")
+                _reject_unknown_fields(
+                    python_package,
+                    ("wheel", "distribution", "version", "import", "requires-python", "arch"),
+                    "installation.python",
+                )
                 for field in ("wheel", "distribution", "version", "import"):
                     value = python_package.get(field)
                     if not isinstance(value, str) or not value.strip():
@@ -375,6 +407,7 @@ def validate_metadata(data: dict):
             if verification is not None:
                 if not isinstance(verification, dict):
                     raise MetadataValidationError("'installation.verification' must be an object")
+                _reject_unknown_fields(verification, ("command",), "installation.verification")
                 _validate_windows_path_spec(
                     verification.get("command"), "installation.verification.command"
                 )
@@ -397,7 +430,7 @@ def validate_metadata(data: dict):
                 skill_ids = set()
                 for index, skill in enumerate(skills):
                     prefix = f"installation.skills[{index}]"
-                    _validate_windows_path_spec(skill, prefix)
+                    _validate_windows_path_spec(skill, prefix, ("id", "environment", "relative"))
                     skill_id = skill.get("id") if isinstance(skill, dict) else None
                     if not isinstance(skill_id, str) or not re.fullmatch(_SAFE_NAME, skill_id):
                         raise MetadataValidationError(

@@ -326,6 +326,60 @@ class WindowsPackageTests(unittest.TestCase):
                     ):
                         validate_metadata(metadata)
 
+    def full_windows_installation(self):
+        """Use every installation field Core's create_windows_metadata.py writes."""
+        self.use_scheduler_and_core()
+        program_files = {"environment": "ProgramFiles", "relative": "SimaPCIeHost\\bin\\x.cmd"}
+        service = {
+            "name": "SiMa Platform PCIe service", "type": "windows-service",
+            "value": "SiMaMlaDaemon", "guidance": "Start the service.",
+        }
+        self.metadata["installation"].update({
+            "prerequisites": [OPENSSH, PLATFORM_DRIVER, service, GSTREAMER],
+            "verification": {"command": dict(program_files)},
+            "skills": [{"id": "neat-pcie-application-builder", **program_files}],
+            "setup": {"command": dict(program_files)},
+            "post-message": "Neat PCIe host installation completed.",
+        })
+        return self.metadata["installation"]
+
+    def test_metadata_accepts_every_field_the_core_generator_writes(self):
+        self.full_windows_installation()
+        self.assertTrue(validate_metadata(self.metadata))
+
+    def test_metadata_rejects_unknown_windows_fields(self):
+        cases = {
+            "installation": lambda i: i,
+            "installation.native-packages[1]": lambda i: i["native-packages"][1],
+            "installation.python": lambda i: i["python"],
+            "installation.verification": lambda i: i["verification"],
+            "installation.verification.command": lambda i: i["verification"]["command"],
+            "installation.skills[0]": lambda i: i["skills"][0],
+            "installation.prerequisites[0]": lambda i: i["prerequisites"][0],
+            "installation.prerequisites[1]": lambda i: i["prerequisites"][1],
+            "installation.prerequisites[2]": lambda i: i["prerequisites"][2],
+            "installation.prerequisites[3]": lambda i: i["prerequisites"][3],
+            "installation.prerequisites[3].candidates[0]":
+                lambda i: i["prerequisites"][3]["candidates"][0],
+        }
+        self.full_windows_installation()
+        valid = json.dumps(self.metadata)
+        for field, select in cases.items():
+            for unknown in ("prerequisite", "verfication", "script", "signer"):
+                with self.subTest(field=field, unknown=unknown):
+                    metadata = json.loads(valid)
+                    select(metadata["installation"])[unknown] = "x"
+                    with self.assertRaisesRegex(
+                        MetadataValidationError,
+                        rf"'{re.escape(field)}' has unsupported fields: {unknown}$",
+                    ):
+                        validate_metadata(metadata)
+
+    def test_metadata_rejects_a_prerequisite_type_that_is_not_a_string(self):
+        self.metadata["installation"]["prerequisites"] = [{**OPENSSH, "type": ["executable"]}]
+        with self.assertRaisesRegex(MetadataValidationError, r"prerequisites\[0\]\.type"):
+            validate_metadata(self.metadata)
+
     def test_metadata_rejects_a_python_distribution_that_is_a_path(self):
         for distribution in ("..\\..\\x", "C:\\x", "/x", "a/b"):
             with self.subTest(distribution=distribution):

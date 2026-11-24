@@ -674,6 +674,22 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertIs(_msi_product_installed(PRODUCT_CODES["sima"]), expected)
         windll.msi.MsiQueryProductStateW.assert_called_with(PRODUCT_CODES["sima"])
 
+    def test_cli_starts_on_a_python_built_without_ctypes(self):
+        # A Python built without libffi has no ctypes; only the Windows paths use it.
+        script = (
+            "import sys; sys.modules['ctypes'] = None\n"
+            "import sima_cli.cli\n"
+            "from sima_cli.install import windows_package as w\n"
+            "assert w._is_windows_administrator() is False\n"
+            "assert w._msi_product_installed('{11111111-1111-1111-1111-111111111111}') is False\n"
+            "assert w._system_program('msiexec.exe') == 'C:\\\\Windows\\\\System32\\\\msiexec.exe'\n"
+            "assert w._interactive_console() in (True, False)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_administrator_runs_msiexec_from_the_windows_system_directory(self):
         def system_directory(buffer, _size):
             buffer.value = "D:\\WINNT\\system32"

@@ -1,7 +1,6 @@
 """Install a declarative Windows MSI and optional Python wheel."""
 
 import base64
-import ctypes
 import json
 import os
 import re
@@ -15,6 +14,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import click
 
 from sima_cli.playbooks.manager import SkillError, SkillManager
+
+try:
+    import ctypes
+except ImportError:  # A Python built without libffi; only the Windows paths use ctypes,
+    ctypes = None  # and each of them falls back when an attribute lookup fails.
 
 
 MSI_RESTART_INITIATED = 1641

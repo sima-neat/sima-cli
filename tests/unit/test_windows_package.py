@@ -2454,6 +2454,50 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(pip_calls, [])
         self.assertNotIn("pip", [part for call in fake_run.call_args_list for part in call.args[0]])
 
+    def test_local_bundle_recovery_asks_to_copy_the_bundle_again(self):
+        # A bundle file changed or removed after the folder check was copied, not downloaded.
+        copy_again = (
+            "Copy the bundle again from the computer that downloaded it, "
+            "then rerun the same command."
+        )
+        download_again = "To download a verified copy, rerun the same command."
+        self.use_scheduler_and_core()
+        run, _requests = fake_elevation(
+            [ELEVATED_INSTALLER_HASH_MISMATCH], errors={0: "found " + "0" * 64}
+        )
+        with self.non_elevated_session(run), self.assertRaises(WindowsNativeInstallError) as raised:
+            install_windows_package(
+                self.metadata, str(self.root), native_only=True, local_bundle=True
+            )
+        self.assertIn(f"it was not started. {copy_again}", str(raised.exception))
+
+        self.msi.write_bytes(b"replaced msi")
+        for local_bundle, advice in ((True, copy_again), (False, download_again)):
+            run, _requests = fake_elevation([0, 0])
+            with self.subTest(local_bundle=local_bundle), self.non_elevated_session(run), \
+                    self.assertRaises(WindowsNativeInstallError) as raised:
+                install_windows_package(
+                    self.metadata, str(self.root), native_only=True, local_bundle=local_bundle
+                )
+            self.assertIn(f"it was not started. {advice}", str(raised.exception))
+
+    def test_local_bundle_missing_dependency_asks_to_copy_the_bundle_again(self):
+        dependency = self.use_wheelhouse()
+        dependency.unlink()
+        responses = [python_facts(), completed(), completed(returncode=3)]
+        with patch("sima_cli.install.windows_package._run", side_effect=responses), \
+                self.assertRaises(WindowsPythonInstallError) as raised:
+            install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python),
+                local_bundle=True,
+            )
+
+        self.assertEqual(str(raised.exception), (
+            f"Windows package resource is missing: '{dependency.resolve()}'. Copy the bundle "
+            "again from the computer that downloaded it, then rerun the same command. "
+            "The native installation was kept."
+        ))
+
     def test_pip_failure_reports_partial_installation(self):
         responses = [
             python_facts(), completed(), completed(returncode=3), completed(returncode=1)
@@ -2567,6 +2611,7 @@ class WindowsPackageTests(unittest.TestCase):
                     record_receipt=ANY,
                     check_prerequisites=False,
                     retry_command=None,
+                    local_bundle=False,
                 )
                 registry.update_state.assert_called_once_with(
                     self.metadata["name"], self.metadata["version"], state

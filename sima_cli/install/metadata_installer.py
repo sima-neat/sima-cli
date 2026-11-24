@@ -1775,6 +1775,7 @@ def install_from_metadata(
                                     ),
                                     check_prerequisites=False,
                                     retry_command=retry_command,
+                                    local_bundle=local_bundle,
                                 )
                                 registry.update_state(
                                     metadata.get("name"), metadata.get("version"), "installed"

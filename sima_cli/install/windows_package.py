@@ -93,7 +93,9 @@ def _interactive_console() -> bool:
         return False
 
 
-def _declared_resource(metadata: Dict, install_dir: str, resource: str) -> Path:
+def _declared_resource(
+    metadata: Dict, install_dir: str, resource: str, rerun: Optional[str] = None
+) -> Path:
     resources = metadata.get("resources", [])
     if resource not in resources:
         raise click.ClickException(
@@ -110,6 +112,10 @@ def _declared_resource(metadata: Dict, install_dir: str, resource: str) -> Path:
     if root not in path.parents:
         raise click.ClickException(f"Windows package resource escapes the install directory: '{resource}'.")
     if not path.is_file():
+        if isinstance(rerun, _BundleRerun):
+            raise click.ClickException(
+                f"Windows package resource is missing: '{path}'. {_fresh_copy(rerun)}"
+            )
         raise click.ClickException(f"Downloaded Windows package resource is missing: '{path}'.")
     return path
 
@@ -121,9 +127,22 @@ def _declared_sha256(metadata: Dict, resource: str) -> str:
 _RERUN_SAME_COMMAND = "rerun the same command."
 
 
-def _rerun(retry_command: Optional[str]) -> str:
+class _BundleRerun(str):
+    """The rerun advice of a local offline bundle, whose files are copied, not downloaded."""
+
+
+def _rerun(retry_command: Optional[str], local_bundle: bool = False) -> str:
     """End a recovery message with the exact command when the caller knows it."""
+    if local_bundle:
+        return _BundleRerun(_RERUN_SAME_COMMAND)
     return f"rerun this exact release: {retry_command}" if retry_command else _RERUN_SAME_COMMAND
+
+
+def _fresh_copy(rerun: str) -> str:
+    """Say how to replace a resource that is missing or no longer matches its SHA-256."""
+    if isinstance(rerun, _BundleRerun):
+        return f"Copy the bundle again from the computer that downloaded it, then {rerun}"
+    return f"To download a verified copy, {rerun}"
 
 
 # FILE_SHARE_READ: other processes may read the file, but not write, rename or delete it.
@@ -182,7 +201,7 @@ def _verify_sha256(
         raise error_type(
             f"Windows package resource '{resource}' no longer matches its declared SHA-256 "
             f"(expected {expected}, found {actual}); it was not started. "
-            f"To download a verified copy, {rerun}"
+            f"{_fresh_copy(rerun)}"
         )
     return held
 
@@ -1029,7 +1048,7 @@ def _pip_install_from_wheelhouse(
     if not no_deps:
         for entry in python_package["wheelhouse"]:
             try:
-                path = _declared_resource(metadata, install_dir, entry["wheel"])
+                path = _declared_resource(metadata, install_dir, entry["wheel"], rerun)
             except click.ClickException as error:
                 raise WindowsPythonInstallError(
                     f"{error.message} The native installation was kept."
@@ -1080,7 +1099,7 @@ def _install_python_wheel(
         raise WindowsPythonInstallError(f"Selected Python executable does not exist: '{executable}'.")
 
     try:
-        wheel = _declared_resource(metadata, install_dir, python_package["wheel"])
+        wheel = _declared_resource(metadata, install_dir, python_package["wheel"], rerun)
     except click.ClickException as error:
         raise WindowsPythonInstallError(
             f"{error.message} The native installation was kept."
@@ -1174,7 +1193,7 @@ def _install_native_packages(
     packages = _native_packages(metadata["installation"])
     items = []
     for index, package in enumerate(packages, start=1):
-        msi = _declared_resource(metadata, install_dir, package["msi"])
+        msi = _declared_resource(metadata, install_dir, package["msi"], rerun)
         log_path = root / f"sima-cli-msi-install-{index:02d}-{_safe_log_label(package['owner'])}.log"
         items.append({
             "index": index,
@@ -1249,7 +1268,7 @@ def _install_native_packages(
             raise WindowsNativeInstallError(
                 f"Windows package resource '{item['resource']}' no longer matched its declared "
                 f"SHA-256 when the elevated installer checked it (expected {item['sha256']}, "
-                f"{detail}); it was not started. To download a verified copy, {rerun}"
+                f"{detail}); it was not started. {_fresh_copy(rerun)}"
             )
         if returncode != 0:
             installed_owners = ", ".join(entry["owner"] for entry in installed) or "none"
@@ -1511,20 +1530,22 @@ def install_windows_package(
     record_receipt=None,
     check_prerequisites: bool = True,
     retry_command: Optional[str] = None,
+    local_bundle: bool = False,
 ) -> Dict[str, Any]:
     """Install the ordered native package cohort and its Python wheel.
 
     record_receipt, when given, receives the package product codes and selected Python
     before any MSI starts. check_prerequisites=False skips host prerequisites that
     preflight_windows_package already verified. retry_command, when given, is the
-    command pinned to this release that recovery messages print.
+    command pinned to this release that recovery messages print. local_bundle says that
+    install_dir is an offline bundle folder, which recovery messages ask to copy again.
     """
     require_windows_host()
     if native_only and python_executable:
         raise click.ClickException("--native-only cannot be combined with --python-executable.")
 
     installed: List[Dict[str, str]] = []
-    rerun = _rerun(retry_command)
+    rerun = _rerun(retry_command, local_bundle)
     try:
         if check_prerequisites:
             _check_prerequisites(metadata)

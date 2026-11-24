@@ -1023,6 +1023,7 @@ class LocalWindowsMetadataTests(unittest.TestCase):
             record_receipt=ANY,
             check_prerequisites=False,
             retry_command=None,
+            local_bundle=True,
         )
         mocks["preflight_windows_package"].assert_called_once_with(self.metadata, None, True)
         mocks["_extract_archives_in_folder"].assert_not_called()

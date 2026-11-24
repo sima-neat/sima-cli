@@ -153,3 +153,16 @@ sima-cli install -m .\metadata.json
 修正し、同じコマンドを再実行してください。その他の `sima-cli` コマンドは引き続き
 新しい `sima-cli` の確認を試み、確認できない場合はそのまま続行します。この確認を
 省略するには、先に `$env:SIMA_CLI_CHECK_FOR_UPDATE = "0"` を設定してください。
+
+バンドルには SiMa Platform の Windows ドライバーパッケージは含まれていません。これは、
+インターネットに接続されたホストでは `sima-cli install drivers/windows` がインストールする
+パッケージです。インターネットに接続されたコンピューターで、SiMa.ai のログインを使用して
+ダウンロードしてください。このコマンドはパッケージのファイルをインストールせずに保存し、
+どのオペレーティングシステムでも実行できます。
+
+```text
+sima-cli install drivers/windows --download-only -d platform
+```
+
+`platform` フォルダーをホストにコピーし、バンドルより先にインストールします。管理者として
+起動したコマンドプロンプトで、その `install.bat` を実行してください。

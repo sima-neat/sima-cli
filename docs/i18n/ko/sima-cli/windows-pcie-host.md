@@ -142,3 +142,15 @@ sima-cli install -m .\metadata.json
 다른 `sima-cli` 명령은 계속 새로운 `sima-cli`를 확인하려고 시도하고,
 확인할 수 없으면 그대로 진행합니다. 이 확인을 건너뛰려면 먼저
 `$env:SIMA_CLI_CHECK_FOR_UPDATE = "0"`을 설정하세요.
+
+번들에는 SiMa Platform Windows 드라이버 패키지가 포함되어 있지 않습니다. 이 패키지는
+인터넷에 연결된 호스트에서 `sima-cli install drivers/windows`가 설치하는 패키지입니다.
+인터넷에 연결된 컴퓨터에서 SiMa.ai 로그인으로 다운로드하세요. 이 명령은 패키지 파일을
+설치하지 않고 저장하며, 어떤 운영 체제에서도 실행할 수 있습니다.
+
+```text
+sima-cli install drivers/windows --download-only -d platform
+```
+
+`platform` 폴더를 호스트에 복사하고 번들보다 먼저 설치하세요. 관리자 권한으로 시작한
+명령 프롬프트에서 해당 폴더의 `install.bat`을 실행합니다.

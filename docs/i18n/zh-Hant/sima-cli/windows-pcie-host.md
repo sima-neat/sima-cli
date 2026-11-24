@@ -119,3 +119,14 @@ sima-cli install -m .\metadata.json
 移除發行版本。若某個步驟失敗，請修正回報的問題，然後重新執行相同的命令。其他 `sima-cli`
 命令仍會嘗試檢查是否有較新的 `sima-cli`，無法檢查時會
 繼續執行；若要略過此檢查，請先設定 `$env:SIMA_CLI_CHECK_FOR_UPDATE = "0"`。
+
+套件組不包含 SiMa Platform Windows 驅動程式套件；在可連線的主機上，該套件由
+`sima-cli install drivers/windows` 安裝。請在可連線的電腦上使用您的 SiMa.ai 登入
+下載它。此命令只儲存套件的檔案而不安裝，可在任何作業系統上執行：
+
+```text
+sima-cli install drivers/windows --download-only -d platform
+```
+
+將 `platform` 資料夾複製到主機，並在安裝套件組之前安裝它：在以系統管理員身分啟動的
+命令提示字元中執行其 `install.bat`。

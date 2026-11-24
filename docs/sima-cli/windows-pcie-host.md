@@ -156,3 +156,15 @@ to repair, run it from a newer bundle to upgrade, and remove the release with
 rerun the same command. Other `sima-cli` commands still try to check for a
 newer `sima-cli` and continue when they cannot; to skip that check, set
 `$env:SIMA_CLI_CHECK_FOR_UPDATE = "0"` first.
+
+The bundle does not contain the SiMa Platform Windows driver package, which
+`sima-cli install drivers/windows` installs on a connected host. Download it on
+the connected computer with your SiMa.ai login. The command saves the package's
+files without installing them, on any operating system:
+
+```text
+sima-cli install drivers/windows --download-only -d platform
+```
+
+Copy the `platform` folder to the host, and install it before the bundle: run
+its `install.bat` from a Command Prompt started as administrator.

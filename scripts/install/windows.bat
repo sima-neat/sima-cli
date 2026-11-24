@@ -2,6 +2,9 @@
 setlocal enabledelayedexpansion
 title Sima-CLI Installer
 
+rem Run system tools from the system directory: cmd looks in the current directory before PATH.
+set "POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+
 set "WHEEL_PATH=%~1"
 set "UNINSTALL="
 set "UNINSTALL_FORCE="
@@ -27,7 +30,7 @@ if "%INSTALL_FROM_PYPI%"=="0" if not exist "%WHEEL_PATH%" (
     exit /b 2
 )
 
-net session >nul 2>&1
+"%SystemRoot%\System32\net.exe" session >nul 2>&1
 if %errorlevel% equ 0 (
     echo Administrator privileges detected.
     set "IS_ADMIN=1"
@@ -57,7 +60,7 @@ set "UNINSTALL_FAILED="
 if defined UNINSTALL (
     set "PS_RECEIPTS=$ErrorActionPreference = 'Stop'; $file = $env:USERPROFILE + '\.sima-cli\registry.json'; if (-not [IO.File]::Exists($file)) { exit 0 }; $all = Get-Content -Raw -Encoding UTF8 -LiteralPath $file | ConvertFrom-Json; $msi = @($all | Where-Object { $_.metadata.installation.type -eq 'windows-msi' }); if ($msi.Count -eq 0) { exit 0 }"
     set "PS_RECEIPTS=!PS_RECEIPTS!; Write-Host 'These packages were installed with Windows Installer and are removed with sima-cli:'; foreach ($p in $msi) { Write-Host ('    sima-cli packages remove ' + $p.package_name + ' --version ' + $p.version) }; if ($env:UNINSTALL_FORCE) { Write-Host 'With --force they stay installed. Remove them later under Settings > Apps > Installed apps.' }; exit 2"
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_RECEIPTS!"
+    "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "!PS_RECEIPTS!"
     set "RECEIPTS=!errorlevel!"
 )
 if defined UNINSTALL if not defined UNINSTALL_FORCE if "!RECEIPTS!"=="2" (
@@ -80,7 +83,7 @@ if defined UNINSTALL if not defined UNINSTALL_FAILED if exist "!INSTALL_DIR!\" (
 )
 if defined UNINSTALL if not defined UNINSTALL_FAILED (
     set "PS_UNPATH=; $kept = @($raw.Split(';') | Where-Object { -not (Same ([Environment]::ExpandEnvironmentVariables($_))) }); if ($kept.Count -lt $raw.Split(';').Count) { Write-Host ('Removing ' + $env:VENV_PATH + ' from the user PATH...'); $key.SetValue('Path', ($kept -join ';'), $key.GetValueKind('Path')) }"
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_COMMON!!PS_UNPATH!!PS_MACHINE!!PS_BROADCAST!"
+    "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "!PS_COMMON!!PS_UNPATH!!PS_MACHINE!!PS_BROADCAST!"
     if errorlevel 1 (
         echo Could not remove !VENV_PATH! from the user PATH. Remove it under Edit environment variables for your account.
         set "UNINSTALL_FAILED=1"
@@ -129,14 +132,14 @@ if not defined PYTHON (
     )
 )
 if not defined PYTHON if not defined PYTHON_FAILED (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri $env:PYTHON_URL -OutFile $env:PYTHON_INSTALLER"
+    "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri $env:PYTHON_URL -OutFile $env:PYTHON_INSTALLER"
     if errorlevel 1 (
         echo Failed to download !PYTHON_URL!
         set "PYTHON_FAILED=1"
     )
 )
 if not defined PYTHON if not defined PYTHON_FAILED (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "if ((Get-FileHash -LiteralPath $env:PYTHON_INSTALLER -Algorithm SHA256).Hash -ne $env:PYTHON_SHA256) { exit 1 }; $s = Get-AuthenticodeSignature -LiteralPath $env:PYTHON_INSTALLER; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName', $false) -ne 'Python Software Foundation') { exit 1 }"
+    "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "if ((Get-FileHash -LiteralPath $env:PYTHON_INSTALLER -Algorithm SHA256).Hash -ne $env:PYTHON_SHA256) { exit 1 }; $s = Get-AuthenticodeSignature -LiteralPath $env:PYTHON_INSTALLER; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName', $false) -ne 'Python Software Foundation') { exit 1 }"
     if errorlevel 1 (
         echo The downloaded Python installer does not match the pinned SHA-256 or is not validly signed by the Python Software Foundation. It was not run.
         set "PYTHON_FAILED=1"
@@ -195,7 +198,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo %PATH% | findstr /I /C:"%VENV_PATH%" >nul
+echo %PATH% | "%SystemRoot%\System32\findstr.exe" /I /C:"%VENV_PATH%" >nul
 if errorlevel 1 (
     echo Adding %VENV_PATH% to current session PATH...
     set "PATH=%PATH%;%VENV_PATH%"
@@ -214,7 +217,7 @@ rem or program, so this installer never changes it.
 set "PS_PATH=!PS_PATH!; $first = $null; foreach ($scope in 'system', 'user') { $target = 'Machine'; if ($scope -eq 'user') { $target = 'User' }; foreach ($entry in ([string][Environment]::GetEnvironmentVariable('Path', $target)).Split(';')) { $folder = $entry.Trim().Trim([char]34).TrimEnd('\'); foreach ($name in 'sima-cli.exe', 'sima-cli.bat', 'sima-cli.cmd') { if (-not $first -and $folder -and [IO.File]::Exists($folder + '\' + $name)) { $first = @($folder, $name, $scope) } } } }"
 set "PS_PATH=!PS_PATH!; if ($first -and -not (Same $first[0])) { Write-Host ''; Write-Host 'WARNING: a new window will run another sima-cli, not the one just installed:'; Write-Host ('    ' + $first[0] + '\' + $first[1]); if ($first[2] -eq 'system') { Write-Host '  It is on the system PATH, which Windows searches before your user PATH.' } else { Write-Host ('  It is on your user PATH, ahead of ' + $dir + '.') }"
 set "PS_PATH=!PS_PATH!; if ($first[2] -eq 'system' -and $first[0] -like '*\.sima-cli-env\Scripts') { Write-Host '  It is the sima-cli of another account. Running windows.bat in that account from an administrator window moves it to that account''s own user PATH.' } else { Write-Host ('  Uninstall that copy, or remove ' + $first[0] + ' from the ' + $first[2] + ' PATH if nothing else needs it.') }; exit 2 }"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"
+"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"
 set "PATH_RESULT=!errorlevel!"
 
 echo.

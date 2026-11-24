@@ -229,7 +229,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         # Without Stop, a failed .NET call only ends its statement and the exit code
         # comes from the last statement, so the failure message never printed.
         self.assertTrue(powershell(self.script, "PS_PATH").startswith("$ErrorActionPreference = 'Stop'; "))
-        run = self.script.index('powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"')
+        run = self.script.index('"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"')
         self.assertEqual(self.script[run:].splitlines()[1], 'set "PATH_RESULT=!errorlevel!"')
 
     def test_path_step_outcome_is_explicit(self):
@@ -248,7 +248,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         # A new window searches the system PATH, then the user PATH. A sima-cli of another
         # account on the system PATH ran instead of the one just installed, and the script
         # still printed Done.
-        run = self.script.index('powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"')
+        run = self.script.index('"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"')
         check = powershell(self.script, "PS_PATH").split("'SIMA_CLI_PATH_REFRESH', $null, 'User')", 1)[1]
         self.assertIn(
             "foreach ($scope in 'system', 'user') { $target = 'Machine'; if ($scope -eq 'user') { $target = 'User' }; "
@@ -310,6 +310,15 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         removal = 'if defined UNINSTALL if not defined UNINSTALL_FAILED if exist "!INSTALL_DIR!\\" (\n'
         self.assertLess(self.script.index(refused), self.script.index(removal))
         self.assertLess(self.script.index(unreadable), self.script.index(removal))
+
+    def test_system_tools_run_from_the_system_directory(self):
+        # cmd looks in the current directory before PATH, so a powershell.exe, net.exe or
+        # findstr.exe next to the downloaded windows.bat would otherwise run instead.
+        self.assertIn('set "POWERSHELL=%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"', self.script)
+        self.assertNotRegex(self.script, r"(?im)(^\s*|\|\s*)(powershell|net|findstr)(\.exe)?\s")
+        self.assertEqual(self.script.count('"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command '), 5)
+        self.assertIn('"%SystemRoot%\\System32\\net.exe" session >nul 2>&1', self.script)
+        self.assertIn('| "%SystemRoot%\\System32\\findstr.exe" /I', self.script)
 
     def test_messages_survive_delayed_expansion(self):
         # Under enabledelayedexpansion a "!" that does not close a !variable! is dropped

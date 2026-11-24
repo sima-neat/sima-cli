@@ -2775,6 +2775,32 @@ class WindowsPackageTests(unittest.TestCase):
     def test_native_only_is_rejected_for_non_windows_package(self):
         self.assert_windows_option_rejected("--native-only", native_only=True)
 
+    def test_cli_rejects_python_options_for_a_script_package_before_downloading(self):
+        metadata = {"name": "linux-package", "version": "1", "installation": {"type": "script"}}
+        for options, option in (
+            (["--native-only"], "--native-only"),
+            (["--python-executable", str(self.python)], "--python-executable"),
+        ):
+            with self.subTest(option=option), patch.object(
+                metadata_installer,
+                "_download_and_validate_metadata",
+                return_value=(metadata, None),
+            ), patch.object(metadata_installer, "registry") as registry, patch.object(
+                metadata_installer, "_download_assets"
+            ) as download:
+                result = CliRunner().invoke(
+                    main,
+                    ["install", "-m", "https://example.invalid/metadata.json",
+                     "-d", str(self.root), *options],
+                    env={"SIMA_CLI_CHECK_FOR_UPDATE": "0"},
+                )
+
+                self.assertEqual(result.exit_code, 2, result.output)
+                self.assertIn(f"{option} applies only to Windows MSI packages", result.output)
+                self.assertNotIn("Failed to install", result.output)
+                download.assert_not_called()
+                registry.create_entry.assert_not_called()
+
     def test_python_options_are_rejected_for_components_without_metadata(self):
         cases = [
             ("cr:sima/tool", ["--native-only"], "--native-only"),

@@ -1074,11 +1074,16 @@ class LocalWindowsMetadataTests(unittest.TestCase):
         self.assertEqual(self.receipts(), [("0.6.1", "failed")])
 
     def test_local_windows_metadata_on_another_host_fails_before_receipt(self):
+        # Only the host error: the bundle folder is neither probed nor announced.
         metadata_path = self.write_metadata()
-        with patch.object(metadata_installer, "_verify_local_resources") as verify:
+        with patch.object(metadata_installer, "_verify_local_resources") as verify, patch.object(
+            metadata_installer, "_ensure_install_dir_writable"
+        ) as probe:
             mocks, output = self.install(metadata_path, fails=True, windows=False)
 
         self.assertIn("The windows-msi installation type can only run on Windows.", output)
+        self.assertNotIn("Installing from the packages in", output)
+        self.assertNotIn(os.path.abspath(self.bundle), [call.args[0] for call in probe.call_args_list])
         verify.assert_not_called()
         mocks["preflight_windows_package"].assert_not_called()
         mocks["install_windows_package"].assert_not_called()

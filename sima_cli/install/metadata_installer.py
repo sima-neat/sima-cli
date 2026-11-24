@@ -1716,15 +1716,15 @@ def install_from_metadata(
             # A local Windows package installs the files beside its metadata, as an
             # offline bundle copied to the host provides them, instead of downloading.
             local_bundle = install_type == "windows-msi" and not download_only and local_metadata
-            if local_bundle:
-                install_dir = metadata_folder
-                _ensure_install_dir_writable(install_dir, command_name=command_name)
-                click.echo(f"Installing from the packages in: {install_dir}")
             print_metadata_summary(metadata=metadata)
             if install_type == "windows-msi" and not download_only:
                 # Before the receipt and the download: metadata without platforms, or
                 # --force, gets past the compatibility check on any host.
                 require_windows_host()
+            if local_bundle:
+                install_dir = metadata_folder
+                _ensure_install_dir_writable(install_dir, command_name=command_name)
+                click.echo(f"Installing from the packages in: {install_dir}")
             if not download_only:
                 registry.create_entry(metadata.get('name'), metadata.get('version'), metadata, '')
                 

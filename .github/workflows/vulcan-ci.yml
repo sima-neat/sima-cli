@@ -574,6 +574,7 @@ jobs:
             Assert-Output "Installing/Upgrading sima-cli from $wheel..."
             Assert-Output "Done. Open a new Command Prompt or PowerShell and type:"
             if ($installerOutput.Contains("No working Python found")) { throw "windows.bat looked for another Python although its environment works" }
+            if ($installerOutput.Contains("needs 64-bit Python 3.14")) { throw "windows.bat printed the Python 3.14 note although it created no environment" }
             $version = (& "$scripts\sima-cli.exe" --version) -join "`n"
             if ($LASTEXITCODE -ne 0 -or $version -cne $expected) { throw "Installed sima-cli reports '$version', expected '$expected'" }
             # A python on PATH whose path has a character the console code page lacks: cmd reads the path it

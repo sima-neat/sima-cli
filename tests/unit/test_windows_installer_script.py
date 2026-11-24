@@ -195,7 +195,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         # So the interpreter, a full path or that name, always runs through call.
         self.assertNotRegex(self.script, r'(?m)^\s*"[!%]PYTHON[!%]"')
         self.assertIn('    call "%%PYTHON%%" -m venv --clear "%%INSTALL_DIR%%"\n', self.script)
-        self.assertIn("\ncall \"%%PYTHON%%\" -c \"import struct, sys;", self.script)
+        self.assertIn("\n    call \"%%PYTHON%%\" -c \"import struct, sys;", self.script)
         # On a runner: a python first on PATH whose path has a character the console code page lacks.
         step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
         case = step.split("# A python on PATH whose path has a character", 1)[1].split("# A failed pip step", 1)[0]
@@ -381,6 +381,18 @@ class WindowsInstallerScriptTests(unittest.TestCase):
     def test_reports_python_other_than_64_bit_314(self):
         self.assertIn("sys.version_info[:2] == (3, 14) and struct.calcsize('P') == 8", self.script)
         self.assertIn("needs 64-bit Python 3.14 from https://www.python.org/downloads/windows/", self.script)
+        # Only for the Python a new environment is created from: a working environment is the
+        # first choice, so after installing 3.14 as told, the note followed the old one on every run.
+        create = self.script.split(
+            '"%INSTALL_DIR%\\Scripts\\python.exe" -c "import sys" >nul 2>nul\nif errorlevel 1 (\n', 1
+        )[1].split("    echo Creating virtual environment in !INSTALL_DIR!...\n", 1)[0]
+        self.assertIn("    call \"%%PYTHON%%\" -c \"import struct, sys;", create)
+        self.assertIn("    if errorlevel 1 echo Note: the Windows PCIe host package needs 64-bit Python 3.14", create)
+        self.assertEqual(self.script.count("needs 64-bit Python 3.14"), 1)
+        step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
+        working = step.split("# Run from a folder with a python.bat and a python.cmd that do nothing", 1)[1]
+        working = working.split("# A python on PATH whose path has a character", 1)[0]
+        self.assertIn('if ($installerOutput.Contains("needs 64-bit Python 3.14")) { throw', working)
 
     def test_environment_that_does_not_run_is_recreated(self):
         # A leftover environment whose base Python was removed was reused, so pip failed.

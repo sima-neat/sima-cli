@@ -178,14 +178,15 @@ if not defined PYTHON (
     echo Python installation failed: no Python 3.14 runs from !PYTHON_LOCATIONS!
     exit /b 1
 )
-rem call parses its line a second time, which doubles a caret and drops a percent sign in a path
-rem expanded before it. So the variables are written with doubled percent signs and expand only then.
-call "%%PYTHON%%" -c "import struct, sys; sys.exit(0 if sys.version_info[:2] == (3, 14) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
-if errorlevel 1 echo Note: the Windows PCIe host package needs 64-bit Python 3.14 from https://www.python.org/downloads/windows/
 
 rem Also recreate an environment whose python does not run, such as one whose base Python was removed.
 "%INSTALL_DIR%\Scripts\python.exe" -c "import sys" >nul 2>nul
 if errorlevel 1 (
+    rem call parses its line a second time, which doubles a caret and drops a percent sign in a path
+    rem expanded before it. So the variables are written with doubled percent signs and expand only then.
+    rem The note is printed only here: a working environment is used whatever Python created it.
+    call "%%PYTHON%%" -c "import struct, sys; sys.exit(0 if sys.version_info[:2] == (3, 14) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
+    if errorlevel 1 echo Note: the Windows PCIe host package needs 64-bit Python 3.14 from https://www.python.org/downloads/windows/
     echo Creating virtual environment in !INSTALL_DIR!...
     call "%%PYTHON%%" -m venv --clear "%%INSTALL_DIR%%"
     if errorlevel 1 (

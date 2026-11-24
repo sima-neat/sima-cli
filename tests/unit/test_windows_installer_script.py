@@ -191,6 +191,14 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertNotIn('set "PYTHON=%ProgramFiles%', self.script)
         self.assertNotIn('set "PYTHON=%LOCALAPPDATA%', self.script)
 
+    def test_python_installer_downloads_without_a_progress_bar(self):
+        # Windows PowerShell 5.1 slows a large Invoke-WebRequest download while it draws progress.
+        self.assertIn(
+            "-Command \"$ProgressPreference = 'SilentlyContinue'; "
+            'Invoke-WebRequest -Uri $env:PYTHON_URL -OutFile $env:PYTHON_INSTALLER"\n',
+            self.script,
+        )
+
     def test_python_installer_runs_only_after_signature_check(self):
         check = self.script.index("Get-AuthenticodeSignature -LiteralPath $env:PYTHON_INSTALLER")
         run = self.script.index(RUN_INSTALLER)

@@ -139,7 +139,8 @@ if not defined PYTHON (
     )
 )
 if not defined PYTHON if not defined PYTHON_FAILED (
-    "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri $env:PYTHON_URL -OutFile $env:PYTHON_INSTALLER"
+    rem Windows PowerShell downloads much more slowly while it draws a progress bar.
+    "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri $env:PYTHON_URL -OutFile $env:PYTHON_INSTALLER"
     if errorlevel 1 (
         echo Failed to download !PYTHON_URL!
         set "PYTHON_FAILED=1"

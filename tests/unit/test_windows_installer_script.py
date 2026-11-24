@@ -47,6 +47,27 @@ def exits_not_last_in_statement(script):
     return found
 
 
+def interpreters_run_by_name(script):
+    """Return each line that runs python, py or pip by its bare name outside a for /f capture.
+
+    cmd looks for a bare name in the current directory, then on PATH, and takes a .bat or .cmd
+    as well as an .exe. A batch file started from a batch file without call never returns, so
+    the script ends there with that file's exit code. The command of for /f ('...') runs in a
+    child cmd, which returns.
+    """
+    found = []
+    for line in script.splitlines():
+        text = line.strip()
+        if re.match(r"(?i)rem\b", text):
+            continue
+        text = re.split(r"(?i)\becho\b", re.sub(r"\('.*?'\)", "", text), maxsplit=1)[0]
+        for match in re.finditer(r"(?i)(?<![^\s(&|])(python3?|py|pip3?)(\.exe)?(?![^\s)&|])", text):
+            if not re.search(r"(?i)(-m|defined)\s+$", text[: match.start()]):
+                found.append(line.strip())
+                break
+    return found
+
+
 def powershell(script, name):
     """Return the PowerShell command cmd assembles in variable name, with the pieces it uses."""
     text = "".join(re.findall(rf'^\s*set "{name}=(?:!{name}!)?(.*)"$', script, re.MULTILINE))
@@ -59,6 +80,11 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         '( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )'
     )
 
+    PATH_PROBE = (
+        "for /f \"delims=\" %%P in ('python -c \"import sys; print(sys.executable)\" 2^>nul ^<nul') "
+        'do set "PYTHON=%%P"'
+    )
+
     def setUp(self):
         self.script = SCRIPT.read_text(encoding="utf-8")
 
@@ -69,13 +95,47 @@ class WindowsInstallerScriptTests(unittest.TestCase):
 
     def test_store_alias_or_broken_python_counts_as_missing(self):
         self.assertNotIn("where python", self.script)
-        self.assertIn('python -c "import sys" >nul 2>nul', self.script)
+        self.assertIn(self.PATH_PROBE, self.script)
+
+    def test_python_on_path_runs_in_a_child_cmd_and_then_by_full_path(self):
+        # A python.bat or python.cmd, such as pyenv-win's shim or one in the current folder, ended
+        # the script at its first Python probe with exit code 0, and nothing was installed.
+        python = self.script.split("\ncall ", 1)[0]
+        self.assertEqual(interpreters_run_by_name(python), [])
+        self.assertNotIn('set "PYTHON=python"', self.script)
+        self.assertIn('"!PYTHON!" -m venv --clear "%INSTALL_DIR%"', python)
+        # On a runner: a pyenv-win style python.bat first on PATH, and no environment yet.
+        step = WORKFLOW.read_text(encoding="utf-8").split("- name: Test repo installer script on native Windows\n", 1)[1]
+        shim = step.split("# A python that is a batch file, as pyenv-win's shim first on PATH", 1)[1]
+        shim = shim.split("# A failed pip step fails the script.", 1)[0]
+        self.assertIn('Set-Content -LiteralPath (Join-Path $pathShims "python.bat") -Value "@`"', shim)
+        self.assertIn('Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".sima-cli-env") -Recurse -Force', shim)
+        self.assertIn('$env:PATH = "$pathShims;$env:PATH"\n', shim)
+        self.assertIn("Invoke-Installer $wheel\n            $env:PATH = $savedPath\n", shim)
+        self.assertIn('Assert-Output "Creating virtual environment in $env:USERPROFILE\\.sima-cli-env..."', shim)
+        self.assertIn("if ($LASTEXITCODE -ne 0 -or $version -cne $expected)", shim)
+        self.assertEqual(
+            interpreters_run_by_name(
+                'python -c "import sys" >nul 2>nul\nif 1==1 (\n    py -3.14 -m venv x\n)\ncall python -V\n'
+                "if 1==1 pip install x\nif not defined PYTHON python -V\n"
+            ),
+            ['python -c "import sys" >nul 2>nul', "py -3.14 -m venv x", "call python -V", "if 1==1 pip install x",
+             "if not defined PYTHON python -V"],
+        )
+        self.assertEqual(
+            interpreters_run_by_name(
+                "rem python\necho Python 3.14 needs python.exe\n\"!PYTHON!\" -m pip install x\n"
+                "for /f %%P in ('python -c \"print(1)\"') do set \"P=%%P\"\n"
+                '"%VENV_PATH%\\python.exe" -m pip install x\n'
+            ),
+            [],
+        )
 
     def test_existing_python_is_found_before_installing(self):
         # The python.org installer leaves Python off PATH by default, so PATH alone
         # misses the usual per-user install and the script reinstalled over it.
         probes = [
-            'python -c "import sys" >nul 2>nul\nif not errorlevel 1 set "PYTHON=python"',
+            self.PATH_PROBE,
             "('py -3.14 -c \"import sys; print(sys.executable)\" 2^>nul ^<nul') do set \"PYTHON=%%P\"",
             'set PYTHON_LOCATIONS="%LOCALAPPDATA%\\Programs\\Python\\Python314\\python.exe" '
             '"%ProgramFiles%\\Python314\\python.exe"',

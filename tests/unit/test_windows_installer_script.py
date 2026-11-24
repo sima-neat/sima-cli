@@ -510,8 +510,17 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn('if ((Get-RawPath $machineKey) -cne "$machineStub;$machineBase")', body)
         # A broken environment is recreated, and a pip failure fails the script.
         self.assertIn("'^home = .*', 'home = C:\\sima-cli-missing-python'", body)
-        self.assertIn("cmd.exe /c scripts\\install\\windows.bat $invalidWheel", body)
-        self.assertIn('if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }', body)
+        # Exactly the pip failure: a wrong path (exit 2) or a failed pip self-upgrade would also be non-zero.
+        self.assertIn("Invoke-Installer $invalidWheel\n", body)
+        self.assertIn('if ($installerCode -ne 1) { throw "windows.bat returned $installerCode although pip failed" }', body)
+        self.assertIn(
+            'Assert-Output "Could not install sima-cli into $env:USERPROFILE\\.sima-cli-env. See the pip output above."', body
+        )
+        # Every run of the installed sima-cli checks its exit code.
+        runs = [match.end() for match in re.finditer(r'& "\$scripts\\sima-cli\.exe" --version\)?[^\n]*\n', body)]
+        self.assertEqual(len(runs), 4)
+        for end in runs:
+            self.assertRegex(body[end:].split("\n", 1)[0], r"^\s*if \(\$LASTEXITCODE -ne 0[ )]")
         # A refusal inside the Python bootstrap block fails the script: with no Python to
         # find, a download directory that cannot be created stops it.
         refusal = body.split("# A refused Python bootstrap fails the script", 1)[1]

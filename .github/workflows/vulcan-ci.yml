@@ -532,6 +532,7 @@ jobs:
             Set-RawPath $userKey "$userBase;$scripts"
             Set-RawPath $machineKey $machineBase
             & "$scripts\sima-cli.exe" --version
+            if ($LASTEXITCODE -ne 0) { throw "sima-cli does not run from the installed environment" }
             # An environment whose base Python is gone is recreated, not reused.
             $config = Join-Path $env:USERPROFILE ".sima-cli-env\pyvenv.cfg"
             (Get-Content -LiteralPath $config) -replace '^home = .*', 'home = C:\sima-cli-missing-python' | Set-Content -LiteralPath $config
@@ -578,8 +579,9 @@ jobs:
             # A failed pip step fails the script.
             $invalidWheel = Join-Path $env:RUNNER_TEMP "sima_cli-0.0.0-py3-none-any.whl"
             Set-Content -LiteralPath $invalidWheel -Value "not a wheel"
-            cmd.exe /c scripts\install\windows.bat $invalidWheel
-            if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }
+            Invoke-Installer $invalidWheel
+            if ($installerCode -ne 1) { throw "windows.bat returned $installerCode although pip failed" }
+            Assert-Output "Could not install sima-cli into $env:USERPROFILE\.sima-cli-env. See the pip output above."
             # A refused Python bootstrap fails the script. With no sima-cli environment, no Python on PATH
             # or in the python.org locations, and TEMP under a file, it cannot create its download directory.
             $blocker = Join-Path $env:RUNNER_TEMP "not-a-directory"

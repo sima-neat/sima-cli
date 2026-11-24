@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import click
 
 from sima_cli.playbooks.manager import SkillError, SkillManager
+from sima_cli.utils.env import installed_by_windows_msi
 
 
 MSI_RESTART_INITIATED = 1641
@@ -754,7 +755,9 @@ def _python_bootstrap_candidates(required_version: Optional[str]) -> List[List[s
         if executable:
             candidates.append([executable])
 
-    candidates.append([sys.executable])
+    if not installed_by_windows_msi():
+        # The Windows installer's embedded runtime has no pip or venv.
+        candidates.append([sys.executable])
     local_app_data = os.environ.get("LOCALAPPDATA")
     program_files = os.environ.get("ProgramFiles")
     if required_version:

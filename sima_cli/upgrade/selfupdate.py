@@ -24,6 +24,7 @@ from rich.console import Console
 
 from sima_cli.download.downloader import download_file_from_url
 from sima_cli.install.metadata_installer import _resolve_resource_url_candidates
+from sima_cli.utils.env import installed_by_windows_msi, windows_msi_update_text
 from sima_cli.vulcan.artifacts import (
     ArtifactClient,
     join_url,
@@ -305,6 +306,14 @@ def selfupdate(ctx, version, manual_url, vulcan_environment, branch):
       sima-cli selfupdate -m https://.../sima_cli-0.0.46.whl
 
     """
+    if installed_by_windows_msi():
+        # The Windows installer's runtime has no pip; WinGet or the next MSI updates it.
+        click.echo(windows_msi_update_text("This sima-cli came from the Windows installer. To update it, run:"))
+        if version or manual_url or vulcan_environment or branch:
+            click.echo("Branch and pinned builds are installed with install.py, which needs Python.")
+            sys.exit(1)
+        return
+
     if branch and not vulcan_environment:
         console.print("[red]❌ Error:[/red] --branch can only be used with --dev, --stg, or --prd/--neat/--vulcan.")
         sys.exit(1)

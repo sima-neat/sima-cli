@@ -1,9 +1,12 @@
+import importlib.metadata
 import os
 import subprocess
 import platform
 import shutil
 import re
 from typing import Tuple, Optional
+
+from sima_cli.utils.windows_installer import INSTALLER_MARKER, LATEST_MSI_URL, WINGET_PACKAGE_IDENTIFIER
 
 # Utility functions to determine the environment:
 # - Whether we are running on a SiMa board
@@ -323,6 +326,25 @@ def check_pcie_card_installation() -> Tuple[bool, str]:
 
     except Exception as e:
         return False, f"❌ Unexpected error: {str(e)}"
+
+
+def installed_by_windows_msi() -> bool:
+    """True when this copy came from the Windows installer, which WinGet updates."""
+    try:
+        installer = importlib.metadata.distribution("sima-cli").read_text("INSTALLER")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return (installer or "").strip() == INSTALLER_MARKER
+
+
+def windows_msi_update_text(first_line: str) -> str:
+    """How to update a copy from the Windows installer: WinGet, or the newest MSI."""
+    return (
+        f"{first_line}\n\n"
+        f"    winget upgrade --id {WINGET_PACKAGE_IDENTIFIER}\n\n"
+        "If WinGet does not offer it yet, run the installer from\n"
+        f"{LATEST_MSI_URL}\n"
+    )
 
 
 if __name__ == "__main__":

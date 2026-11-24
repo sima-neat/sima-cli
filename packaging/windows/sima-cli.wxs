@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-user sima-cli: the bundle build_msi.py stages (embeddable CPython, sima-cli and its
+  dependencies, bin\sima-cli.exe), installed to %LOCALAPPDATA%\Programs\sima-cli with
+  bin prepended to the user PATH. No administrator rights, no custom actions, no UI.
+  build_msi.py passes every $(var.*) below and harvests $(var.BundleDir) as the Bundle group.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="$(var.ProductCode)" Name="$(var.ProductName)" Language="1033"
+           Version="$(var.ProductVersion)" Manufacturer="$(var.Publisher)"
+           UpgradeCode="$(var.UpgradeCode)">
+    <!-- Windows Installer 5 single package authoring: ALLUSERS=2 with MSIINSTALLPERUSER=1
+         installs for the current user without elevation, and ProgramFiles64Folder resolves to
+         %LOCALAPPDATA%\Programs. "limited" sets the no-elevation bit of the summary Word Count. -->
+    <Package InstallerVersion="500" Compressed="yes" Platform="x64" InstallPrivileges="limited"
+             Manufacturer="$(var.Publisher)" Description="$(var.ProductName) $(var.ProductVersion)" />
+    <Property Id="ALLUSERS" Value="2" />
+    <Property Id="MSIINSTALLPERUSER" Value="1" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of sima-cli is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="sima-cli" />
+      </Directory>
+    </Directory>
+
+    <!-- Windows Installer removes exactly this PATH part on uninstall and broadcasts the change.
+         The key path never changes, so the component GUID is fixed. -->
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="UserPath" Guid="{2FF09D29-6B83-4853-BC39-85EEC875812B}">
+        <RegistryValue Root="HKCU" Key="Software\sima-cli\WindowsInstaller" Name="UserPath"
+                       Type="integer" Value="1" KeyPath="yes" />
+        <Environment Id="UserPath" Name="PATH" Value="[INSTALLFOLDER]bin" Part="first"
+                     Action="set" System="no" Permanent="no" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="$(var.ProductName)" Level="1" Absent="disallow">
+      <ComponentGroupRef Id="Bundle" />
+      <ComponentRef Id="UserPath" />
+    </Feature>
+  </Product>
+</Wix>

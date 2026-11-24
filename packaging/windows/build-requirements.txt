@@ -1,0 +1,3 @@
+# Build tool for build_msi.py; the bundled packages are in requirements.txt.
+distlib==0.4.4
+packaging==26.4

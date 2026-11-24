@@ -100,3 +100,13 @@ Windows를 다시 시작해야 한다는 뜻입니다.
 & "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
 sima-cli playbooks remove neat-pcie-application-builder --yes
 ```
+
+`sima-cli`는 `%USERPROFILE%\.sima-cli\registry.json`의 기록으로 패키지를 찾으므로,
+`sima-cli`나 그 폴더를 제거하기 전에 패키지를 먼저 제거하세요. 기록이 없어졌다면
+설치된 릴리스의 설치 명령을 다시 실행해 기록을 복원한 뒤 위와 같이 패키지를
+제거하거나, 설정 > 앱 > 설치된 앱에서 `sima-pcie-host`를 제거한 다음
+`simaai-scheduler-pcie-host`를 제거하세요.
+
+기록은 설치를 실행한 Windows 계정에 속하고, 패키지는 컴퓨터 전체에 설치됩니다.
+다른 계정은 같은 설치 명령을 실행해 자신의 기록, Python 환경, 스킬과 카드 SSH 키를
+얻습니다. 이때 패키지는 다시 설치되지 않고 복구됩니다.

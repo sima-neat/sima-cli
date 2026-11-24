@@ -35,6 +35,18 @@ Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile w
 sima-cli --version
 ```
 
+新しいウィンドウで別の `sima-cli` が実行される場合、インストーラーはそのコピーを示す警告と、それまでの間に新しいコピーを実行するためのフルパスを表示します。Windows はユーザー PATH より先にシステム PATH を検索します。別のコピーをアンインストールするか、そのフォルダーを該当する PATH から削除してください。それが別のアカウントの `.sima-cli-env\Scripts` の場合は、そのアカウントで管理者ウィンドウから `windows.bat` を実行してください。その項目がそのアカウントのユーザー PATH に移動します。`where.exe sima-cli` は、Windows が検索する順序ですべてのコピーを表示します。
+
+`sima-cli` を更新する場合や、PyPI リリースとブランチビルドを切り替える場合は、インストーラーを再実行してください。ブランチビルドについては次のセクションを参照してください。Windows では、`sima-cli selfupdate` と更新の案内はその場で更新せず、`pip` コマンドを表示します。新しいウィンドウで実行されるバージョンを確認するには、新しいウィンドウを開いて `sima-cli --version` を実行してください。
+
+`sima-cli` を削除するには、まず `sima-cli` が Windows Installer でインストールしたパッケージ（Windows PCIe ホストパッケージなど）を `sima-cli packages remove` で削除してください。その後、次を実行します。
+
+```powershell
+.\windows.bat uninstall
+```
+
+これにより `%USERPROFILE%\.sima-cli-env` とその PATH 項目が削除されます。そのようなパッケージがまだ記録されている場合は停止し、それぞれを削除するコマンドを表示します。`.\windows.bat uninstall --force` を使うと、それでも `sima-cli` を削除します。サインイン情報、パッケージの記録、設定は `%USERPROFILE%\.sima-cli` に残ります。これらも削除する場合はそのフォルダーを削除してください。Python は削除されません。
+
 ### 詳細設定：ブランチまたはリリースを選択してください。
 
 最新の公式 PyPI リリースをインストールする代わりに、特定のテスト済みのブランチビルドまたはリリースを選択する必要がある場合にのみ、`install.py` を使用してください。

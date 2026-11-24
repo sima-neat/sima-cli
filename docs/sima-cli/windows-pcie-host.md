@@ -108,3 +108,15 @@ environment, or synced customer skill; it prints the commands that remove them:
 & "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
 sima-cli playbooks remove neat-pcie-application-builder --yes
 ```
+
+`sima-cli` finds the packages through its receipt in
+`%USERPROFILE%\.sima-cli\registry.json`, so remove them before you remove
+`sima-cli` or that folder. If the receipt is gone, either run the install
+command for the installed release again, which restores the receipt, and then
+remove the packages as above; or uninstall `sima-pcie-host` and then
+`simaai-scheduler-pcie-host` under Settings > Apps > Installed apps.
+
+The receipt belongs to the Windows account that ran the install; the packages
+are installed for the whole machine. Another account runs the same install
+command to get its own receipt, Python environment, skill and card SSH key;
+this repairs the packages instead of installing them again.

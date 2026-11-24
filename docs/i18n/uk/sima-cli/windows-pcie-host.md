@@ -109,3 +109,14 @@ sima-cli packages remove gh:sima-neat/core/pciehost/windows/amd64 --version INST
 & "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
 sima-cli playbooks remove neat-pcie-application-builder --yes
 ```
+
+`sima-cli` знаходить пакети за записом у `%USERPROFILE%\.sima-cli\registry.json`,
+тому видаліть їх раніше, ніж `sima-cli` або цю папку. Якщо запису вже немає, або
+знову виконайте команду встановлення для встановленого випуску, яка відновлює запис,
+а потім видаліть пакети, як описано вище; або видаліть `sima-pcie-host`, а потім
+`simaai-scheduler-pcie-host` у Параметри > Програми > Інстальовані програми.
+
+Запис належить обліковому запису Windows, який виконав встановлення; пакети ж
+установлено для всього комп'ютера. Інший обліковий запис виконує ту саму команду
+встановлення, щоб отримати власний запис, середовище Python, навичку та SSH-ключ
+картки; при цьому пакети відновлюються, а не встановлюються заново.

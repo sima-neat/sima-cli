@@ -84,3 +84,11 @@ sima-cli packages remove gh:sima-neat/core/pciehost/windows/amd64 --version INST
 & "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
 sima-cli playbooks remove neat-pcie-application-builder --yes
 ```
+
+`sima-cli` 會透過 `%USERPROFILE%\.sima-cli\registry.json` 中的記錄找到這些套件，
+因此請在移除 `sima-cli` 或該資料夾之前先移除套件。若記錄已不存在，可以再次執行已安裝
+發行版本的安裝命令以還原記錄，然後依上述方式移除套件；或在 設定 > 應用程式 >
+已安裝的應用程式 中先解除安裝 `sima-pcie-host`，再解除安裝 `simaai-scheduler-pcie-host`。
+
+記錄屬於執行安裝的 Windows 帳戶，而套件是為整台電腦安裝的。其他帳戶執行相同的安裝命令，
+即可取得自己的記錄、Python 環境、技能與卡片 SSH 金鑰；此時套件會被修復，而不會重新安裝。

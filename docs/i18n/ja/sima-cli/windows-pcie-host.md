@@ -104,3 +104,15 @@ Core が残っている間は Scheduler を削除せず、記録を `remove-fail
 & "$env:USERPROFILE\pyneatpcie\Scripts\python.exe" -m pip uninstall -y pyneatpcie
 sima-cli playbooks remove neat-pcie-application-builder --yes
 ```
+
+`sima-cli` は `%USERPROFILE%\.sima-cli\registry.json` の記録を使ってパッケージを
+見つけるため、`sima-cli` またはそのフォルダーを削除する前にパッケージを削除して
+ください。記録がなくなった場合は、インストール済みリリースのインストールコマンドを
+再実行して記録を復元してから上記のとおりパッケージを削除するか、設定 > アプリ >
+インストールされているアプリで `sima-pcie-host`、続いて
+`simaai-scheduler-pcie-host` をアンインストールしてください。
+
+記録はインストールを実行した Windows アカウントに属し、パッケージはコンピューター
+全体にインストールされます。別のアカウントは同じインストールコマンドを実行して、
+自身の記録、Python 環境、スキル、カードの SSH キーを取得します。この場合、パッケージは
+再インストールされず修復されます。

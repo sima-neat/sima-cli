@@ -3,8 +3,8 @@
     "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
     "docs/sima-cli/guides/sdk-setup.md": "8a104a806e72757d760fa03ba8f27888d9425ed3e2fbe1a33a62e4344a9bc310",
     "docs/sima-cli/guides/system-updates.md": "1846c5b38447978404bd75ac9444f6c6bb38516dd6a3c46e30856b460216d664",
-    "docs/sima-cli/index.md": "8877395e6a66542407131ac084c0354695dd8cf1fea985b7ce186ff3baad806f",
-    "docs/sima-cli/windows-pcie-host.md": "2f885946be61ef52eb401bc85a90b7b431b049fd1e0e8f94812b11b06e16ed9d",
+    "docs/sima-cli/index.md": "73c0794aa62fc50783736624347db6d381ae0f12e0041204987e2724be2c680b",
+    "docs/sima-cli/windows-pcie-host.md": "2aed196c9a3ddb343af0b62c70568035e2fd3ea4e1e61ad9e36203e3dafb2df1",
     "docs/sima-cli/sdk-networking/index.md": "a283f17e7c0f13c6cb83037c8d16dcba6b884a42ce098822895e0e54438dc775",
     "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
     "docs/sima-cli/sdk-networking/troubleshooting.md": "b3f004e84d95db8a68175b17a9bb042483a80a83e7ee093d065734e63a90782f"
@@ -13,8 +13,8 @@
     "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
     "docs/sima-cli/guides/sdk-setup.md": "8a104a806e72757d760fa03ba8f27888d9425ed3e2fbe1a33a62e4344a9bc310",
     "docs/sima-cli/guides/system-updates.md": "1846c5b38447978404bd75ac9444f6c6bb38516dd6a3c46e30856b460216d664",
-    "docs/sima-cli/index.md": "8877395e6a66542407131ac084c0354695dd8cf1fea985b7ce186ff3baad806f",
-    "docs/sima-cli/windows-pcie-host.md": "2f885946be61ef52eb401bc85a90b7b431b049fd1e0e8f94812b11b06e16ed9d",
+    "docs/sima-cli/index.md": "73c0794aa62fc50783736624347db6d381ae0f12e0041204987e2724be2c680b",
+    "docs/sima-cli/windows-pcie-host.md": "2aed196c9a3ddb343af0b62c70568035e2fd3ea4e1e61ad9e36203e3dafb2df1",
     "docs/sima-cli/sdk-networking/index.md": "a283f17e7c0f13c6cb83037c8d16dcba6b884a42ce098822895e0e54438dc775",
     "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
     "docs/sima-cli/sdk-networking/troubleshooting.md": "b3f004e84d95db8a68175b17a9bb042483a80a83e7ee093d065734e63a90782f"
@@ -23,8 +23,8 @@
     "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
     "docs/sima-cli/guides/sdk-setup.md": "8a104a806e72757d760fa03ba8f27888d9425ed3e2fbe1a33a62e4344a9bc310",
     "docs/sima-cli/guides/system-updates.md": "1846c5b38447978404bd75ac9444f6c6bb38516dd6a3c46e30856b460216d664",
-    "docs/sima-cli/index.md": "8877395e6a66542407131ac084c0354695dd8cf1fea985b7ce186ff3baad806f",
-    "docs/sima-cli/windows-pcie-host.md": "2f885946be61ef52eb401bc85a90b7b431b049fd1e0e8f94812b11b06e16ed9d",
+    "docs/sima-cli/index.md": "73c0794aa62fc50783736624347db6d381ae0f12e0041204987e2724be2c680b",
+    "docs/sima-cli/windows-pcie-host.md": "2aed196c9a3ddb343af0b62c70568035e2fd3ea4e1e61ad9e36203e3dafb2df1",
     "docs/sima-cli/sdk-networking/index.md": "a283f17e7c0f13c6cb83037c8d16dcba6b884a42ce098822895e0e54438dc775",
     "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
     "docs/sima-cli/sdk-networking/troubleshooting.md": "b3f004e84d95db8a68175b17a9bb042483a80a83e7ee093d065734e63a90782f"
@@ -33,8 +33,8 @@
     "docs/sima-cli/guides/boot-image-and-netboot.md": "339c8548c6fe1952ee37c4964c85da8a6fed99a12467447ee202e560fef8d5bc",
     "docs/sima-cli/guides/sdk-setup.md": "8a104a806e72757d760fa03ba8f27888d9425ed3e2fbe1a33a62e4344a9bc310",
     "docs/sima-cli/guides/system-updates.md": "1846c5b38447978404bd75ac9444f6c6bb38516dd6a3c46e30856b460216d664",
-    "docs/sima-cli/index.md": "8877395e6a66542407131ac084c0354695dd8cf1fea985b7ce186ff3baad806f",
-    "docs/sima-cli/windows-pcie-host.md": "2f885946be61ef52eb401bc85a90b7b431b049fd1e0e8f94812b11b06e16ed9d",
+    "docs/sima-cli/index.md": "73c0794aa62fc50783736624347db6d381ae0f12e0041204987e2724be2c680b",
+    "docs/sima-cli/windows-pcie-host.md": "2aed196c9a3ddb343af0b62c70568035e2fd3ea4e1e61ad9e36203e3dafb2df1",
     "docs/sima-cli/sdk-networking/index.md": "a283f17e7c0f13c6cb83037c8d16dcba6b884a42ce098822895e0e54438dc775",
     "docs/sima-cli/sdk-networking/rollback.md": "85a505f08287ca66fb7ef9935f092201fab9d3970e34b738515de96b27a81920",
     "docs/sima-cli/sdk-networking/troubleshooting.md": "b3f004e84d95db8a68175b17a9bb042483a80a83e7ee093d065734e63a90782f"

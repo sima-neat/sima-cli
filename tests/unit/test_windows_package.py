@@ -2349,6 +2349,104 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(result["python"], "installed")
         self.assertEqual(run.call_args_list[3].args[0][-2:], ["--upgrade", str(self.wheel)])
 
+    def use_wheelhouse(self):
+        """Declare one dependency wheel; return its path."""
+        dependency = self.root / "wheelhouse" / "numpy-2.5.4-cp314-cp314-win_amd64.whl"
+        dependency.parent.mkdir()
+        dependency.write_bytes(b"numpy fixture")
+        resource = "wheelhouse/" + dependency.name
+        self.metadata["resources"].append(resource)
+        self.metadata["resources-checksum"][resource] = sha256(dependency)
+        self.metadata["installation"]["python"]["wheelhouse"] = [
+            {"wheel": resource, "distribution": "numpy", "version": "2.5.4"}
+        ]
+        self.assertTrue(validate_metadata(self.metadata))
+        return dependency
+
+    def run_recording_requirements(self, responses):
+        """Serve _run from responses; record each pip command and its requirements file."""
+        pip_calls = []
+        self.pip_cwds = []
+
+        def run(command, **kwargs):
+            if command[1:4] == ["-m", "pip", "install"] and "-r" in command:
+                requirements = Path(command[command.index("-r") + 1])
+                pip_calls.append((command, requirements.read_text(encoding="utf-8")))
+                self.pip_cwds.append(kwargs.get("cwd"))
+            return responses.pop(0)
+
+        return run, pip_calls
+
+    def test_wheelhouse_installs_with_no_index_and_hashes(self):
+        dependency = self.use_wheelhouse()
+        run, pip_calls = self.run_recording_requirements([
+            python_facts(), completed(), completed(returncode=3),
+            completed(), completed(stdout="0.6.1\n"), completed(),
+        ])
+        with patch("sima_cli.install.windows_package._run", side_effect=run):
+            result = install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python)
+            )
+
+        self.assertEqual(result["python"], "installed")
+        [(command, requirements)] = pip_calls
+        requirements_file = command[-1]
+        self.assertEqual(command, [
+            str(self.python), "-m", "pip", "install", "--upgrade",
+            "--isolated", "--no-index", "--only-binary", ":all:", "--require-hashes",
+            "--find-links", str(dependency.parent.resolve()), "-r", requirements_file,
+        ])
+        self.assertEqual(requirements, (
+            f"{self.wheel.resolve().as_uri()} --hash=sha256:{sha256(self.wheel)}\n"
+            f"numpy==2.5.4 --hash=sha256:{sha256(dependency)}\n"
+        ))
+        self.assertFalse(Path(requirements_file).exists())
+        # pip runs from the interpreter's folder, so every path it is given is absolute.
+        self.assertEqual(self.pip_cwds, [str(self.python.parent)])
+        self.assertTrue(Path(requirements_file).is_absolute())
+
+    def test_wheelhouse_reinstall_of_other_wheel_omits_dependencies(self):
+        # The same version from another build replaces only the package itself.
+        self.use_wheelhouse()
+        run, pip_calls = self.run_recording_requirements([
+            python_facts(), completed(), completed(stdout="0.6.1\n"), direct_url("d" * 64),
+            completed(), completed(stdout="0.6.1\n"), completed(),
+        ])
+        with patch("sima_cli.install.windows_package._run", side_effect=run):
+            result = install_windows_package(
+                self.metadata, str(self.root), python_executable=str(self.python)
+            )
+
+        self.assertEqual(result["python"], "installed")
+        [(command, requirements)] = pip_calls
+        self.assertEqual(command[4:12], [
+            "--upgrade", "--force-reinstall", "--no-deps",
+            "--isolated", "--no-index", "--only-binary", ":all:", "--require-hashes",
+        ])
+        self.assertNotIn("--find-links", command)
+        self.assertEqual(
+            requirements, f"{self.wheel.resolve().as_uri()} --hash=sha256:{sha256(self.wheel)}\n"
+        )
+
+    def test_wheelhouse_modified_dependency_stops_before_pip(self):
+        dependency = self.use_wheelhouse()
+        dependency.write_bytes(b"changed numpy")
+        run, pip_calls = self.run_recording_requirements(
+            [python_facts(), completed(), completed(returncode=3)]
+        )
+        with patch("sima_cli.install.windows_package._run", side_effect=run) as fake_run:
+            with self.assertRaisesRegex(
+                WindowsPythonInstallError,
+                "'wheelhouse/numpy-2.5.4-cp314-cp314-win_amd64.whl' no longer matches its "
+                "declared SHA-256",
+            ):
+                install_windows_package(
+                    self.metadata, str(self.root), python_executable=str(self.python)
+                )
+
+        self.assertEqual(pip_calls, [])
+        self.assertNotIn("pip", [part for call in fake_run.call_args_list for part in call.args[0]])
+
     def test_pip_failure_reports_partial_installation(self):
         responses = [
             python_facts(), completed(), completed(returncode=3), completed(returncode=1)

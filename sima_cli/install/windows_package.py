@@ -1007,6 +1007,59 @@ def _verify_python_import(
         )
 
 
+def _pip_install_from_wheelhouse(
+    metadata: Dict,
+    install_dir: str,
+    executable: Path,
+    wheel: Path,
+    pip_options: List[str],
+    no_deps: bool,
+    rerun: str,
+) -> subprocess.CompletedProcess:
+    """Install the wheel and its declared dependencies from local files only.
+
+    pip uses no index and no configuration, builds nothing from source, and refuses any
+    file whose SHA-256 is not the declared one, including other versions in the folder.
+    """
+    python_package = metadata["installation"]["python"]
+    # A direct file reference, so pip still records the archive hash that a rerun reads.
+    lines = [f"{wheel.as_uri()} --hash=sha256:{_declared_sha256(metadata, python_package['wheel'])}"]
+    folders: List[str] = []
+    if not no_deps:
+        for entry in python_package["wheelhouse"]:
+            try:
+                path = _declared_resource(metadata, install_dir, entry["wheel"])
+            except click.ClickException as error:
+                raise WindowsPythonInstallError(
+                    f"{error.message} The native installation was kept."
+                ) from error
+            _verify_declared_checksum(
+                metadata, entry["wheel"], path, WindowsPythonInstallError, rerun
+            )
+            lines.append(
+                f"{entry['distribution']}=={entry['version']} "
+                f"--hash=sha256:{_declared_sha256(metadata, entry['wheel'])}"
+            )
+            if str(path.parent) not in folders:
+                folders.append(str(path.parent))
+    work = tempfile.mkdtemp(prefix="sima-cli-pip-")
+    try:
+        requirements = Path(work) / "requirements.txt"
+        requirements.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return _run(
+            [
+                str(executable), "-m", "pip", "install", *pip_options,
+                "--isolated", "--no-index", "--only-binary", ":all:", "--require-hashes",
+                *[part for folder in folders for part in ("--find-links", folder)],
+                "-r", str(requirements),
+            ],
+            text=True,
+            cwd=str(executable.parent),
+        )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def _install_python_wheel(
     metadata: Dict,
     install_dir: str,
@@ -1068,11 +1121,16 @@ def _install_python_wheel(
     _verify_declared_checksum(
         metadata, python_package["wheel"], wheel, WindowsPythonInstallError, rerun
     )
-    result = _run(
-        [str(executable), "-m", "pip", "install", *pip_options, str(wheel)],
-        text=True,
-        cwd=str(executable.parent),
-    )
+    if python_package.get("wheelhouse"):
+        result = _pip_install_from_wheelhouse(
+            metadata, install_dir, executable, wheel, pip_options, no_deps, rerun
+        )
+    else:
+        result = _run(
+            [str(executable), "-m", "pip", "install", *pip_options, str(wheel)],
+            text=True,
+            cwd=str(executable.parent),
+        )
     if result.returncode != 0:
         raise WindowsPythonInstallError(
             f"Native MSI installation succeeded, but pip failed with exit code {result.returncode}. "

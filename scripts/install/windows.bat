@@ -207,12 +207,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo %PATH% | "%SystemRoot%\System32\findstr.exe" /I /C:"%VENV_PATH%" >nul
-if errorlevel 1 (
-    echo Adding %VENV_PATH% to current session PATH...
-    set "PATH=%PATH%;%VENV_PATH%"
-)
-
 rem The environment is per-user, so persist it to the user PATH only, even when elevated.
 set "PS_PATH=!PS_COMMON!"
 rem Keep the first entry for this environment, where an earlier run put it, and drop its repeats.

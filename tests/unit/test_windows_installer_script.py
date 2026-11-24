@@ -469,7 +469,13 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertNotRegex(self.script, r"(?im)(^\s*|\|\s*)(powershell|net|findstr)(\.exe)?\s")
         self.assertEqual(self.script.count('"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -Command '), 5)
         self.assertIn('"%SystemRoot%\\System32\\net.exe" session >nul 2>&1', self.script)
-        self.assertIn('| "%SystemRoot%\\System32\\findstr.exe" /I', self.script)
+
+    def test_does_not_claim_to_change_the_callers_path(self):
+        # A PATH set inside setlocal never reaches the window that ran the script, so "Adding ... to
+        # current session PATH" printed on every run and changed nothing.
+        self.assertNotIn("current session PATH", self.script)
+        self.assertNotRegex(self.script, r'(?im)^\s*set "?PATH=')
+        self.assertNotIn("echo %PATH%", self.script)
 
     def test_messages_survive_delayed_expansion(self):
         # Under enabledelayedexpansion a "!" that does not close a !variable! is dropped

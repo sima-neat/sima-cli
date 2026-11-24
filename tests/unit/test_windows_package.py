@@ -134,6 +134,8 @@ def fake_elevation(exit_codes, wrapper_code=0, errors=None):
     return run, requests
 
 
+# An online install: the metadata and its resources come from a release channel.
+ONLINE_METADATA = "https://artifacts.example.invalid/core/pciehost/windows/amd64/metadata.json"
 PINNED_RETRY = (
     'sima-cli neat install core/pciehost/windows/amd64@v0.6.1:0123456789ab '
     '--python-executable "C:\\Program Files\\Python314\\python.exe"'
@@ -2498,12 +2500,12 @@ class WindowsPackageTests(unittest.TestCase):
         ):
             if not fails:
                 metadata_installer.install_from_metadata(
-                    "metadata", False, str(self.root), **options
+                    ONLINE_METADATA, False, str(self.root), **options
                 )
             else:
                 with self.assertRaises(SystemExit) as raised:
                     metadata_installer.install_from_metadata(
-                        "metadata", False, str(self.root), **options
+                        ONLINE_METADATA, False, str(self.root), **options
                     )
                 self.assertEqual(raised.exception.code, exit_code)
         return registry, output.getvalue()
@@ -2565,7 +2567,7 @@ class WindowsPackageTests(unittest.TestCase):
                     self.metadata["name"], self.metadata["version"], state
                 )
                 if fails:
-                    self.assertIn(f"Failed to install from metadata URL metadata: {outcome}", output)
+                    self.assertIn(f"Failed to install from metadata URL {ONLINE_METADATA}: {outcome}", output)
 
     def test_upgrade_replaces_the_old_receipt_so_removing_it_uninstalls_nothing(self):
         # Both releases share the Scheduler MSI; the old receipt must not remove it.
@@ -2605,11 +2607,11 @@ class WindowsPackageTests(unittest.TestCase):
                     if fails:
                         with self.assertRaises(SystemExit):
                             metadata_installer.install_from_metadata(
-                                "metadata", False, str(self.root), native_only=True
+                                ONLINE_METADATA, False, str(self.root), native_only=True
                             )
                     else:
                         metadata_installer.install_from_metadata(
-                            "metadata", False, str(self.root), native_only=True
+                            ONLINE_METADATA, False, str(self.root), native_only=True
                         )
 
                 receipts = PackageRegistry(self.root / "registry.json")._data

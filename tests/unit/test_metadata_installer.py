@@ -1,12 +1,18 @@
+import hashlib
+import io
+import json
 import os
 import stat
 import unittest
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import click
 
+from sima_cli.install import metadata_installer
+from sima_cli.install.registry import PackageRegistry
 from sima_cli.install.metadata_installer import (
     InstallationPreflightError,
     _combine_multipart_files,
@@ -898,6 +904,226 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
         self.assertEqual(panel.title, "Installation Failed")
         self.assertEqual(panel.border_style, "yellow")
         self.assertIn("Current directory '/' is not writable.", str(panel.renderable))
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class LocalWindowsMetadataTests(unittest.TestCase):
+    """A local windows-msi metadata file installs the files in its own folder."""
+
+    NAME = "gh:sima-neat/core/pciehost/windows/amd64"
+
+    def setUp(self):
+        self.temp = TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bundle = Path(self.temp.name) / "pcie offline" / "neat-offline"
+        files = {
+            "sima-pcie-host-0.6.1-win64.msi": b"core msi",
+            "pyneatpcie-0.6.1-cp314-cp314-win_amd64.whl": b"wheel",
+            "wheelhouse/numpy-2.5.4-cp314-cp314-win_amd64.whl": b"numpy",
+            "card/neat-core-offline-installer.tar.gz": b"card bundle",
+        }
+        for resource, content in files.items():
+            path = self.bundle.joinpath(*resource.split("/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        self.metadata = {
+            "name": self.NAME,
+            "version": "0.6.1",
+            "release": "v0.6.1",
+            "platforms": [{"type": "host", "os": ["windows"], "arch": ["amd64"]}],
+            "resources": list(files),
+            "resources-checksum": {
+                resource: _sha256(self.bundle.joinpath(*resource.split("/"))) for resource in files
+            },
+            "installation": {
+                "type": "windows-msi",
+                "msi": "sima-pcie-host-0.6.1-win64.msi",
+                "python": {
+                    "wheel": "pyneatpcie-0.6.1-cp314-cp314-win_amd64.whl",
+                    "distribution": "pyneatpcie",
+                    "version": "0.6.1",
+                    "import": "pyneatpcie",
+                    "wheelhouse": [{
+                        "wheel": "wheelhouse/numpy-2.5.4-cp314-cp314-win_amd64.whl",
+                        "distribution": "numpy",
+                        "version": "2.5.4",
+                    }],
+                },
+            },
+        }
+        self.registry = PackageRegistry(Path(self.temp.name) / "registry.json")
+
+    def write_metadata(self, metadata=None):
+        path = self.bundle / "metadata.json"
+        path.write_text(json.dumps(metadata or self.metadata), encoding="utf-8")
+        return path
+
+    def install(
+        self, metadata_url, install_windows_package=None, fails=False, windows=True, **options
+    ):
+        """Run install_from_metadata without network; return the mocks and the output."""
+        output = io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(redirect_stdout(output))
+            stack.enter_context(
+                patch("sima_cli.install.windows_package._is_windows", return_value=windows)
+            )
+            mocks = {
+                name: stack.enter_context(patch.object(metadata_installer, name, **kwargs))
+                for name, kwargs in {
+                    "registry": {"new": self.registry},
+                    "download_file_from_url": {"side_effect": AssertionError("network")},
+                    "_download_assets": {"side_effect": AssertionError("network")},
+                    "_is_platform_compatible": {"return_value": True},
+                    "_check_whether_disk_is_big_enough": {"return_value": True},
+                    "preflight_windows_package": {},
+                    "install_windows_package": install_windows_package or {
+                        "return_value": {"native": "installed"}
+                    },
+                    "_extract_archives_in_folder": {},
+                    "_combine_multipart_files": {},
+                    "_print_post_install_message": {},
+                }.items()
+            }
+            if fails:
+                with self.assertRaises(SystemExit) as raised:
+                    metadata_installer.install_from_metadata(
+                        str(metadata_url), False, ".", **options
+                    )
+                self.assertEqual(raised.exception.code, 1)
+            else:
+                metadata_installer.install_from_metadata(str(metadata_url), False, ".", **options)
+        return mocks, output.getvalue()
+
+    def receipts(self):
+        return [
+            (entry["version"], entry["state"])
+            for entry in PackageRegistry(self.registry.registry_path)._data
+        ]
+
+    def test_local_windows_metadata_installs_from_its_folder(self):
+        # Same receipt and installer call as an online install: rerun, upgrade, downgrade
+        # and remove then take the online paths. An older receipt is replaced.
+        old_metadata = {**self.metadata, "version": "0.6.0"}
+        self.registry.create_entry(self.NAME, "0.6.0", old_metadata, ".")
+        self.registry.update_state(self.NAME, "0.6.0", "installed")
+        metadata_path = self.write_metadata()
+
+        mocks, output = self.install(metadata_path, native_only=True)
+
+        mocks["install_windows_package"].assert_called_once_with(
+            metadata=self.metadata,
+            install_dir=os.path.abspath(self.bundle),
+            python_executable=None,
+            native_only=True,
+            record_receipt=ANY,
+            check_prerequisites=False,
+            retry_command=None,
+        )
+        mocks["preflight_windows_package"].assert_called_once_with(self.metadata, None, True)
+        mocks["_extract_archives_in_folder"].assert_not_called()
+        mocks["_combine_multipart_files"].assert_not_called()
+        self.assertIn(
+            f"Installing from the packages in: {os.path.abspath(self.bundle)}", output
+        )
+        self.assertEqual(self.receipts(), [("0.6.1", "installed")])
+        self.assertIn(f"Replaced the registry receipt of {self.NAME} 0.6.0 with 0.6.1.", output)
+        self.assertEqual(
+            PackageRegistry(self.registry.registry_path)._data[0]["metadata"], self.metadata
+        )
+        self.assertFalse((self.bundle / "card" / "neat-core-offline-installer").exists())
+
+    def test_local_windows_metadata_reports_missing_and_changed_files(self):
+        numpy = "wheelhouse/numpy-2.5.4-cp314-cp314-win_amd64.whl"
+        metadata_path = self.write_metadata()
+        (self.bundle / "sima-pcie-host-0.6.1-win64.msi").unlink()
+        self.bundle.joinpath(*numpy.split("/")).write_bytes(b"x")
+
+        mocks, output = self.install(metadata_path, fails=True)
+
+        mocks["install_windows_package"].assert_not_called()
+        self.assertIn(
+            "Offline bundle files are missing or changed; nothing was installed:\n"
+            "  sima-pcie-host-0.6.1-win64.msi: missing\n"
+            f"  {numpy}: SHA-256 differs (expected "
+            f"{self.metadata['resources-checksum'][numpy]}, "
+            f"found {hashlib.sha256(b'x').hexdigest()})\n"
+            "Copy the bundle again from the computer that downloaded it, "
+            "then rerun the same command.",
+            output,
+        )
+        self.assertEqual(self.receipts(), [("0.6.1", "failed")])
+
+    def test_local_windows_metadata_rejects_url_resource(self):
+        url = "https://example.invalid/neat-core-offline-installer.tar.gz"
+        self.metadata["resources"][3] = url
+        self.metadata["resources-checksum"][url] = self.metadata["resources-checksum"].pop(
+            "card/neat-core-offline-installer.tar.gz"
+        )
+        metadata_path = self.write_metadata()
+
+        mocks, output = self.install(metadata_path, fails=True)
+
+        mocks["install_windows_package"].assert_not_called()
+        self.assertIn(
+            f"Resource '{url}' is not a file in the folder of the local metadata file", output
+        )
+        self.assertEqual(self.receipts(), [("0.6.1", "failed")])
+
+    def test_local_windows_metadata_on_another_host_fails_before_receipt(self):
+        metadata_path = self.write_metadata()
+        with patch.object(metadata_installer, "_verify_local_resources") as verify:
+            mocks, output = self.install(metadata_path, fails=True, windows=False)
+
+        self.assertIn("The windows-msi installation type can only run on Windows.", output)
+        verify.assert_not_called()
+        mocks["preflight_windows_package"].assert_not_called()
+        mocks["install_windows_package"].assert_not_called()
+        self.assertEqual(self.receipts(), [])
+
+    def test_local_windows_metadata_download_only_still_downloads(self):
+        # --download-only mirrors the resources from any host, without a receipt.
+        metadata_path = self.write_metadata()
+        with patch.object(
+            metadata_installer, "_download_assets", return_value=[]
+        ) as download, patch.object(
+            metadata_installer, "_verify_local_resources"
+        ) as verify, patch.object(
+            metadata_installer, "registry", self.registry
+        ), patch.object(
+            metadata_installer, "_check_whether_disk_is_big_enough", return_value=True
+        ), patch(
+            "sima_cli.install.windows_package._is_windows", return_value=False
+        ), redirect_stdout(io.StringIO()) as output:
+            metadata_installer.install_from_metadata(
+                str(metadata_path), False, ".", download_only=True
+            )
+
+        download.assert_called_once_with(self.metadata, str(metadata_path), ".", False, tag=None)
+        verify.assert_not_called()
+        self.assertNotIn("Installing from the packages in", output.getvalue())
+        self.assertEqual(self.receipts(), [])
+
+    def test_local_script_metadata_still_downloads(self):
+        metadata = {
+            "name": "demo", "version": "1.0", "release": "", "platforms": [],
+            "resources": ["payload.tar.gz"], "installation": {"script": "echo installed"},
+        }
+        metadata_path = self.write_metadata(metadata)
+        with patch.object(
+            metadata_installer, "_download_assets", return_value=[]
+        ) as download, patch.object(
+            metadata_installer, "registry", self.registry
+        ), patch.object(
+            metadata_installer, "_check_whether_disk_is_big_enough", return_value=True
+        ), redirect_stdout(io.StringIO()) as output:
+            metadata_installer.install_from_metadata(str(metadata_path), False, ".")
+
+        download.assert_called_once_with(metadata, str(metadata_path), ".", False, tag=None)
+        self.assertNotIn("Installing from the packages in", output.getvalue())
 
 
 if __name__ == "__main__":

@@ -125,6 +125,7 @@ def _initialize_main_context(ctx, internal, yes):
         os.environ["SIMA_CLI_AUTO_ACCEPT_UPDATE"] = "1"
     try:
         if (ctx.invoked_subcommand not in LOCAL_ONLY_SUBCOMMANDS
+                and not ctx.meta.get("local_metadata")
                 and check_for_update('sima-cli') and _should_rerun_after_update(sys.argv)):
             _rerun_current_command()
     finally:
@@ -175,6 +176,16 @@ def _initialize_main_context(ctx, internal, yes):
         click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
 
 
+def _local_metadata_file(options):
+    """Return whether the -m/--mirror value names an existing file."""
+    for index, arg in enumerate(options):
+        if arg in ('-m', '--mirror') and index + 1 < len(options):
+            return os.path.isfile(options[index + 1])
+        if arg.startswith('--mirror='):
+            return os.path.isfile(arg[len('--mirror='):])
+    return False
+
+
 class InspectionAwareGroup(click.Group):
     def parse_args(self, ctx, args):
         # Capture the actual Click arguments (also works with CliRunner), before
@@ -186,6 +197,12 @@ class InspectionAwareGroup(click.Group):
         )
         if _command_name_from_argv(['sima-cli'] + options) == 'update' and any(arg in ('--inspect', '--swap', '--reset-overlay') for arg in options):
             ctx.meta['update_inspect'] = True
+        # An install from a metadata file on this computer, such as an offline bundle,
+        # must not reach PyPI for the sima-cli update check.
+        ctx.meta['local_metadata'] = (
+            _command_name_from_argv(['sima-cli'] + options) == 'install'
+            and _local_metadata_file(options)
+        )
         return super().parse_args(ctx, args)
 
 

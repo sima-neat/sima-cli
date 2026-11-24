@@ -85,6 +85,11 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         'do set "PYTHON=%%P"'
     )
 
+    ENVIRONMENT_PROBE = (
+        '"%INSTALL_DIR%\\Scripts\\python.exe" -c "import sys" >nul 2>nul\n'
+        'if not errorlevel 1 set "PYTHON=%INSTALL_DIR%\\Scripts\\python.exe"\n'
+    )
+
     def setUp(self):
         self.script = SCRIPT.read_text(encoding="utf-8")
 
@@ -135,6 +140,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         # The python.org installer leaves Python off PATH by default, so PATH alone
         # misses the usual per-user install and the script reinstalled over it.
         probes = [
+            self.ENVIRONMENT_PROBE,
             self.PATH_PROBE,
             "('py -3.14 -c \"import sys; print(sys.executable)\" 2^>nul ^<nul') do set \"PYTHON=%%P\"",
             'set PYTHON_LOCATIONS="%LOCALAPPDATA%\\Programs\\Python\\Python314\\python.exe" '
@@ -146,6 +152,14 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         install = self.script.index("if not defined PYTHON (\n")
         self.assertLess(positions[-1], install)
         self.assertLess(install, self.script.index("Invoke-WebRequest"))
+
+    def test_working_environment_is_used_before_looking_for_another_python(self):
+        # An upgrade on a PC without python on PATH downloaded and installed Python 3.14, which the
+        # working environment did not need, before the script found that environment.
+        environment = self.script.index(self.ENVIRONMENT_PROBE)
+        self.assertLess(self.script.index('\nset "PYTHON="\n'), environment)
+        self.assertIn(self.ENVIRONMENT_PROBE + "if not defined PYTHON " + self.PATH_PROBE + "\n", self.script)
+        self.assertLess(environment, self.script.index("Invoke-WebRequest"))
 
     def test_installed_python_is_accepted_from_either_location(self):
         # The installer can keep an existing 3.14's scope, whatever the elevation.
@@ -460,6 +474,9 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("$env:TEMP = $blocker", refusal)
         self.assertIn('if ($code -eq 0) { throw "windows.bat reported success although it refused to install Python" }', refusal)
         self.assertIn('$env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"\n            $env:ProgramFiles = $env:LOCALAPPDATA', refusal)
+        # The environment of the earlier runs would otherwise be its Python.
+        self.assertIn("$env:ProgramFiles = $env:LOCALAPPDATA\n            $env:USERPROFILE = $env:LOCALAPPDATA\n", refusal)
+        self.assertIn("USERPROFILE = $env:USERPROFILE }", refusal)
         self.assertIn('($output -match "^Could not create a new download directory: ")', refusal)
         # Uninstall stops on an MSI receipt, then removes the environment and PATH entries.
         uninstall = refusal.split("# Uninstall stops while", 1)[1]

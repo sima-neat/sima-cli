@@ -98,15 +98,18 @@ if defined UNINSTALL if not defined UNINSTALL_FAILED (
 if defined UNINSTALL if defined UNINSTALL_FAILED exit /b 1
 if defined UNINSTALL exit /b 0
 
-rem Use the first Python that runs: python on PATH, the py launcher's 3.14, then the two
-rem python.org 3.14 locations, because that installer does not add Python to PATH by default.
+rem Use the first Python that runs: this account's sima-cli environment, so an upgrade needs no other
+rem Python, then python on PATH, the py launcher's 3.14, then the two python.org 3.14 locations,
+rem because that installer does not add Python to PATH by default.
 rem The Microsoft Store alias, or any python that cannot run, counts as no Python.
 rem python and py run in a child cmd and print the interpreter they ran, which is used by its full path
 rem from then on: a python.bat or python.cmd, such as a version manager's shim, run directly from this
 rem script would end it there with exit code 0.
 rem The launcher gets no input, so an offer to install a missing version cannot wait for an answer.
 set "PYTHON="
-for /f "delims=" %%P in ('python -c "import sys; print(sys.executable)" 2^>nul ^<nul') do set "PYTHON=%%P"
+"%INSTALL_DIR%\Scripts\python.exe" -c "import sys" >nul 2>nul
+if not errorlevel 1 set "PYTHON=%INSTALL_DIR%\Scripts\python.exe"
+if not defined PYTHON for /f "delims=" %%P in ('python -c "import sys; print(sys.executable)" 2^>nul ^<nul') do set "PYTHON=%%P"
 if not defined PYTHON for /f "delims=" %%P in ('py -3.14 -c "import sys; print(sys.executable)" 2^>nul ^<nul') do set "PYTHON=%%P"
 set PYTHON_LOCATIONS="%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%ProgramFiles%\Python314\python.exe"
 for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON ( "%%~P" -c "import sys" >nul 2>nul && set "PYTHON=%%~P" )

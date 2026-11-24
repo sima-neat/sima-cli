@@ -565,15 +565,16 @@ jobs:
             Set-Content -LiteralPath $invalidWheel -Value "not a wheel"
             cmd.exe /c scripts\install\windows.bat $invalidWheel
             if ($LASTEXITCODE -eq 0) { throw "windows.bat reported success although pip failed" }
-            # A refused Python bootstrap fails the script. With no Python on PATH or in the
-            # python.org locations, and TEMP under a file, it cannot create its download directory.
+            # A refused Python bootstrap fails the script. With no sima-cli environment, no Python on PATH
+            # or in the python.org locations, and TEMP under a file, it cannot create its download directory.
             $blocker = Join-Path $env:RUNNER_TEMP "not-a-directory"
             Set-Content -LiteralPath $blocker -Value ""
-            $savedEnv = @{ PATH = $env:PATH; TEMP = $env:TEMP; LOCALAPPDATA = $env:LOCALAPPDATA; ProgramFiles = $env:ProgramFiles }
+            $savedEnv = @{ PATH = $env:PATH; TEMP = $env:TEMP; LOCALAPPDATA = $env:LOCALAPPDATA; ProgramFiles = $env:ProgramFiles; USERPROFILE = $env:USERPROFILE }
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
             $env:TEMP = $blocker
             $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "no-python"
             $env:ProgramFiles = $env:LOCALAPPDATA
+            $env:USERPROFILE = $env:LOCALAPPDATA
             $output = cmd.exe /c scripts\install\windows.bat
             $code = $LASTEXITCODE
             foreach ($name in $savedEnv.Keys) { Set-Item -LiteralPath "env:$name" -Value $savedEnv[$name] }

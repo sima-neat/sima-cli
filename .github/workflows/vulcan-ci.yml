@@ -592,6 +592,57 @@ jobs:
           # The failures above are the expected results; do not let them become the step's exit code.
           $global:LASTEXITCODE = 0
 
+      - name: Test the repo installer script's Python installer check on native Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # windows.bat downloads and checks Python only on a PC without one, which this runner is not.
+          # Run its own lines here as it runs them: from PowerShell 7, through cmd, in Windows PowerShell 5.1.
+          # Its installer run and the steps after it are not executed here.
+          $script = Get-Content -LiteralPath scripts\install\windows.bat
+          function Get-Line($pattern) {
+            $found = @($script | Where-Object { $_ -match $pattern })
+            if ($found.Count -ne 1) { throw "windows.bat has $($found.Count) lines matching $pattern" }
+            $found[0]
+          }
+          # The script's preparation is everything before it reads its arguments.
+          $prepare = $script[0..([Array]::IndexOf($script, (Get-Line '^set "WHEEL_PATH=')) - 1)]
+          $pinned = (Get-Line '^\s*set "PYTHON_URL='), (Get-Line '^\s*set "PYTHON_SHA256=')
+          $download = Get-Line 'Invoke-WebRequest -Uri'
+          $verify = Get-Line 'Get-AuthenticodeSignature -LiteralPath'
+          $work = Join-Path $env:RUNNER_TEMP "python-installer-check"
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          function Invoke-Lines($name, $lines) {
+            $bat = Join-Path $work "$name.bat"
+            Set-Content -LiteralPath $bat -Value (@($lines) + "exit /b !errorlevel!")
+            cmd.exe /c $bat | Out-Host
+            $LASTEXITCODE
+          }
+          $installer = Join-Path $work "python-installer.exe"
+          $code = Invoke-Lines download ($prepare + $pinned + "set `"PYTHON_INSTALLER=$installer`"" + $download)
+          if ($code -ne 0) { throw "The download line of windows.bat failed with exit code $code" }
+          $code = Invoke-Lines verify ($prepare + $pinned + "set `"PYTHON_INSTALLER=$installer`"" + $verify)
+          if ($code -ne 0) { throw "The check in windows.bat refused the pinned Python installer: exit code $code" }
+          # A copy with one byte changed fails the SHA-256, and, with its own SHA-256 pinned, the signature.
+          $modified = Join-Path $work "python-installer-modified.exe"
+          $bytes = [IO.File]::ReadAllBytes($installer)
+          $bytes[[int]($bytes.Length / 2)] = $bytes[[int]($bytes.Length / 2)] -bxor 1
+          [IO.File]::WriteAllBytes($modified, $bytes)
+          $code = Invoke-Lines modified ($prepare + $pinned + "set `"PYTHON_INSTALLER=$modified`"" + $verify)
+          if ($code -ne 1) { throw "The check in windows.bat returned $code for a modified Python installer" }
+          $hash = (Get-FileHash -LiteralPath $modified -Algorithm SHA256).Hash.ToLower()
+          $code = Invoke-Lines unsigned ($prepare + $pinned + "set `"PYTHON_SHA256=$hash`"" + "set `"PYTHON_INSTALLER=$modified`"" + $verify)
+          if ($code -ne 1) { throw "The check in windows.bat returned $code for a modified Python installer with its SHA-256 pinned" }
+          # Canary, not a test: the same check without clearing PSModulePath shows whether this runner has the fault it guards against.
+          $unfixed = @($prepare | Where-Object { $_ -notmatch '^set "PSModulePath=' })
+          if ($unfixed.Count -ne $prepare.Count - 1) { throw "windows.bat does not clear PSModulePath in its preparation" }
+          $code = Invoke-Lines canary ($unfixed + $pinned + "set `"PYTHON_INSTALLER=$installer`"" + $verify)
+          Write-Host "Canary: PowerShell $($PSVersionTable.PSVersion); without clearing PSModulePath the check exits with $code (1: the fault occurs on this runner)."
+          Remove-Item -LiteralPath $work -Recurse -Force
+          # The refusals above are the expected results; do not let them become the step's exit code.
+          $global:LASTEXITCODE = 0
+
       - name: Install candidate on native Windows
         if: runner.os == 'Windows'
         shell: pwsh

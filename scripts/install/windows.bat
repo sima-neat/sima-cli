@@ -4,6 +4,8 @@ title Sima-CLI Installer
 
 rem Run system tools from the system directory: cmd looks in the current directory before PATH.
 set "POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+rem Started from PowerShell 7, Windows PowerShell inherits its module path and cannot load Get-AuthenticodeSignature.
+set "PSModulePath="
 
 set "WHEEL_PATH=%~1"
 set "UNINSTALL="

@@ -104,6 +104,45 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         failure = self.script[check:run]
         self.assertIn('set "PYTHON_FAILED=1"', failure)
 
+    def test_windows_powershell_does_not_inherit_the_powershell_7_module_path(self):
+        # Started from PowerShell 7.3 or later, cmd passes PowerShell 7's PSModulePath on, Windows
+        # PowerShell cannot load Get-AuthenticodeSignature, and a genuine Python installer was refused.
+        clear = self.script.index('\nset "PSModulePath="\n')
+        self.assertLess(self.script.index("\nsetlocal enabledelayedexpansion\n"), clear)
+        self.assertLess(clear, self.script.index('"%POWERSHELL%"'))
+        # The hosted check runs the script's lines before its arguments, so the variable is cleared there.
+        self.assertLess(clear, self.script.index('\nset "WHEEL_PATH=%~1"\n'))
+
+    def test_ci_runs_the_python_installer_check_as_the_script_runs_it(self):
+        # The bootstrap never runs on a runner that has Python, so its download and check run alone,
+        # from pwsh through cmd, as on a customer PC whose terminal is PowerShell 7.
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        name = "- name: Test the repo installer script's Python installer check on native Windows\n"
+        step = workflow.split(name, 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("        shell: pwsh\n", step)
+        for pattern in (
+            '^set "WHEEL_PATH=',
+            '^\\s*set "PYTHON_URL=',
+            '^\\s*set "PYTHON_SHA256=',
+            "Invoke-WebRequest -Uri",
+            "Get-AuthenticodeSignature -LiteralPath",
+        ):
+            self.assertIn(f"Get-Line '{pattern}'", step)
+            self.assertEqual(len(re.findall(pattern, self.script, re.MULTILINE)), 1, pattern)
+        self.assertIn("$prepare = $script[0..([Array]::IndexOf($script, (Get-Line '^set \"WHEEL_PATH=')) - 1)]", step)
+        self.assertIn("cmd.exe /c $bat | Out-Host", step)
+        self.assertIn(
+            'if ($code -ne 0) { throw "The check in windows.bat refused the pinned Python installer: exit code $code" }',
+            step,
+        )
+        self.assertIn('if ($code -ne 1) { throw "The check in windows.bat returned $code for a modified Python installer" }', step)
+        self.assertIn('"set `"PYTHON_SHA256=$hash`""', step)
+        # The canary only logs whether the fault occurs on the runner.
+        canary = step.split("# Canary, not a test:", 1)[1].split("$global:LASTEXITCODE = 0", 1)[0]
+        self.assertIn("Where-Object { $_ -notmatch '^set \"PSModulePath=' }", canary)
+        self.assertNotIn("throw", canary.split("Invoke-Lines canary", 1)[1])
+        self.assertTrue(step.rstrip().endswith("$global:LASTEXITCODE = 0"))
+
     def test_python_installer_matches_pinned_sha256_before_it_runs(self):
         url = re.search(r"/ftp/python/[^/]+/(python-[^/\s\"]+\.exe)", self.script).group(1)
         self.assertRegex(self.script, r'set "PYTHON_SHA256=[0-9a-f]{64}"\n')

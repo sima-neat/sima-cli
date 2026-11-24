@@ -165,6 +165,9 @@ class TestCliUpdate(unittest.TestCase):
                 ["install", "-m", str(metadata)],
                 ["-y", "install", "--native-only", "--mirror", str(metadata)],
                 ["install", f"--mirror={metadata}"],
+                ["install", f"-m{metadata}"],
+                ["install", "-fm", str(metadata)],
+                ["install", f"-fm{metadata}"],
             ):
                 with self.subTest(args=args):
                     self._invoke_install(args).assert_not_called()
@@ -173,6 +176,8 @@ class TestCliUpdate(unittest.TestCase):
         for args in (
             ["install", "-m", "https://example.invalid/metadata.json"],
             ["install", "-m", "missing-metadata.json"],
+            ["install", "-fm", "https://example.invalid/metadata.json"],
+            ["install", "-mhttps://example.invalid/metadata.json"],
         ):
             with self.subTest(args=args):
                 self._invoke_install(args).assert_called_once_with("sima-cli")

@@ -176,14 +176,14 @@ def _initialize_main_context(ctx, internal, yes):
         click.echo(f"🔧 Environment: {env_type} ({env_subtype})")
 
 
-def _local_metadata_file(options):
-    """Return whether the -m/--mirror value names an existing file."""
-    for index, arg in enumerate(options):
-        if arg in ('-m', '--mirror') and index + 1 < len(options):
-            return os.path.isfile(options[index + 1])
-        if arg.startswith('--mirror='):
-            return os.path.isfile(arg[len('--mirror='):])
-    return False
+def _local_metadata_file(command, parent, args):
+    """Return whether the -m/--mirror value, as click parses args for command, names an existing file."""
+    try:
+        context = command.make_context(command.name, list(args), parent=parent, resilient_parsing=True)
+    except click.ClickException:
+        return False
+    mirror = context.params.get('mirror')
+    return isinstance(mirror, str) and os.path.isfile(mirror)
 
 
 class InspectionAwareGroup(click.Group):
@@ -199,9 +199,9 @@ class InspectionAwareGroup(click.Group):
             ctx.meta['update_inspect'] = True
         # An install from a metadata file on this computer, such as an offline bundle,
         # must not reach PyPI for the sima-cli update check.
-        ctx.meta['local_metadata'] = (
-            _command_name_from_argv(['sima-cli'] + options) == 'install'
-            and _local_metadata_file(options)
+        command_name = _command_name_from_argv(['sima-cli'] + options)
+        ctx.meta['local_metadata'] = command_name == 'install' and _local_metadata_file(
+            self.get_command(ctx, command_name), ctx, args[args.index(command_name) + 1:]
         )
         return super().parse_args(ctx, args)
 

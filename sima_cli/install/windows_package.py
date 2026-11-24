@@ -662,6 +662,7 @@ def _normalize_python_arch(value: str) -> str:
 # directory, first on sys.path, so a planted json.py would run in place of the standard
 # library, as administrator in an elevated console. -I would also hide the user
 # site-packages that pip installs into for an all-users Python, so only that entry goes.
+# python -m pip and -m venv run with the interpreter's own folder as current directory.
 _NO_CURRENT_DIRECTORY = "import sys\nif sys.path and sys.path[0] == '': del sys.path[0]\n"
 
 # Reports whether the interpreter accepts the wheel filename passed as its argument,
@@ -902,6 +903,7 @@ def _managed_python_executable(metadata: Dict) -> str:
         [*selected, "-m", "venv", str(environment)],
         text=True,
         capture_output=True,
+        cwd=str(Path(selected[0]).parent),
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
@@ -1064,6 +1066,7 @@ def _install_python_wheel(
     result = _run(
         [str(executable), "-m", "pip", "install", *pip_options, str(wheel)],
         text=True,
+        cwd=str(executable.parent),
     )
     if result.returncode != 0:
         raise WindowsPythonInstallError(

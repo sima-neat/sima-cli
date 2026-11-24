@@ -32,6 +32,7 @@ from sima_cli.install.windows_package import (
     _check_command_version,
     _check_windows_service,
     _inspect_python,
+    _install_python_wheel,
     _managed_python_executable,
     _msi_product_code,
     _python_bootstrap_candidates,
@@ -2233,6 +2234,45 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual([result.returncode for result in results], [0, 0, 0, 0])
         self.assertIsNotNone(facts, detail)
         self.assertTrue(installed)
+
+    def test_pip_and_venv_do_not_import_modules_from_the_current_directory(self):
+        # python -m puts the current directory, by default the download directory, first on
+        # sys.path, so a planted pip.py or venv.py would run in place of the real module.
+        planted = self.root / "planted"
+        planted.mkdir()
+        for module in ("pip", "venv"):
+            (planted / f"{module}.py").write_text("raise SystemExit(97)\n", encoding="utf-8")
+        home = self.root / "home"
+        managed_python = home / "pyneatpcie" / "Scripts" / "python.exe"
+        results = {}
+        answers = [python_facts(), python_facts(), completed(returncode=3),
+                   completed(stdout="0.6.1\n"), completed()]
+
+        def run(command, **kwargs):
+            if command[1:2] != ["-m"]:
+                return answers.pop(0)
+            # The real module, with an argument that changes nothing.
+            harmless = "--version" if command[2] == "pip" else "--help"
+            results[command[2]] = subprocess.run(
+                [*command[:3], harmless], check=False, **{"capture_output": True, **kwargs}
+            )
+            if command[2] == "venv":
+                managed_python.parent.mkdir(parents=True)
+                managed_python.write_bytes(b"managed python fixture")
+            return results[command[2]]
+
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(planted)
+        with patch("sima_cli.install.windows_package.Path.home", return_value=home), patch(
+            "sima_cli.install.windows_package._python_bootstrap_candidates",
+            return_value=[[sys.executable]],
+        ), patch("sima_cli.install.windows_package._run", side_effect=run):
+            _managed_python_executable(self.metadata)
+            result = _install_python_wheel(self.metadata, str(self.root), sys.executable)
+
+        self.assertEqual({name: done.returncode for name, done in results.items()}, {"pip": 0, "venv": 0})
+        self.assertEqual(result, "installed")
+        self.assertEqual(answers, [])
 
     def test_wheel_modified_after_download_is_not_installed(self):
         responses = [python_facts(), completed(), completed(returncode=3)]

@@ -29,6 +29,7 @@ from sima_cli.install.windows_package import (
     WindowsSetupError,
     _WindowsPnpDriverVersionError,
     _bootstrap_python,
+    _check_windows_service,
     _managed_python_executable,
     _msi_product_code,
     _python_bootstrap_candidates,
@@ -719,6 +720,35 @@ class WindowsPackageTests(unittest.TestCase):
             [(package["owner"], package["product_code"]) for package in result["native_packages"]],
             [("scheduler", PRODUCT_CODES["simaai"]), ("core", PRODUCT_CODES["sima"])],
         )
+
+    def test_windows_powershell_does_not_inherit_the_powershell_7_module_path(self):
+        # Started from PowerShell 7, Windows PowerShell 5.1 would autoload PowerShell 7
+        # modules from the inherited PSModulePath. Windows matches names in any case.
+        inherited = {
+            "PSModulePath": "C:\\Program Files\\PowerShell\\7\\Modules",
+            "psmodulepath": "C:\\Users\\me\\Documents\\PowerShell\\Modules",
+            "SIMA_CLI_TEST_KEPT": "kept",
+        }
+        run, _requests = fake_elevation([0])
+        environments = []
+
+        def capture(command, **kwargs):
+            environments.append(kwargs["env"])
+            if "SIMA_CLI_ELEVATED_ARGUMENTS" in kwargs["env"]:
+                return run(command, **kwargs)
+            return completed(stdout="Running\n")
+
+        with patch.dict(os.environ, inherited), self.non_elevated_session(capture):
+            install_windows_package(self.metadata, str(self.root), native_only=True)
+            _check_windows_service("SiMaMlaDaemon")
+
+        self.assertEqual(len(environments), 2)
+        for environment in environments:
+            self.assertEqual(
+                [name for name in environment if name.upper() == "PSMODULEPATH"], []
+            )
+            self.assertEqual(environment["SIMA_CLI_TEST_KEPT"], "kept")
+        self.assertIn("SIMA_CLI_ELEVATED_ARGUMENTS", environments[0])
 
     def test_elevated_scheduler_failure_stops_before_core(self):
         self.use_scheduler_and_core()

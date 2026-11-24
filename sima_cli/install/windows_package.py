@@ -170,13 +170,20 @@ def _system_program(*parts: str) -> str:
 
 
 def _run_powershell(script: str, variables: Optional[Dict[str, str]] = None, **kwargs):
-    """Run a Windows PowerShell script; values reach it as environment variables."""
+    """Run a Windows PowerShell script; values reach it as environment variables.
+
+    PSModulePath is dropped: inherited from PowerShell 7 through this process, it makes
+    Windows PowerShell 5.1 autoload PowerShell 7 modules; unset, 5.1 builds its default.
+    """
+    environment = {
+        name: value for name, value in os.environ.items() if name.upper() != "PSMODULEPATH"
+    }
     return _run(
         [
             _system_program("WindowsPowerShell", "v1.0", "powershell.exe"),
             "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script,
         ],
-        env={**os.environ, **(variables or {})},
+        env={**environment, **(variables or {})},
         text=True,
         **kwargs,
     )

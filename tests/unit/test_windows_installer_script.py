@@ -223,10 +223,19 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         first = re.search(r'^set "PS_PATH=([^"]*)"$', self.script, re.MULTILINE).group(1)
         self.assertTrue(first.startswith("$ErrorActionPreference = 'Stop'; "), first)
         run = self.script.index('powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"')
-        self.assertIn(
-            "if errorlevel 1 echo Could not update the user PATH.",
-            self.script[run:].splitlines()[1],
-        )
+        self.assertEqual(self.script[run:].splitlines()[1], 'set "PATH_RESULT=!errorlevel!"')
+
+    def test_path_step_outcome_is_explicit(self):
+        # A failed PATH step printed "Done. ... type: sima-cli" and then exited 1. The install
+        # itself succeeded, so the script exits 0 and prints how to run it without the PATH.
+        outcome = self.script.split('set "PATH_RESULT=!errorlevel!"\n', 1)[1]
+        done, failed = outcome.split(") else (\n", 1)
+        self.assertIn('if "!PATH_RESULT!"=="0" (\n    echo Done. Open a new Command Prompt or PowerShell', done)
+        self.assertNotIn("Done.", failed)
+        self.assertIn("echo Could not update the user PATH. Add !VENV_PATH! to it manually.", failed)
+        self.assertIn('    echo     ^& "!VENV_PATH!\\sima-cli.exe"\n)\n', failed)
+        self.assertEqual(self.script.splitlines()[-1], "exit /b 0")
+        self.assertLess(self.script.rindex("\nendlocal\n"), self.script.rindex("\nexit /b 0"))
 
     def test_messages_survive_delayed_expansion(self):
         # Under enabledelayedexpansion a "!" that does not close a !variable! is dropped

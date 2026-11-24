@@ -147,10 +147,18 @@ set "PS_PATH=!PS_PATH!; if ($env:IS_ADMIN -eq '1') { $key = [Microsoft.Win32.Reg
 rem Setting an unused user variable to null only broadcasts the change, so new windows see the new PATH.
 set "PS_PATH=!PS_PATH!; [Environment]::SetEnvironmentVariable('SIMA_CLI_PATH_REFRESH', $null, 'User')"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"
-if errorlevel 1 echo Could not update the user PATH. Add %VENV_PATH% to it manually.
+set "PATH_RESULT=!errorlevel!"
 
 echo.
-echo Done. Open a new Command Prompt or PowerShell and type:
-echo     sima-cli
-echo to start using the tool.
+if "!PATH_RESULT!"=="0" (
+    echo Done. Open a new Command Prompt or PowerShell and type:
+    echo     sima-cli
+    echo to start using the tool.
+) else (
+    echo Could not update the user PATH. Add !VENV_PATH! to it manually.
+    echo sima-cli is installed. Until the PATH is fixed, run it by its full path, in PowerShell:
+    echo     ^& "!VENV_PATH!\sima-cli.exe"
+)
 endlocal
+rem sima-cli is installed and runs by its full path even when the PATH step failed, so exit 0.
+exit /b 0

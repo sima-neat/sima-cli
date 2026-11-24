@@ -21,3 +21,18 @@ def test_localized_command_links_resolve_to_generated_docs():
 
     assert command_links, "expected translated pages to link to generated command docs"
     assert not broken_links, "broken translated command links:\n" + "\n".join(broken_links)
+
+
+def test_localized_index_pages_list_every_command_the_english_index_lists():
+    def commands(page):
+        return sorted(
+            Path(target).name
+            for target in MARKDOWN_LINK.findall(page.read_text(encoding="utf-8"))
+            if "commands/" in target
+        )
+
+    english = commands(REPO_ROOT / "docs" / "sima-cli" / "index.md")
+    translated = sorted(LOCALIZED_DOCS.glob("*/sima-cli/index.md"))
+    assert translated, "expected translated index pages"
+    for page in translated:
+        assert commands(page) == english, page.relative_to(REPO_ROOT)

@@ -47,6 +47,12 @@ def exits_not_last_in_statement(script):
     return found
 
 
+def powershell(script, name):
+    """Return the PowerShell command cmd assembles in variable name, with the pieces it uses."""
+    text = "".join(re.findall(rf'^\s*set "{name}=(?:!{name}!)?(.*)"$', script, re.MULTILINE))
+    return re.sub(r"!(PS_[A-Z]+)!", lambda match: powershell(script, match.group(1)), text)
+
+
 class WindowsInstallerScriptTests(unittest.TestCase):
     LOCATION_PROBE = (
         'for %%P in (%PYTHON_LOCATIONS%) do if not defined PYTHON '
@@ -200,15 +206,17 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertNotIn("/M", self.script)
         self.assertIn("[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')", self.script)
         self.assertIn("'DoNotExpandEnvironmentNames'", self.script)
-        machine = self.script.split("[Microsoft.Win32.Registry]::LocalMachine", 1)[1]
+        machine = powershell(self.script, "PS_MACHINE")
+        self.assertIn("[Microsoft.Win32.Registry]::LocalMachine", machine)
         self.assertIn("Where-Object { -not (Same $_) }", machine)
         self.assertEqual(machine.count("$key.SetValue('Path', ($kept -join ';')"), 1)
+        self.assertIn(machine, powershell(self.script, "PS_PATH"))
 
     def test_repeated_user_path_entries_keep_the_first(self):
         # Earlier installers added the environment again on each run. The first entry stays
         # where it is, so it still wins over later entries, and only its repeats are removed.
-        user = self.script.split("[Microsoft.Win32.Registry]::CurrentUser", 1)[1]
-        user = user.split("[Microsoft.Win32.Registry]::LocalMachine", 1)[0]
+        user = powershell(self.script, "PS_PATH").split("[Microsoft.Win32.Registry]::LocalMachine", 1)[0]
+        self.assertIn("[Microsoft.Win32.Registry]::CurrentUser", user)
         self.assertIn(
             "foreach ($entry in $raw.Split(';')) { if (Same ([Environment]::ExpandEnvironmentVariables($entry))) "
             "{ $count++; if ($count -gt 1) { continue } }; $kept += $entry }",
@@ -220,8 +228,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
     def test_path_update_failure_is_reported(self):
         # Without Stop, a failed .NET call only ends its statement and the exit code
         # comes from the last statement, so the failure message never printed.
-        first = re.search(r'^set "PS_PATH=([^"]*)"$', self.script, re.MULTILINE).group(1)
-        self.assertTrue(first.startswith("$ErrorActionPreference = 'Stop'; "), first)
+        self.assertTrue(powershell(self.script, "PS_PATH").startswith("$ErrorActionPreference = 'Stop'; "))
         run = self.script.index('powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"')
         self.assertEqual(self.script[run:].splitlines()[1], 'set "PATH_RESULT=!errorlevel!"')
 
@@ -241,9 +248,8 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         # A new window searches the system PATH, then the user PATH. A sima-cli of another
         # account on the system PATH ran instead of the one just installed, and the script
         # still printed Done.
-        broadcast = self.script.index("[Environment]::SetEnvironmentVariable('SIMA_CLI_PATH_REFRESH'")
         run = self.script.index('powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_PATH!"')
-        check = self.script[broadcast:run]
+        check = powershell(self.script, "PS_PATH").split("'SIMA_CLI_PATH_REFRESH', $null, 'User')", 1)[1]
         self.assertIn(
             "foreach ($scope in 'system', 'user') { $target = 'Machine'; if ($scope -eq 'user') { $target = 'User' }; "
             "foreach ($entry in ([string][Environment]::GetEnvironmentVariable('Path', $target)).Split(';'))",
@@ -252,7 +258,7 @@ class WindowsInstallerScriptTests(unittest.TestCase):
         self.assertIn("foreach ($name in 'sima-cli.exe', 'sima-cli.bat', 'sima-cli.cmd')", check)
         self.assertIn("if ($first -and -not (Same $first[0])) {", check)
         self.assertIn("'WARNING: a new window will run another sima-cli, not the one just installed:'", check)
-        self.assertTrue(check.rstrip().endswith("; exit 2 }\""), check[-80:])
+        self.assertTrue(check.endswith("; exit 2 }"), check[-80:])
         # Warn only: the entry may belong to another account or program.
         self.assertNotIn("SetValue", check)
         outcome = self.script[run:]
@@ -260,6 +266,50 @@ class WindowsInstallerScriptTests(unittest.TestCase):
             'if not "!PATH_RESULT!"=="2" echo Could not update the user PATH.', outcome.split(") else (\n", 1)[1]
         )
         self.assertNotIn("Done.", outcome.split(") else (\n", 1)[1])
+
+    def test_uninstall_removes_this_environment_and_its_path_entries(self):
+        self.assertIn(
+            'if /i "%~1"=="uninstall" (\n    set "UNINSTALL=1"\n    set "WHEEL_PATH="\n'
+            '    if /i "%~2"=="--force" set "UNINSTALL_FORCE=1"\n)\n',
+            self.script,
+        )
+        # Uninstall needs no Python, so it ends before the Python bootstrap.
+        done = self.script.index("\nif defined UNINSTALL exit /b 0\n")
+        self.assertLess(done, self.script.index('set "PYTHON="\n'))
+        self.assertLess(self.script.index("\nif defined UNINSTALL if defined UNINSTALL_FAILED exit /b 1\n"), done)
+        uninstall = self.script[self.script.index('if /i "%~1"=="uninstall"'):done]
+        receipts = uninstall.index('-Command "!PS_RECEIPTS!"')
+        remove = uninstall.index('rmdir /s /q "!INSTALL_DIR!"')
+        path = uninstall.index('-Command "!PS_COMMON!!PS_UNPATH!!PS_MACHINE!!PS_BROADCAST!"')
+        self.assertLess(receipts, remove)
+        self.assertLess(remove, path)
+        unpath = powershell(self.script, "PS_UNPATH")
+        self.assertIn("Where-Object { -not (Same ([Environment]::ExpandEnvironmentVariables($_))) }", unpath)
+        self.assertIn("$key.SetValue('Path', ($kept -join ';'), $key.GetValueKind('Path'))", unpath)
+        # The state folder, with sign-in and package receipts, stays.
+        self.assertEqual(self.script.count("rmdir /s /q"), 2)
+        self.assertIn("remain in !USERPROFILE!\\.sima-cli; delete that folder to remove them too.", uninstall)
+
+    def test_uninstall_stops_while_windows_installer_packages_are_recorded(self):
+        # sima-cli removes those packages through its receipts, so it must still be there.
+        receipts = powershell(self.script, "PS_RECEIPTS")
+        self.assertIn("$file = $env:USERPROFILE + '\\.sima-cli\\registry.json'", receipts)
+        self.assertIn("$msi = @($all | Where-Object { $_.metadata.installation.type -eq 'windows-msi' })", receipts)
+        self.assertIn("('    sima-cli packages remove ' + $p.package_name + ' --version ' + $p.version)", receipts)
+        self.assertIn("if ($env:UNINSTALL_FORCE) {", receipts)
+        self.assertIn("Settings > Apps > Installed apps", receipts)
+        self.assertTrue(receipts.endswith("; exit 2"))
+        refused = 'if defined UNINSTALL if not defined UNINSTALL_FORCE if "!RECEIPTS!"=="2" (\n'
+        block = self.script.split(refused, 1)[1].split("\n)\n", 1)[0]
+        self.assertIn("or run %~nx0 uninstall --force to remove sima-cli and leave them installed.", block)
+        self.assertIn('set "UNINSTALL_FAILED=1"', block)
+        unreadable = (
+            'if defined UNINSTALL if not defined UNINSTALL_FORCE if not "!RECEIPTS!"=="0" '
+            'if not "!RECEIPTS!"=="2" (\n'
+        )
+        removal = 'if defined UNINSTALL if not defined UNINSTALL_FAILED if exist "!INSTALL_DIR!\\" (\n'
+        self.assertLess(self.script.index(refused), self.script.index(removal))
+        self.assertLess(self.script.index(unreadable), self.script.index(removal))
 
     def test_messages_survive_delayed_expansion(self):
         # Under enabledelayedexpansion a "!" that does not close a !variable! is dropped

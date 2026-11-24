@@ -3,6 +3,18 @@ setlocal enabledelayedexpansion
 title Sima-CLI Installer
 
 set "WHEEL_PATH=%~1"
+set "UNINSTALL="
+set "UNINSTALL_FORCE="
+if /i "%~1"=="uninstall" (
+    set "UNINSTALL=1"
+    set "WHEEL_PATH="
+    if /i "%~2"=="--force" set "UNINSTALL_FORCE=1"
+)
+if defined UNINSTALL if not "%~2"=="" if not defined UNINSTALL_FORCE (
+    echo Unknown option: %~2
+    echo Usage: %~nx0 uninstall [--force]
+    exit /b 2
+)
 if "%WHEEL_PATH%"=="" (
     set "INSTALL_FROM_PYPI=1"
 ) else (
@@ -11,6 +23,7 @@ if "%WHEEL_PATH%"=="" (
 if "%INSTALL_FROM_PYPI%"=="0" if not exist "%WHEEL_PATH%" (
     echo Wheel not found: %WHEEL_PATH%
     echo Usage: %~nx0 [path\to\sima_cli.whl]
+    echo    or: %~nx0 uninstall [--force]
     exit /b 2
 )
 
@@ -22,6 +35,63 @@ if %errorlevel% equ 0 (
     echo Standard user detected.
     set "IS_ADMIN=0"
 )
+
+set "INSTALL_DIR=%USERPROFILE%\.sima-cli-env"
+set "VENV_PATH=%INSTALL_DIR%\Scripts"
+rem PowerShell steps that edit the PATH, for install and uninstall. They contain no exclamation
+rem mark, percent sign or double quote, so cmd passes them to PowerShell unchanged.
+rem Edit the raw registry value so entries that reference variables stay unexpanded.
+rem Stop on the first error so a failure reaches the exit code and the message after it.
+set "PS_COMMON=$ErrorActionPreference = 'Stop'; $dir = $env:VENV_PATH.TrimEnd('\'); function Same($entry) { $entry.Trim().TrimEnd('\') -ieq $dir }"
+set "PS_COMMON=!PS_COMMON!; $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); $raw = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')"
+rem Earlier installers added this exact per-user path to the system PATH when elevated; remove only that.
+set "PS_MACHINE=; if ($env:IS_ADMIN -eq '1') { $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true); $raw = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames'); $kept = @($raw.Split(';') | Where-Object { -not (Same $_) }); if ($kept.Count -lt $raw.Split(';').Count) { Write-Host ('Removing ' + $env:VENV_PATH + ' from the system PATH...'); $key.SetValue('Path', ($kept -join ';'), $key.GetValueKind('Path')) } }"
+rem Setting an unused user variable to null only broadcasts the change, so new windows see the new PATH.
+set "PS_BROADCAST=; [Environment]::SetEnvironmentVariable('SIMA_CLI_PATH_REFRESH', $null, 'User')"
+
+rem Uninstall removes this account's environment and its PATH entries and keeps the sima-cli state
+rem folder of the profile. sima-cli removes the packages it installed with Windows Installer through
+rem the receipts in that folder, so while any is recorded, stop unless --force is given.
+set "RECEIPTS=0"
+set "UNINSTALL_FAILED="
+if defined UNINSTALL (
+    set "PS_RECEIPTS=$ErrorActionPreference = 'Stop'; $file = $env:USERPROFILE + '\.sima-cli\registry.json'; if (-not [IO.File]::Exists($file)) { exit 0 }; $all = Get-Content -Raw -Encoding UTF8 -LiteralPath $file | ConvertFrom-Json; $msi = @($all | Where-Object { $_.metadata.installation.type -eq 'windows-msi' }); if ($msi.Count -eq 0) { exit 0 }"
+    set "PS_RECEIPTS=!PS_RECEIPTS!; Write-Host 'These packages were installed with Windows Installer and are removed with sima-cli:'; foreach ($p in $msi) { Write-Host ('    sima-cli packages remove ' + $p.package_name + ' --version ' + $p.version) }; if ($env:UNINSTALL_FORCE) { Write-Host 'With --force they stay installed. Remove them later under Settings > Apps > Installed apps.' }; exit 2"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_RECEIPTS!"
+    set "RECEIPTS=!errorlevel!"
+)
+if defined UNINSTALL if not defined UNINSTALL_FORCE if "!RECEIPTS!"=="2" (
+    echo sima-cli was not removed. Remove those packages first, then run %~nx0 uninstall again,
+    echo or run %~nx0 uninstall --force to remove sima-cli and leave them installed.
+    set "UNINSTALL_FAILED=1"
+)
+if defined UNINSTALL if not defined UNINSTALL_FORCE if not "!RECEIPTS!"=="0" if not "!RECEIPTS!"=="2" (
+    echo Could not read the package receipts in !USERPROFILE!\.sima-cli\registry.json, so sima-cli was not removed.
+    echo To remove it anyway, run %~nx0 uninstall --force.
+    set "UNINSTALL_FAILED=1"
+)
+if defined UNINSTALL if not defined UNINSTALL_FAILED if exist "!INSTALL_DIR!\" (
+    echo Removing !INSTALL_DIR!...
+    rmdir /s /q "!INSTALL_DIR!"
+    if exist "!INSTALL_DIR!\" (
+        echo Could not remove all of !INSTALL_DIR!. Close every window and program that uses sima-cli, then run %~nx0 uninstall again.
+        set "UNINSTALL_FAILED=1"
+    )
+)
+if defined UNINSTALL if not defined UNINSTALL_FAILED (
+    set "PS_UNPATH=; $kept = @($raw.Split(';') | Where-Object { -not (Same ([Environment]::ExpandEnvironmentVariables($_))) }); if ($kept.Count -lt $raw.Split(';').Count) { Write-Host ('Removing ' + $env:VENV_PATH + ' from the user PATH...'); $key.SetValue('Path', ($kept -join ';'), $key.GetValueKind('Path')) }"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "!PS_COMMON!!PS_UNPATH!!PS_MACHINE!!PS_BROADCAST!"
+    if errorlevel 1 (
+        echo Could not remove !VENV_PATH! from the user PATH. Remove it under Edit environment variables for your account.
+        set "UNINSTALL_FAILED=1"
+    )
+)
+if defined UNINSTALL if not defined UNINSTALL_FAILED (
+    echo.
+    echo sima-cli is removed. Your sign-in, package receipts and settings remain in !USERPROFILE!\.sima-cli; delete that folder to remove them too. Python is not removed.
+)
+if defined UNINSTALL if defined UNINSTALL_FAILED exit /b 1
+if defined UNINSTALL exit /b 0
 
 rem Use the first Python that runs: python on PATH, the py launcher's 3.14, then the two
 rem python.org 3.14 locations, because that installer does not add Python to PATH by default.
@@ -93,7 +163,6 @@ if not defined PYTHON (
 "%PYTHON%" -c "import struct, sys; sys.exit(0 if sys.version_info[:2] == (3, 14) and struct.calcsize('P') == 8 else 1)" >nul 2>nul
 if errorlevel 1 echo Note: the Windows PCIe host package needs 64-bit Python 3.14 from https://www.python.org/downloads/windows/
 
-set "INSTALL_DIR=%USERPROFILE%\.sima-cli-env"
 rem Also recreate an environment whose python does not run, such as one whose base Python was removed.
 "%INSTALL_DIR%\Scripts\python.exe" -c "import sys" >nul 2>nul
 if errorlevel 1 (
@@ -126,7 +195,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set "VENV_PATH=%INSTALL_DIR%\Scripts"
 echo %PATH% | findstr /I /C:"%VENV_PATH%" >nul
 if errorlevel 1 (
     echo Adding %VENV_PATH% to current session PATH...
@@ -134,18 +202,12 @@ if errorlevel 1 (
 )
 
 rem The environment is per-user, so persist it to the user PATH only, even when elevated.
-rem Edit the raw registry value so entries that reference variables stay unexpanded.
-rem Stop on the first error so a failure reaches the exit code and the message below.
-set "PS_PATH=$ErrorActionPreference = 'Stop'; $dir = $env:VENV_PATH.TrimEnd('\'); function Same($entry) { $entry.Trim().TrimEnd('\') -ieq $dir }"
-set "PS_PATH=!PS_PATH!; $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); $raw = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')"
+set "PS_PATH=!PS_COMMON!"
 rem Keep the first entry for this environment, where an earlier run put it, and drop its repeats.
 set "PS_PATH=!PS_PATH!; $kept = @(); $count = 0; foreach ($entry in $raw.Split(';')) { if (Same ([Environment]::ExpandEnvironmentVariables($entry))) { $count++; if ($count -gt 1) { continue } }; $kept += $entry }"
 set "PS_PATH=!PS_PATH!; $kind = 'ExpandString'; if ($null -ne $key.GetValue('Path')) { $kind = $key.GetValueKind('Path') }"
 set "PS_PATH=!PS_PATH!; if ($count -eq 0) { Write-Host ('Persisting ' + $env:VENV_PATH + ' to the user PATH...'); $key.SetValue('Path', ($raw.TrimEnd(';') + ';' + $env:VENV_PATH).TrimStart(';'), $kind) } elseif ($count -eq 1) { Write-Host 'Already in the user PATH.' } else { Write-Host ('Removing ' + ($count - 1) + ' repeated ' + $env:VENV_PATH + ' entries from the user PATH...'); $key.SetValue('Path', ($kept -join ';'), $kind) }"
-rem Earlier installers added this exact per-user path to the system PATH when elevated; remove only that.
-set "PS_PATH=!PS_PATH!; if ($env:IS_ADMIN -eq '1') { $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true); $raw = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames'); $kept = @($raw.Split(';') | Where-Object { -not (Same $_) }); if ($kept.Count -lt $raw.Split(';').Count) { Write-Host ('Removing ' + $env:VENV_PATH + ' from the system PATH...'); $key.SetValue('Path', ($kept -join ';'), $key.GetValueKind('Path')) } }"
-rem Setting an unused user variable to null only broadcasts the change, so new windows see the new PATH.
-set "PS_PATH=!PS_PATH!; [Environment]::SetEnvironmentVariable('SIMA_CLI_PATH_REFRESH', $null, 'User')"
+set "PS_PATH=!PS_PATH!!PS_MACHINE!!PS_BROADCAST!"
 rem A new window searches the system PATH, then the user PATH, from the registry. When another
 rem sima-cli comes first, name it and exit 2. Only warn: the entry may belong to another account
 rem or program, so this installer never changes it.

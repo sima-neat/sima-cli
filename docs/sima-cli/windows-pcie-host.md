@@ -114,7 +114,11 @@ sima-cli playbooks remove neat-pcie-application-builder --yes
 `sima-cli` or that folder. If the receipt is gone, either run the install
 command for the installed release again, which restores the receipt, and then
 remove the packages as above; or uninstall `sima-pcie-host` and then
-`simaai-scheduler-pcie-host` under Settings > Apps > Installed apps.
+`simaai-scheduler-pcie-host` under Settings > Apps > Installed apps. If you
+deleted the whole `%USERPROFILE%\.sima-cli` folder, the install command stops
+first with a message that the skill already exists outside the sima-cli
+registry; delete the skill folders that the message names, then run the
+install command again.
 
 The receipt belongs to the Windows account that ran the install; the packages
 are installed for the whole machine. Another account runs the same install

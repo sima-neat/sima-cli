@@ -105,7 +105,10 @@ sima-cli playbooks remove neat-pcie-application-builder --yes
 `sima-cli`나 그 폴더를 제거하기 전에 패키지를 먼저 제거하세요. 기록이 없어졌다면
 설치된 릴리스의 설치 명령을 다시 실행해 기록을 복원한 뒤 위와 같이 패키지를
 제거하거나, 설정 > 앱 > 설치된 앱에서 `sima-pcie-host`를 제거한 다음
-`simaai-scheduler-pcie-host`를 제거하세요.
+`simaai-scheduler-pcie-host`를 제거하세요. `%USERPROFILE%\.sima-cli` 폴더 전체를
+삭제했다면, 설치 명령은 먼저 스킬이 sima-cli 레지스트리 밖에 이미 있다는
+메시지와 함께 중지됩니다. 메시지에 표시된 스킬 폴더를 삭제한 다음 설치 명령을
+다시 실행하세요.
 
 기록은 설치를 실행한 Windows 계정에 속하고, 패키지는 컴퓨터 전체에 설치됩니다.
 다른 계정은 같은 설치 명령을 실행해 자신의 기록, Python 환경, 스킬과 카드 SSH 키를

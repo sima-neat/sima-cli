@@ -122,25 +122,65 @@ def _rerun(retry_command: Optional[str]) -> str:
     return f"rerun this exact release: {retry_command}" if retry_command else _RERUN_SAME_COMMAND
 
 
+# FILE_SHARE_READ: other processes may read the file, but not write, rename or delete it.
+_FILE_SHARE_READ = 0x1
+
+
+def _open_unchangeable(path: Path):
+    """Open path for reading; on Windows nothing can change it until the file is closed."""
+    if os.name != "nt":
+        return open(path, "rb")
+    import _winapi
+    import msvcrt
+
+    handle = _winapi.CreateFile(
+        str(path), _winapi.GENERIC_READ, _FILE_SHARE_READ, _winapi.NULL,
+        _winapi.OPEN_EXISTING, 0, _winapi.NULL,
+    )
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+    except BaseException:
+        _winapi.CloseHandle(handle)
+        raise
+    return os.fdopen(descriptor, "rb")
+
+
 def _verify_sha256(
-    resource: str, path: Path, expected: str, error_type, rerun: str = _RERUN_SAME_COMMAND
-) -> None:
+    resource: str,
+    path: Path,
+    expected: str,
+    error_type,
+    rerun: str = _RERUN_SAME_COMMAND,
+    hold: bool = False,
+):
+    """Refuse a resource whose bytes differ from the declared SHA-256.
+
+    With hold, the file is opened before it is hashed and returned open, so nothing can
+    change it until the caller closes it.
+    """
     from sima_cli.install.metadata_installer import _compute_sha256
 
+    held = None
     try:
+        held = _open_unchangeable(path) if hold else None
         actual = _compute_sha256(path)
     except OSError as error:
+        if held is not None:
+            held.close()
         raise error_type(
             f"Windows package resource '{resource}' could not be read for SHA-256 "
             f"verification at '{path}': {error}; it was not started. "
             f"Close any program using the file, then {rerun}"
         ) from error
     if actual != expected:
+        if held is not None:
+            held.close()
         raise error_type(
             f"Windows package resource '{resource}' no longer matches its declared SHA-256 "
             f"(expected {expected}, found {actual}); it was not started. "
             f"To download a verified copy, {rerun}"
         )
+    return held
 
 
 def _verify_declared_checksum(
@@ -352,9 +392,13 @@ def _run_msi_operations(
     first_log = items[0]["log"]
     if _is_windows_administrator():
         for item in items:
+            held = None
             if "msi" in item:
-                _verify_sha256(
-                    item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError, rerun
+                # Held from the hash until msiexec returns, as the elevated script holds
+                # it, so no other account can replace the verified MSI in between.
+                held = _verify_sha256(
+                    item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError,
+                    rerun, hold=True,
                 )
             try:
                 result = _run([_system_program("msiexec.exe"), *item["args"]])
@@ -364,6 +408,9 @@ def _run_msi_operations(
                     "Check the current account's permissions and Windows application-control "
                     f"policy; do not disable security controls. Intended installer log: {item['log']}"
                 ) from error
+            finally:
+                if held is not None:
+                    held.close()
             handle_result(item, result.returncode, "")
         return
     if not _interactive_console():

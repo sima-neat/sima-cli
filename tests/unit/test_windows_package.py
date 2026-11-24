@@ -1284,6 +1284,40 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args.args[0][2], str(self.scheduler_msi))
 
+    @unittest.skipUnless(Path("/proc/self/fd").is_dir(), "needs /proc to list open files")
+    def test_administrator_holds_each_msi_open_from_its_hash_until_msiexec_returns(self):
+        # As the elevated script does, so another account cannot replace the verified MSI
+        # between the hash and msiexec. Windows refuses writers while the handle is open.
+        self.use_scheduler_and_core()
+
+        def open_msis():
+            names = []
+            for descriptor in Path("/proc/self/fd").iterdir():
+                try:
+                    target = os.readlink(descriptor)
+                except OSError:
+                    continue
+                if target in (str(self.scheduler_msi.resolve()), str(self.msi.resolve())):
+                    names.append(Path(target).name)
+            return names
+
+        held = []
+
+        def msiexec(command, **kwargs):
+            held.append(open_msis())
+            return completed()
+
+        with patch("sima_cli.install.windows_package._run", side_effect=msiexec):
+            install_windows_package(self.metadata, str(self.root), native_only=True)
+        self.assertEqual(held, [[self.scheduler_msi.name], [self.msi.name]])
+        self.assertEqual(open_msis(), [])
+
+        self.msi.write_bytes(b"replaced msi")
+        with patch("sima_cli.install.windows_package._run", side_effect=msiexec):
+            with self.assertRaisesRegex(WindowsNativeInstallError, "declared SHA-256"):
+                install_windows_package(self.metadata, str(self.root), native_only=True)
+        self.assertEqual(open_msis(), [])
+
     def test_unreadable_second_msi_records_partial_native_failure(self):
         self.use_scheduler_and_core()
         compute_sha256 = metadata_installer._compute_sha256

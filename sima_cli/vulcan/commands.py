@@ -1,4 +1,6 @@
 import json
+import os
+import re
 
 import click
 
@@ -55,12 +57,64 @@ def _environment_shortcut_options(function):
     return function
 
 
+def _python_install_options(function):
+    function = click.option(
+        "--native-only",
+        is_flag=True,
+        help=(
+            "Install only the native packages; do not create a managed Python environment or "
+            "install the wheel (Windows MSI packages only)."
+        ),
+    )(function)
+    return click.option(
+        "--python-executable",
+        type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=str),
+        help=(
+            "Install the wheel into this Python environment instead of the managed user "
+            "environment (Windows MSI packages only)."
+        ),
+    )(function)
+
+
 def _ensure_available_environment(environment):
     if environment not in AVAILABLE_ENVIRONMENTS:
         raise click.ClickException(
             f"Artifact environment '{environment}' is not yet available to use. "
             "Please use --env dev or --env staging for now."
         )
+
+
+def _powershell_literal(value):
+    """Quote a value for PowerShell, which also reads the typographic single quotes."""
+    return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1", value) + "'"
+
+
+def _pinned_install_command(
+    result, base_url, package_type, python_executable, native_only, install_dir="."
+):
+    """Return the neat install command for exactly the release this run resolved.
+
+    Only Windows MSI recovery messages print it, for a PowerShell window that may have
+    another current directory, so a chosen install directory is kept as an absolute path.
+    """
+    package = f"/{result.package_path}" if result.package_path else ""
+    parts = [
+        "sima-cli neat install",
+        f"{result.repository}{package}@{result.ref}:{result.resolved_spec}",
+    ]
+    if result.environment != "production":
+        parts.append(f"--env {result.environment}")
+    if base_url:
+        parts.append(f"--base-url {base_url}")
+    if package_type:
+        parts.append(f"-t {package_type}")
+    if native_only:
+        parts.append("--native-only")
+    if install_dir != ".":
+        parts.append(f"--install-dir {_powershell_literal(os.path.abspath(install_dir))}")
+    if python_executable:
+        parts.append(f"--python-executable {_powershell_literal(python_executable)}")
+    return " ".join(parts)
 
 
 def install_vulcan_package(
@@ -74,7 +128,11 @@ def install_vulcan_package(
     json_output=False,
     command_name="sima-cli neat install",
     download_only=False,
+    python_executable=None,
+    native_only=False,
 ):
+    if native_only and python_executable:
+        raise click.ClickException("--native-only cannot be combined with --python-executable.")
     resolved_environment = normalize_environment(environment) or "production"
     _ensure_available_environment(resolved_environment)
 
@@ -115,7 +173,14 @@ def install_vulcan_package(
         install_dir=install_dir,
         force=force,
         command_name=command_name,
+        retry_command=_pinned_install_command(
+            result, base_url, package_type, python_executable, native_only, install_dir
+        ),
     )
+    if python_executable is not None:
+        install_kwargs["python_executable"] = python_executable
+    if native_only:
+        install_kwargs["native_only"] = True
     if download_only:
         install_kwargs["download_only"] = True
     return install_from_metadata(**install_kwargs)
@@ -283,8 +348,22 @@ def artifacts(ctx, repo, ref, environment, environment_flag, base_url, output, a
 )
 @click.option("--json", "json_output", is_flag=True, help="Print resolved metadata URL and exit.")
 @click.option("--download-only", is_flag=True, help="Download metadata resources without running installation.")
+@_python_install_options
 @click.pass_context
-def install(ctx, target, environment, environment_flag, base_url, install_dir, package_type, force, json_output, download_only):
+def install(
+    ctx,
+    target,
+    environment,
+    environment_flag,
+    base_url,
+    install_dir,
+    package_type,
+    force,
+    json_output,
+    download_only,
+    python_executable,
+    native_only,
+):
     """Install a Neat artifact package from TARGET.
 
     TARGET supports REPO, REPO/folder, REPO@branch, REPO/folder@branch:spec,
@@ -306,6 +385,8 @@ def install(ctx, target, environment, environment_flag, base_url, install_dir, p
         json_output=json_output,
         command_name=f"sima-cli {group_name} install",
         download_only=download_only,
+        python_executable=python_executable,
+        native_only=native_only,
     )
 
 

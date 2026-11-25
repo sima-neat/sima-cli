@@ -35,6 +35,18 @@ Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile w
 sima-cli --version
 ```
 
+Якщо нове вікно запускатиме інший `sima-cli`, інсталятор виводить попередження з назвою цієї копії та повний шлях, щоб тим часом запускати нову. Windows шукає в системному PATH раніше, ніж у PATH користувача. Видаліть іншу копію або приберіть її папку з відповідного PATH. Якщо це `.sima-cli-env\Scripts` іншого облікового запису, запустіть `windows.bat` у тому обліковому записі з вікна адміністратора: запис буде перенесено до PATH користувача того облікового запису. `where.exe sima-cli` показує всі копії в порядку, у якому їх шукає Windows.
+
+Щоб оновити `sima-cli` або перейти між випуском із PyPI і збіркою гілки, запустіть інсталятор ще раз; про збірки гілок див. наступний розділ. У Windows `sima-cli selfupdate` і запрошення до оновлення виводять команду `pip` замість оновлення на місці. Щоб побачити, яку версію запускає нове вікно, відкрийте його та виконайте `sima-cli --version`.
+
+Щоб видалити `sima-cli`, спочатку видаліть пакети, які `sima-cli` встановив через Windows Installer, наприклад пакети хоста Windows PCIe, командою `sima-cli packages remove`. Потім виконайте:
+
+```powershell
+.\windows.bat uninstall
+```
+
+Ця команда видаляє `%USERPROFILE%\.sima-cli-env` і його записи в PATH. Поки такі пакети ще записані, вона зупиняється й показує команду, що видаляє кожен із них; `.\windows.bat uninstall --force` усе одно видаляє `sima-cli`. Дані входу, записи пакетів і налаштування залишаються в `%USERPROFILE%\.sima-cli`; щоб видалити й їх, видаліть цю папку. Python не видаляється.
+
 ### Розширені налаштування: оберіть гілку або версію.
 
 Використовуйте `install.py` лише тоді, коли вам потрібно вибрати певну протестовану гілку або версію, а не встановлювати останню офіційну версію з PyPI.
@@ -85,6 +97,7 @@ pip install sima-cli
 | [Neat SDK Налаштування мережі.](sdk-networking/index.md) | Neat SDK, також відомий як Neat Development Environment, працює всередині контейнера Docker. `sima-cli sdk setup` створює контейнер, готує точку монтування робочого простору хоста, запускає Insight, якщо його активовано, і публікує порти контейнера, які використовуються браузером хоста та DevKit під час розробки. |
 | [Відмініть зміни мережевих налаштувань SDK.](sdk-networking/rollback.md) | Використовуйте функцію відкату, коли потрібно перевірити або скасувати зміни мережевих налаштувань хоста Linux, внесені під час налаштування SDK або відновлення мережі. |
 | [Вирішення проблем із мережею SDK.](sdk-networking/troubleshooting.md) | Використовуйте мережевого лікаря, коли контейнер SDK, Insight інтерфейс користувача, DevKit SSH, RTSP, відео WebRTC або синхронізація робочого простору працюють не так, як очікувалося. |
+| [Установлення Neat PCIe Host у Windows](windows-pcie-host.md) | Установіть випуск хоста Windows PCIe однією командою `sima-cli`. Маніфест визначає узгоджені MSI-пакети Scheduler і Core, порядок, версії та контрольні суми. `sima-cli` завантажує й перевіряє весь комплект, перш ніж передати кожен нативний пакет до Windows Installer. |
 
 ## Команди вищого рівня.
 
@@ -154,6 +167,7 @@ pip install sima-cli
 - [`sima-cli neat sdk`](../../../sima-cli/commands/sima-cli-neat-sdk.md)
 - [`sima-cli packages build`](../../../sima-cli/commands/sima-cli-packages-build.md)
 - [`sima-cli packages list`](../../../sima-cli/commands/sima-cli-packages-list.md)
+- [`sima-cli packages remove`](../../../sima-cli/commands/sima-cli-packages-remove.md)
 - [`sima-cli packages show`](../../../sima-cli/commands/sima-cli-packages-show.md)
 - [`sima-cli peripherals describe`](../../../sima-cli/commands/sima-cli-peripherals-describe.md)
 - [`sima-cli peripherals list`](../../../sima-cli/commands/sima-cli-peripherals-list.md)

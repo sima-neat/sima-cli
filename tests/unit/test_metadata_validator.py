@@ -97,6 +97,35 @@ class MetadataValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(MetadataValidationError, "Invalid palette version"):
             validate_metadata(_base_metadata([{"type": "palette", "version": ">=2.0.0"}]))
 
+    def test_installation_type_is_absent_script_or_windows_msi(self):
+        def with_installation(installation):
+            metadata = _base_metadata([{"type": "host", "os": ["linux"]}])
+            metadata["installation"] = installation
+            return metadata
+
+        script = {"script": "./install.sh", "post-message": "Done."}
+        self.assertTrue(validate_metadata(with_installation(script)))
+        self.assertTrue(validate_metadata(with_installation({**script, "type": "script"})))
+        windows = with_installation({"type": "windows-msi", "msi": "payload.msi"})
+        windows["resources"] = ["payload.msi"]
+        windows["resources-checksum"] = {"payload.msi": "a" * 64}
+        self.assertTrue(validate_metadata(windows))
+
+        # Every package type is refused, not only Windows ones: a document that sets
+        # another type is not installed with its script.
+        for install_type in ("bash", "shell", "debian-packages", "", None, ["script"], 1):
+            with self.subTest(install_type=install_type):
+                with self.assertRaisesRegex(
+                    MetadataValidationError, "Unsupported installation type"
+                ):
+                    validate_metadata(with_installation({**script, "type": install_type}))
+        for installation in (None, "./install.sh", ["./install.sh"]):
+            with self.subTest(installation=installation):
+                with self.assertRaisesRegex(
+                    MetadataValidationError, "'installation' must be an object"
+                ):
+                    validate_metadata(with_installation(installation))
+
     def test_metadata_fixture_files_match_validator_expectations(self):
         fixture_dir = Path(__file__).parent / "pkg-metadata"
 

@@ -16,6 +16,7 @@ Whenever `sima-cli install <package>` is executed, this registry stores:
 """
 
 import json
+import sys
 import click
 import datetime
 import re
@@ -63,6 +64,59 @@ def packages():
 def list_packages():
     reg = PackageRegistry()
     reg.list_packages()
+
+
+@packages.command(
+    "remove",
+    help=(
+        "Remove one local registry receipt. A Windows MSI package is uninstalled first; "
+        "other package files are not touched."
+    ),
+)
+@click.argument("name", metavar="PACKAGE")
+@click.option(
+    "--version",
+    "-v",
+    required=True,
+    help="Exact installed version whose registry receipt should be removed.",
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt.")
+@click.pass_context
+def remove_package_receipt(ctx, name, version, yes):
+    """Forget an installation receipt, uninstalling a Windows MSI package first."""
+    reg = PackageRegistry()
+    entry = reg._find(name, version)
+    if entry is None:
+        raise click.ClickException(f"Package {name}@{version} not found in registry.")
+    yes = yes or bool((ctx.find_root().obj or {}).get("yes"))
+    windows_msi = entry.get("metadata", {}).get("installation", {}).get("type") == "windows-msi"
+    prompt = (
+        f"Uninstall the Windows native packages of {name}@{version} and remove its registry receipt?"
+        if windows_msi
+        else f"Remove only the local registry receipt for {name}@{version}?"
+    )
+    if not yes and not click.confirm(prompt, default=False):
+        click.echo("Registry receipt removal cancelled.")
+        return
+    restart_required = False
+    if windows_msi:
+        from sima_cli.install.windows_package import uninstall_windows_package
+
+        try:
+            restart_required = uninstall_windows_package(
+                entry, reg.product_codes_of_other_receipts(name, version), reg.registry_path
+            )
+        except BaseException:
+            reg.update_state(name, version, "remove-failed")
+            raise
+    try:
+        reg.remove_entry(name, version)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Removed local registry receipt: {name}@{version}")
+    if restart_required:
+        click.echo("Restart Windows to finish removing the native packages.")
+        sys.exit(3010)
 
 
 @packages.command(
@@ -272,6 +326,9 @@ class PackageRegistry:
 
         existing = self._find(name, version)
         if existing:
+            # Keep installer-recorded fields, such as MSI product codes, until a new
+            # install replaces them, so a failed retry still leaves a removable receipt.
+            entry = {**existing, **entry}
             self._data.remove(existing)
 
         self._data.append(entry)
@@ -286,6 +343,59 @@ class PackageRegistry:
         pkg["state"] = state
         pkg["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
         self._save()
+
+    def update_fields(self, name, version, fields):
+        """Record installer-specific details on an existing receipt."""
+        pkg = self._find(name, version)
+        if not pkg:
+            raise ValueError(f"Package {name}@{version} not found in registry.")
+        pkg.update(fields)
+        pkg["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+        self._save()
+
+    def remove_entry(self, name, version):
+        """Remove one exact local receipt without touching installed package files."""
+        pkg = self._find(name, version)
+        if not pkg:
+            raise ValueError(f"Package {name}@{version} not found in registry.")
+        self._data.remove(pkg)
+        self._save()
+
+    def remove_other_versions(self, name, version):
+        """Forget receipts of other versions that an installed upgrade replaced.
+
+        Return the forgotten versions. Their native packages were replaced in place,
+        so removing an old receipt later must not uninstall what the new one owns.
+        """
+        replaced = [
+            pkg for pkg in self._data if pkg["package_name"] == name and pkg["version"] != version
+        ]
+        for pkg in replaced:
+            self._data.remove(pkg)
+        if replaced:
+            self._save()
+        return [pkg["version"] for pkg in replaced]
+
+    def product_codes_of_other_receipts(self, name, version):
+        """Map each Windows product code and upgrade code another receipt records to it.
+
+        Every receipt but the removed one counts, in every state, so only removing the last
+        receipt of a package uninstalls it. The upgrade code still matches after a later
+        release replaced the recorded product; '*' stands for a package recorded without
+        one, which may be any package.
+        """
+        return {
+            code: f"{pkg['package_name']}@{pkg['version']}"
+            for pkg in self._data
+            if (pkg["package_name"], pkg["version"]) != (name, version)
+            for package in pkg.get("native_packages") or []
+            if package.get("product_code")
+            for code in (
+                package["product_code"],
+                "*" if package.get("upgrade_code") is None else package["upgrade_code"],
+            )
+            if code
+        }
 
     def list_packages(self):
         """Display all registry entries in a Rich-formatted table."""

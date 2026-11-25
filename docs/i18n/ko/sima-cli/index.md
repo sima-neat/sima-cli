@@ -35,6 +35,18 @@ Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile w
 sima-cli --version
 ```
 
+새 창에서 다른 `sima-cli`가 실행될 경우, 설치 프로그램은 그 사본을 알려 주는 경고와 그동안 새 사본을 실행할 전체 경로를 출력합니다. Windows는 사용자 PATH보다 시스템 PATH를 먼저 검색합니다. 다른 사본을 제거하거나 그 폴더를 해당 PATH에서 삭제하세요. 다른 계정의 `.sima-cli-env\Scripts`인 경우에는 그 계정에서 관리자 창으로 `windows.bat`를 실행하면 해당 항목이 그 계정의 사용자 PATH로 옮겨집니다. `where.exe sima-cli`는 Windows가 검색하는 순서대로 모든 사본을 표시합니다.
+
+`sima-cli`를 업데이트하거나 PyPI 릴리스와 브랜치 빌드 사이를 전환하려면 설치 프로그램을 다시 실행하세요. 브랜치 빌드는 다음 섹션을 참조하세요. Windows에서는 `sima-cli selfupdate`와 업데이트 안내가 제자리에서 업데이트하지 않고 `pip` 명령을 출력합니다. 새 창에서 실행되는 버전을 확인하려면 새 창을 열고 `sima-cli --version`을 실행하세요.
+
+`sima-cli`를 제거하려면 먼저 `sima-cli`가 Windows Installer로 설치한 패키지(예: Windows PCIe 호스트 패키지)를 `sima-cli packages remove`로 제거하세요. 그런 다음 다음을 실행합니다.
+
+```powershell
+.\windows.bat uninstall
+```
+
+이 명령은 `%USERPROFILE%\.sima-cli-env`와 그 PATH 항목을 제거합니다. 그런 패키지가 아직 기록되어 있으면 중지하고 각 패키지를 제거하는 명령을 표시합니다. `.\windows.bat uninstall --force`는 그래도 `sima-cli`를 제거합니다. 로그인 정보, 패키지 기록과 설정은 `%USERPROFILE%\.sima-cli`에 남으며, 이것들도 제거하려면 그 폴더를 삭제하세요. Python은 제거되지 않습니다.
+
 ### 고급: 브랜치 또는 릴리스를 선택하세요.
 
 최신 공식 PyPI 릴리스를 설치하는 대신 특정 테스트 버전의 빌드 또는 릴리스를 선택해야 하는 경우에만 `install.py`를 사용하십시오.
@@ -85,6 +97,7 @@ pip install sima-cli
 | [Neat SDK 네트워크 설정](sdk-networking/index.md) | Neat SDK는 Neat 개발 환경이라고도 하며, Docker 컨테이너 내에서 실행됩니다. `sima-cli sdk setup`은 컨테이너를 생성하고, 호스트 작업 공간 마운트를 준비하며, 활성화된 경우 Insight를 시작하고, 호스트 브라우저와 DevKit가 개발 중에 사용하는 컨테이너 포트를 게시합니다. |
 | [SDK 네트워크 변경 사항 되돌리기](sdk-networking/rollback.md) | SDK 설정 또는 네트워크 복구를 통해 이루어진 Linux 호스트 네트워킹 변경 사항을 검사하거나 되돌리려면 롤백을 사용하세요. |
 | [SDK 네트워킹 문제 해결](sdk-networking/troubleshooting.md) | SDK 컨테이너, Insight UI, DevKit SSH, RTSP, WebRTC 비디오 또는 작업 공간 동기화가 예상대로 작동하지 않을 때 네트워크 진단 도구를 사용하십시오. |
+| [Windows에 Neat PCIe Host 설치](windows-pcie-host.md) | `sima-cli` 명령 하나로 Windows PCIe 호스트 릴리스를 설치합니다. 릴리스 매니페스트는 호환되는 Scheduler 및 Core MSI 패키지, 순서, 버전, 체크섬을 지정합니다. `sima-cli`는 전체를 다운로드하고 검증한 뒤 각 네이티브 패키지를 Windows Installer에 전달합니다. |
 
 ## 최상위 명령어
 
@@ -154,6 +167,7 @@ pip install sima-cli
 - [`sima-cli neat sdk`](../../../sima-cli/commands/sima-cli-neat-sdk.md)
 - [`sima-cli packages build`](../../../sima-cli/commands/sima-cli-packages-build.md)
 - [`sima-cli packages list`](../../../sima-cli/commands/sima-cli-packages-list.md)
+- [`sima-cli packages remove`](../../../sima-cli/commands/sima-cli-packages-remove.md)
 - [`sima-cli packages show`](../../../sima-cli/commands/sima-cli-packages-show.md)
 - [`sima-cli peripherals describe`](../../../sima-cli/commands/sima-cli-peripherals-describe.md)
 - [`sima-cli peripherals list`](../../../sima-cli/commands/sima-cli-peripherals-list.md)

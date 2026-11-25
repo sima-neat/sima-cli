@@ -1,10 +1,11 @@
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from sima_cli.playbooks.manager import SkillManager, SkillRegistry
+from sima_cli.playbooks.manager import SkillError, SkillManager, SkillRegistry
 
 
 class TestSkillsManager(unittest.TestCase):
@@ -280,6 +281,161 @@ compatibility:
 
         rendered = (codex_dest / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("codex", rendered)
+
+    @patch("sima_cli.playbooks.manager.get_environment_type", return_value=("host", "mac"))
+    def test_same_local_source_can_replace_its_registered_skill(self, _mock_env):
+        source_root = self.root / "source"
+        source_root.mkdir(parents=True)
+        skill_path = self._create_skill(source_root)
+
+        self.manager.install(str(skill_path))
+        self.assertTrue(
+            self.manager.check_install_ownership("netops", str(skill_path))
+        )
+        installed = self.manager.install(
+            str(skill_path), replace_same_source=True
+        )
+
+        self.assertEqual(installed, ["netops"])
+        self.assertEqual(
+            self.registry.get_skill("netops")["source"], str(skill_path)
+        )
+
+    @patch("sima_cli.playbooks.manager.get_environment_type", return_value=("host", "mac"))
+    def test_owned_skill_uninstall_after_source_removal_preserves_unrelated_skill(
+        self, _mock_env
+    ):
+        source_root = self.root / "package"
+        source_root.mkdir(parents=True)
+        skill_path = self._create_skill(source_root)
+        self.manager.install(str(skill_path))
+        self.manager.install(str(skill_path), replace_same_source=True)
+
+        unrelated = self.codex_home / "skills" / "customer-owned" / "customer.txt"
+        unrelated.parent.mkdir(parents=True)
+        unrelated.write_text("independent\n", encoding="utf-8")
+        shutil.rmtree(source_root)
+
+        self.manager.uninstall("netops")
+
+        self.assertIsNone(self.registry.get_skill("netops"))
+        self.assertFalse((self.codex_home / "skills" / "netops").exists())
+        self.assertFalse((self.claude_home / "skills" / "netops").exists())
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "independent\n")
+
+    @patch("sima_cli.playbooks.manager.get_environment_type", return_value=("host", "mac"))
+    def test_failed_second_agent_copy_is_removed_so_rerun_succeeds(self, _mock_env):
+        source_root = self.root / "package"
+        source_root.mkdir(parents=True)
+        skill_path = self._create_skill(source_root)
+        apply_overlay = self.manager._apply_agent_overlay
+
+        def fail_claude_overlay(skill_root, agent, dest):
+            if agent == "claude":
+                raise OSError("claude skills directory is locked")
+            apply_overlay(skill_root, agent, dest)
+
+        with patch.object(
+            self.manager, "_apply_agent_overlay", side_effect=fail_claude_overlay
+        ), self.assertRaisesRegex(OSError, "claude skills directory is locked"):
+            self.manager.install(str(skill_path), replace_same_source=True)
+
+        self.assertFalse((self.codex_home / "skills" / "netops").exists())
+        self.assertFalse((self.claude_home / "skills" / "netops").exists())
+        self.assertIsNone(self.registry.get_skill("netops"))
+        self.assertEqual(
+            self.manager.install(str(skill_path), replace_same_source=True), ["netops"]
+        )
+
+    @patch("sima_cli.playbooks.manager.get_environment_type", return_value=("host", "mac"))
+    def test_failed_install_cleanup_preserves_preexisting_agent_directory(self, _mock_env):
+        source_root = self.root / "package"
+        source_root.mkdir(parents=True)
+        skill_path = self._create_skill(source_root)
+        customer = self.claude_home / "skills" / "netops"
+        customer.mkdir(parents=True)
+        marker = customer / "customer.txt"
+        marker.write_text("independent\n", encoding="utf-8")
+        rmtree = shutil.rmtree
+        locked = [customer]
+
+        def locked_customer_directory(path, *args, **kwargs):
+            # The lock clears after the first attempt, so a cleanup that also
+            # targeted this directory would delete it.
+            if Path(path) in locked:
+                locked.remove(Path(path))
+                raise PermissionError(13, "The directory is in use", str(path))
+            rmtree(path, *args, **kwargs)
+
+        with patch(
+            "sima_cli.playbooks.manager.shutil.rmtree", side_effect=locked_customer_directory
+        ), self.assertRaisesRegex(PermissionError, "The directory is in use"):
+            self.manager.install(str(skill_path))
+
+        self.assertFalse((self.codex_home / "skills" / "netops").exists())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "independent\n")
+        self.assertIsNone(self.registry.get_skill("netops"))
+
+    def test_different_registered_source_cannot_replace_skill(self):
+        independent_source = self.root / "independent" / "netops"
+        package_source = self.root / "package" / "netops"
+        self.registry.set_skill(
+            "netops",
+            {
+                "id": "netops",
+                "source": str(independent_source),
+                "source_scheme": "local",
+            },
+        )
+
+        with self.assertRaisesRegex(
+            SkillError, "already owned.*cannot be replaced"
+        ):
+            self.manager.check_install_ownership("netops", str(package_source))
+
+        self.assertEqual(
+            self.registry.get_skill("netops")["source"], str(independent_source)
+        )
+
+    def test_unregistered_destination_cannot_be_claimed(self):
+        destination = self.codex_home / "skills" / "netops"
+        destination.mkdir(parents=True)
+        marker = destination / "customer.txt"
+        marker.write_text("independent\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            SkillError, "outside the sima-cli registry"
+        ):
+            self.manager.check_install_ownership(
+                "netops", str(self.root / "package" / "netops")
+            )
+
+        self.assertEqual(marker.read_text(encoding="utf-8"), "independent\n")
+
+    def test_same_source_does_not_claim_an_unregistered_agent_destination(self):
+        source = self.root / "package" / "netops"
+        owned_codex = self.codex_home / "skills" / "netops"
+        owned_codex.mkdir(parents=True)
+        independent_claude = self.claude_home / "skills" / "netops"
+        independent_claude.mkdir(parents=True)
+        marker = independent_claude / "customer.txt"
+        marker.write_text("independent\n", encoding="utf-8")
+        self.registry.set_skill(
+            "netops",
+            {
+                "id": "netops",
+                "source": str(source),
+                "source_scheme": "local",
+                "installed_paths": {"codex": str(owned_codex)},
+            },
+        )
+
+        with self.assertRaisesRegex(
+            SkillError, "outside the sima-cli registry"
+        ):
+            self.manager.check_install_ownership("netops", str(source))
+
+        self.assertEqual(marker.read_text(encoding="utf-8"), "independent\n")
 
     @patch("sima_cli.playbooks.manager.get_environment_type", return_value=("host", "mac"))
     def test_install_local_rule_to_sima_storage(self, _mock_env):

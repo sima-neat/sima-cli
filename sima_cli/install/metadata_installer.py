@@ -14,7 +14,7 @@ import hashlib
 from urllib.parse import urlparse, quote, urljoin, unquote
 from typing import Dict, List
 from tqdm import tqdm
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import requests
 
@@ -33,6 +33,16 @@ from sima_cli.install.compatibility import current_host_arch, normalize_host_arc
 from sima_cli.install.metadata_info import print_metadata_summary, parse_size_string_to_bytes
 from sima_cli.utils.container_registries import install_from_cr
 from sima_cli.install.registry import PackageRegistry
+from sima_cli.install.windows_package import (
+    WindowsPackageRestartRequired,
+    WindowsPrerequisiteError,
+    WindowsPythonInstallError,
+    WindowsSetupError,
+    _is_windows,
+    install_windows_package,
+    preflight_windows_package,
+    require_windows_host,
+)
 
 console = Console()
 registry = PackageRegistry()
@@ -69,9 +79,44 @@ def _is_http_forbidden_error(exc: BaseException) -> bool:
     return False
 
 
+def _work_directory_advice(command_name: str) -> str:
+    if _is_windows():
+        return (
+            "Run the command again from a writable work directory, for example in PowerShell:\n"
+            "  mkdir -Force $HOME\\neat-pcie; cd $HOME\\neat-pcie\n"
+            f"  {command_name} ...\n\n"
+        )
+    return (
+        "Run the command again from a writable work directory, for example:\n"
+        "  mkdir -p ~/sima-install && cd ~/sima-install\n"
+        f"  {command_name} ...\n\n"
+    )
+
+
+def _inside_windows_directory(path: str) -> bool:
+    system_root = os.environ.get("SystemRoot")
+    if not system_root:
+        return False
+    root, location = PureWindowsPath(system_root), PureWindowsPath(path)
+    return location == root or root in location.parents
+
+
 def _ensure_install_dir_writable(install_dir: str, command_name: str = "sima-cli install") -> None:
     target = Path(install_dir or ".").expanduser()
     display_path = Path.cwd() if str(target) == "." else target
+
+    # A PowerShell window opened with Run as administrator starts in System32.
+    if str(target) == "." and _is_windows() and _inside_windows_directory(str(display_path)):
+        raise InstallationPreflightError(
+            f"Current directory '{display_path}' is inside the Windows directory "
+            f"'{os.environ['SystemRoot']}'.\n\n"
+            "This install downloads package assets and installer logs into the current "
+            "directory, and a PowerShell window opened with Run as administrator starts in "
+            f"'{os.environ['SystemRoot']}\\System32'.\n\n"
+            + _work_directory_advice(command_name)
+            + "Or choose a destination explicitly:\n"
+            f"  {command_name} ... --install-dir <writable-directory>"
+        )
 
     check_dir = target
     if not check_dir.exists():
@@ -90,10 +135,8 @@ def _ensure_install_dir_writable(install_dir: str, command_name: str = "sima-cli
             raise InstallationPreflightError(
                 f"Current directory '{Path.cwd()}' is not writable.\n\n"
                 "This install downloads package assets into the current directory before installation.\n\n"
-                "Run the command again from a writable work directory, for example:\n"
-                "  mkdir -p ~/sima-install && cd ~/sima-install\n"
-                f"  {command_name} ...\n\n"
-                "Or choose a destination explicitly:\n"
+                + _work_directory_advice(command_name)
+                + "Or choose a destination explicitly:\n"
                 f"  {command_name} ... --install-dir <writable-directory>"
             ) from exc
         raise InstallationPreflightError(
@@ -1245,6 +1288,18 @@ def _get_palette_sdk_version(release_file: Path = Path("/etc/sdk-release")) -> s
     return match.group(1).split("_", 1)[0].strip()
 
 
+def _windows_release() -> str:
+    """Return the Windows client release, reading Windows 11 from its build number.
+
+    platform.release() reports "10" for Windows 11 on Python versions released
+    before it. Client builds from 22000 are Windows 11; servers keep their release.
+    """
+    version = sys.getwindowsversion()
+    if version.major == 10 and version.product_type == 1 and version.build >= 22000:
+        return "11"
+    return platform.release() or "Unknown"
+
+
 def _detected_host_platform() -> tuple:
     os_name = platform.system().lower()
     os_version = "Unknown"
@@ -1252,7 +1307,7 @@ def _detected_host_platform() -> tuple:
     if os_name == "darwin":
         return "mac", platform.mac_ver()[0] or "Unknown", current_host_arch()
     if os_name == "windows":
-        return "windows", platform.release() or "Unknown", current_host_arch()
+        return "windows", _windows_release(), current_host_arch()
     if os_name != "linux":
         return os_name, os_version, current_host_arch()
 
@@ -1571,6 +1626,16 @@ def _resolve_github_metadata_url(gh_ref: str) -> Tuple[str, str]:
     except Exception as e:
         raise RuntimeError(f"Failed to resolve GitHub metadata URL {gh_ref}: {e}")
 
+def _forget_replaced_receipts(metadata: Dict) -> None:
+    """After a Windows upgrade, drop receipts whose product codes the new one now owns."""
+    replaced = registry.remove_other_versions(metadata.get("name"), metadata.get("version"))
+    if replaced:
+        click.echo(
+            f"Replaced the registry receipt of {metadata.get('name')} "
+            + ", ".join(replaced) + f" with {metadata.get('version')}."
+        )
+
+
 def install_from_metadata(
     metadata_url: str,
     internal: bool,
@@ -1578,6 +1643,9 @@ def install_from_metadata(
     force: bool = False,
     command_name: str = "sima-cli install",
     download_only: bool = False,
+    python_executable: str = None,
+    native_only: bool = False,
+    retry_command: str = None,
 ):
     _ensure_install_dir_writable(install_dir, command_name=command_name)
 
@@ -1598,24 +1666,94 @@ def install_from_metadata(
             check_compatibility=not download_only,
         )
         if metadata:
+            install_type = metadata.get("installation", {}).get("type", "script")
+            if (python_executable or native_only) and install_type != "windows-msi":
+                option = "--native-only" if native_only else "--python-executable"
+                raise click.UsageError(
+                    f"{option} applies only to Windows MSI packages; "
+                    f"'{metadata.get('name')}' uses the '{install_type}' installation type."
+                )
             print_metadata_summary(metadata=metadata)
+            if install_type == "windows-msi" and not download_only:
+                # Before the receipt and the download: metadata without platforms, or
+                # --force, gets past the compatibility check on any host.
+                require_windows_host()
             if not download_only:
                 registry.create_entry(metadata.get('name'), metadata.get('version'), metadata, '')
                 
             if _check_whether_disk_is_big_enough(metadata, force) or force:
                 if download_only or force or _is_platform_compatible(metadata, force):
-                    local_paths = _download_assets(metadata, metadata_url, install_dir, internal, tag=tag)
-                    if download_only:
-                        click.echo(f"✅ Download complete. {len(local_paths)} resource(s) saved to: {install_dir}")
-                        return local_paths
-                    if len(local_paths) > 0:
-                        _mark_install_script_executable(metadata, install_dir)
-                        _combine_multipart_files(install_dir, local_paths=local_paths)
-                        _extract_archives_in_folder(install_dir, local_paths)
-                        _mark_install_script_executable(metadata, install_dir)
-                        _run_installation_script(metadata=metadata, extract_path=install_dir, force=force)
+                    try:
+                        if install_type == "windows-msi" and not download_only:
+                            preflight_windows_package(metadata, python_executable, native_only)
+                        local_paths = _download_assets(metadata, metadata_url, install_dir, internal, tag=tag)
+                        if download_only:
+                            click.echo(f"✅ Download complete. {len(local_paths)} resource(s) saved to: {install_dir}")
+                            return local_paths
+                        if len(local_paths) > 0:
+                            _mark_install_script_executable(metadata, install_dir)
+                            _combine_multipart_files(install_dir, local_paths=local_paths)
+                            _extract_archives_in_folder(install_dir, local_paths)
+                            _mark_install_script_executable(metadata, install_dir)
+                            if install_type == "windows-msi":
+                                result = install_windows_package(
+                                    metadata=metadata,
+                                    install_dir=install_dir,
+                                    python_executable=python_executable,
+                                    native_only=native_only,
+                                    record_receipt=lambda fields: registry.update_fields(
+                                        metadata.get("name"), metadata.get("version"), fields
+                                    ),
+                                    check_prerequisites=False,
+                                    retry_command=retry_command,
+                                )
+                                registry.update_state(
+                                    metadata.get("name"), metadata.get("version"), "installed"
+                                )
+                                _forget_replaced_receipts(metadata)
+                                _print_post_install_message(metadata=metadata)
+                                return result
+                            _run_installation_script(
+                                metadata=metadata, extract_path=install_dir, force=force)
+                    except WindowsPackageRestartRequired as error:
+                        registry.update_state(
+                            metadata.get("name"),
+                            metadata.get("version"),
+                            "restart-required",
+                        )
+                        click.echo(f"⚠️  Restart required to finish installing from metadata URL {metadata_url}: {error}")
+                        sys.exit(error.exit_code)
+                    except WindowsPrerequisiteError:
+                        registry.update_state(
+                            metadata.get("name"),
+                            metadata.get("version"),
+                            "prerequisite-failed",
+                        )
+                        raise
+                    except WindowsSetupError:
+                        registry.update_state(
+                            metadata.get("name"), metadata.get("version"), "setup-failed"
+                        )
+                        _forget_replaced_receipts(metadata)
+                        raise
+                    except BaseException as error:
+                        # A failed or interrupted download or MSI must not leave the receipt at installing.
+                        if install_type != "windows-msi" or download_only:
+                            raise
+                        if not getattr(error, "native_packages_installed", None):
+                            state = "failed"
+                        elif isinstance(error, WindowsPythonInstallError):
+                            state = "partial-python-failed"
+                        else:
+                            state = "partial-native-failed"
+                        registry.update_state(
+                            metadata.get("name"),
+                            metadata.get("version"),
+                            state,
+                        )
+                        raise
 
-    except MetadataAccessForbidden:
+    except (MetadataAccessForbidden, click.UsageError):
         raise
     except Exception as e:
         click.echo(f"❌ Failed to install from metadata URL {metadata_url}: {e}")

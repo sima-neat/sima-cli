@@ -216,7 +216,14 @@ class SkillManager:
             ref=ref,
         )
 
-    def install(self, source: str, *, force: bool = False, dry_run: bool = False) -> List[str]:
+    def install(
+        self,
+        source: str,
+        *,
+        force: bool = False,
+        dry_run: bool = False,
+        replace_same_source: bool = False,
+    ) -> List[str]:
         self._last_install_skips = []
         self._last_install_summary = {"detected": 0, "valid": 0, "discarded": 0}
         parsed = self.parse_source(source)
@@ -250,7 +257,10 @@ class SkillManager:
                 if dry_run:
                     installed_ids.append(skill_id)
                     continue
-                if self.registry.get_skill(skill_id) and not force:
+                existing = self.registry.get_skill(skill_id)
+                if replace_same_source:
+                    self.check_install_ownership(skill_id, parsed.raw)
+                elif existing and not force:
                     raise SkillError(
                         f"Skill '{skill_id}' is already installed. Use --force to overwrite."
                     )
@@ -263,6 +273,66 @@ class SkillManager:
                     "No compatible skills were installed for the current environment."
                 )
             return installed_ids
+
+    def check_install_ownership(self, skill_id: str, source: str) -> bool:
+        """Verify that replacing ``skill_id`` cannot claim another installation.
+
+        Returns ``True`` when the registry already records the same local source and
+        ``False`` for a clean first install. A different registered source, or an
+        unregistered destination directory, is an ownership conflict.
+        """
+        existing = self.registry.get_skill(skill_id)
+        if existing:
+            existing_source = existing.get("source")
+            existing_scheme = existing.get("source_scheme")
+            if (
+                existing_source
+                and existing_scheme in {None, "local"}
+                and self._normalize_local_source(existing_source)
+                == self._normalize_local_source(source)
+            ):
+                self._raise_for_unmanaged_installation(skill_id, existing)
+                return True
+            owner = existing_source or "an unknown source"
+            raise SkillError(
+                f"Skill '{skill_id}' is already owned by '{owner}'. "
+                f"It cannot be replaced by '{source}'."
+            )
+
+        self._raise_for_unmanaged_installation(skill_id)
+        return False
+
+    @staticmethod
+    def _normalize_local_source(source: str) -> str:
+        return os.path.normcase(
+            os.path.abspath(os.path.expanduser(source))
+        ).rstrip("/\\")
+
+    def _raise_for_unmanaged_installation(
+        self,
+        skill_id: str,
+        existing: Optional[dict] = None,
+    ) -> None:
+        candidates = [
+            self._agent_skills_root(agent) / skill_id
+            for agent in ("codex", "claude")
+        ]
+        owned_paths = {
+            self._normalize_local_source(str(path))
+            for path in self._iter_installed_roots(existing or {})
+        }
+        conflicts = [
+            str(destination)
+            for destination in candidates
+            if destination.exists()
+            and self._normalize_local_source(str(destination)) not in owned_paths
+        ]
+        if conflicts:
+            raise SkillError(
+                f"Skill '{skill_id}' already exists outside the sima-cli registry at: "
+                + ", ".join(conflicts)
+                + ". Remove or register that installation before retrying."
+            )
 
     def uninstall(self, skill_id: str) -> None:
         entry = self.registry.get_skill(skill_id)
@@ -722,20 +792,29 @@ class SkillManager:
     def _install_skill(self, skill_root: Path, manifest: dict, source: SourceRef) -> dict:
         skill_id = manifest["id"]
         installed_paths: Dict[str, str] = {}
+        created: List[Path] = []
 
-        for agent in manifest["agents"]:
-            if agent not in {"codex", "claude"}:
-                continue
-            dest_root = self._agent_skills_root(agent)
-            dest = dest_root / skill_id
-            if dest.exists():
-                shutil.rmtree(dest)
-            dest.mkdir(parents=True, exist_ok=True)
+        try:
+            for agent in manifest["agents"]:
+                if agent not in {"codex", "claude"}:
+                    continue
+                dest_root = self._agent_skills_root(agent)
+                dest = dest_root / skill_id
+                if dest.exists():
+                    shutil.rmtree(dest)
+                else:
+                    created.append(dest)
+                dest.mkdir(parents=True, exist_ok=True)
 
-            self._copy_common(skill_root, dest)
-            self._apply_agent_overlay(skill_root, agent, dest)
-            self._apply_template_substitutions(dest, agent)
-            installed_paths[agent] = str(dest)
+                self._copy_common(skill_root, dest)
+                self._apply_agent_overlay(skill_root, agent, dest)
+                self._apply_template_substitutions(dest, agent)
+                installed_paths[agent] = str(dest)
+        except BaseException:
+            # An unregistered partial copy would block every later ownership check.
+            for path in created:
+                shutil.rmtree(path, ignore_errors=True)
+            raise
 
         if not installed_paths:
             raise SkillError(

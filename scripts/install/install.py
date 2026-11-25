@@ -31,6 +31,7 @@ DEFAULT_BASE_URL = os.environ.get(
 PUBLIC_PYPI_JSON_URL = "https://pypi.org/pypi/sima-cli/json"
 PUBLIC_PYPI_SIMPLE_URL = "https://pypi.org/simple"
 DEFAULT_PYPI_RELEASE_LIMIT = 5
+WINDOWS_SYSTEM_ENVIRONMENT_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
 
 
 def branch_key(ref: str) -> str:
@@ -342,10 +343,98 @@ def _append_line_once(path: Path, line: str) -> None:
         return
 
 
+def _add_to_windows_user_path(directory: str) -> bool:
+    """Append directory to the raw user PATH, as windows.bat does, then announce it.
+
+    The raw registry value keeps entries that reference variables unexpanded and
+    leaves the machine PATH alone; setx would rewrite the user PATH instead.
+    Return False when the user PATH could not be updated.
+    """
+    import ctypes
+    import winreg
+
+    def same(entry: str) -> bool:
+        expanded = winreg.ExpandEnvironmentStrings(entry).strip().rstrip("\\")
+        return expanded.lower() == directory.rstrip("\\").lower()
+
+    try:
+        access = winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, "Environment", 0, access) as key:
+            try:
+                raw, kind = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                raw, kind = "", winreg.REG_EXPAND_SZ
+            if any(same(entry) for entry in raw.split(";")):
+                print("Already in the user PATH.")
+                return True
+            print(f"Persisting {directory} to the user PATH...")
+            winreg.SetValueEx(key, "Path", 0, kind, (raw.rstrip(";") + ";" + directory).lstrip(";"))
+    except OSError as exc:
+        print(f"Could not update the user PATH ({exc}). Add {directory} to it manually.")
+        return False
+    # WM_SETTINGCHANGE "Environment", so windows opened from now on see the new PATH.
+    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x1A, 0, "Environment", 0x0002, 5000, None)
+    return True
+
+
+def _first_windows_sima_cli() -> Optional[Tuple[str, str, str]]:
+    """Return the folder, file name and PATH scope of the sima-cli a new window runs.
+
+    A new window searches the system PATH, then the user PATH, as the registry holds them.
+    """
+    import winreg
+
+    for scope, root, subkey in (
+        ("system", winreg.HKEY_LOCAL_MACHINE, WINDOWS_SYSTEM_ENVIRONMENT_KEY),
+        ("user", winreg.HKEY_CURRENT_USER, "Environment"),
+    ):
+        try:
+            with winreg.OpenKey(root, subkey) as key:
+                raw = winreg.QueryValueEx(key, "Path")[0]
+        except OSError:
+            continue
+        for entry in str(raw).split(";"):
+            folder = winreg.ExpandEnvironmentStrings(entry).strip().strip('"').rstrip("\\")
+            for name in ("sima-cli.exe", "sima-cli.bat", "sima-cli.cmd"):
+                if folder and os.path.isfile(folder + "\\" + name):
+                    return folder, name, scope
+    return None
+
+
+def _report_windows_path_shadow(directory: str) -> None:
+    """Say which sima-cli a new window runs; warn, as windows.bat does, when it is another copy.
+
+    The other copy may belong to another account or program, so its entry is never changed.
+    """
+    directory = directory.rstrip("\\")
+    first = _first_windows_sima_cli()
+    if first is None or first[0].lower() == directory.lower():
+        print("Open a new PowerShell window to use sima-cli.")
+        return
+    folder, name, scope = first
+    print()
+    print("WARNING: a new window will run another sima-cli, not the one just installed:")
+    print(f"    {folder}\\{name}")
+    if scope == "system":
+        print("  It is on the system PATH, which Windows searches before your user PATH.")
+    else:
+        print(f"  It is on your user PATH, ahead of {directory}.")
+    if scope == "system" and folder.lower().endswith("\\.sima-cli-env\\scripts"):
+        print(
+            "  It is the sima-cli of another account. Running windows.bat in that account from an "
+            "administrator window moves it to that account's own user PATH."
+        )
+    else:
+        print(f"  Uninstall that copy, or remove {folder} from the {scope} PATH if nothing else needs it.")
+    print("sima-cli is installed. Until the PATH is fixed, run it by its full path, in PowerShell:")
+    print(f'    & "{directory}\\sima-cli.exe"')
+
+
 def _configure_pypi_shell_path(venv_dir: Path) -> None:
     if platform.system().lower() == "windows":
         scripts = str(venv_dir / "Scripts")
-        subprocess.run(["setx", "PATH", f"%PATH%;{scripts}"], check=False)
+        if _add_to_windows_user_path(scripts):
+            _report_windows_path_shadow(scripts)
         return
 
     rc_file = Path.home() / (".zshrc" if platform.system().lower() == "darwin" else ".bashrc")

@@ -35,6 +35,18 @@ Invoke-WebRequest https://artifacts.neat.sima.ai/sima-cli/windows.bat -OutFile w
 sima-cli --version
 ```
 
+若新視窗會執行另一個 `sima-cli`，安裝程式會顯示警告，指出該副本，並提供在此期間執行新副本的完整路徑。Windows 會先搜尋系統 PATH，再搜尋使用者 PATH。請解除安裝另一個副本，或從該 PATH 移除其資料夾。若它是另一個帳戶的 `.sima-cli-env\Scripts`，請在該帳戶中從系統管理員視窗執行 `windows.bat`，該項目便會移到該帳戶的使用者 PATH。`where.exe sima-cli` 會依 Windows 搜尋的順序列出所有副本。
+
+若要更新 `sima-cli`，或在 PyPI 發行版本與分支組建之間切換，請再次執行安裝程式；分支組建請參閱下一節。在 Windows 上，`sima-cli selfupdate` 與更新提示會顯示 `pip` 命令，而不會就地更新。若要查看新視窗執行的版本，請開啟新視窗並執行 `sima-cli --version`。
+
+若要移除 `sima-cli`，請先使用 `sima-cli packages remove` 移除 `sima-cli` 透過 Windows Installer 安裝的套件，例如 Windows PCIe 主機套件。然後執行：
+
+```powershell
+.\windows.bat uninstall
+```
+
+這會移除 `%USERPROFILE%\.sima-cli-env` 及其 PATH 項目。若仍記錄著這類套件，它會停止並列出移除每個套件的命令；`.\windows.bat uninstall --force` 仍會移除 `sima-cli`。您的登入資訊、套件記錄與設定會保留在 `%USERPROFILE%\.sima-cli`；若也要移除，請刪除該資料夾。Python 不會被移除。
+
 ### 進階：選擇一個分支或版本。
 
 僅在您需要選擇特定的經過測試的分支版本或發布版本，而不是安裝最新的官方 PyPI 發布版本時，才使用 `install.py`。
@@ -85,6 +97,7 @@ pip install sima-cli
 | [Neat SDK 網路設定](sdk-networking/index.md) | Neat SDK，也稱為 Neat 開發環境，在 Docker 容器中執行。`sima-cli sdk setup` 會建立容器、準備主機工作區掛載點、在啟用時啟動 Insight，並發布主機瀏覽器和 DevKit 在開發期間使用的容器連接埠。 |
 | [將 SDK 網路變更還原。](sdk-networking/rollback.md) | 當您想要檢查或撤銷 SDK 設定或網路修復所做的 Linux 主機網路變更時，請使用「還原」功能。 |
 | [疑難排解：SDK 網路問題](sdk-networking/troubleshooting.md) | 當 SDK 容器、Insight UI、DevKit SSH、RTSP、WebRTC 視訊或工作區同步未如預期運作時，請使用網路診斷工具。 |
+| [在 Windows 安裝 Neat PCIe Host](windows-pcie-host.md) | 使用一個 `sima-cli` 命令安裝 Windows PCIe 主機版本。發行清單列出配對的 Scheduler 和 Core MSI 套件、順序、版本及檢查碼。`sima-cli` 先下載並驗證整組套件，再將各個原生套件交給 Windows Installer。 |
 
 ## 頂層指令
 
@@ -154,6 +167,7 @@ pip install sima-cli
 - [`sima-cli neat sdk`](../../../sima-cli/commands/sima-cli-neat-sdk.md)
 - [`sima-cli packages build`](../../../sima-cli/commands/sima-cli-packages-build.md)
 - [`sima-cli packages list`](../../../sima-cli/commands/sima-cli-packages-list.md)
+- [`sima-cli packages remove`](../../../sima-cli/commands/sima-cli-packages-remove.md)
 - [`sima-cli packages show`](../../../sima-cli/commands/sima-cli-packages-show.md)
 - [`sima-cli peripherals describe`](../../../sima-cli/commands/sima-cli-peripherals-describe.md)
 - [`sima-cli peripherals list`](../../../sima-cli/commands/sima-cli-peripherals-list.md)

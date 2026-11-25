@@ -321,6 +321,74 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
 
     @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
     @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "windows"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("windows", "11", "amd64"))
+    def test_windows_11_x64_host_matches_native_package(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [{
+                "type": "host",
+                "os": ["windows"],
+                "versions": {"windows": [">=11"]},
+                "arch": ["amd64"],
+            }]
+        }
+
+        self.assertTrue(_is_platform_compatible(metadata))
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "windows"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("windows", "10", "amd64"))
+    def test_windows_10_host_is_rejected_for_native_package(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [{
+                "type": "host",
+                "os": ["windows"],
+                "versions": {"windows": [">=11"]},
+                "arch": ["amd64"],
+            }]
+        }
+
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible(metadata)
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
+    @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "windows"))
+    @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("windows", "11", "arm64"))
+    def test_windows_11_arm64_host_is_rejected_for_x64_package(
+        self,
+        _mock_host,
+        _mock_env,
+        _mock_devkit,
+        _mock_version,
+    ):
+        metadata = {
+            "platforms": [{
+                "type": "host",
+                "os": ["windows"],
+                "versions": {"windows": [">=11"]},
+                "arch": ["amd64"],
+            }]
+        }
+
+        with self.assertRaises(SystemExit):
+            _is_platform_compatible(metadata)
+
+    @patch("sima_cli.install.metadata_installer.get_sima_build_version", return_value=("", ""))
+    @patch("sima_cli.install.metadata_installer.get_exact_devkit_type", return_value="")
     @patch("sima_cli.install.metadata_installer.get_environment_type", return_value=("host", "linux"))
     @patch("sima_cli.install.metadata_installer._detected_host_platform", return_value=("ubuntu", "24.04", "amd64"))
     def test_host_bare_version_preserves_prefix_match(
@@ -733,6 +801,92 @@ class MetadataInstallerCompatibilityTests(unittest.TestCase):
                 _ensure_install_dir_writable(".")
             finally:
                 os.chdir(original_cwd)
+
+    def test_unwritable_current_directory_gives_powershell_advice_on_windows(self):
+        with TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                with patch(
+                    "sima_cli.install.metadata_installer.tempfile.NamedTemporaryFile",
+                    side_effect=PermissionError("denied"),
+                ), patch("sima_cli.install.metadata_installer._is_windows", return_value=True):
+                    with self.assertRaises(InstallationPreflightError) as raised:
+                        _ensure_install_dir_writable(".", command_name="sima-cli neat install")
+            finally:
+                os.chdir(original_cwd)
+
+        message = raised.exception.message
+        self.assertIn(
+            "for example in PowerShell:\n"
+            "  mkdir -Force $HOME\\neat-pcie; cd $HOME\\neat-pcie\n"
+            "  sima-cli neat install ...",
+            message,
+        )
+        self.assertNotIn("mkdir -p", message)
+        self.assertNotIn("&&", message)
+
+    def test_windows_directory_is_not_used_as_the_work_directory(self):
+        for cwd in ("C:\\Windows\\System32", "c:\\windows", "C:\\WINDOWS\\Temp\\x"):
+            with self.subTest(cwd=cwd), patch.dict(os.environ, {"SystemRoot": "C:\\Windows"}), patch(
+                "sima_cli.install.metadata_installer._is_windows", return_value=True
+            ), patch(
+                "sima_cli.install.metadata_installer.Path.cwd", return_value=cwd
+            ), patch(
+                "sima_cli.install.metadata_installer.tempfile.NamedTemporaryFile"
+            ) as write_test:
+                with self.assertRaises(InstallationPreflightError) as raised:
+                    _ensure_install_dir_writable(".", command_name="sima-cli neat install")
+
+            message = raised.exception.message
+            self.assertIn(f"Current directory '{cwd}' is inside the Windows directory", message)
+            self.assertIn("mkdir -Force $HOME\\neat-pcie; cd $HOME\\neat-pcie", message)
+            self.assertIn("--install-dir <writable-directory>", message)
+            write_test.assert_not_called()
+
+    def test_directories_beside_the_windows_directory_are_usable(self):
+        with TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                with patch.dict(os.environ, {"SystemRoot": "C:\\Windows"}), patch(
+                    "sima_cli.install.metadata_installer._is_windows", return_value=True
+                ):
+                    _ensure_install_dir_writable(".")
+            finally:
+                os.chdir(original_cwd)
+        with patch.dict(os.environ, {"SystemRoot": "C:\\Windows"}):
+            from sima_cli.install.metadata_installer import _inside_windows_directory
+
+            self.assertFalse(_inside_windows_directory("C:\\WindowsApps\\work"))
+            self.assertFalse(_inside_windows_directory("C:\\Users\\sima\\Windows"))
+            self.assertTrue(_inside_windows_directory("C:\\Windows\\System32"))
+
+    def test_windows_11_is_detected_from_the_build_number(self):
+        from types import SimpleNamespace
+        from sima_cli.install.metadata_installer import _detected_host_platform
+
+        # (build, product type, platform.release() of the interpreter running sima-cli)
+        cases = [
+            (19045, 1, "10", "10"),      # Windows 10 22H2
+            (22631, 1, "10", "11"),      # Windows 11 23H2 seen by an older Python
+            (26100, 1, "10", "11"),      # Windows 11 24H2
+            (26200, 1, "11", "11"),      # Windows 11 25H2
+            (26100, 3, "2025Server", "2025Server"),  # Windows Server 2025 is not Windows 11
+        ]
+        for build, product_type, release, expected in cases:
+            version = SimpleNamespace(major=10, minor=0, build=build, product_type=product_type)
+            with self.subTest(build=build, product_type=product_type), patch(
+                "sima_cli.install.metadata_installer.platform.system", return_value="Windows"
+            ), patch(
+                "sima_cli.install.metadata_installer.platform.release", return_value=release
+            ), patch(
+                "sima_cli.install.metadata_installer.sys.getwindowsversion",
+                return_value=version, create=True,
+            ), patch(
+                "sima_cli.install.metadata_installer.current_host_arch", return_value="amd64"
+            ):
+                self.assertEqual(_detected_host_platform(), ("windows", expected, "amd64"))
 
     def test_installation_preflight_error_renders_yellow_panel(self):
         error = InstallationPreflightError("Current directory '/' is not writable.")

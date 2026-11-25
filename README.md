@@ -58,6 +58,18 @@ After installation, open a new Command Prompt or PowerShell window, then verify 
 sima-cli --version
 ```
 
+If a new window would run another `sima-cli`, the installer prints a warning that names that copy and the full path to run the new one meanwhile. Windows searches the system PATH before the user PATH. Uninstall the other copy or remove its folder from that PATH. If it is another account's `.sima-cli-env\Scripts`, run `windows.bat` in that account from an administrator window, which moves the entry to that account's user PATH. `where.exe sima-cli` lists every copy in the order Windows searches them.
+
+To update `sima-cli`, or to switch between the PyPI release and a branch build, run the installer again; see the next section for branch builds. On Windows, `sima-cli selfupdate` and the update prompt print a `pip` command instead of updating in place. To see which version a new window runs, open one and run `sima-cli --version`.
+
+To remove `sima-cli`, first remove the packages it installed with Windows Installer, such as the Windows PCIe host packages, with `sima-cli packages remove`. Then run:
+
+```powershell
+.\windows.bat uninstall
+```
+
+This removes `%USERPROFILE%\.sima-cli-env` and its PATH entries. While such packages are still recorded, it stops and lists the command that removes each one; `.\windows.bat uninstall --force` removes `sima-cli` anyway. Your sign-in, package receipts and settings stay in `%USERPROFILE%\.sima-cli`; delete that folder to remove them too. Python is not removed.
+
 ### Advanced: choose a branch or release
 
 Use `install.py` only when you need to choose a specific tested branch build or release instead of installing the latest official PyPI release.

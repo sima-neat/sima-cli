@@ -48,6 +48,7 @@ from sima_cli.vulcan.commands import (
     ENV_METAVAR,
     _environment_shortcut_options,
     _normalize_environment_option,
+    _python_install_options,
     _resolve_environment,
     install_vulcan_package,
 )
@@ -932,6 +933,7 @@ def _show_neat_install_fallback(component: str) -> None:
     default=False,
     help="Force installation even if compatibility checks fail.",
 )
+@_python_install_options
 @click.pass_context
 def install_cmd(
     ctx,
@@ -947,6 +949,8 @@ def install_cmd(
     install_dir,
     json_output,
     force,
+    python_executable,
+    native_only,
 ):
     """
     Install SiMa packages.
@@ -981,6 +985,13 @@ def install_cmd(
         sima-cli install samples/llima -v 1.7.0
     """
     internal = ctx.obj.get("internal", False)
+    if native_only and python_executable:
+        raise click.ClickException("--native-only cannot be combined with --python-executable.")
+    python_install_options = {}
+    if python_executable is not None:
+        python_install_options["python_executable"] = python_executable
+    if native_only:
+        python_install_options["native_only"] = True
 
     use_neat_resolver = use_neat or use_vulcan
     if use_neat_resolver:
@@ -999,6 +1010,7 @@ def install_cmd(
             force=force,
             json_output=json_output,
             command_name="sima-cli install",
+            **python_install_options,
         )
         return None
 
@@ -1013,6 +1025,7 @@ def install_cmd(
             install_dir=install_dir,
             force=force,
             command_name="sima-cli install",
+            **python_install_options,
         )
         return None
 
@@ -1029,9 +1042,20 @@ def install_cmd(
             install_dir=install_dir,
             force=force,
             command_name="sima-cli install",
+            **python_install_options,
         )
         return None
     
+    if python_install_options and (
+        component.startswith(("cr:", "ghcr:"))
+        or component.lower() in {"palette", "hostdriver", "optiview"}
+    ):
+        option = "--native-only" if native_only else "--python-executable"
+        raise click.UsageError(
+            f"{option} applies only to Windows MSI packages; "
+            f"'{component}' is not installed from package metadata."
+        )
+
     # if the user specified cr: or ghcr: as component, install from container registry
     if component.startswith("cr:") or component.startswith("ghcr:"):
         install_from_cr(resource_spec=component, internal=internal)
@@ -1063,14 +1087,14 @@ def install_cmd(
         try:
             metadata_url = metadata_resolver(component, version, tag)
             click.echo(f"🔧 Installing '{component}' from resolved metadata: {metadata_url}")
-            if install_from_metadata(
+            install_from_metadata(
                 metadata_url=metadata_url,
                 internal=internal,
                 install_dir=install_dir,
                 force=force,
                 command_name="sima-cli install",
-            ):
-                click.echo("✅ Installation complete.")
+                **python_install_options,
+            )
         except MetadataAccessForbidden:
             if not _is_neat_install_target(component):
                 raise
@@ -1083,6 +1107,7 @@ def install_cmd(
                 force=force,
                 json_output=json_output,
                 command_name="sima-cli neat install",
+                **python_install_options,
             )
             return None
         except click.ClickException:

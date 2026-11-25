@@ -26,6 +26,7 @@ sima-cli bootimg [OPTIONS]
 | `-r, --rootfs` | Custom root fs folders (internal use only) |
 | `-a, --autoflash` | Network boot the selected DevKit, then automatically flash its internal storage once SSH is ready. |
 | `-y, --yes` | Skip NetBoot setup confirmation with an explicit --devkit IP and --autoflash, and skip reboot confirmation after a manual NetBoot flash. |
+| `--skip-troot` | Flash only eMMC during netboot; requires acceptance of a warning. |
 
 ## Arguments
 
@@ -78,6 +79,10 @@ Usage: sima-cli bootimg [OPTIONS]
     under the platform temporary directory in ``sima-cli/netboot`` and is
     reused by default. ``--delete-cache`` removes only the managed cache
     entry after the session exits.
+
+  With ``--skip-troot``, both manual (``f``) and automatic flashing write only
+  eMMC. You must accept a warning once at startup, even with ``--yes``.
+  Existing tRoot firmware stays unchanged and may be incompatible with the OS.
 
   Examples:
 
@@ -137,5 +142,7 @@ Options:
                                   explicit --devkit IP and --autoflash, and
                                   skip reboot confirmation after a manual
                                   NetBoot flash.
+  --skip-troot                    Flash only eMMC during netboot; requires
+                                  acceptance of a warning.
   --help                          Show this message and exit.
 ```

@@ -319,20 +319,25 @@ def main() -> int:
                 # An older release is refused, with the way out, and the newer one stays.
                 output = install(old, expect=1)
                 if ("because a newer version of it is already installed" not in output
-                        or f"sima-cli packages remove {PACKAGE} --version <installed version>" not in output):
+                        or f"sima-cli packages remove {PACKAGE} --version <installed version>" not in output
+                        or f"sima-cli packages remove {PACKAGE} --version {old}," not in output):
                     raise SystemExit("downgrade did not print the refusal")
                 if installed(old) or not installed(new):
                     raise SystemExit("the refused downgrade changed the installed product")
                 check_payload(new)
 
             # Remove through the command, as a customer does: the refused downgrade left a
-            # receipt for 1.0.0, whose package is not installed.
-            sima_cli(home, "packages", "remove", PACKAGE, "--version", new, "--yes")
+            # receipt for 1.0.0, which shares the upgrade code and so keeps 1.1.0 until it
+            # is removed too; its removal then uninstalls the 1.1.0 that replaced it.
+            output = sima_cli(home, "packages", "remove", PACKAGE, "--version", new, "--yes")
+            if (f"Keeping native packages another receipt uses: native (still recorded by "
+                    f"{PACKAGE}@{old})" not in output or not installed(new)):
+                raise SystemExit("removing 1.1.0 did not keep it for the refused downgrade's receipt")
+            output = sima_cli(home, "packages", "remove", PACKAGE, "--version", old, "--yes")
+            if "native native package removed." not in output:
+                raise SystemExit("removing the last receipt did not report the removal")
             if installed(new) or install_root.exists():
                 raise SystemExit("packages remove left the 1.1.0 MSI installed")
-            output = sima_cli(home, "packages", "remove", PACKAGE, "--version", old, "--yes")
-            if "native package is not installed; nothing to remove." not in output:
-                raise SystemExit("removing the receipt of a package that is not installed did not say so")
             if receipts(home):
                 raise SystemExit(f"receipts remain after removal: {receipts(home)}")
 

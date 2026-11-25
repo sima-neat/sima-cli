@@ -992,28 +992,28 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("Removed local registry receipt", output)
         self.assertEqual(receipts, [])
 
-    def test_removing_a_failed_upgrade_keeps_the_scheduler_the_installed_release_uses(self):
-        # Approval for 0.6.2 was cancelled after its receipt recorded the shared Scheduler.
+    def test_removing_a_failed_upgrade_keeps_the_packages_the_installed_release_uses(self):
+        # Approval for 0.6.2 was cancelled after its receipt recorded the shared Scheduler
+        # and the next Core, which shares the installed Core's upgrade code.
         registry_path = self.root / "registry.json"
-        registry = self.windows_receipt(registry_path, self.recorded_cohort())
+        registry = self.windows_receipt(registry_path, self.upgraded_cohort())
         new_core = "{33333333-3333-3333-3333-333333333333}"
         registry.create_entry(self.metadata["name"], "0.6.2", self.metadata, "")
         registry.update_fields(self.metadata["name"], "0.6.2", {"native_packages": [
-            {"owner": "scheduler", "version": "0.6.1", "product_code": PRODUCT_CODES["simaai"]},
-            {"owner": "core", "version": "0.6.2", "product_code": new_core},
+            self.upgraded_cohort()[0],
+            {"owner": "core", "version": "0.6.2", "product_code": new_core,
+             "upgrade_code": UPGRADE_CODES["sima"]},
         ]})
         registry.update_state(self.metadata["name"], "0.6.2", "failed")
 
-        run, requests = fake_elevation([1605])
+        run, requests = fake_elevation([])
         exit_code, output, receipts = self.run_packages_remove(registry_path, "0.6.2", run)
 
         self.assertEqual(exit_code, 0, output)
-        self.assertEqual(
-            [package["arguments"].split()[:2] for package in requests[0]["request"]["packages"]],
-            [["/x", new_core]],
-        )
+        self.assertEqual(requests, [])
         self.assertIn(
-            "Keeping native packages another receipt uses: scheduler (still recorded by "
+            f"Keeping native packages another receipt uses: core (still recorded by "
+            f"{self.metadata['name']}@0.6.1), scheduler (still recorded by "
             f"{self.metadata['name']}@0.6.1)",
             output,
         )
@@ -1194,40 +1194,6 @@ class WindowsPackageTests(unittest.TestCase):
             for package, key in zip(self.recorded_cohort(), ("simaai", "sima"))
         ]
 
-    def test_administrator_uninstall_keeps_a_release_another_account_installed_earlier(self):
-        # Account bob installed 0.6.0, whose Core MSI had another product code; this
-        # account's 0.6.1 install upgraded it in place, so only the upgrade codes match.
-        bob = "HOST\\bob"
-        old_core = "{33333333-3333-3333-3333-333333333333}"
-        scan = completed(stdout=json.dumps({
-            old_core: [bob], UPGRADE_CODES["sima"]: [bob],
-            PRODUCT_CODES["simaai"]: [bob], UPGRADE_CODES["simaai"]: [bob],
-        }))
-        restart, output, run = self.administrator_uninstall(scan, self.upgraded_cohort())
-
-        self.assertFalse(restart)
-        self.assertEqual(len(run.call_args_list), 1, "no msiexec may start")
-        for owner in ("core", "scheduler"):
-            self.assertIn(
-                f"Keeping {owner} native package, which is installed for the whole machine, "
-                f"for other Windows accounts whose sima-cli receipts may use it: {bob}.",
-                output,
-            )
-
-        # A receipt recorded without upgrade codes may share one with any package.
-        scan = completed(stdout=json.dumps({old_core: [bob]}))
-        restart, output, run = self.administrator_uninstall(scan)
-        self.assertEqual(len(run.call_args_list), 1, "no msiexec may start")
-        self.assertIn(f"may use it: {bob}.", output)
-
-        # A different product of another account keeps nothing.
-        scan = completed(stdout=json.dumps({old_core: [bob], "{99999999-9999-9999-9999-999999999999}": [bob]}))
-        _restart, _output, run = self.administrator_uninstall(scan, self.upgraded_cohort())
-        self.assertEqual(
-            [command.args[0][:3] for command in run.call_args_list[1:]],
-            [[MSIEXEC, "/x", PRODUCT_CODES["sima"]], [MSIEXEC, "/x", PRODUCT_CODES["simaai"]]],
-        )
-
     def test_uninstall_removes_the_release_that_upgraded_the_recorded_one(self):
         # Another account's 0.6.2 install upgraded the Core this 0.6.1 receipt recorded.
         new_core = "{44444444-4444-4444-4444-444444444444}"
@@ -1277,42 +1243,72 @@ class WindowsPackageTests(unittest.TestCase):
             output,
         )
 
-    def test_removing_a_partly_failed_upgrade_keeps_the_core_the_older_receipt_uses(self):
-        # 0.6.2 upgraded Core in place, then its Python step failed, so the 0.6.1 receipt
-        # stays; it records the replaced Core, which only the upgrade code relates.
+    def test_any_other_receipt_that_records_the_package_keeps_it(self):
+        # One rule for this account's other receipts and every other account's: a package
+        # is kept while any receipt but the removed one, in any state, records a release
+        # with its upgrade code, or records a package without an upgrade code.
         new_core = "{44444444-4444-4444-4444-444444444444}"
-        for older_state, removed in (("installed", []), ("failed", [["/x", new_core]])):
-            with self.subTest(older_state=older_state):
-                registry_path = self.root / "registry.json"
-                registry_path.unlink(missing_ok=True)
-                registry = self.windows_receipt(registry_path, self.upgraded_cohort())
-                registry.update_state(self.metadata["name"], "0.6.1", older_state)
-                registry.create_entry(self.metadata["name"], "0.6.2", self.metadata, "")
-                registry.update_fields(self.metadata["name"], "0.6.2", {"native_packages": [
-                    self.upgraded_cohort()[0],
-                    {"owner": "core", "version": "0.6.2", "product_code": new_core,
-                     "upgrade_code": UPGRADE_CODES["sima"]},
-                ]})
-                registry.update_state(self.metadata["name"], "0.6.2", "partial-python-failed")
+        other_line = {"owner": "other", "version": "1.0", "upgrade_code": "{66666666-6666-6666-6666-666666666666}",
+                      "product_code": "{55555555-5555-5555-5555-555555555555}"}
 
-                run, requests = fake_elevation([0])
-                exit_code, output, receipts = self.run_packages_remove(registry_path, "0.6.2", run)
+        def core(version="0.6.1", **fields):
+            package = {"owner": "core", "version": version, "product_code": PRODUCT_CODES["sima"],
+                       "upgrade_code": UPGRADE_CODES["sima"], **fields}
+            return {key: value for key, value in package.items() if value is not None}
 
-                self.assertEqual(exit_code, 0, output)
-                self.assertEqual(
-                    [package["arguments"].split()[:2]
-                     for request in requests for package in request["request"]["packages"]],
-                    removed,
-                )
-                kept = ["scheduler"] + (["core"] if not removed else [])
-                self.assertIn(
-                    "Keeping native packages another receipt uses: " + ", ".join(
-                        f"{owner} (still recorded by {self.metadata['name']}@0.6.1)"
-                        for owner in reversed(kept)
-                    ),
-                    output,
-                )
-                self.assertEqual([receipt["version"] for receipt in receipts], ["0.6.1"])
+        cases = [
+            # (other receipt's state and packages, removed package, kept)
+            ("same release", "installed", [core(product_code=new_core)], core("0.6.2", product_code=new_core), True),
+            ("upgraded ProductCode", "installed", [core()], core("0.6.2", product_code=new_core), True),
+            ("failed receipt", "failed", [core()], core("0.6.2", product_code=new_core), True),
+            ("partial receipt", "partial-python-failed", [core()], core("0.6.2", product_code=new_core), True),
+            ("no upgrade code recorded", "installed", [core(upgrade_code=None)],
+             core("0.6.2", product_code=new_core), True),
+            ("removed package has none", "installed", [other_line],
+             core("0.6.2", product_code=new_core, upgrade_code=None), True),
+            ("another package", "installed", [other_line], core("0.6.2", product_code=new_core), False),
+            ("only the removed receipt", None, [], core("0.6.2", product_code=new_core), False),
+        ]
+        name = self.metadata["name"]
+        for account in ("this account", "another account"):
+            for case, state, packages, removed, kept in cases:
+                with self.subTest(account=account, case=case):
+                    registry_path = self.root / "registry.json"
+                    registry_path.unlink(missing_ok=True)
+                    (self.root / "other.json").unlink(missing_ok=True)
+                    registry = PackageRegistry(registry_path)
+                    registry.create_entry(name, "0.6.2", self.metadata, "")
+                    registry.update_fields(name, "0.6.2", {"native_packages": [removed]})
+                    holder = registry if account == "this account" else PackageRegistry(self.root / "other.json")
+                    if state:
+                        holder.create_entry(name, "0.6.1", self.metadata, "")
+                        holder.update_fields(name, "0.6.1", {"native_packages": packages})
+                        holder.update_state(name, "0.6.1", state)
+                    # Stands in for the elevated scan, which reads another account's
+                    # receipts by the same rule (the Windows e2e test runs the real one).
+                    scan = {} if holder is registry else {
+                        code: ["HOST\\bob"] for code in holder.product_codes_of_other_receipts("", "")
+                    }
+                    output = io.StringIO()
+                    with patch(
+                        "sima_cli.install.windows_package._run",
+                        side_effect=lambda command, **_kwargs: (
+                            completed(stdout=json.dumps(scan)) if command[0] == POWERSHELL else completed()
+                        ),
+                    ) as run, patch(
+                        "sima_cli.install.registry.PackageRegistry", lambda: PackageRegistry(registry_path)
+                    ), redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+                        packages_group.main(
+                            ["remove", name, "--version", "0.6.2", "--yes"], prog_name="packages"
+                        )
+
+                    self.assertEqual(raised.exception.code, 0, output.getvalue())
+                    self.assertEqual(
+                        [command.args[0][1:3] for command in run.call_args_list
+                         if command.args[0][0] == MSIEXEC],
+                        [] if kept else [["/x", new_core]],
+                    )
+                    self.assertEqual("Keeping" in output.getvalue(), kept, output.getvalue())
 
     def test_uninstall_starts_no_installer_when_other_receipts_record_every_package(self):
         shared = {code: "other@0.6.0" for code in PRODUCT_CODES.values()}
@@ -1634,6 +1630,11 @@ class WindowsPackageTests(unittest.TestCase):
             self.assertIn("Packages completed earlier in this run: scheduler.", message)
             self.assertIn(
                 f"sima-cli packages remove {self.metadata['name']} --version <installed version>",
+                message,
+            )
+            self.assertIn(
+                "and remove the receipt this attempt left, which keeps the newer release "
+                f"installed, with sima-cli packages remove {self.metadata['name']} --version 0.6.1,",
                 message,
             )
             self.assertTrue(message.endswith(f"then rerun this exact release: {PINNED_RETRY}"))

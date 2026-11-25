@@ -248,9 +248,9 @@ def _is_windows_administrator() -> bool:
 # needs administrator rights, so this runs with them, just before a removal. It maps each
 # product code and upgrade code that a receipt of another account records to that account;
 # the upgrade code still matches after a later release of the package replaced the one
-# that receipt installed, unless that receipt failed. '*' lists the accounts whose registry
-# exists but could not be read, or that records a package without its upgrade code; they
-# may use any package.
+# that receipt installed. Every receipt counts, in every state. '*' lists the accounts whose
+# registry exists but could not be read, or that records a package without its upgrade
+# code; they may use any package. The elevated script matches as _holders does.
 _OTHER_ACCOUNT_USES_FUNCTION = r"""
 function Get-OtherAccountUses([string]$OwnRegistry) {
   $uses = @{}
@@ -274,8 +274,6 @@ function Get-OtherAccountUses([string]$OwnRegistry) {
         foreach ($package in $receipt.native_packages) {
           if ($package.product_code) {
             $codes += ([string]$package.product_code).ToUpperInvariant()
-            # A failed run installed none of its packages; it holds only what it records.
-            if ($receipt.state -eq 'failed') { continue }
             if ($null -eq $package.upgrade_code) { $codes += '*' }
             elseif ($package.upgrade_code) {
               $codes += ([string]$package.upgrade_code).ToUpperInvariant()
@@ -473,6 +471,17 @@ def _run_elevated_msi_batch(
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _holders(uses: Dict[str, Any], upgrade_code: Optional[str], *product_codes: str) -> List[Any]:
+    """Return the holders in uses of a package that a receipt being removed records.
+
+    uses maps each product code and upgrade code that another receipt records to its
+    holder, and '*' to the holders of a package recorded without an upgrade code. A package
+    recorded without one itself (None) may be any package that another receipt records.
+    """
+    codes = uses if upgrade_code is None else ("*", upgrade_code, *product_codes)
+    return [uses[code] for code in codes if code and code in uses]
+
+
 def _other_account_uses(own_registry: Path) -> Dict[str, List[str]]:
     """Map product codes that other Windows accounts' receipts record to those accounts."""
     try:
@@ -505,20 +514,15 @@ def _run_msi_operations(
 
     handle_result raises for every exit code outside continue_codes, so the steps stop
     at the first failure. A non-elevated session approves all steps with one prompt.
-    With own_registry, a step whose product code or upgrade code a receipt of another
-    Windows account records is not run; it reports NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS
-    instead. A step without an upgrade code (None) is kept for every such account.
+    With own_registry, a step that a receipt of another Windows account holds, as
+    _holders decides, is not run; it reports NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS instead.
     """
     first_log = items[0]["log"]
     if _is_windows_administrator():
         other_uses = _other_account_uses(own_registry) if own_registry is not None else {}
         for item in items:
-            codes = (
-                other_uses
-                if item.get("upgrade_code") is None
-                else ("*", item.get("product_code"), item["upgrade_code"])
-            )
-            users = sorted({user for code in codes for user in other_uses.get(code, [])})
+            holders = _holders(other_uses, item.get("upgrade_code"), item.get("product_code"))
+            users = sorted({user for accounts in holders for user in accounts})
             if users:
                 handle_result(item, NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS, "; ".join(users))
                 continue
@@ -1351,8 +1355,10 @@ def _install_native_packages(
                     f"{installed_owners}. Installer log: {log_path}. To install this release, "
                     "find the installed version with sima-cli packages list, remove it with "
                     f"sima-cli packages remove {metadata.get('name')} --version <installed version> "
-                    "(or from Settings > Apps > Installed apps if sima-cli did not install it), "
-                    f"then {rerun}"
+                    "(or from Settings > Apps > Installed apps if sima-cli did not install it) "
+                    "and remove the receipt this attempt left, which keeps the newer release "
+                    f"installed, with sima-cli packages remove {metadata.get('name')} --version "
+                    f"{metadata.get('version')}, then {rerun}"
                 )
             policy_detail = (
                 " Windows Installer rejected this package under system policy; "
@@ -1650,9 +1656,10 @@ def uninstall_windows_package(
 ) -> bool:
     """Remove a receipt's native packages in reverse install order.
 
-    shared maps product codes and upgrade codes that other receipts in registry_path, the
-    caller's registry, still record to one such receipt; those packages are kept, and so is
-    a package that a receipt of another Windows account records in any release. When a later release of a
+    A package is kept while any other receipt holds it: one in registry_path, the caller's
+    registry, which shared maps as product_codes_of_other_receipts does, or one of another
+    Windows account. A receipt holds every release that shares an upgrade code with one it
+    records, in every state; one recorded without an upgrade code may be any package. When a later release of a
     package replaced the recorded one, the installed release is removed instead. Returns
     True when Windows must restart to finish the removal.
     """
@@ -1690,16 +1697,9 @@ def uninstall_windows_package(
             related = _msi_related_products(upgrade_code)
             if len(related) == 1:
                 installed_code = related[0]
-        recorded_by = next(
-            (
-                shared[code]
-                for code in (product_code, installed_code, upgrade_code)
-                if code and code in (shared or {})
-            ),
-            None,
-        )
-        if recorded_by:
-            kept.append(f"{owner} (still recorded by {recorded_by})")
+        holders = _holders(shared or {}, upgrade_code, product_code, installed_code)
+        if holders:
+            kept.append(f"{owner} (still recorded by {holders[0]})")
             continue
         log_path = log_root / f"sima-cli-msi-uninstall-{index:02d}-{_safe_log_label(owner)}.log"
         items.append({

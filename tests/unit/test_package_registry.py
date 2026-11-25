@@ -138,13 +138,15 @@ def test_product_codes_of_other_receipts_ignores_the_removed_receipt(tmp_path):
         })
     registry.create_entry("other/package", "1.0.0", {}, tmp_path)
 
+    # Recorded without upgrade codes, the other receipt may hold any package.
     assert registry.product_codes_of_other_receipts("example/package", "2.0.0") == {
         "{S}": "example/package@1.0.0",
         "{C1}": "example/package@1.0.0",
+        "*": "example/package@1.0.0",
     }
 
 
-def test_other_receipts_hold_their_upgrade_codes_unless_they_failed(tmp_path):
+def test_other_receipts_hold_their_upgrade_codes_in_every_state(tmp_path):
     registry = PackageRegistry(tmp_path / "registry.json")
     for name, state in (("installed/package", "installed"), ("failed/package", "failed")):
         registry.create_entry(name, "1.0.0", {}, tmp_path)
@@ -157,4 +159,5 @@ def test_other_receipts_hold_their_upgrade_codes_unless_they_failed(tmp_path):
         "{installed/package}": "installed/package@1.0.0",
         "{U-installed/package}": "installed/package@1.0.0",
         "{failed/package}": "failed/package@1.0.0",
+        "{U-failed/package}": "failed/package@1.0.0",
     }

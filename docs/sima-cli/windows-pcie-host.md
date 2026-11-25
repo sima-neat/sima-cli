@@ -123,4 +123,9 @@ install command again.
 The receipt belongs to the Windows account that ran the install; the packages
 are installed for the whole machine. Another account runs the same install
 command to get its own receipt, Python environment, skill and card SSH key;
-this repairs the packages instead of installing them again.
+this repairs the packages instead of installing them again. Before it uninstalls
+a package, `sima-cli packages remove` reads the other accounts' receipts in its
+elevated step. It keeps every package that another account's receipt records,
+or might record because that receipt cannot be read, names those accounts, and
+removes only the current account's receipt. The last account to remove its
+receipt uninstalls the packages.

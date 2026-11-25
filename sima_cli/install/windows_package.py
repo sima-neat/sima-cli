@@ -28,6 +28,8 @@ WINDOWS_ELEVATION_CANCELLED = 1223
 ELEVATED_INSTALLER_EXIT_CODE_MISSING = 9001
 ELEVATED_INSTALLER_LAUNCH_FAILED = 9002
 ELEVATED_INSTALLER_HASH_MISMATCH = 9003
+# Not an msiexec result: removal skipped the package because another account may use it.
+NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS = 9004
 MSI_UNKNOWN_PRODUCT = 1605
 MSI_INSTALL_FAILURE = 1603
 INSTALLSTATE_DEFAULT = 5
@@ -241,21 +243,94 @@ def _is_windows_administrator() -> bool:
         return False
 
 
+# The MSIs are installed for the whole machine, but each Windows account keeps its own
+# receipts in %USERPROFILE%\.sima-cli\registry.json. Reading another account's profile
+# needs administrator rights, so this runs with them, just before a removal. It maps each
+# product code that a receipt of another account records to that account; '*' lists the
+# accounts whose registry exists but could not be read, which may record any package.
+_OTHER_ACCOUNT_USES_FUNCTION = r"""
+function Get-OtherAccountUses([string]$OwnRegistry) {
+  $uses = @{}
+  $own = [IO.Path]::GetFullPath($OwnRegistry)
+  $profiles = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+  foreach ($key in Get-ChildItem -LiteralPath $profiles) {
+    $profilePath = $key.GetValue('ProfileImagePath')
+    if (-not $profilePath) { continue }
+    $registry = [IO.Path]::GetFullPath(
+      [IO.Path]::Combine($profilePath, '.sima-cli', 'registry.json'))
+    if ($registry -eq $own) { continue }
+    try {
+      $account = (New-Object Security.Principal.SecurityIdentifier $key.PSChildName).Translate(
+        [Security.Principal.NTAccount]).Value
+    } catch {
+      $account = $key.PSChildName
+    }
+    $codes = @()
+    try {
+      foreach ($receipt in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($registry)))) {
+        foreach ($package in $receipt.native_packages) {
+          if ($package.product_code) {
+            $codes += ([string]$package.product_code).ToUpperInvariant()
+          }
+        }
+      }
+    } catch {
+      $missing = $false
+      for ($exception = $_.Exception; $null -ne $exception; $exception = $exception.InnerException) {
+        if ($exception -is [IO.FileNotFoundException] -or
+            $exception -is [IO.DirectoryNotFoundException]) { $missing = $true }
+      }
+      if ($missing) { continue }
+      $codes = @('*')
+      $account = "$account (could not read $registry)"
+    }
+    foreach ($code in $codes) {
+      if (-not $uses.ContainsKey($code)) { $uses[$code] = @() }
+      $uses[$code] += $account
+    }
+  }
+  return $uses
+}
+"""
+
+_OTHER_ACCOUNT_USES_SCRIPT = (
+    "$ErrorActionPreference = 'Stop'\n" + _OTHER_ACCOUNT_USES_FUNCTION + "[Console]::Out.Write("
+    "(ConvertTo-Json -Compress -InputObject (Get-OtherAccountUses $env:SIMA_CLI_OWN_REGISTRY)))\n"
+)
+
 # Runs in the elevated process. It receives the whole ordered request on its command
 # line, refuses an MSI whose bytes differ from the hash the CLI verified (holding a
-# read lock so the file cannot change before msiexec reads it), stops at the first
-# exit code outside continue_codes, and rewrites the CLI's result file after each
-# package so a result survives a later crash.
-_ELEVATED_MSI_SCRIPT = r"""
+# read lock so the file cannot change before msiexec reads it), skips a removal that
+# another account's receipt records, stops at the first exit code outside
+# continue_codes, and rewrites the CLI's result file after each package so a result
+# survives a later crash.
+_ELEVATED_MSI_SCRIPT = _OTHER_ACCOUNT_USES_FUNCTION + r"""
 $ErrorActionPreference = 'Stop'
 $request = [Text.Encoding]::UTF8.GetString(
   [Convert]::FromBase64String('@REQUEST@')) | ConvertFrom-Json
 $msiexec = Join-Path ([Environment]::SystemDirectory) 'msiexec.exe'
+$otherUses = @{}
+if ($request.own_registry) {
+  try {
+    $otherUses = Get-OtherAccountUses $request.own_registry
+  } catch {
+    $otherUses = @{ '*' = @("other Windows accounts (could not check: $($_.Exception.Message))") }
+  }
+}
 $results = @()
 foreach ($package in $request.packages) {
   $result = [ordered]@{ owner = $package.owner; exit_code = 9001; error = '' }
   $lock = $null
   try {
+    if ($request.own_registry) {
+      $users = @(foreach ($code in '*', ([string]$package.product_code).ToUpperInvariant()) {
+        if ($otherUses.ContainsKey($code)) { $otherUses[$code] }
+      })
+      if ($users.Count -gt 0) {
+        $result.exit_code = 9004
+        $result.error = @($users | Sort-Object -Unique) -join '; '
+      }
+    }
     if ($package.msi) {
       $lock = [IO.File]::Open($package.msi, [IO.FileMode]::Open,
         [IO.FileAccess]::Read, [IO.FileShare]::Read)
@@ -267,7 +342,7 @@ foreach ($package in $request.packages) {
         $result.error = "found $actual"
       }
     }
-    if ($result.exit_code -ne 9003) {
+    if ($result.exit_code -ne 9003 -and $result.exit_code -ne 9004) {
       $info = New-Object System.Diagnostics.ProcessStartInfo $msiexec, $package.arguments
       $info.UseShellExecute = $false
       $process = [System.Diagnostics.Process]::Start($info)
@@ -342,7 +417,7 @@ def _read_elevated_results(path: Path, items: List[Dict]) -> List[Tuple[int, str
 
 
 def _run_elevated_msi_batch(
-    items: List[Dict], continue_codes: List[int]
+    items: List[Dict], continue_codes: List[int], own_registry: Optional[Path] = None
 ) -> Tuple[subprocess.CompletedProcess, List[Tuple[int, str]]]:
     """Run every msiexec step in one elevated process; return each step's result."""
     work = Path(tempfile.mkdtemp(prefix="sima-cli-msi-"))
@@ -354,12 +429,14 @@ def _run_elevated_msi_batch(
         request = {
             "result": str(result_path),
             "continue_codes": sorted(continue_codes),
+            "own_registry": str(own_registry) if own_registry is not None else None,
             "packages": [
                 {
                     "owner": item["owner"],
                     "arguments": subprocess.list2cmdline(item["args"]),
                     "msi": str(item["msi"]) if "msi" in item else None,
                     "sha256": item.get("sha256"),
+                    "product_code": item.get("product_code"),
                 }
                 for item in items
             ],
@@ -381,21 +458,51 @@ def _run_elevated_msi_batch(
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _other_account_uses(own_registry: Path) -> Dict[str, List[str]]:
+    """Map product codes that other Windows accounts' receipts record to those accounts."""
+    try:
+        result = _run_powershell(
+            _OTHER_ACCOUNT_USES_SCRIPT,
+            {"SIMA_CLI_OWN_REGISTRY": str(own_registry)},
+            capture_output=True,
+        )
+        detail = (result.stderr or "").strip() or f"exit code {result.returncode}"
+        uses = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, ValueError) as error:
+        detail, uses = str(error), None
+    if not isinstance(uses, dict):
+        return {"*": [f"other Windows accounts (could not check: {detail})"]}
+    return {
+        code.upper(): accounts if isinstance(accounts, list) else [str(accounts)]
+        for code, accounts in uses.items()
+    }
+
+
 def _run_msi_operations(
     items: List[Dict],
     continue_codes: List[int],
     handle_result,
     nothing_done: str,
     rerun: str = _RERUN_SAME_COMMAND,
+    own_registry: Optional[Path] = None,
 ) -> None:
     """Run ordered msiexec steps, calling handle_result(item, exit_code, detail) for each.
 
     handle_result raises for every exit code outside continue_codes, so the steps stop
     at the first failure. A non-elevated session approves all steps with one prompt.
+    With own_registry, a step whose product code a receipt of another Windows account
+    records is not run; it reports NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS instead.
     """
     first_log = items[0]["log"]
     if _is_windows_administrator():
+        other_uses = _other_account_uses(own_registry) if own_registry is not None else {}
         for item in items:
+            users = sorted(
+                {*other_uses.get("*", []), *other_uses.get(item.get("product_code"), [])}
+            )
+            if users:
+                handle_result(item, NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS, "; ".join(users))
+                continue
             held = None
             if "msi" in item:
                 # Held from the hash until msiexec returns, as the elevated script holds
@@ -431,7 +538,7 @@ def _run_msi_operations(
                 item["resource"], item["msi"], item["sha256"], WindowsNativeInstallError, rerun
             )
     try:
-        launched, results = _run_elevated_msi_batch(items, continue_codes)
+        launched, results = _run_elevated_msi_batch(items, continue_codes, own_registry)
     except OSError as error:
         raise WindowsNativeInstallError(
             f"Could not start Windows Installer for {items[0]['owner']}: {error}. "
@@ -1493,11 +1600,15 @@ def install_windows_package(
     }
 
 
-def uninstall_windows_package(receipt: Dict, shared: Optional[Dict[str, str]] = None) -> bool:
+def uninstall_windows_package(
+    receipt: Dict, shared: Optional[Dict[str, str]] = None, registry_path: Optional[Path] = None
+) -> bool:
     """Remove a receipt's native packages in reverse install order.
 
-    shared maps product codes that other receipts still record to one such receipt;
-    those packages are kept. Returns True when Windows must restart to finish the removal.
+    shared maps product codes that other receipts in registry_path, the caller's registry,
+    still record to one such receipt; those packages are kept, and so is a package that a
+    receipt of another Windows account records. Returns True when Windows must restart to
+    finish the removal.
     """
     if not _is_windows():
         raise click.ClickException("Windows MSI packages can only be uninstalled on Windows.")
@@ -1527,6 +1638,7 @@ def uninstall_windows_package(receipt: Dict, shared: Optional[Dict[str, str]] = 
         items.append({
             "owner": owner,
             "log": log_path,
+            "product_code": product_code.upper(),
             "args": ["/x", product_code, "/passive", "/norestart", "/L*v", str(log_path)],
         })
     if kept:
@@ -1542,6 +1654,14 @@ def uninstall_windows_package(receipt: Dict, shared: Optional[Dict[str, str]] = 
         owner = item["owner"]
         if returncode == MSI_UNKNOWN_PRODUCT:
             click.echo(f"{owner} native package is not installed; nothing to remove.")
+            return
+        if returncode == NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS:
+            click.echo(
+                f"Keeping {owner} native package, which is installed for the whole machine, "
+                f"for other Windows accounts whose sima-cli receipts may use it: {detail}. "
+                "The last of them to remove its receipt uninstalls it; if none does, remove it "
+                "under Settings > Apps > Installed apps once no account uses it."
+            )
             return
         if returncode in {0, MSI_RESTART_REQUIRED}:
             removed.append(owner)
@@ -1568,11 +1688,16 @@ def uninstall_windows_package(receipt: Dict, shared: Optional[Dict[str, str]] = 
         )
 
     if items:
+        if registry_path is None:
+            from sima_cli.install.registry import REGISTRY_PATH
+
+            registry_path = REGISTRY_PATH
         _run_msi_operations(
             items,
-            [0, MSI_UNKNOWN_PRODUCT, MSI_RESTART_REQUIRED],
+            [0, MSI_UNKNOWN_PRODUCT, MSI_RESTART_REQUIRED, NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS],
             handle_result,
             "No native package was removed.",
+            own_registry=registry_path,
         )
 
     python_executable = receipt.get("python_executable")

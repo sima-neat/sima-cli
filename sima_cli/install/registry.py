@@ -104,7 +104,7 @@ def remove_package_receipt(ctx, name, version, yes):
 
         try:
             restart_required = uninstall_windows_package(
-                entry, reg.product_codes_of_other_receipts(name, version)
+                entry, reg.product_codes_of_other_receipts(name, version), reg.registry_path
             )
         except BaseException:
             reg.update_state(name, version, "remove-failed")

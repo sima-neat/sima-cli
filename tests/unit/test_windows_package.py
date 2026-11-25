@@ -22,6 +22,7 @@ from sima_cli.install.windows_package import (
     ELEVATED_INSTALLER_EXIT_CODE_MISSING,
     ELEVATED_INSTALLER_HASH_MISMATCH,
     ELEVATED_INSTALLER_LAUNCH_FAILED,
+    NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS,
     WindowsNativeInstallError,
     WindowsPackageRestartRequired,
     WindowsPrerequisiteError,
@@ -724,6 +725,8 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn("$startInfo.Verb = 'runas'", command[-1])
         request = requests[0]["request"]
         self.assertEqual(request["continue_codes"], [0])
+        # Only a removal looks for other accounts' receipts.
+        self.assertIsNone(request["own_registry"])
         self.assertEqual(
             [(package["owner"], package["msi"], package["sha256"]) for package in request["packages"]],
             [
@@ -947,7 +950,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(exit_code, 0, output)
         self.assertEqual(len(requests), 1)
         request = requests[0]["request"]
-        self.assertEqual(request["continue_codes"], [0, 1605, 3010])
+        self.assertEqual(request["continue_codes"], [0, 1605, 3010, 9004])
         self.assertEqual(
             [(package["owner"], package["arguments"].split()[:2]) for package in request["packages"]],
             [
@@ -955,6 +958,16 @@ class WindowsPackageTests(unittest.TestCase):
                 ("scheduler", ["/x", PRODUCT_CODES["simaai"]]),
             ],
         )
+        # The elevated step skips a package whose code another account's receipt records;
+        # it reads the other profiles, not the caller's own registry.
+        self.assertEqual(request["own_registry"], str(self.root / "registry.json"))
+        self.assertEqual(
+            [package["product_code"] for package in request["packages"]],
+            [PRODUCT_CODES["sima"], PRODUCT_CODES["simaai"]],
+        )
+        script = requests[0]["script"]
+        self.assertIn("CurrentVersion\\ProfileList", script)
+        self.assertIn("$result.exit_code = 9004", script)
         self.assertEqual([package["msi"] for package in request["packages"]], [None, None])
         self.assertIn("Removing native packages: core, scheduler", output)
         self.assertIn(f"& \"{self.python}\" -m pip uninstall -y pyneatpcie", output)
@@ -997,6 +1010,28 @@ class WindowsPackageTests(unittest.TestCase):
             [["/x", PRODUCT_CODES["sima"]], ["/x", PRODUCT_CODES["simaai"]]],
         )
         self.assertNotIn("Keeping native packages", output)
+        self.assertEqual(receipts, [])
+
+    def test_uninstall_keeps_packages_another_windows_account_records(self):
+        # Another account ran the same install for its own receipt. The MSIs are
+        # machine-wide, so removing this account's receipt must not uninstall them.
+        bob = "HOST\\bob"
+        run, requests = fake_elevation(
+            [NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS] * 2, errors={0: bob, 1: bob}
+        )
+
+        exit_code, output, receipts = self.remove_windows_receipt(self.recorded_cohort(), run)
+
+        self.assertEqual(exit_code, 0, output)
+        self.assertEqual(len(requests), 1)
+        for owner in ("core", "scheduler"):
+            self.assertIn(
+                f"Keeping {owner} native package, which is installed for the whole machine, "
+                f"for other Windows accounts whose sima-cli receipts may use it: {bob}.",
+                output,
+            )
+        self.assertNotIn("native package removed", output)
+        self.assertNotIn("Restart Windows", output)
         self.assertEqual(receipts, [])
 
     def test_uninstall_treats_an_absent_package_as_removed(self):
@@ -1071,20 +1106,66 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(requests, [])
         self.assertEqual(receipts, [])
 
-    def test_administrator_uninstall_runs_msiexec_in_reverse_install_order(self):
+    def administrator_uninstall(self, other_accounts=completed(stdout="{}")):
+        """Remove the recorded cohort from an elevated session; return (restart, output, run)."""
+        output = io.StringIO()
+        registry_path = self.root / "registry.json"
         with patch(
-            "sima_cli.install.windows_package._run", return_value=completed()
-        ) as run:
-            restart = uninstall_windows_package({"native_packages": self.recorded_cohort()})
+            "sima_cli.install.windows_package._run",
+            side_effect=lambda command, **_kwargs: (
+                other_accounts if command[0] == POWERSHELL else completed()
+            ),
+        ) as run, redirect_stdout(output):
+            restart = uninstall_windows_package(
+                {"native_packages": self.recorded_cohort()}, {}, registry_path
+            )
+        scans = [command for command in run.call_args_list if command.args[0][0] == POWERSHELL]
+        self.assertEqual(len(scans), 1)
+        self.assertEqual(scans[0].kwargs["env"]["SIMA_CLI_OWN_REGISTRY"], str(registry_path))
+        self.assertIn("CurrentVersion\\ProfileList", scans[0].args[0][-1])
+        return restart, output.getvalue(), run
+
+    def test_administrator_uninstall_runs_msiexec_in_reverse_install_order(self):
+        restart, _output, run = self.administrator_uninstall()
 
         self.assertFalse(restart)
         self.assertEqual(
-            [command.args[0][:3] for command in run.call_args_list],
+            [command.args[0][:3] for command in run.call_args_list[1:]],
             [
                 [MSIEXEC, "/x", PRODUCT_CODES["sima"]],
                 [MSIEXEC, "/x", PRODUCT_CODES["simaai"]],
             ],
         )
+
+    def test_administrator_uninstall_keeps_what_other_accounts_may_use(self):
+        unreadable = "HOST\\carol (could not read C:\\Users\\carol\\.sima-cli\\registry.json)"
+        cases = [
+            (
+                completed(stdout=json.dumps({
+                    PRODUCT_CODES["sima"]: ["HOST\\bob"],
+                    PRODUCT_CODES["simaai"].lower(): "HOST\\bob",
+                })),
+                "HOST\\bob",
+            ),
+            (completed(stdout=json.dumps({"*": [unreadable]})), unreadable),
+            (
+                completed(returncode=1, stderr="ProfileList is unavailable"),
+                "other Windows accounts (could not check: ProfileList is unavailable)",
+            ),
+        ]
+        for scan, accounts in cases:
+            with self.subTest(accounts=accounts):
+                restart, output, run = self.administrator_uninstall(scan)
+
+                self.assertFalse(restart)
+                self.assertEqual(len(run.call_args_list), 1, "no msiexec may start")
+                for owner in ("core", "scheduler"):
+                    self.assertIn(
+                        f"Keeping {owner} native package, which is installed for the whole "
+                        f"machine, for other Windows accounts whose sima-cli receipts may use "
+                        f"it: {accounts}.",
+                        output,
+                    )
 
     def test_uninstall_starts_no_installer_when_other_receipts_record_every_package(self):
         shared = {code: "other@0.6.0" for code in PRODUCT_CODES.values()}

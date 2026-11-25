@@ -35,6 +35,22 @@ class WindowsCiWorkflowTests(unittest.TestCase):
         self.assertIn("if installed(old) or not installed(new):", source)
         self.assertNotIn("uninstall_windows_package(", source)
 
+    def test_msi_fixture_keeps_the_package_while_another_account_records_it(self):
+        # The MSIs are machine-wide; another account's receipt is found only through the
+        # profiles Windows lists, which the runner's own profile is and the temporary home is not.
+        source = (WORKFLOW.parents[2] / "tests/e2e/windows_msi_install.py").read_text(encoding="utf-8")
+        order = [
+            'sima_cli(None, "install", "-m", f"{channel}/{new}/metadata.json"',
+            'output = sima_cli(home, "packages", "remove", PACKAGE, "--version", new, "--yes",\n'
+            '                              approval=True)',
+            'raise SystemExit("packages remove uninstalled a package another account records")',
+            'output = sima_cli(None, "packages", "remove", PACKAGE, "--version", new, "--yes",\n'
+            '                              approval=True)',
+            'raise SystemExit("packages remove through administrator approval left 1.1.0 installed")',
+        ]
+        positions = [source.index(step) for step in order]
+        self.assertEqual(positions, sorted(positions))
+
     def test_msi_job_consumes_built_wheel_without_source_imports(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         job = workflow.split("\n  windows-msi:\n", 1)[1].split("\n  compatibility-test:\n", 1)[0]

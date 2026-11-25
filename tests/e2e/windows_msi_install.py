@@ -4,7 +4,9 @@
 The MSI is built twice, as 1.0.0 and 1.1.0 with the same upgrade code. Through the installed
 sima-cli command it is installed, upgraded, refused as a downgrade and removed; the repair of
 an installed release runs through the package installer in this process. Last, it is installed
-and removed once more through the administrator approval a window that is not elevated uses.
+and removed once more through the administrator approval a window that is not elevated uses,
+while a second Windows account holds a receipt for the same release, so the first removal keeps
+the package and the second account's removal uninstalls it.
 """
 
 from __future__ import annotations
@@ -162,13 +164,19 @@ with mock.patch.object(windows_package, "_is_windows_administrator", return_valu
 APPROVAL_REQUEST = "Requesting Windows administrator approval once for the native packages."
 
 
-def sima_cli(home: Path, *arguments: object, expect: int = 0, approval: bool = False) -> str:
-    """Run the installed sima-cli command without input, with its state under home."""
+def sima_cli(home: Path | None, *arguments: object, expect: int = 0, approval: bool = False) -> str:
+    """Run the installed sima-cli command without input, with its state under home.
+
+    home None keeps this account's own profile, which Windows lists among the machine's
+    profiles; a temporary home stands in for another account that the list does not show.
+    """
     command = [str(Path(sysconfig.get_path("scripts")) / "sima-cli.exe"), *map(str, arguments)]
     if approval:
         command = [sys.executable, "-I", "-c", APPROVAL_PATH_CLI, *command[1:]]
-    environment = dict(os.environ, USERPROFILE=str(home), SIMA_CLI_CHECK_FOR_UPDATE="0",
+    environment = dict(os.environ, SIMA_CLI_CHECK_FOR_UPDATE="0",
                        PYTHONIOENCODING="utf-8", NO_PROXY="127.0.0.1")
+    if home is not None:
+        environment["USERPROFILE"] = str(home)
     print("+", subprocess.list2cmdline(command), flush=True)
     try:
         result = subprocess.run(
@@ -185,8 +193,8 @@ def sima_cli(home: Path, *arguments: object, expect: int = 0, approval: bool = F
     return result.stdout
 
 
-def receipts(home: Path) -> list[dict]:
-    registry = home / ".sima-cli" / "registry.json"
+def receipts(home: Path | None) -> list[dict]:
+    registry = (home or Path(os.environ["USERPROFILE"])) / ".sima-cli" / "registry.json"
     data = json.loads(registry.read_text(encoding="utf-8")) if registry.is_file() else []
     return [entry for entry in data if entry["package_name"] == PACKAGE]
 
@@ -258,7 +266,7 @@ def main() -> int:
             if not payload.is_file() or payload.read_text(encoding="utf-8") != f"sima-cli Windows MSI e2e {version}\n":
                 raise SystemExit(f"installed MSI payload is not the {version} one")
 
-        removed = False
+        removed = other_account_installed = False
         try:
             with served(root / "dist") as channel:
                 def install(version: str, expect: int = 0) -> str:
@@ -331,23 +339,51 @@ def main() -> int:
             with served(root / "dist") as channel:
                 output = sima_cli(home, "install", "-m", f"{channel}/{new}/metadata.json",
                                   "-d", root / "downloads-approval", approval=True)
-            if APPROVAL_REQUEST not in output:
-                raise SystemExit("the install did not request administrator approval")
-            if not installed(new):
-                raise SystemExit("the install through administrator approval left 1.1.0 uninstalled")
-            check_payload(new)
-            if [(entry["version"], entry["state"]) for entry in receipts(home)] != [(new, "installed")]:
-                raise SystemExit(f"unexpected receipts after the approved install: {receipts(home)}")
+                if APPROVAL_REQUEST not in output:
+                    raise SystemExit("the install did not request administrator approval")
+                if not installed(new):
+                    raise SystemExit("the install through administrator approval left 1.1.0 uninstalled")
+                check_payload(new)
+                if [(entry["version"], entry["state"]) for entry in receipts(home)] != [(new, "installed")]:
+                    raise SystemExit(f"unexpected receipts after the approved install: {receipts(home)}")
+                # A second account runs the same install for its own receipt.
+                other_account_installed = True
+                sima_cli(None, "install", "-m", f"{channel}/{new}/metadata.json",
+                         "-d", root / "downloads-other-account")
+            if [(entry["version"], entry["state"]) for entry in receipts(None)] != [(new, "installed")]:
+                raise SystemExit(f"unexpected receipts of the second account: {receipts(None)}")
+            # The first account's removal keeps the machine-wide package the second one records.
             output = sima_cli(home, "packages", "remove", PACKAGE, "--version", new, "--yes",
                               approval=True)
             if APPROVAL_REQUEST not in output:
                 raise SystemExit("packages remove did not request administrator approval")
-            if installed(new) or install_root.exists():
-                raise SystemExit("packages remove through administrator approval left 1.1.0 installed")
+            if ("Keeping native native package" not in output
+                    or os.environ["USERNAME"].lower() not in output.lower()):
+                raise SystemExit("packages remove did not name the account that keeps the package")
+            if not installed(new):
+                raise SystemExit("packages remove uninstalled a package another account records")
+            check_payload(new)
             if receipts(home):
                 raise SystemExit(f"receipts remain after the approved removal: {receipts(home)}")
+            # The last account's removal uninstalls it.
+            output = sima_cli(None, "packages", "remove", PACKAGE, "--version", new, "--yes",
+                              approval=True)
+            other_account_installed = False
+            if APPROVAL_REQUEST not in output:
+                raise SystemExit("packages remove did not request administrator approval")
+            if installed(new) or install_root.exists():
+                raise SystemExit("packages remove through administrator approval left 1.1.0 installed")
+            if receipts(None):
+                raise SystemExit(f"receipts remain after the last account's removal: {receipts(None)}")
             removed = True
         finally:
+            registry = Path(os.environ["USERPROFILE"]) / ".sima-cli" / "registry.json"
+            if other_account_installed and registry.is_file():
+                # Leave this account's own registry as it was.
+                entries = json.loads(registry.read_text(encoding="utf-8"))
+                registry.write_text(json.dumps(
+                    [entry for entry in entries if entry["package_name"] != PACKAGE], indent=2),
+                    encoding="utf-8")
             if not removed:
                 for version, code in codes.items():
                     uninstall_log = root / f"msi-uninstall-{version}.log"
@@ -368,7 +404,8 @@ def main() -> int:
             "repeat_install_repairs": "PASS", "repair_restores_registry": "PASS",
             "repair_leaves_file_in_use": "PASS", "setup_ran_interactive": "PASS",
             "upgrade": "PASS", "downgrade_refused": "PASS", "packages_remove": "PASS",
-            "approval_install": "PASS", "approval_remove": "PASS", "cleanup": "PASS",
+            "approval_install": "PASS", "approval_remove_keeps_other_account": "PASS",
+            "approval_remove": "PASS", "cleanup": "PASS",
         }, indent=2) + "\n", encoding="utf-8")
 
     print("WINDOWS_MSI_INSTALL_E2E_PASS")

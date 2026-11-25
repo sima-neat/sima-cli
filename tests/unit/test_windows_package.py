@@ -35,7 +35,7 @@ from sima_cli.install.windows_package import (
     _inspect_python,
     _install_python_wheel,
     _managed_python_executable,
-    _msi_product_code,
+    _msi_codes,
     _python_bootstrap_candidates,
     _python_distribution_archive_sha256,
     _python_distribution_version,
@@ -55,6 +55,10 @@ POWERSHELL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
 PRODUCT_CODES = {
     "simaai": "{11111111-1111-1111-1111-111111111111}",
     "sima": "{22222222-2222-2222-2222-222222222222}",
+}
+UPGRADE_CODES = {
+    "simaai": "{AAAAAAAA-1111-1111-1111-111111111111}",
+    "sima": "{BBBBBBBB-2222-2222-2222-222222222222}",
 }
 OPENSSH = {
     "name": "Windows OpenSSH client",
@@ -153,8 +157,10 @@ class WindowsPackageTests(unittest.TestCase):
         windows.start()
         self.addCleanup(windows.stop)
         product_codes = patch(
-            "sima_cli.install.windows_package._msi_product_code",
-            side_effect=lambda msi: PRODUCT_CODES[msi.name.split("-")[0]],
+            "sima_cli.install.windows_package._msi_codes",
+            side_effect=lambda msi: (
+                PRODUCT_CODES[msi.name.split("-")[0]], UPGRADE_CODES[msi.name.split("-")[0]]
+            ),
         )
         product_codes.start()
         self.addCleanup(product_codes.stop)
@@ -876,9 +882,11 @@ class WindowsPackageTests(unittest.TestCase):
             {
                 "native_packages": [
                     {"owner": "scheduler", "version": "0.6.1",
-                     "product_code": PRODUCT_CODES["simaai"]},
+                     "product_code": PRODUCT_CODES["simaai"],
+                     "upgrade_code": UPGRADE_CODES["simaai"]},
                     {"owner": "core", "version": "0.6.1",
-                     "product_code": PRODUCT_CODES["sima"]},
+                     "product_code": PRODUCT_CODES["sima"],
+                     "upgrade_code": UPGRADE_CODES["sima"]},
                 ],
                 "python_executable": None,
             },
@@ -891,16 +899,25 @@ class WindowsPackageTests(unittest.TestCase):
         ) as run, self.assertRaisesRegex(
             WindowsNativeInstallError, "ProductCode of .*could not be opened.*No MSI was started"
         ):
-            _msi_product_code(self.msi)
+            _msi_codes(self.msi)
         self.assertEqual(run.call_args.kwargs["env"]["SIMA_CLI_MSI_PATH"], str(self.msi))
 
+        code = "{abcdef01-2345-6789-abcd-ef0123456789}"
+        upgrade = "{fedcba98-2345-6789-abcd-ef0123456789}"
+        # An MSI without an UpgradeCode prints an empty second line.
+        for stdout, codes in (
+            (f"{code}\n{upgrade}\n", (code.upper(), upgrade.upper())),
+            (f"{code}\n\n", (code.upper(), "")),
+        ):
+            with self.subTest(stdout=stdout), patch(
+                "sima_cli.install.windows_package._run", return_value=completed(stdout=stdout)
+            ):
+                self.assertEqual(_msi_codes(self.msi), codes)
         with patch(
             "sima_cli.install.windows_package._run",
-            return_value=completed(stdout="{abcdef01-2345-6789-abcd-ef0123456789}"),
-        ):
-            self.assertEqual(
-                _msi_product_code(self.msi), "{ABCDEF01-2345-6789-ABCD-EF0123456789}"
-            )
+            return_value=completed(stdout=f"{code}\n/i other.msi\n"),
+        ), self.assertRaisesRegex(WindowsNativeInstallError, "ProductCode of"):
+            _msi_codes(self.msi)
 
     def windows_receipt(self, registry_path, native_packages):
         self.use_scheduler_and_core()
@@ -968,6 +985,7 @@ class WindowsPackageTests(unittest.TestCase):
         script = requests[0]["script"]
         self.assertIn("CurrentVersion\\ProfileList", script)
         self.assertIn("$result.exit_code = 9004", script)
+        self.assertIn("$package.upgrade_code", script)
         self.assertEqual([package["msi"] for package in request["packages"]], [None, None])
         self.assertIn("Removing native packages: core, scheduler", output)
         self.assertIn(f"& \"{self.python}\" -m pip uninstall -y pyneatpcie", output)
@@ -1085,16 +1103,18 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(receipts, [])
 
     def test_uninstall_refuses_an_invalid_recorded_product_code(self):
-        cohort = self.recorded_cohort()
-        cohort[1]["product_code"] = "/i \\\\server\\share\\other.msi"
-        run, requests = fake_elevation([0, 0])
+        for field in ("product_code", "upgrade_code"):
+            with self.subTest(field=field):
+                cohort = self.upgraded_cohort()
+                cohort[1][field] = "/i \\\\server\\share\\other.msi"
+                run, requests = fake_elevation([0, 0])
 
-        exit_code, output, receipts = self.remove_windows_receipt(cohort, run)
+                exit_code, output, receipts = self.remove_windows_receipt(cohort, run)
 
-        self.assertNotEqual(exit_code, 0)
-        self.assertIn("invalid product code for core", output)
-        self.assertEqual(requests, [])
-        self.assertEqual([receipt["state"] for receipt in receipts], ["remove-failed"])
+                self.assertNotEqual(exit_code, 0)
+                self.assertIn(f"invalid {field.replace('_', ' ')} for core", output)
+                self.assertEqual(requests, [])
+                self.assertEqual([receipt["state"] for receipt in receipts], ["remove-failed"])
 
     def test_uninstall_without_recorded_product_codes_removes_only_the_receipt(self):
         run, requests = fake_elevation([0, 0])
@@ -1106,7 +1126,7 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertEqual(requests, [])
         self.assertEqual(receipts, [])
 
-    def administrator_uninstall(self, other_accounts=completed(stdout="{}")):
+    def administrator_uninstall(self, other_accounts=completed(stdout="{}"), cohort=None):
         """Remove the recorded cohort from an elevated session; return (restart, output, run)."""
         output = io.StringIO()
         registry_path = self.root / "registry.json"
@@ -1117,7 +1137,7 @@ class WindowsPackageTests(unittest.TestCase):
             ),
         ) as run, redirect_stdout(output):
             restart = uninstall_windows_package(
-                {"native_packages": self.recorded_cohort()}, {}, registry_path
+                {"native_packages": cohort or self.recorded_cohort()}, {}, registry_path
             )
         scans = [command for command in run.call_args_list if command.args[0][0] == POWERSHELL]
         self.assertEqual(len(scans), 1)
@@ -1166,6 +1186,96 @@ class WindowsPackageTests(unittest.TestCase):
                         f"it: {accounts}.",
                         output,
                     )
+
+    def upgraded_cohort(self):
+        """The cohort as this build records it: each package with its upgrade code."""
+        return [
+            {**package, "upgrade_code": UPGRADE_CODES[key]}
+            for package, key in zip(self.recorded_cohort(), ("simaai", "sima"))
+        ]
+
+    def test_administrator_uninstall_keeps_a_release_another_account_installed_earlier(self):
+        # Account bob installed 0.6.0, whose Core MSI had another product code; this
+        # account's 0.6.1 install upgraded it in place, so only the upgrade codes match.
+        bob = "HOST\\bob"
+        old_core = "{33333333-3333-3333-3333-333333333333}"
+        scan = completed(stdout=json.dumps({
+            old_core: [bob], UPGRADE_CODES["sima"]: [bob],
+            PRODUCT_CODES["simaai"]: [bob], UPGRADE_CODES["simaai"]: [bob],
+        }))
+        restart, output, run = self.administrator_uninstall(scan, self.upgraded_cohort())
+
+        self.assertFalse(restart)
+        self.assertEqual(len(run.call_args_list), 1, "no msiexec may start")
+        for owner in ("core", "scheduler"):
+            self.assertIn(
+                f"Keeping {owner} native package, which is installed for the whole machine, "
+                f"for other Windows accounts whose sima-cli receipts may use it: {bob}.",
+                output,
+            )
+
+        # A receipt recorded without upgrade codes may share one with any package.
+        scan = completed(stdout=json.dumps({old_core: [bob]}))
+        restart, output, run = self.administrator_uninstall(scan)
+        self.assertEqual(len(run.call_args_list), 1, "no msiexec may start")
+        self.assertIn(f"may use it: {bob}.", output)
+
+        # A different product of another account keeps nothing.
+        scan = completed(stdout=json.dumps({old_core: [bob], "{99999999-9999-9999-9999-999999999999}": [bob]}))
+        _restart, _output, run = self.administrator_uninstall(scan, self.upgraded_cohort())
+        self.assertEqual(
+            [command.args[0][:3] for command in run.call_args_list[1:]],
+            [[MSIEXEC, "/x", PRODUCT_CODES["sima"]], [MSIEXEC, "/x", PRODUCT_CODES["simaai"]]],
+        )
+
+    def test_uninstall_removes_the_release_that_upgraded_the_recorded_one(self):
+        # Another account's 0.6.2 install upgraded the Core this 0.6.1 receipt recorded.
+        new_core = "{44444444-4444-4444-4444-444444444444}"
+        with patch(
+            "sima_cli.install.windows_package._msi_product_installed",
+            side_effect=lambda code: code != PRODUCT_CODES["sima"],
+        ), patch(
+            "sima_cli.install.windows_package._msi_related_products",
+            side_effect=lambda code: [new_core] if code == UPGRADE_CODES["sima"] else [],
+        ) as related:
+            run, requests = fake_elevation([0, 0])
+            exit_code, output, receipts = self.remove_windows_receipt(self.upgraded_cohort(), run)
+
+            self.assertEqual(exit_code, 0, output)
+            related.assert_called_once_with(UPGRADE_CODES["sima"])
+            packages = requests[0]["request"]["packages"]
+            self.assertEqual(
+                [(package["arguments"].split()[:2], package["product_code"], package["upgrade_code"])
+                 for package in packages],
+                [
+                    (["/x", new_core], new_core, UPGRADE_CODES["sima"]),
+                    (["/x", PRODUCT_CODES["simaai"]], PRODUCT_CODES["simaai"], UPGRADE_CODES["simaai"]),
+                ],
+            )
+            self.assertIn("core native package removed.", output)
+            self.assertEqual(receipts, [])
+
+            # Another receipt of this account that records the installed release keeps it.
+            registry_path = self.root / "registry.json"
+            registry = self.windows_receipt(registry_path, self.upgraded_cohort())
+            registry.create_entry(self.metadata["name"], "0.6.2", self.metadata, "")
+            registry.update_fields(self.metadata["name"], "0.6.2", {"native_packages": [
+                {"owner": "core", "version": "0.6.2", "product_code": new_core,
+                 "upgrade_code": UPGRADE_CODES["sima"]},
+            ]})
+            run, requests = fake_elevation([0])
+            exit_code, output, _receipts = self.run_packages_remove(registry_path, "0.6.1", run)
+
+        self.assertEqual(exit_code, 0, output)
+        self.assertEqual(
+            [package["arguments"].split()[:2] for package in requests[0]["request"]["packages"]],
+            [["/x", PRODUCT_CODES["simaai"]]],
+        )
+        self.assertIn(
+            f"Keeping native packages another receipt uses: core (still recorded by "
+            f"{self.metadata['name']}@0.6.2)",
+            output,
+        )
 
     def test_uninstall_starts_no_installer_when_other_receipts_record_every_package(self):
         shared = {code: "other@0.6.0" for code in PRODUCT_CODES.values()}

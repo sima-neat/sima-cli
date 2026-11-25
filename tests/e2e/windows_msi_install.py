@@ -3,10 +3,11 @@
 
 The MSI is built twice, as 1.0.0 and 1.1.0 with the same upgrade code. Through the installed
 sima-cli command it is installed, upgraded, refused as a downgrade and removed; the repair of
-an installed release runs through the package installer in this process. Last, it is installed
-and removed once more through the administrator approval a window that is not elevated uses,
-while a second Windows account holds a receipt for the same release, so the first removal keeps
-the package and the second account's removal uninstalls it.
+an installed release runs through the package installer in this process. Last, a second Windows
+account installs 1.0.0, and the first account upgrades it to 1.1.0 and removes it through the
+administrator approval a window that is not elevated uses: that removal keeps the package the
+second account's receipt records under its earlier product code, and the second account's
+removal then uninstalls the installed 1.1.0.
 """
 
 from __future__ import annotations
@@ -254,7 +255,7 @@ def main() -> int:
             for version in (old, new)
         }
         metadata = {version: package_metadata(msi, version, install_name) for version, msi in msis.items()}
-        codes = {version: windows_package._msi_product_code(msi) for version, msi in msis.items()}
+        codes = {version: windows_package._msi_codes(msi)[0] for version, msi in msis.items()}
         if codes[old] == codes[new]:
             raise SystemExit(f"both versions have product code {codes[old]}")
         payload = install_root / "share" / "payload.txt"
@@ -335,24 +336,28 @@ def main() -> int:
             if receipts(home):
                 raise SystemExit(f"receipts remain after removal: {receipts(home)}")
 
-            # Install and remove once more through the administrator approval path.
+            # A second account installs the older release for its own receipt, which records
+            # the upgrade code that both releases share.
             with served(root / "dist") as channel:
+                other_account_installed = True
+                sima_cli(None, "install", "-m", f"{channel}/{old}/metadata.json",
+                         "-d", root / "downloads-other-account")
+                if [(entry["version"], entry["state"],
+                     [(package["product_code"], package["upgrade_code"]) for package in entry["native_packages"]])
+                        for entry in receipts(None)] != [(old, "installed", [(codes[old], f"{{{upgrade_guid}}}")])]:
+                    raise SystemExit(f"unexpected receipts of the second account: {receipts(None)}")
+                # This account upgrades it through the administrator approval path.
                 output = sima_cli(home, "install", "-m", f"{channel}/{new}/metadata.json",
                                   "-d", root / "downloads-approval", approval=True)
                 if APPROVAL_REQUEST not in output:
                     raise SystemExit("the install did not request administrator approval")
-                if not installed(new):
-                    raise SystemExit("the install through administrator approval left 1.1.0 uninstalled")
+                if installed(old) or not installed(new):
+                    raise SystemExit("the install through administrator approval did not upgrade to 1.1.0")
                 check_payload(new)
                 if [(entry["version"], entry["state"]) for entry in receipts(home)] != [(new, "installed")]:
                     raise SystemExit(f"unexpected receipts after the approved install: {receipts(home)}")
-                # A second account runs the same install for its own receipt.
-                other_account_installed = True
-                sima_cli(None, "install", "-m", f"{channel}/{new}/metadata.json",
-                         "-d", root / "downloads-other-account")
-            if [(entry["version"], entry["state"]) for entry in receipts(None)] != [(new, "installed")]:
-                raise SystemExit(f"unexpected receipts of the second account: {receipts(None)}")
-            # The first account's removal keeps the machine-wide package the second one records.
+            # This account's removal keeps the machine-wide package that the second account's
+            # receipt records under the earlier product code.
             output = sima_cli(home, "packages", "remove", PACKAGE, "--version", new, "--yes",
                               approval=True)
             if APPROVAL_REQUEST not in output:
@@ -365,8 +370,8 @@ def main() -> int:
             check_payload(new)
             if receipts(home):
                 raise SystemExit(f"receipts remain after the approved removal: {receipts(home)}")
-            # The last account's removal uninstalls it.
-            output = sima_cli(None, "packages", "remove", PACKAGE, "--version", new, "--yes",
+            # The last account's removal uninstalls the release that upgraded its own.
+            output = sima_cli(None, "packages", "remove", PACKAGE, "--version", old, "--yes",
                               approval=True)
             other_account_installed = False
             if APPROVAL_REQUEST not in output:

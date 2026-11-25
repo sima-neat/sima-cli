@@ -246,8 +246,10 @@ def _is_windows_administrator() -> bool:
 # The MSIs are installed for the whole machine, but each Windows account keeps its own
 # receipts in %USERPROFILE%\.sima-cli\registry.json. Reading another account's profile
 # needs administrator rights, so this runs with them, just before a removal. It maps each
-# product code that a receipt of another account records to that account; '*' lists the
-# accounts whose registry exists but could not be read, which may record any package.
+# product code and upgrade code that a receipt of another account records to that account;
+# the upgrade code still matches after a later release of the package replaced the one
+# that receipt installed. '*' lists the accounts whose registry exists but could not be
+# read, or that records a package without its upgrade code; they may use any package.
 _OTHER_ACCOUNT_USES_FUNCTION = r"""
 function Get-OtherAccountUses([string]$OwnRegistry) {
   $uses = @{}
@@ -271,6 +273,10 @@ function Get-OtherAccountUses([string]$OwnRegistry) {
         foreach ($package in $receipt.native_packages) {
           if ($package.product_code) {
             $codes += ([string]$package.product_code).ToUpperInvariant()
+            if ($null -eq $package.upgrade_code) { $codes += '*' }
+            elseif ($package.upgrade_code) {
+              $codes += ([string]$package.upgrade_code).ToUpperInvariant()
+            }
           }
         }
       }
@@ -323,8 +329,13 @@ foreach ($package in $request.packages) {
   $lock = $null
   try {
     if ($request.own_registry) {
-      $users = @(foreach ($code in '*', ([string]$package.product_code).ToUpperInvariant()) {
-        if ($otherUses.ContainsKey($code)) { $otherUses[$code] }
+      # A receipt that does not record the upgrade code may share it with any package.
+      $codes = if ($null -eq $package.upgrade_code) { @($otherUses.Keys) } else {
+        @('*', ([string]$package.product_code).ToUpperInvariant(),
+          ([string]$package.upgrade_code).ToUpperInvariant())
+      }
+      $users = @(foreach ($code in $codes) {
+        if ($code -and $otherUses.ContainsKey($code)) { $otherUses[$code] }
       })
       if ($users.Count -gt 0) {
         $result.exit_code = 9004
@@ -437,6 +448,7 @@ def _run_elevated_msi_batch(
                     "msi": str(item["msi"]) if "msi" in item else None,
                     "sha256": item.get("sha256"),
                     "product_code": item.get("product_code"),
+                    "upgrade_code": item.get("upgrade_code"),
                 }
                 for item in items
             ],
@@ -490,16 +502,20 @@ def _run_msi_operations(
 
     handle_result raises for every exit code outside continue_codes, so the steps stop
     at the first failure. A non-elevated session approves all steps with one prompt.
-    With own_registry, a step whose product code a receipt of another Windows account
-    records is not run; it reports NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS instead.
+    With own_registry, a step whose product code or upgrade code a receipt of another
+    Windows account records is not run; it reports NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS
+    instead. A step without an upgrade code (None) is kept for every such account.
     """
     first_log = items[0]["log"]
     if _is_windows_administrator():
         other_uses = _other_account_uses(own_registry) if own_registry is not None else {}
         for item in items:
-            users = sorted(
-                {*other_uses.get("*", []), *other_uses.get(item.get("product_code"), [])}
+            codes = (
+                other_uses
+                if item.get("upgrade_code") is None
+                else ("*", item.get("product_code"), item["upgrade_code"])
             )
+            users = sorted({user for code in codes for user in other_uses.get(code, [])})
             if users:
                 handle_result(item, NATIVE_PACKAGE_KEPT_FOR_OTHER_ACCOUNTS, "; ".join(users))
                 continue
@@ -559,31 +575,44 @@ def _run_msi_operations(
         handle_result(item, code, detail)
 
 
-def _msi_product_code(msi: Path) -> str:
-    """Read an MSI's ProductCode so the receipt can drive msiexec /x later."""
+def _msi_codes(msi: Path) -> Tuple[str, str]:
+    """Read an MSI's ProductCode, which drives msiexec /x later, and its UpgradeCode.
+
+    Releases of one package share the UpgradeCode while the ProductCode changes; it is
+    empty for an MSI that declares none, which no later release can then upgrade.
+    """
     script = r"""
 $ErrorActionPreference = 'Stop'
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $database = $installer.GetType().InvokeMember(
   'OpenDatabase', 'InvokeMethod', $null, $installer, @($env:SIMA_CLI_MSI_PATH, 0))
-$view = $database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $database,
-  @("SELECT Value FROM Property WHERE Property = 'ProductCode'"))
-$view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
-$record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
-[Console]::Out.Write(
-  $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1))
+foreach ($property in 'ProductCode', 'UpgradeCode') {
+  $view = $database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $database,
+    @("SELECT Value FROM Property WHERE Property = '$property'"))
+  $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+  $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+  if ($null -ne $record) {
+    [Console]::Out.Write(
+      $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1))
+  }
+  [Console]::Out.Write("`n")
+}
 """
     try:
         result = _run_powershell(script, {"SIMA_CLI_MSI_PATH": str(msi)}, capture_output=True)
     except OSError as error:
         result = subprocess.CompletedProcess([], 1, stdout="", stderr=str(error))
-    code = (result.stdout or "").strip()
-    if result.returncode != 0 or not _PRODUCT_CODE.fullmatch(code):
-        detail = (result.stderr or "").strip() or f"unexpected value '{code}'"
+    code, upgrade_code = ((result.stdout or "").strip().splitlines() + ["", ""])[:2]
+    if (
+        result.returncode != 0
+        or not _PRODUCT_CODE.fullmatch(code.strip())
+        or not (upgrade_code.strip() == "" or _PRODUCT_CODE.fullmatch(upgrade_code.strip()))
+    ):
+        detail = (result.stderr or "").strip() or f"unexpected value '{result.stdout}'"
         raise WindowsNativeInstallError(
             f"Could not read the ProductCode of '{msi.name}': {detail}. No MSI was started."
         )
-    return code.upper()
+    return code.strip().upper(), upgrade_code.strip().upper()
 
 
 # WiX MajorUpgrade sets this property when a newer version of the product is installed;
@@ -609,6 +638,18 @@ def _msi_product_installed(product_code: str) -> bool:
         return ctypes.windll.msi.MsiQueryProductStateW(product_code) == INSTALLSTATE_DEFAULT
     except (AttributeError, OSError):
         return False
+
+
+def _msi_related_products(upgrade_code: str) -> List[str]:
+    """List the installed product codes that share this UpgradeCode."""
+    products: List[str] = []
+    try:
+        buffer = ctypes.create_unicode_buffer(39)
+        while ctypes.windll.msi.MsiEnumRelatedProductsW(upgrade_code, 0, len(products), buffer) == 0:
+            products.append(buffer.value.upper())
+    except (AttributeError, OSError):
+        return []
+    return products
 
 
 def _program_files_64() -> Optional[str]:
@@ -1233,7 +1274,7 @@ def _install_native_packages(
             "args": ["/i", str(msi), "/passive", "/norestart", "/L*v", str(log_path)],
         })
     for item in items:
-        item["product_code"] = _msi_product_code(item["msi"])
+        item["product_code"], item["upgrade_code"] = _msi_codes(item["msi"])
         # Passing an installed package to /i again only enters maintenance mode and
         # rewrites nothing, so a rerun of the same release repairs it instead: files that
         # are missing or older, plus machine and user registry entries and shortcuts.
@@ -1246,7 +1287,7 @@ def _install_native_packages(
         # Recorded before any MSI starts, so a later uninstall can find every package.
         record_receipt({
             "native_packages": [
-                {key: item[key] for key in ("owner", "version", "product_code")}
+                {key: item[key] for key in ("owner", "version", "product_code", "upgrade_code")}
                 for item in items
             ],
             "python_executable": python_executable,
@@ -1330,6 +1371,7 @@ def _install_native_packages(
                 "msi": str(item["msi"]),
                 "log": str(log_path),
                 "product_code": item["product_code"],
+                "upgrade_code": item["upgrade_code"],
             }
         )
         click.echo(
@@ -1607,8 +1649,9 @@ def uninstall_windows_package(
 
     shared maps product codes that other receipts in registry_path, the caller's registry,
     still record to one such receipt; those packages are kept, and so is a package that a
-    receipt of another Windows account records. Returns True when Windows must restart to
-    finish the removal.
+    receipt of another Windows account records in any release. When a later release of a
+    package replaced the recorded one, the installed release is removed instead. Returns
+    True when Windows must restart to finish the removal.
     """
     if not _is_windows():
         raise click.ClickException("Windows MSI packages can only be uninstalled on Windows.")
@@ -1626,20 +1669,38 @@ def uninstall_windows_package(
     for index, package in enumerate(reversed(packages), start=1):
         owner = str(package.get("owner", ""))
         product_code = str(package.get("product_code", ""))
+        # None for a receipt recorded before upgrade codes were.
+        upgrade_code = package.get("upgrade_code")
         if not _PRODUCT_CODE.fullmatch(product_code):
             raise click.ClickException(
                 f"The receipt records an invalid product code for {owner or 'a package'}: "
                 f"'{product_code}'. No native package was removed."
             )
-        if product_code in (shared or {}):
-            kept.append(f"{owner} (still recorded by {shared[product_code]})")
+        if upgrade_code and not _PRODUCT_CODE.fullmatch(str(upgrade_code)):
+            raise click.ClickException(
+                f"The receipt records an invalid upgrade code for {owner or 'a package'}: "
+                f"'{upgrade_code}'. No native package was removed."
+            )
+        installed_code = product_code.upper()
+        if upgrade_code and not _msi_product_installed(product_code):
+            # A later release, installed for another receipt, upgraded this one in place.
+            related = _msi_related_products(upgrade_code)
+            if len(related) == 1:
+                installed_code = related[0]
+        recorded_by = next(
+            (shared[code] for code in (product_code, installed_code) if code in (shared or {})),
+            None,
+        )
+        if recorded_by:
+            kept.append(f"{owner} (still recorded by {recorded_by})")
             continue
         log_path = log_root / f"sima-cli-msi-uninstall-{index:02d}-{_safe_log_label(owner)}.log"
         items.append({
             "owner": owner,
             "log": log_path,
-            "product_code": product_code.upper(),
-            "args": ["/x", product_code, "/passive", "/norestart", "/L*v", str(log_path)],
+            "product_code": installed_code,
+            "upgrade_code": upgrade_code if upgrade_code is None else str(upgrade_code).upper(),
+            "args": ["/x", installed_code, "/passive", "/norestart", "/L*v", str(log_path)],
         })
     if kept:
         click.echo("Keeping native packages another receipt uses: " + ", ".join(kept))

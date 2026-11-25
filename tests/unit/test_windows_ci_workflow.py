@@ -38,13 +38,16 @@ class WindowsCiWorkflowTests(unittest.TestCase):
     def test_msi_fixture_keeps_the_package_while_another_account_records_it(self):
         # The MSIs are machine-wide; another account's receipt is found only through the
         # profiles Windows lists, which the runner's own profile is and the temporary home is not.
+        # That account installs the older release, which this account then upgrades.
         source = (WORKFLOW.parents[2] / "tests/e2e/windows_msi_install.py").read_text(encoding="utf-8")
         order = [
-            'sima_cli(None, "install", "-m", f"{channel}/{new}/metadata.json"',
+            'sima_cli(None, "install", "-m", f"{channel}/{old}/metadata.json"',
+            'output = sima_cli(home, "install", "-m", f"{channel}/{new}/metadata.json"',
+            'raise SystemExit("the install through administrator approval did not upgrade to 1.1.0")',
             'output = sima_cli(home, "packages", "remove", PACKAGE, "--version", new, "--yes",\n'
             '                              approval=True)',
             'raise SystemExit("packages remove uninstalled a package another account records")',
-            'output = sima_cli(None, "packages", "remove", PACKAGE, "--version", new, "--yes",\n'
+            'output = sima_cli(None, "packages", "remove", PACKAGE, "--version", old, "--yes",\n'
             '                              approval=True)',
             'raise SystemExit("packages remove through administrator approval left 1.1.0 installed")',
         ]

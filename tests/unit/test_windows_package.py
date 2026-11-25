@@ -2954,7 +2954,7 @@ class WindowsPackageTests(unittest.TestCase):
         )()
         pinned = "sima-cli neat install core/pciehost/windows/amd64@v0.6.1:" + "a" * 12
         cases = [
-            ({"python_executable": str(self.python)}, f'--python-executable "{self.python}"'),
+            ({"python_executable": str(self.python)}, f"--python-executable '{self.python}'"),
             ({"native_only": True}, "--native-only"),
         ]
         for options, option_text in cases:
@@ -2973,6 +2973,37 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertEqual(
                     forwarded["retry_command"], f"{pinned} --env dev {option_text}"
                 )
+
+    def test_pinned_retry_keeps_the_install_directory_as_an_absolute_powershell_literal(self):
+        # The retry may run in a new window, for example after a restart, whose current
+        # directory is System32; a relative or omitted --install-dir would download there.
+        resolved = type("Result", (), {
+            "environment": "production", "repository": "core",
+            "package_path": "pciehost/windows/amd64", "ref": "v0.6.1",
+            "resolved_spec": "a" * 12, "metadata_url": "https://example.invalid/metadata.json",
+            "base_url": "https://example.invalid", "ref_key": "v0.6.1",
+            "requested_spec": "latest",
+        })()
+        # PowerShell also ends a single-quoted string at a typographic quote.
+        work = self.root / "Neat O'Brien’s downloads"
+        work.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.root)
+        with patch(
+            "sima_cli.vulcan.commands.resolve_install_metadata_url", return_value=resolved
+        ), patch("sima_cli.vulcan.commands.install_from_metadata") as install:
+            install_vulcan_package(
+                target="core/pciehost/windows/amd64@v0.6.1", environment="production",
+                install_dir=work.name, python_executable=str(self.python),
+            )
+
+        quoted = "'" + str(work.resolve()).replace("'", "''").replace("’", "’’") + "'"
+        self.assertEqual(
+            install.call_args.kwargs["retry_command"],
+            "sima-cli neat install core/pciehost/windows/amd64@v0.6.1:" + "a" * 12
+            + f" --install-dir {quoted} --python-executable '{self.python}'",
+        )
+        self.assertEqual(install.call_args.kwargs["install_dir"], work.name)
 
 
 if __name__ == "__main__":

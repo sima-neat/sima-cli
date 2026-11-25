@@ -1,4 +1,6 @@
 import json
+import os
+import re
 
 import click
 
@@ -82,10 +84,19 @@ def _ensure_available_environment(environment):
         )
 
 
+def _powershell_literal(value):
+    """Quote a value for PowerShell, which also reads the typographic single quotes."""
+    return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1", value) + "'"
+
+
 def _pinned_install_command(
-    result, base_url, package_type, python_executable, native_only
+    result, base_url, package_type, python_executable, native_only, install_dir="."
 ):
-    """Return the neat install command for exactly the release this run resolved."""
+    """Return the neat install command for exactly the release this run resolved.
+
+    Only Windows MSI recovery messages print it, for a PowerShell window that may have
+    another current directory, so a chosen install directory is kept as an absolute path.
+    """
     package = f"/{result.package_path}" if result.package_path else ""
     parts = [
         "sima-cli neat install",
@@ -99,8 +110,10 @@ def _pinned_install_command(
         parts.append(f"-t {package_type}")
     if native_only:
         parts.append("--native-only")
+    if install_dir != ".":
+        parts.append(f"--install-dir {_powershell_literal(os.path.abspath(install_dir))}")
     if python_executable:
-        parts.append(f'--python-executable "{python_executable}"')
+        parts.append(f"--python-executable {_powershell_literal(python_executable)}")
     return " ".join(parts)
 
 
@@ -161,7 +174,7 @@ def install_vulcan_package(
         force=force,
         command_name=command_name,
         retry_command=_pinned_install_command(
-            result, base_url, package_type, python_executable, native_only
+            result, base_url, package_type, python_executable, native_only, install_dir
         ),
     )
     if python_executable is not None:

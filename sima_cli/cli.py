@@ -701,9 +701,10 @@ def show_mla_memory_usage(ctx):
     help="Skip NetBoot setup confirmation with an explicit --devkit IP and --autoflash, "
          "and skip reboot confirmation after a manual NetBoot flash.",
 )
+@click.option("--skip-troot", is_flag=True, help="Flash only eMMC during netboot; requires acceptance of a warning.")
 @click.pass_context
 def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_ip,
-                autoflash, fwtype, rootfs, recovery=False, force=False, yes=False):
+                autoflash, fwtype, rootfs, recovery=False, force=False, yes=False, skip_troot=False):
     """
     Prepare a bootable image for the SiMa DevKit.
 
@@ -747,6 +748,10 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
         reused by default. ``--delete-cache`` removes only the managed cache
         entry after the session exits.
 
+    With ``--skip-troot``, both manual (``f``) and automatic flashing write
+    only eMMC. You must accept a warning once at startup, even with ``--yes``.
+    Existing tRoot firmware stays unchanged and may be incompatible with the OS.
+
     \b
     Examples:
 
@@ -781,6 +786,8 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
     """
 
     uses_netboot = netboot or autoflash
+    if skip_troot and not uses_netboot:
+        raise click.UsageError("--skip-troot requires --netboot or --autoflash.")
     if uses_netboot and sys.platform == "win32":
         raise click.ClickException(
             "NetBoot requires WSL 2 on Windows. Open a WSL 2 distro, install "
@@ -829,6 +836,8 @@ def bootimg_cmd(ctx, version, boardtype, netboot, images, delete_cache, devkit_i
             from sima_cli.update.netboot import setup_netboot
 
             netboot_options = {}
+            if skip_troot:
+                netboot_options["skip_troot"] = True
             if images:
                 netboot_options["images"] = str(images)
             if delete_cache:

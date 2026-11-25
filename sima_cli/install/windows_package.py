@@ -248,8 +248,9 @@ def _is_windows_administrator() -> bool:
 # needs administrator rights, so this runs with them, just before a removal. It maps each
 # product code and upgrade code that a receipt of another account records to that account;
 # the upgrade code still matches after a later release of the package replaced the one
-# that receipt installed. '*' lists the accounts whose registry exists but could not be
-# read, or that records a package without its upgrade code; they may use any package.
+# that receipt installed, unless that receipt failed. '*' lists the accounts whose registry
+# exists but could not be read, or that records a package without its upgrade code; they
+# may use any package.
 _OTHER_ACCOUNT_USES_FUNCTION = r"""
 function Get-OtherAccountUses([string]$OwnRegistry) {
   $uses = @{}
@@ -273,6 +274,8 @@ function Get-OtherAccountUses([string]$OwnRegistry) {
         foreach ($package in $receipt.native_packages) {
           if ($package.product_code) {
             $codes += ([string]$package.product_code).ToUpperInvariant()
+            # A failed run installed none of its packages; it holds only what it records.
+            if ($receipt.state -eq 'failed') { continue }
             if ($null -eq $package.upgrade_code) { $codes += '*' }
             elseif ($package.upgrade_code) {
               $codes += ([string]$package.upgrade_code).ToUpperInvariant()
@@ -1647,9 +1650,9 @@ def uninstall_windows_package(
 ) -> bool:
     """Remove a receipt's native packages in reverse install order.
 
-    shared maps product codes that other receipts in registry_path, the caller's registry,
-    still record to one such receipt; those packages are kept, and so is a package that a
-    receipt of another Windows account records in any release. When a later release of a
+    shared maps product codes and upgrade codes that other receipts in registry_path, the
+    caller's registry, still record to one such receipt; those packages are kept, and so is
+    a package that a receipt of another Windows account records in any release. When a later release of a
     package replaced the recorded one, the installed release is removed instead. Returns
     True when Windows must restart to finish the removal.
     """
@@ -1688,7 +1691,11 @@ def uninstall_windows_package(
             if len(related) == 1:
                 installed_code = related[0]
         recorded_by = next(
-            (shared[code] for code in (product_code, installed_code) if code in (shared or {})),
+            (
+                shared[code]
+                for code in (product_code, installed_code, upgrade_code)
+                if code and code in (shared or {})
+            ),
             None,
         )
         if recorded_by:

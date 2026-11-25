@@ -142,3 +142,19 @@ def test_product_codes_of_other_receipts_ignores_the_removed_receipt(tmp_path):
         "{S}": "example/package@1.0.0",
         "{C1}": "example/package@1.0.0",
     }
+
+
+def test_other_receipts_hold_their_upgrade_codes_unless_they_failed(tmp_path):
+    registry = PackageRegistry(tmp_path / "registry.json")
+    for name, state in (("installed/package", "installed"), ("failed/package", "failed")):
+        registry.create_entry(name, "1.0.0", {}, tmp_path)
+        registry.update_fields(name, "1.0.0", {"native_packages": [
+            {"owner": "x", "product_code": f"{{{name}}}", "upgrade_code": f"{{U-{name}}}"},
+        ]})
+        registry.update_state(name, "1.0.0", state)
+
+    assert registry.product_codes_of_other_receipts("other/package", "1.0.0") == {
+        "{installed/package}": "installed/package@1.0.0",
+        "{U-installed/package}": "installed/package@1.0.0",
+        "{failed/package}": "failed/package@1.0.0",
+    }

@@ -377,17 +377,24 @@ class PackageRegistry:
         return [pkg["version"] for pkg in replaced]
 
     def product_codes_of_other_receipts(self, name, version):
-        """Map each Windows product code another receipt records to that receipt.
+        """Map each Windows product code and upgrade code another receipt records to it.
 
         Every state counts: a receipt that is not marked installed may still be the one
         whose release uses the package, so only removing its last receipt uninstalls it.
+        The upgrade code, which still matches after a later release replaced the recorded
+        one, counts unless the receipt failed: a failed run installed none of its packages.
         """
         return {
-            package["product_code"]: f"{pkg['package_name']}@{pkg['version']}"
+            code: f"{pkg['package_name']}@{pkg['version']}"
             for pkg in self._data
             if (pkg["package_name"], pkg["version"]) != (name, version)
             for package in pkg.get("native_packages") or []
             if package.get("product_code")
+            for code in (
+                package["product_code"],
+                package.get("upgrade_code") if pkg.get("state") != "failed" else None,
+            )
+            if code
         }
 
     def list_packages(self):

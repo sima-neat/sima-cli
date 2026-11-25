@@ -1277,6 +1277,43 @@ class WindowsPackageTests(unittest.TestCase):
             output,
         )
 
+    def test_removing_a_partly_failed_upgrade_keeps_the_core_the_older_receipt_uses(self):
+        # 0.6.2 upgraded Core in place, then its Python step failed, so the 0.6.1 receipt
+        # stays; it records the replaced Core, which only the upgrade code relates.
+        new_core = "{44444444-4444-4444-4444-444444444444}"
+        for older_state, removed in (("installed", []), ("failed", [["/x", new_core]])):
+            with self.subTest(older_state=older_state):
+                registry_path = self.root / "registry.json"
+                registry_path.unlink(missing_ok=True)
+                registry = self.windows_receipt(registry_path, self.upgraded_cohort())
+                registry.update_state(self.metadata["name"], "0.6.1", older_state)
+                registry.create_entry(self.metadata["name"], "0.6.2", self.metadata, "")
+                registry.update_fields(self.metadata["name"], "0.6.2", {"native_packages": [
+                    self.upgraded_cohort()[0],
+                    {"owner": "core", "version": "0.6.2", "product_code": new_core,
+                     "upgrade_code": UPGRADE_CODES["sima"]},
+                ]})
+                registry.update_state(self.metadata["name"], "0.6.2", "partial-python-failed")
+
+                run, requests = fake_elevation([0])
+                exit_code, output, receipts = self.run_packages_remove(registry_path, "0.6.2", run)
+
+                self.assertEqual(exit_code, 0, output)
+                self.assertEqual(
+                    [package["arguments"].split()[:2]
+                     for request in requests for package in request["request"]["packages"]],
+                    removed,
+                )
+                kept = ["scheduler"] + (["core"] if not removed else [])
+                self.assertIn(
+                    "Keeping native packages another receipt uses: " + ", ".join(
+                        f"{owner} (still recorded by {self.metadata['name']}@0.6.1)"
+                        for owner in reversed(kept)
+                    ),
+                    output,
+                )
+                self.assertEqual([receipt["version"] for receipt in receipts], ["0.6.1"])
+
     def test_uninstall_starts_no_installer_when_other_receipts_record_every_package(self):
         shared = {code: "other@0.6.0" for code in PRODUCT_CODES.values()}
         output = io.StringIO()

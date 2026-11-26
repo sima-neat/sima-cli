@@ -46,6 +46,13 @@ DEVICE_RETURN_POLL_SECONDS = 5
 # The allocation-scoped API reports DevKit connectability only by refusing a
 # new ICE session with this error; it is the boot-readiness signal we wait on.
 PREVIOUS_CLEANUP_PENDING_ERROR = "previous ICE session cleanup is pending"
+# What the service answers once an allocation has ended: a released or expired
+# one still authenticates for a day but is refused (409), then is removed (401).
+# Other 401s (a skewed clock, a replayed nonce) are transient and not listed.
+ALLOCATION_ENDED_ERRORS = {
+    (401, "Invalid allocation credential"),
+    (409, "Allocation is not ready or has expired"),
+}
 
 PARTIAL_SUCCESS = ("Power cycle completed; CloudEx reconnection is still pending. "
                    "Rerun sima-cli cloudex power-cycle to resume.")
@@ -55,6 +62,10 @@ sleep = time.sleep
 
 class PowerCycleRejected(CloudExError):
     """The service or appliance authoritatively refused the cycle."""
+
+
+class AllocationEnded(PowerCycleRejected):
+    """The allocation is gone; its saved power cycle can never be resumed."""
 
 
 class PowerCyclePending(CloudExError):
@@ -409,6 +420,15 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
         try:
             status = api.call("GET", path)
         except APIError as exc:
+            if allocation_ended(exc):
+                # The service never sends a cycle once the allocation is gone, so
+                # dropping the record cannot lead to a second one.
+                store.delete(operation["allocation_id"])
+                raise AllocationEnded(
+                    "The DevKit's allocation has ended, so power command {} can no longer be checked; "
+                    "no power cycle is sent after an allocation ends. The saved power-cycle state was "
+                    "removed.".format(operation["command_id"])
+                ) from exc
             if exc.status == 404:
                 raise PowerCyclePending(
                     "power command {} is no longer known to CloudEx; its outcome cannot be confirmed. "
@@ -457,6 +477,17 @@ def wait_for_peer_cleanup(api, progress, timeout=None):
             return False
         progress.update("Waiting for the previous CloudEx connection to close")
         sleep(PEER_CLEANUP_POLL_SECONDS)
+
+
+def allocation_ended(error):
+    """Whether a failure (or what it wraps) says the allocation itself has ended."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, APIError) and (error.status, api_error_message(error)) in ALLOCATION_ENDED_ERRORS:
+            return True
+        error = error.__cause__
+    return False
 
 
 def device_not_ready(error):

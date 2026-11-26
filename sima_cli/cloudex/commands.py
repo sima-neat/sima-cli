@@ -33,6 +33,7 @@ from .client import (
     find_forwarder,
     inspect_session,
     run_benchmark,
+    session_expired,
     stop_local_forwarder,
 )
 from .installer import DEFAULT_BRANCH, install_forwarder
@@ -581,6 +582,8 @@ def _reconnect_after_cycle(profile, store, session, device):
                         cleared = False  # report the reconnect failure, not the status probe
                     if cleared:
                         continue
+                if power.allocation_ended(exc):
+                    raise  # nothing left to resume; the caller reports it
                 progress.warning("{} did not reconnect yet".format(device))
                 reason = power.api_error_message(exc) if isinstance(exc, APIError) else str(exc)
                 raise power.PowerCyclePending(power.PARTIAL_SUCCESS + "\nLast error: " + reason) from exc
@@ -588,6 +591,27 @@ def _reconnect_after_cycle(profile, store, session, device):
                 _retain_credential(store, session)
             progress.success("{} power-cycled and CloudEx reconnected".format(device))
             return connected
+
+
+ALLOCATION_ENDED = (
+    "The relay power cycle of {} completed, but its CloudEx allocation has ended, so it cannot be "
+    "reconnected. The saved power-cycle state and the ended connection record were removed; request "
+    "a new allocation in NeatOps."
+)
+
+
+def _drop_ended_allocation(store, operations, allocation_id, device):
+    """Forget an ended allocation's saved cycle so it never hijacks a later run."""
+    for recorded in store.list():
+        if recorded.get("allocation_id") != allocation_id:
+            continue
+        try:
+            stop_local_forwarder(recorded)
+        except CloudExError:
+            continue  # keep a record whose forwarder still runs, for cloudex disconnect
+        store.delete(recorded["session_id"])
+    operations.delete(allocation_id)
+    raise power.AllocationEnded(ALLOCATION_ENDED.format(device))
 
 
 LOCK_UNSUPPORTED_WARNING = (
@@ -748,6 +772,8 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
                           "or remove it with sima-cli -i cloudex disconnect.".format(device), markup=False)
             return
 
+        if session and session_expired(session):
+            _drop_ended_allocation(store, operations, allocation_id, device)
         try:
             if phase == power.CYCLE_COMPLETED:
                 console.print("[cyan]→[/cyan] Cleaning up the previous CloudEx connection")
@@ -776,6 +802,8 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
         except power.PowerCyclePending:
             raise
         except CloudExError as exc:
+            if power.allocation_ended(exc):
+                _drop_ended_allocation(store, operations, allocation_id, device)
             raise power.PowerCyclePending(power.PARTIAL_SUCCESS + "\nLast error: " + str(exc)) from exc
         if operation["phase"] == power.COMPLETED:
             operations.delete(allocation_id)

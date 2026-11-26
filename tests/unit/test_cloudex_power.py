@@ -450,6 +450,114 @@ def test_rerun_in_every_post_submit_phase_never_cycles_again(env, phase):
     assert not env.op_path.exists()
 
 
+# Ended allocations ----------------------------------------------------------
+
+
+GONE = APIError(401, json.dumps({"error": "Invalid allocation credential"}))
+EXPIRED = APIError(409, json.dumps({"error": "Allocation is not ready or has expired"}))
+
+
+def _assert_ended_and_forgotten(env, result):
+    assert result.exit_code == 1
+    assert "allocation has ended" in result.output
+    assert "Rerun" not in result.output
+    assert not env.op_path.exists()
+    assert [s for s in env.store.list() if s["allocation_id"] == ALLOCATION] == []
+    assert env.api.posts() == []
+
+
+def _next_allocation_cycles_normally(env):
+    env.connect.side_effect = None
+    env.connect.return_value = dict(_record("f" * 32, allocation_id=OTHER_ALLOCATION), target="10.252.9.2")
+    env.store.write(_record("e" * 32, allocation_id=OTHER_ALLOCATION))
+    env.api.states = ["running", "completed"]
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert [c[2]["action"] for c in env.api.posts()] == ["cycle"]
+
+
+@pytest.mark.parametrize("phase", [power.CYCLE_COMPLETED, power.WAITING_FOR_DEVICE, power.RECONNECTING])
+def test_locally_expired_allocation_drops_the_saved_cycle(env, phase):
+    _saved_operation(env, phase)
+    env.store.write(dict(_record(), expires_at=1))
+
+    result = invoke([])
+
+    _assert_ended_and_forgotten(env, result)
+    env.connect.assert_not_called()
+    assert env.api.calls == []
+    _next_allocation_cycles_normally(env)
+
+
+@pytest.mark.parametrize("error", [GONE, EXPIRED])
+def test_service_reporting_the_allocation_ended_drops_the_saved_cycle(env, error):
+    _saved_operation(env, power.RECONNECTING)
+    env.store.write(_record())
+    env.connect.side_effect = error
+
+    result = invoke([])
+
+    _assert_ended_and_forgotten(env, result)
+    _next_allocation_cycles_normally(env)
+
+
+def test_allocation_ended_while_reconnect_cleanup_wraps_it(env):
+    _saved_operation(env, power.RECONNECTING)
+    env.store.write(_record())
+    try:
+        try:
+            raise EXPIRED
+        except APIError as inner:
+            raise CloudExError("Connection failed and cleanup is pending: x") from inner
+    except CloudExError as wrapped:
+        env.connect.side_effect = wrapped
+
+    result = invoke([])
+
+    _assert_ended_and_forgotten(env, result)
+
+
+def test_allocation_removed_while_waiting_for_the_old_peer(env):
+    _saved_operation(env, power.WAITING_FOR_DEVICE)
+    env.store.write(_record())
+    env.api.ice_sessions = [GONE]
+
+    result = invoke([])
+
+    _assert_ended_and_forgotten(env, result)
+    env.connect.assert_not_called()
+
+
+def test_status_poll_on_a_removed_allocation_drops_the_submitted_cycle(env):
+    _saved_operation(env, power.CYCLE_SUBMITTED)
+    env.store.write(_record())
+    env.api.get_error = GONE
+
+    result = invoke([])
+
+    assert result.exit_code == 1
+    assert "allocation has ended" in result.output
+    assert COMMAND in result.output
+    assert not env.op_path.exists()
+    assert env.api.posts() == []
+    env.connect.assert_not_called()
+
+
+def test_transient_authentication_failure_is_still_resumable(env):
+    _saved_operation(env, power.RECONNECTING)
+    env.store.write(_record())
+    env.connect.side_effect = APIError(401, json.dumps({"error": "invalid, expired, or replayed authentication"}))
+
+    result = invoke([])
+
+    assert result.exit_code == 1
+    assert power.PARTIAL_SUCCESS in result.output.replace("\n", " ")
+    assert json.loads(env.op_path.read_text())["phase"] == power.RECONNECTING
+    assert [s["session_id"] for s in env.store.list()] == ["b" * 32]
+
+
 def test_completed_phase_rerun_only_clears_record(env):
     _saved_operation(env, power.COMPLETED)
     env.store.write(_record())

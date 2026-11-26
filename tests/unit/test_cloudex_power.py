@@ -11,7 +11,8 @@ from click.testing import CliRunner
 
 from sima_cli.cli import main
 from sima_cli.cloudex import commands, power
-from sima_cli.cloudex.client import APIError, CloudExAPI, CloudExError, SessionStore
+from sima_cli.cloudex.client import (APIError, CloudExAPI, CloudExError, DeviceNotJoinedError,
+                                     DirectHandshakeError, SessionStore)
 
 ALLOCATION = "a" * 32
 OTHER_ALLOCATION = "c" * 32
@@ -579,9 +580,13 @@ def test_no_reconnect_stops_after_power_event(env):
     assert env.store.list(), "the allocation's record is never released by power-cycle"
 
 
-def test_waits_while_device_is_offline_then_reconnects(env):
+def _not_joined():
+    return DeviceNotJoinedError("CloudEx connection setup deadline expired")
+
+
+def test_waits_while_device_has_not_joined_then_reconnects(env):
     env.store.write(_record())
-    offline = APIError(409, json.dumps({"error": power.DEVICE_OFFLINE_ERROR}))
+    offline = _not_joined()
     successful = env.connect.side_effect
     attempts = []
 
@@ -603,9 +608,89 @@ def test_waits_while_device_is_offline_then_reconnects(env):
     assert power.sleep.call_count >= 2
 
 
+def _connect_failing_with(env, errors):
+    successful = env.connect.side_effect
+    attempts = []
+
+    def flaky(profile, store, progress, **kwargs):
+        attempts.append(1)
+        if errors:
+            for old in store.list():
+                store.delete(old["session_id"])
+            raise errors.pop(0)
+        return successful(profile, store, progress, **kwargs)
+
+    env.connect.side_effect = flaky
+    return attempts
+
+
+def test_not_joined_wrapped_in_a_cleanup_error_is_still_waited_out(env):
+    env.store.write(_record())
+    try:
+        try:
+            raise _not_joined()
+        except DeviceNotJoinedError as inner:
+            raise CloudExError("Connection failed and cleanup is pending: remote tunnel cleanup is "
+                               "still pending. Run cloudex disconnect again.") from inner
+    except CloudExError as wrapped:
+        attempts = _connect_failing_with(env, [wrapped])
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert len(attempts) == 2
+
+
+def test_previous_ice_cleanup_pending_is_waited_out(env):
+    env.store.write(_record())
+    pending = APIError(409, json.dumps({"error": power.PREVIOUS_CLEANUP_PENDING_ERROR}))
+    attempts = _connect_failing_with(env, [pending])
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert len(attempts) == 2
+
+
+def test_retry_waits_for_the_failed_attempts_ice_session_to_clear(env):
+    env.store.write(_record())
+    attempts = _connect_failing_with(env, [_not_joined()])
+    held = APIError(409, json.dumps({"error": "signaling session is closed or expired"}))
+    gone = APIError(404, json.dumps({"error": "ICE session not found"}))
+    # First 404 belongs to the post-cycle peer wait; the retry then sees the lock clear.
+    env.api.ice_sessions = [gone, held, held, gone]
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert len(attempts) == 2
+    ice_checks = [c for c in env.api.calls if c[:2] == ("GET", "/v1/p2p/ice-sessions")]
+    assert len(ice_checks) == 4
+
+
+def test_device_that_joined_and_then_failed_is_not_retried(env):
+    env.store.write(_record())
+    attempts = _connect_failing_with(env, [DirectHandshakeError("ICE connection state Failed")])
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert len(attempts) == 1
+    assert power.PARTIAL_SUCCESS in result.output.replace("\n", " ")
+    assert json.loads(env.op_path.read_text())["phase"] == power.RECONNECTING
+
+
+def test_legacy_device_offline_conflict_is_not_a_readiness_signal():
+    offline = APIError(409, json.dumps({"error": "Allocated device is offline, stale, unhealthy, "
+                                                 "in maintenance or no longer Development"}))
+    assert not power.device_not_ready(offline)
+    assert power.device_not_ready(_not_joined())
+    assert not power.device_not_ready(DirectHandshakeError("deadline expired"))
+
+
 def test_reconnect_timeout_is_partial_success_and_resumable(env, monkeypatch):
     env.store.write(_record())
-    offline = APIError(409, json.dumps({"error": power.DEVICE_OFFLINE_ERROR}))
+    offline = _not_joined()
     successful = env.connect.side_effect
 
     def offline_connect(profile, store, progress, **kwargs):
@@ -721,7 +806,7 @@ def test_retained_record_after_failed_reconnect_drops_stopped_forwarder(env, mon
     def offline_connect(profile, store, progress, **kwargs):
         for old in store.list():
             store.delete(old["session_id"])
-        raise APIError(409, json.dumps({"error": power.DEVICE_OFFLINE_ERROR}))
+        raise _not_joined()
 
     env.connect.side_effect = offline_connect
     monkeypatch.setattr(power, "DEVICE_RETURN_TIMEOUT_SECONDS", 0)

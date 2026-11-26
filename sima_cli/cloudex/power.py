@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 
-from .client import APIError, CloudExError, DEFAULT_ROOT
+from .client import APIError, CloudExError, DEFAULT_ROOT, DeviceNotJoinedError
 
 PREPARED = "prepared"
 CYCLE_SUBMITTED = "cycle_submitted"
@@ -45,7 +45,7 @@ DEVICE_RETURN_TIMEOUT_SECONDS = 600
 DEVICE_RETURN_POLL_SECONDS = 5
 # The allocation-scoped API reports DevKit connectability only by refusing a
 # new ICE session with this error; it is the boot-readiness signal we wait on.
-DEVICE_OFFLINE_ERROR = "Allocated device is offline, stale, unhealthy, in maintenance or no longer Development"
+PREVIOUS_CLEANUP_PENDING_ERROR = "previous ICE session cleanup is pending"
 
 PARTIAL_SUCCESS = ("Power cycle completed; CloudEx reconnection is still pending. "
                    "Rerun sima-cli cloudex power-cycle to resume.")
@@ -435,5 +435,21 @@ def wait_for_peer_cleanup(api, progress, timeout=None):
         sleep(PEER_CLEANUP_POLL_SECONDS)
 
 
-def device_offline(error):
-    return isinstance(error, APIError) and error.status == 409 and api_error_message(error) == DEVICE_OFFLINE_ERROR
+def device_not_ready(error):
+    """Whether a failed reconnect means the DevKit has not come back yet.
+
+    `/v1/p2p/ice-sessions` never checks the DevKit before accepting a session.
+    A DevKit that is still booting shows up as a session it never joins, or as
+    the previous session's cleanup still waiting on the appliance. connect()
+    may wrap either in a cleanup error, so follow the cause chain.
+    """
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, DeviceNotJoinedError):
+            return True
+        if (isinstance(error, APIError) and error.status == 409
+                and api_error_message(error) == PREVIOUS_CLEANUP_PENDING_ERROR):
+            return True
+        error = error.__cause__
+    return False

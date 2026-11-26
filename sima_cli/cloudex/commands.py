@@ -554,16 +554,21 @@ def _still_unreadable(operations, path):
 
 def _reconnect_after_cycle(profile, store, session, device):
     _authorize_supported_host()
+    api = CloudExAPI.from_profile(profile)
     deadline = time.monotonic() + power.DEVICE_RETURN_TIMEOUT_SECONDS
     with StageProgress("Reconnecting CloudEx") as progress:
         while True:
             try:
                 connected = connect(profile, store, progress)
             except CloudExError as exc:
-                if power.device_offline(exc) and time.monotonic() < deadline:
+                if power.device_not_ready(exc) and time.monotonic() < deadline:
                     progress.update("Waiting for {} to return".format(device))
                     power.sleep(power.DEVICE_RETURN_POLL_SECONDS)
-                    continue
+                    # The failed attempt's ICE session holds the allocation until the
+                    # appliance confirms its cleanup; a new one is refused before then.
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0 and power.wait_for_peer_cleanup(api, progress, timeout=remaining):
+                        continue
                 progress.warning("{} did not reconnect yet".format(device))
                 reason = power.api_error_message(exc) if isinstance(exc, APIError) else str(exc)
                 raise power.PowerCyclePending(power.PARTIAL_SUCCESS + "\nLast error: " + reason) from exc

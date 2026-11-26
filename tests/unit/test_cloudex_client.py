@@ -331,6 +331,29 @@ def test_wait_forwarder_timeout_prints_sanitized_diagnostic_log(tmp_path, monkey
     assert "untrusted output" not in message
 
 
+@pytest.mark.parametrize("stages, remote, expected", [
+    (["joined authenticated signaling session"], "waiting_for_device", client.DeviceNotJoinedError),
+    # The host saw the DevKit's credentials even though the last poll predates them.
+    (["joined authenticated signaling session", "remote ICE credentials received"],
+     "waiting_for_device", client.DirectHandshakeError),
+    (["joined authenticated signaling session"], "gathering_candidates", client.DirectHandshakeError),
+])
+def test_wait_forwarder_reports_a_devkit_that_never_joined(tmp_path, monkeypatch, stages, remote, expected):
+    log = tmp_path / "forwarder.log"
+    log.write_text("".join("kerrigan-p2p-forwarder: {}\n".format(stage) for stage in stages))
+    clock = Mock(return_value=1998.9)
+    monkeypatch.setattr(client.time, "time", clock)
+    monkeypatch.setattr(client.time, "sleep", lambda _seconds: setattr(clock, "return_value", 1999))
+
+    with pytest.raises(client.DirectHandshakeError, match="deadline expired") as raised:
+        client._wait_forwarder(
+            "b" * 32, Mock(poll=Mock(return_value=None)), tmp_path / "report.json", log, 1999, Mock(),
+            remote_status=lambda _deadline: {"status": remote},
+        )
+
+    assert type(raised.value) is expected
+
+
 @pytest.mark.parametrize("confirmation", ["report", "log"])
 def test_wait_forwarder_accepts_confirmation_at_deadline(tmp_path, monkeypatch, confirmation):
     session_id = "b" * 32

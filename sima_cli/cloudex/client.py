@@ -72,6 +72,14 @@ class DirectHandshakeError(CloudExError):
     """A direct path failed and may succeed with fresh ICE candidates."""
 
 
+class DeviceNotJoinedError(DirectHandshakeError):
+    """Setup expired while the service still reported the DevKit as not joined.
+
+    `/v1/p2p/ice-sessions` accepts a session without checking the DevKit, so a
+    DevKit that is still booting shows up only as a session it never joins.
+    """
+
+
 def decode_key(value):
     """Decode and validate an allocation key without persisting the key itself."""
     try:
@@ -484,6 +492,7 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
                     remote_status=None, *, relay_deadline=None):
     previous = None
     next_remote_check = 0.0
+    device_waiting = False
     while True:
         # Read local state even at the deadline. The forwarder can complete
         # between the previous poll and the end of the setup window.
@@ -521,6 +530,7 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
                 remote = None
             if isinstance(remote, dict):
                 remote_state = remote.get("status")
+                device_waiting = remote_state == "waiting_for_device"
                 if remote_state == "failed":
                     detail = remote.get("last_error")
                     if not isinstance(detail, str) or not detail.strip():
@@ -541,7 +551,11 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
     last_stage = "; last host stage: " + stage if stage else ""
     diagnostics = _diagnostic_log_excerpt(log_path)
     log_output = "\nForwarder log ({}):\n{}".format(log_path, diagnostics) if diagnostics else ""
-    raise DirectHandshakeError(
+    # The host's own log proves the DevKit joined even if the last status
+    # poll predates it.
+    joined = stage == "remote ICE credentials received"
+    error = DeviceNotJoinedError if device_waiting and not joined else DirectHandshakeError
+    raise error(
         "CloudEx connection setup deadline expired" + last_stage
         + "; host diagnostics: " + str(log_path) + log_output
     )

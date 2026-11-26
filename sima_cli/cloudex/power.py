@@ -56,6 +56,14 @@ class PowerCyclePending(CloudExError):
     """The outcome is not yet known; the saved operation must be resumed."""
 
 
+class OperationExists(CloudExError):
+    """Another invocation already recorded a power cycle for this allocation."""
+
+    def __init__(self, allocation_id):
+        self.allocation_id = allocation_id
+        super().__init__("a power cycle for this DevKit is already pending or in progress")
+
+
 class UnreadableOperation(CloudExError):
     """A saved record cannot be trusted; only explicit abandonment clears it."""
 
@@ -103,18 +111,50 @@ class OperationStore:
             raise CloudExError("invalid allocation identifier in power-cycle state")
         return os.path.join(self.directory, allocation_id + ".json")
 
-    def write(self, operation):
+    def _stage(self, operation):
+        """Write a fully synced private copy beside its final name."""
         os.makedirs(self.directory, mode=0o700, exist_ok=True)
         os.chmod(self.directory, 0o700)
         path = self._path(operation["allocation_id"])
-        temporary = path + ".tmp"
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # A unique name keeps concurrent writers from sharing one temporary file.
+        temporary = "{}.{}.tmp".format(path, uuid.uuid4().hex)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(operation, stream, separators=(",", ":"), sort_keys=True)
             stream.flush()
             os.fsync(stream.fileno())
+        return temporary, path
+
+    def _sync_directory(self):
+        """Make the new directory entry itself survive a crash, not only its contents."""
+        if os.name == "nt":
+            return
+        descriptor = os.open(self.directory, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def create(self, operation):
+        """Record a new operation only if none exists for its allocation.
+
+        Concurrent invocations would otherwise each choose a request ID,
+        overwrite one another and submit separate physical cycles.
+        """
+        temporary, path = self._stage(operation)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise OperationExists(operation["allocation_id"]) from None
+        finally:
+            os.unlink(temporary)
+        self._sync_directory()
+
+    def write(self, operation):
+        temporary, path = self._stage(operation)
         os.replace(temporary, path)
         os.chmod(path, 0o600)
+        self._sync_directory()
 
     def delete(self, allocation_id):
         try:

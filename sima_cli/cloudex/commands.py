@@ -612,7 +612,13 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
             console.print("Power cycle cancelled.")
             return
         operation = power.new_operation(allocation_id, session and session["session_id"], device)
-        operations.write(operation)
+        try:
+            operations.create(operation)
+        except power.OperationExists:
+            raise click.ClickException(
+                "A power cycle for {} is already pending or in progress in another sima-cli run. "
+                "Rerun sima-cli -i cloudex power-cycle to resume it; no new cycle was sent.".format(device)
+            ) from None
     else:
         allocation_id = operation["allocation_id"]
         session = _allocation_session(sessions, allocation_id, operation.get("session_id"))

@@ -759,3 +759,56 @@ def test_unremovable_unreadable_entry_is_a_clean_error(env):
     assert result.exit_code == 1
     assert "could not be removed" in result.output
     assert env.op_path.exists()
+
+
+def test_concurrent_creation_loses_the_race_without_posting(env, monkeypatch):
+    env.store.write(_record())
+    rival = power.new_operation(ALLOCATION, "b" * 32, "modalix-123")
+    original_create = power.OperationStore.create
+
+    def racing_create(store, operation):
+        # Another run records its operation between our scan and our create.
+        original_create(store, rival)
+        return original_create(store, operation)
+
+    monkeypatch.setattr(power.OperationStore, "create", racing_create)
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert "already pending or in progress" in result.output
+    assert env.api.posts() == []
+    assert json.loads(env.op_path.read_text())["request_id"] == rival["request_id"]
+
+
+def test_create_never_replaces_an_existing_record(tmp_path):
+    store = power.OperationStore(tmp_path)
+    first = power.new_operation(ALLOCATION, None, "x")
+    store.create(first)
+
+    with pytest.raises(power.OperationExists):
+        store.create(power.new_operation(ALLOCATION, None, "x"))
+
+    saved, = store.list()
+    assert saved["request_id"] == first["request_id"]
+    assert stat.S_IMODE(os.stat(store._path(ALLOCATION)).st_mode) == 0o600
+    assert [n for n in os.listdir(store.directory) if n.endswith(".tmp")] == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-only")
+@pytest.mark.parametrize("method", ["create", "write"])
+def test_record_writes_sync_the_directory_entry(tmp_path, monkeypatch, method):
+    store = power.OperationStore(tmp_path)
+    synced = []
+    real_fsync = os.fsync
+
+    def tracking_fsync(descriptor):
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            synced.append(descriptor)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(power.os, "fsync", tracking_fsync)
+
+    getattr(store, method)(power.new_operation(ALLOCATION, None, "x"))
+
+    assert synced, "the containing directory must be fsynced after the rename"

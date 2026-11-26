@@ -412,11 +412,15 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
     """Poll the submitted command to its terminal state."""
     path = POWER_COMMANDS_PATH + "/" + operation["command_id"]
     deadline = time.monotonic() + (COMMAND_TIMEOUT_SECONDS if timeout is None else timeout)
-    # Seen still running in this run: completion is "now". Seen completed on the
-    # first poll (e.g. on resume): it may have finished long ago, so only the
-    # submission time is a safe bound for which tunnels predate the cycle.
+    # Seen still running in this run: the cycle ended after the last poll that
+    # saw it in progress, which is the cutoff (the "completed" reply can arrive
+    # a whole poll interval later, after a new tunnel already came up). Seen
+    # completed on the first poll (e.g. on resume): it may have finished long
+    # ago, so only the submission time is a safe bound.
     watched_in_progress = False
+    last_in_progress = None
     while True:
+        polled_at = time.time()
         try:
             status = api.call("GET", path)
         except APIError as exc:
@@ -441,7 +445,7 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
         if state not in COMMAND_STATES:
             raise PowerCyclePending("CloudEx API returned an invalid power command state")
         if state == "completed":
-            completed_by = time.time() if watched_in_progress else _submitted_at(operation)
+            completed_by = last_in_progress if watched_in_progress else _submitted_at(operation)
             advance(store, operation, CYCLE_COMPLETED, cycle_completed_at=completed_by,
                     completion_observed=watched_in_progress)
             return
@@ -452,6 +456,7 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
             label = "rejected" if state == "rejected" else "failed"
             raise PowerCycleRejected("Power cycle {} (command {}): {}".format(label, operation["command_id"], reason))
         watched_in_progress = True
+        last_in_progress = polled_at
         progress.update(_STATE_LABELS[state])
         if time.monotonic() >= deadline:
             raise PowerCyclePending("power command {} has not finished yet".format(operation["command_id"]))

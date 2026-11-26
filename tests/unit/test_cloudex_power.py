@@ -1334,6 +1334,26 @@ def test_dangling_record_symlink_is_unreadable_not_absent(tmp_path):
         store.list()
 
 
+def test_watched_cutoff_is_the_last_poll_that_saw_the_cycle_running(tmp_path, monkeypatch):
+    api = Mock()
+    api.call.side_effect = [server_command("running"), server_command("completed")]
+    monkeypatch.setattr(power, "sleep", Mock())
+    store = power.OperationStore(tmp_path)
+    operation = dict(power.new_operation(ALLOCATION, None, "x"), phase=power.CYCLE_SUBMITTED,
+                     command_id=COMMAND, submitted_at=90.0)
+    store.write(operation)
+    clock = iter([100.0, 102.0, 102.5, 102.5])  # two polls, then the record update
+    monkeypatch.setattr(power.time, "time", lambda: next(clock))
+
+    power.wait_for_cycle(api, store, operation, Mock())
+
+    saved = store.load(ALLOCATION)
+    assert saved["cycle_completed_at"] == 100.0
+    assert saved["completion_observed"] is True
+    # Came up after the relay finished but before the "completed" reply: kept.
+    assert not commands._created_before({"connected_at": 101.0}, power.cycle_completed_at(saved))
+
+
 def test_first_submission_time_keeps_subsecond_precision(tmp_path, monkeypatch):
     api = Mock()
     api.call.return_value = server_command("queued")

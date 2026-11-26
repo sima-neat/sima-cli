@@ -66,3 +66,33 @@ def test_workstation_cannot_reach_format_or_remount():
             assert "only be executed on the Modalix DevKit" in result.output
     remount.assert_not_called()
     format_drive.assert_not_called()
+
+
+def test_remount_prefers_existing_partition():
+    with patch.object(nvme.os.path, "exists", return_value=True), \
+            patch.object(nvme.subprocess, "check_output") as probe:
+        assert nvme.get_nvme_filesystem_device() == "/dev/nvme0n1p1"
+    probe.assert_not_called()
+
+
+def test_remount_accepts_whole_disk_filesystem():
+    with patch.object(nvme.os.path, "exists", return_value=False), \
+            patch.object(nvme.subprocess, "check_output", return_value="TYPE=ext2\nUSAGE=filesystem\n"):
+        assert nvme.get_nvme_filesystem_device() == "/dev/nvme0n1"
+
+
+@pytest.mark.parametrize("output", ["PTTYPE=gpt\n", "TYPE=crypto_LUKS\nUSAGE=crypto\n", "", "TYPE=ext4\nUSAGE=filesystem\nPTTYPE=gpt\n"])
+def test_remount_does_not_treat_other_disk_layouts_as_filesystems(output):
+    with patch.object(nvme.os.path, "exists", return_value=False), \
+            patch.object(nvme.subprocess, "check_output", return_value=output):
+        with pytest.raises(RuntimeError, match="drive was not modified"):
+            nvme.get_nvme_filesystem_device()
+
+
+def test_selected_disk_is_used_for_mount_and_fstab():
+    with patch.object(nvme, "get_nvme_filesystem_device", return_value="/dev/nvme0n1"), \
+            patch.object(nvme.subprocess, "run") as run, \
+            patch.object(nvme, "add_nvme_to_fstab") as fstab:
+        nvme.mount_nvme()
+    assert any(c.args[0] == ["sudo", "mount", "/dev/nvme0n1", "/media/nvme"] for c in run.call_args_list)
+    fstab.assert_called_once_with("/dev/nvme0n1")

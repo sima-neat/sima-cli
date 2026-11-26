@@ -487,7 +487,7 @@ def test_ctrl_c_keeps_record_for_resume(env):
     result = invoke(["--yes"])
 
     assert result.exit_code == 130
-    assert "Rerun sima-cli cloudex power-cycle to resume" in result.output
+    assert "Rerun sima-cli -i cloudex power-cycle to resume" in result.output
     assert json.loads(env.op_path.read_text())["phase"] == power.CYCLE_SUBMITTED
 
 
@@ -1102,6 +1102,27 @@ def test_completion_first_seen_on_resume_keeps_tunnels_made_after_submission(env
     assert result.exit_code == 0, result.output
     stopped = [c.args[0]["session_id"] for c in commands.stop_local_forwarder.call_args_list]
     assert stopped == ["b" * 32]
+
+
+def test_cleanup_cutoff_uses_the_connection_time_not_the_attempt_start(env):
+    operation = _saved_operation(env, power.CYCLE_SUBMITTED)
+    operation["submitted_at"] = 1_000
+    env.operations.write(operation)
+    env.api.states = ["completed"]
+    env.store.write(dict(_record("b" * 32), created_at=900, connected_at=905))
+    # A parallel connect() started before the cycle but its tunnel came up after it.
+    env.store.write(dict(_record("e" * 32), created_at=950, connected_at=1_500))
+
+    result = invoke([])
+
+    assert result.exit_code == 0, result.output
+    stopped = [c.args[0]["session_id"] for c in commands.stop_local_forwarder.call_args_list]
+    assert stopped == ["b" * 32]
+
+
+def test_recovery_hints_name_the_internal_flag_the_command_requires():
+    assert "sima-cli -i cloudex power-cycle" in power.PARTIAL_SUCCESS
+    assert "sima-cli -i cloudex power-cycle" in commands.POWER_RESUME_HINT
 
 
 def test_exact_server_response_shape_drives_submit_and_wait_to_completed(tmp_path, monkeypatch):

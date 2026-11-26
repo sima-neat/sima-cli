@@ -445,7 +445,7 @@ def disconnect_command(session_id, disconnect_all):
 
 
 POWER_INTERRUPTION = "Power will be interrupted for 5 seconds."
-POWER_RESUME_HINT = "Rerun sima-cli cloudex power-cycle to resume."
+POWER_RESUME_HINT = "Rerun sima-cli -i cloudex power-cycle to resume."
 
 
 def _session_profile(session):
@@ -531,10 +531,13 @@ def _stop_obsolete_forwarders(store, allocation_id, cycle_completed_at):
 
 
 def _created_before(session, moment):
-    created = session.get("created_at")
-    if isinstance(created, bool) or not isinstance(created, (int, float)):
-        return True  # Older records lack a creation time; treat them as obsolete.
-    return created <= moment
+    # A tunnel is as new as its connection, not its attempt: a connect() that
+    # started before the cycle may have come up after it.
+    for key in ("connected_at", "created_at"):
+        value = session.get(key)
+        if not isinstance(value, bool) and isinstance(value, (int, float)):
+            return value <= moment
+    return True  # Older records lack both times; treat them as obsolete.
 
 
 def _has_newer_connection(store, allocation_id, cycle_completed_at):

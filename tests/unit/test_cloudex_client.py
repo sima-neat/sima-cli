@@ -201,7 +201,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     monkeypatch.setattr(client.subprocess, "Popen", popen)
     wait_forwarder = Mock(return_value={"status": "connected", "path": path})
     monkeypatch.setattr(client, "_wait_forwarder", wait_forwarder)
-    monkeypatch.setattr(client.time, "time", Mock(return_value=1000))
+    monkeypatch.setattr(client.time, "time", Mock(return_value=1000.25))
 
     cleanup = Mock()
     monkeypatch.setattr(client, "disconnect_session", cleanup)
@@ -223,6 +223,8 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     assert result["ice_path"] == path
     assert result["expires_at"] == 9999999999.0
     assert store.list()[0]["api_secret"] == allocation_profile()["allocation_secret"]
+    # Sub-second: power-cycle cleanup orders this tunnel against the relay cycle.
+    assert store.list()[0]["connected_at"] == 1000.25
     assert not store.runtime_paths(result["session_id"])[1].exists()
     command = popen.call_args.args[0]
     assert command[:3] == ["sudo", "-n", "--"]
@@ -236,10 +238,10 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     assert "start_new_session" not in popen.call_args.kwargs
     api.call.assert_called_once_with(
         "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]},
-        deadline=1060,
+        deadline=1060.25,
     )
     assert result["remote_session_id"] == "d" * 32
-    assert wait_forwarder.call_args.args[4] == 1060
+    assert wait_forwarder.call_args.args[4] == 1060.25
 
 
 @pytest.mark.parametrize("version,expected", [

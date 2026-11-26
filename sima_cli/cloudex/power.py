@@ -268,7 +268,10 @@ class OperationStore:
                      or _COMMAND_ID.fullmatch(operation.get("command_id") or ""))
             )
         except FileNotFoundError:
-            raise
+            if os.path.lexists(path):
+                valid = False  # e.g. a dangling symlink: present, but not a record
+            else:
+                raise
         except (OSError, ValueError, TypeError):
             valid = False
         if not valid:
@@ -332,8 +335,11 @@ def cycle_completed_at(operation):
     that came up within the same second as the cycle is not taken for older.
     """
     for key in ("cycle_completed_at", "updated_at"):
-        if _timestamp(operation.get(key)):
-            return operation[key]
+        value = operation.get(key)
+        if _timestamp(value):
+            # A whole second comes from an older record and was rounded down:
+            # round up instead, so an uncertain tunnel is stopped, not kept.
+            return value + 1 if isinstance(value, int) else value
     return time.time()
 
 

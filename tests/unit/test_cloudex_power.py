@@ -1165,6 +1165,25 @@ def test_tunnel_up_within_the_cycles_second_is_ordered_by_subsecond_time(tmp_pat
     assert commands._created_before({"created_at": 990, "connected_at": 1_000.10}, cutoff)
 
 
+def test_whole_second_cutoff_from_an_older_record_rounds_up():
+    assert power.cycle_completed_at({"cycle_completed_at": 1_000}) == 1_001
+    assert power.cycle_completed_at({"cycle_completed_at": 1_000.25}) == 1_000.25
+    # A tunnel up in the same (rounded-down) second is uncertain: stop it.
+    assert commands._created_before({"connected_at": 1_000.3}, power.cycle_completed_at({"cycle_completed_at": 1_000}))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_dangling_record_symlink_is_unreadable_not_absent(tmp_path):
+    store = power.OperationStore(tmp_path)
+    os.makedirs(store.directory)
+    os.symlink(str(tmp_path / "missing"), os.path.join(store.directory, ALLOCATION + ".json"))
+
+    with pytest.raises(power.UnreadableOperation):
+        store.load(ALLOCATION)
+    with pytest.raises(power.UnreadableOperation):
+        store.list()
+
+
 def test_first_submission_time_keeps_subsecond_precision(tmp_path, monkeypatch):
     api = Mock()
     api.call.return_value = server_command("queued")
@@ -1342,7 +1361,7 @@ def test_completion_observed_flag_is_recorded(tmp_path, monkeypatch):
 def test_retry_after_lost_response_keeps_the_first_submission_time(env, monkeypatch):
     env.store.write(_record())
     env.api.post_error = CloudExError("CloudEx API is unavailable")
-    monkeypatch.setattr(power.time, "time", lambda: 1_000)
+    monkeypatch.setattr(power.time, "time", lambda: 1_000.0)
 
     first = invoke(["--yes"])
 
@@ -1352,7 +1371,7 @@ def test_retry_after_lost_response_keeps_the_first_submission_time(env, monkeypa
 
     env.api.post_error = None
     env.api.states = ["completed"]  # already finished: completion is not watched live
-    monkeypatch.setattr(power.time, "time", lambda: 9_000)
+    monkeypatch.setattr(power.time, "time", lambda: 9_000.0)
     seen = {}
     real_stop = commands._stop_obsolete_forwarders
 

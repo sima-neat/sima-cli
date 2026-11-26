@@ -16,7 +16,7 @@ from sima_cli.cloudex.client import APIError, CloudExAPI, CloudExError, SessionS
 ALLOCATION = "a" * 32
 OTHER_ALLOCATION = "c" * 32
 SECRET = "S3cr3t-allocation-secret-value-0123456789"
-COMMAND = "p2p-power-0123abcd"
+COMMAND = "p2p-power-" + "0123abcd" * 4
 
 
 def _record(session_id="b" * 32, allocation_id=ALLOCATION, device="modalix-123"):
@@ -46,6 +46,15 @@ def _key(allocation_id=ALLOCATION):
     return base64.b64encode(json.dumps(profile).encode()).decode()
 
 
+def server_command(status, **fields):
+    """A power command exactly as Vulcan's public() serializes it."""
+    command = {"command_id": COMMAND, "allocation_id": ALLOCATION, "action": "cycle", "status": status,
+               "terminal": status in {"completed", "failed", "rejected"}, "disconnect_forced": False,
+               "error": None, "created_at": 1_000, "updated_at": 1_000}
+    command.update(fields)
+    return command
+
+
 class FakeAPI:
     """In-memory allocation-scoped CloudEx P2P API."""
 
@@ -69,14 +78,14 @@ class FakeAPI:
                 self.on_post(data)
             if self.post_error:
                 raise self.post_error
-            return {"command_id": COMMAND, "state": "awaiting_disconnect"}
+            return server_command("awaiting_disconnect")
         if (method, path) == ("GET", power.POWER_COMMANDS_PATH + "/" + COMMAND):
             if self.get_error:
                 raise self.get_error
             state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
             if isinstance(state, BaseException):
                 raise state
-            return state if isinstance(state, dict) else {"command_id": COMMAND, "state": state, "events": []}
+            return state if isinstance(state, dict) else server_command(state)
         if (method, path) == ("GET", "/v1/p2p/ice-sessions"):
             result = self.ice_sessions.pop(0) if len(self.ice_sessions) > 1 else self.ice_sessions[0]
             if isinstance(result, BaseException):
@@ -483,13 +492,12 @@ def test_ctrl_c_keeps_record_for_resume(env):
 
 def test_failed_command_reports_sanitized_reason_and_clears_record(env):
     env.store.write(_record())
-    env.api.states = [{"command_id": COMMAND, "state": "failed",
-                       "error": {"code": "relay", "message": "relay\x1b[31m unavailable\nnow"}}]
+    env.api.states = [server_command("failed", error="relay\x1b[31m unavailable\nnow")]
 
     result = invoke(["--yes"])
 
     assert result.exit_code == 1
-    assert "Power cycle failed (command p2p-power-0123abcd): relay [31m unavailable now" in result.output
+    assert "Power cycle failed (command {}): relay [31m unavailable now".format(COMMAND) in result.output
     assert "\x1b" not in result.output
     assert not env.op_path.exists()
     env.connect.assert_not_called()
@@ -659,7 +667,7 @@ def test_waits_for_backend_peer_cleanup_before_reconnect(env):
 def test_submit_signs_every_retry_with_a_fresh_nonce_and_identical_body(tmp_path, monkeypatch):
     monkeypatch.setattr("sima_cli.cloudex.client.time.sleep", Mock())
     responses = [Mock(ok=False, status_code=503, text="busy"),
-                 Mock(ok=True, status_code=202, json=Mock(return_value={"command_id": COMMAND, "state": "published"}))]
+                 Mock(ok=True, status_code=202, json=Mock(return_value={"command_id": COMMAND, "status": "queued"}))]
     request = Mock(side_effect=responses)
     monkeypatch.setattr(requests, "request", request)
     api = CloudExAPI("https://p2p.example.test", "user-1", SECRET, ALLOCATION)
@@ -685,7 +693,7 @@ def test_submit_signs_every_retry_with_a_fresh_nonce_and_identical_body(tmp_path
 
 def test_invalid_command_id_is_not_interpolated_into_a_path(tmp_path):
     api = Mock()
-    api.call.return_value = {"command_id": "../admin", "state": "published"}
+    api.call.return_value = {"command_id": "../admin", "status": "queued"}
     store = power.OperationStore(tmp_path)
     operation = power.new_operation(ALLOCATION, None, "x")
     store.write(operation)
@@ -984,9 +992,54 @@ def test_completion_first_seen_on_resume_keeps_tunnels_made_after_submission(env
     assert stopped == ["b" * 32]
 
 
+def test_exact_server_response_shape_drives_submit_and_wait_to_completed(tmp_path, monkeypatch):
+    # Field names and status values as returned by Vulcan's /v1/p2p/power-commands.
+    api = Mock()
+    api.call.side_effect = [
+        server_command("awaiting_disconnect"),
+        server_command("awaiting_disconnect", disconnect_forced=True),
+        server_command("queued"),
+        server_command("received"),
+        server_command("running"),
+        server_command("completed", updated_at=1_090),
+    ]
+    monkeypatch.setattr(power, "sleep", Mock())
+    store = power.OperationStore(tmp_path)
+    operation = power.new_operation(ALLOCATION, None, "modalix-123")
+    store.write(operation)
+    progress = Mock()
+
+    assert power.submit_cycle(api, store, operation) == "awaiting_disconnect"
+    power.wait_for_cycle(api, store, operation, progress)
+
+    assert api.call.call_args_list[0].args == (
+        "POST", power.POWER_COMMANDS_PATH, {"request_id": operation["request_id"], "action": "cycle"})
+    for call in api.call.call_args_list[1:]:
+        assert call.args == ("GET", power.POWER_COMMANDS_PATH + "/" + COMMAND)
+    assert store.load(ALLOCATION)["phase"] == power.CYCLE_COMPLETED
+    assert store.load(ALLOCATION)["command_id"] == COMMAND
+    labels = [c.args[0] for c in progress.update.call_args_list]
+    assert "Power cycle requested" in labels
+    assert "Power cycle accepted by the appliance" in labels
+
+
+def test_legacy_state_field_is_not_mistaken_for_status(tmp_path, monkeypatch):
+    api = Mock()
+    api.call.return_value = {"command_id": COMMAND, "state": "completed"}
+    monkeypatch.setattr(power, "sleep", Mock())
+    store = power.OperationStore(tmp_path)
+    operation = dict(power.new_operation(ALLOCATION, None, "x"), phase=power.CYCLE_SUBMITTED,
+                     command_id=COMMAND, submitted_at=1_000)
+    store.write(operation)
+
+    with pytest.raises(power.PowerCyclePending):
+        power.wait_for_cycle(api, store, operation, Mock())
+    assert store.load(ALLOCATION)["phase"] == power.CYCLE_SUBMITTED
+
+
 def test_completion_watched_live_uses_the_observed_time(tmp_path, monkeypatch):
     api = Mock()
-    api.call.side_effect = [{"state": "running"}, {"state": "completed"}]
+    api.call.side_effect = [{"status": "running"}, {"status": "completed"}]
     monkeypatch.setattr(power, "sleep", Mock())
     monkeypatch.setattr(power.time, "time", lambda: 5_000)
     store = power.OperationStore(tmp_path)

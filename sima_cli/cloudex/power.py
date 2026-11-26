@@ -25,7 +25,7 @@ RECONNECTING = "reconnecting"
 COMPLETED = "completed"
 PHASES = (PREPARED, CYCLE_SUBMITTED, CYCLE_COMPLETED, WAITING_FOR_DEVICE, RECONNECTING, COMPLETED)
 
-COMMAND_STATES = {"awaiting_disconnect", "published", "received", "running", "completed", "failed", "rejected"}
+COMMAND_STATES = {"awaiting_disconnect", "queued", "received", "running", "completed", "failed", "rejected"}
 TERMINAL_STATES = {"completed", "failed", "rejected"}
 POWER_COMMANDS_PATH = "/v1/p2p/power-commands"
 # A command ID is interpolated into a signed request path; accept only a
@@ -357,12 +357,12 @@ def submit_cycle(api, store, operation):
     if not isinstance(command_id, str) or not _COMMAND_ID.fullmatch(command_id):
         raise PowerCyclePending("CloudEx API returned an invalid power command identifier")
     advance(store, operation, CYCLE_SUBMITTED, command_id=command_id, submitted_at=int(time.time()))
-    return response.get("state")
+    return response.get("status")
 
 
 _STATE_LABELS = {
     "awaiting_disconnect": "Disconnecting the CloudEx peer before the power cycle",
-    "published": "Power cycle requested",
+    "queued": "Power cycle requested",
     "received": "Power cycle accepted by the appliance",
     "running": "Power cycle in progress",
 }
@@ -388,7 +388,7 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
             raise PowerCyclePending("power command status is unavailable ({})".format(api_error_message(exc))) from exc
         except CloudExError as exc:
             raise PowerCyclePending("power command status is unavailable ({})".format(exc)) from exc
-        state = status.get("state") if isinstance(status, dict) else None
+        state = status.get("status") if isinstance(status, dict) else None
         if state not in COMMAND_STATES:
             raise PowerCyclePending("CloudEx API returned an invalid power command state")
         if state == "completed":

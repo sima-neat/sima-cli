@@ -1041,7 +1041,7 @@ def test_abandon_keeps_a_record_repaired_while_confirming(env, monkeypatch):
 
 def test_retained_newer_connection_skips_old_peer_wait(env):
     operation = _saved_operation(env, power.WAITING_FOR_DEVICE)
-    operation["cycle_completed_at"] = 1_000
+    operation.update(cycle_completed_at=1_000, completion_observed=True)
     env.operations.write(operation)
     env.store.write(dict(_record("e" * 32), created_at=2_000))
     env.api.ice_sessions = [{"session_id": "f" * 32, "status": "connected_direct"}]
@@ -1052,3 +1052,31 @@ def test_retained_newer_connection_skips_old_peer_wait(env):
     assert [c for c in env.api.calls if c[:2] == ("GET", "/v1/p2p/ice-sessions")] == []
     assert "made after the power cycle is kept" in result.output
     env.connect.assert_called_once()
+
+
+def test_unobserved_completion_still_waits_for_old_peer_cleanup(env):
+    # The cutoff is only the submission time: a "newer" tunnel may predate the power cut.
+    operation = _saved_operation(env, power.WAITING_FOR_DEVICE)
+    operation.update(cycle_completed_at=1_000, completion_observed=False)
+    env.operations.write(operation)
+    env.store.write(dict(_record("e" * 32), created_at=2_000))
+
+    result = invoke([])
+
+    assert result.exit_code == 0, result.output
+    assert [c for c in env.api.calls if c[:2] == ("GET", "/v1/p2p/ice-sessions")]
+    assert "made after the power cycle is kept" not in result.output
+
+
+def test_completion_observed_flag_is_recorded(tmp_path, monkeypatch):
+    monkeypatch.setattr(power, "sleep", Mock())
+    store = power.OperationStore(tmp_path)
+    for states, observed in (([{"state": "running"}, {"state": "completed"}], True),
+                             ([{"state": "completed"}], False)):
+        api = Mock()
+        api.call.side_effect = states
+        operation = dict(power.new_operation(ALLOCATION, None, "x"), phase=power.CYCLE_SUBMITTED,
+                         command_id=COMMAND, submitted_at=1_000)
+        store.write(operation)
+        power.wait_for_cycle(api, store, operation, Mock())
+        assert store.load(ALLOCATION)["completion_observed"] is observed

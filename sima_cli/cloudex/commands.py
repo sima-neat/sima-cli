@@ -738,9 +738,12 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
                 phase = operation["phase"]
             if phase == power.WAITING_FOR_DEVICE:
                 with StageProgress("Waiting for {} to return".format(device)) as progress:
-                    if _has_newer_connection(store, allocation_id, power.cycle_completed_at(operation)):
+                    if (operation.get("completion_observed") is True
+                            and _has_newer_connection(store, allocation_id, power.cycle_completed_at(operation))):
                         # The allocation's live ICE session belongs to a tunnel opened
                         # after the cycle; it will never close, and connect() reuses it.
+                        # Only a completion watched live gives a cutoff precise enough to
+                        # tell such a tunnel from one the power cut itself killed.
                         progress.success("A CloudEx connection made after the power cycle is kept")
                     elif power.wait_for_peer_cleanup(api, progress):
                         progress.success("Previous CloudEx connection closed")

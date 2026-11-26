@@ -393,7 +393,8 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
             raise PowerCyclePending("CloudEx API returned an invalid power command state")
         if state == "completed":
             completed_by = int(time.time()) if watched_in_progress else _submitted_at(operation)
-            advance(store, operation, CYCLE_COMPLETED, cycle_completed_at=completed_by)
+            advance(store, operation, CYCLE_COMPLETED, cycle_completed_at=completed_by,
+                    completion_observed=watched_in_progress)
             return
         if state in {"failed", "rejected"}:
             # The command is final; keeping it would block every later attempt.

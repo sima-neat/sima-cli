@@ -32,6 +32,8 @@ POWER_COMMANDS_PATH = "/v1/p2p/power-commands"
 # conservative token so a malformed response cannot change the route.
 _COMMAND_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _HEX32 = re.compile(r"[0-9a-f]{32}")
+_LOCK_HELD = {errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, getattr(errno, "EDEADLK", errno.EAGAIN),
+              getattr(errno, "EDEADLOCK", errno.EAGAIN)}
 _DIRECTORY_SYNC_UNSUPPORTED = {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS}
 _UNPRINTABLE = re.compile(r"[\x00-\x1f\x7f]+")
 
@@ -226,11 +228,15 @@ class OperationStore:
         try:
             try:
                 _try_lock(descriptor)
-            except OSError:
-                raise OperationBusy(
-                    "another sima-cli run is already handling the power cycle for this DevKit; "
-                    "wait for it to finish"
-                ) from None
+            except OSError as exc:
+                if exc.errno in _LOCK_HELD:
+                    raise OperationBusy(
+                        "another sima-cli run is already handling the power cycle for this DevKit; "
+                        "wait for it to finish"
+                    ) from None
+                # The filesystem cannot lock (NFS without lockd, some FUSE/SMB
+                # mounts). Refusing would strand resume and --abandon; exclusive
+                # record creation still prevents a second fresh cycle.
             yield
         finally:
             os.close(descriptor)
@@ -286,6 +292,15 @@ def _try_lock(descriptor):
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+def _submitted_at(operation):
+    # Older records lack submitted_at; while in cycle_submitted, updated_at is that moment.
+    for key in ("submitted_at", "updated_at", "created_at"):
+        value = operation.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return int(time.time())
+
+
 def cycle_completed_at(operation):
     """When the relay cycle finished; older records fall back to their last update."""
     for key in ("cycle_completed_at", "updated_at"):
@@ -332,7 +347,7 @@ def submit_cycle(api, store, operation):
     command_id = response.get("command_id") if isinstance(response, dict) else None
     if not isinstance(command_id, str) or not _COMMAND_ID.fullmatch(command_id):
         raise PowerCyclePending("CloudEx API returned an invalid power command identifier")
-    advance(store, operation, CYCLE_SUBMITTED, command_id=command_id)
+    advance(store, operation, CYCLE_SUBMITTED, command_id=command_id, submitted_at=int(time.time()))
     return response.get("state")
 
 
@@ -348,6 +363,10 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
     """Poll the submitted command to its terminal state."""
     path = POWER_COMMANDS_PATH + "/" + operation["command_id"]
     deadline = time.monotonic() + (COMMAND_TIMEOUT_SECONDS if timeout is None else timeout)
+    # Seen still running in this run: completion is "now". Seen completed on the
+    # first poll (e.g. on resume): it may have finished long ago, so only the
+    # submission time is a safe bound for which tunnels predate the cycle.
+    watched_in_progress = False
     while True:
         try:
             status = api.call("GET", path)
@@ -364,7 +383,8 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
         if state not in COMMAND_STATES:
             raise PowerCyclePending("CloudEx API returned an invalid power command state")
         if state == "completed":
-            advance(store, operation, CYCLE_COMPLETED, cycle_completed_at=int(time.time()))
+            completed_by = int(time.time()) if watched_in_progress else _submitted_at(operation)
+            advance(store, operation, CYCLE_COMPLETED, cycle_completed_at=completed_by)
             return
         if state in {"failed", "rejected"}:
             # The command is final; keeping it would block every later attempt.
@@ -372,6 +392,7 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
             reason = sanitize(status.get("error")) or "no reason was reported"
             label = "rejected" if state == "rejected" else "failed"
             raise PowerCycleRejected("Power cycle {} (command {}): {}".format(label, operation["command_id"], reason))
+        watched_in_progress = True
         progress.update(_STATE_LABELS[state])
         if time.monotonic() >= deadline:
             raise PowerCyclePending("power command {} has not finished yet".format(operation["command_id"]))

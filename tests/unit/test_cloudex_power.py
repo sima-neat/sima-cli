@@ -945,3 +945,45 @@ def test_completed_cycle_records_its_completion_time(env):
     assert result.exit_code == 0, result.output
     assert seen["record"]["phase"] == power.CYCLE_COMPLETED
     assert seen["cutoff"] == seen["record"]["cycle_completed_at"]
+
+
+def test_lock_unsupported_filesystem_does_not_block_runs(env, monkeypatch):
+    _saved_operation(env, power.CYCLE_SUBMITTED)
+    env.store.write(_record())
+    monkeypatch.setattr(power, "_try_lock", Mock(side_effect=OSError(37, "No locks available")))
+
+    result = invoke([])
+
+    assert result.exit_code == 0, result.output
+    assert env.api.posts() == []
+
+
+def test_completion_first_seen_on_resume_keeps_tunnels_made_after_submission(env):
+    operation = _saved_operation(env, power.CYCLE_SUBMITTED)
+    operation["submitted_at"] = 1_000
+    env.operations.write(operation)
+    env.api.states = ["completed"]
+    env.store.write(dict(_record("b" * 32), created_at=900))
+    # The user reconnected by hand after the relay cycled but before this resume.
+    env.store.write(dict(_record("e" * 32), created_at=1_500))
+
+    result = invoke([])
+
+    assert result.exit_code == 0, result.output
+    stopped = [c.args[0]["session_id"] for c in commands.stop_local_forwarder.call_args_list]
+    assert stopped == ["b" * 32]
+
+
+def test_completion_watched_live_uses_the_observed_time(tmp_path, monkeypatch):
+    api = Mock()
+    api.call.side_effect = [{"state": "running"}, {"state": "completed"}]
+    monkeypatch.setattr(power, "sleep", Mock())
+    monkeypatch.setattr(power.time, "time", lambda: 5_000)
+    store = power.OperationStore(tmp_path)
+    operation = dict(power.new_operation(ALLOCATION, None, "x"), phase=power.CYCLE_SUBMITTED,
+                     command_id=COMMAND, submitted_at=1_000)
+    store.write(operation)
+
+    power.wait_for_cycle(api, store, operation, Mock())
+
+    assert store.load(ALLOCATION)["cycle_completed_at"] == 5_000

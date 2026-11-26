@@ -7,6 +7,7 @@ the local session whose record already carries the credential, the
 client-selected request ID, the service command ID, and the current phase.
 """
 
+import contextlib
 import errno
 import json
 import os
@@ -64,6 +65,10 @@ class OperationExists(CloudExError):
     def __init__(self, allocation_id):
         self.allocation_id = allocation_id
         super().__init__("a power cycle for this DevKit is already pending or in progress")
+
+
+class OperationBusy(CloudExError):
+    """Another sima-cli run currently drives this allocation's power cycle."""
 
 
 class UnreadableOperation(CloudExError):
@@ -207,6 +212,32 @@ class OperationStore:
         except OSError as exc:
             raise CloudExError("power-cycle state {} could not be removed".format(path)) from exc
 
+    @contextlib.contextmanager
+    def lock(self, allocation_id):
+        """Hold an exclusive, non-blocking per-allocation lock for one run.
+
+        The OS releases it when the process exits, so a crash never leaves the
+        allocation locked. The lock file is never removed, which keeps two runs
+        from locking different inodes under the same name.
+        """
+        os.makedirs(self.directory, mode=0o700, exist_ok=True)
+        path = self._path(allocation_id)[:-len(".json")] + ".lock"
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                _try_lock(descriptor)
+            except OSError:
+                raise OperationBusy(
+                    "another sima-cli run is already handling the power cycle for this DevKit; "
+                    "wait for it to finish"
+                ) from None
+            yield
+        finally:
+            os.close(descriptor)
+
+    def load(self, allocation_id):
+        return next((o for o in self.list() if o["allocation_id"] == allocation_id), None)
+
     def list(self):
         """Return every pending operation; an unreadable one is an error, not absent.
 
@@ -242,6 +273,26 @@ class OperationStore:
                 raise UnreadableOperation(path)
             operations.append(operation)
         return operations
+
+
+def _try_lock(descriptor):
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def cycle_completed_at(operation):
+    """When the relay cycle finished; older records fall back to their last update."""
+    for key in ("cycle_completed_at", "updated_at"):
+        value = operation.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return int(time.time())
 
 
 def new_operation(allocation_id, session_id, device):
@@ -313,7 +364,7 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
         if state not in COMMAND_STATES:
             raise PowerCyclePending("CloudEx API returned an invalid power command state")
         if state == "completed":
-            advance(store, operation, CYCLE_COMPLETED)
+            advance(store, operation, CYCLE_COMPLETED, cycle_completed_at=int(time.time()))
             return
         if state in {"failed", "rejected"}:
             # The command is final; keeping it would block every later attempt.

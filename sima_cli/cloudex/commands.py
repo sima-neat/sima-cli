@@ -1,6 +1,7 @@
 """Hidden, experimental CloudEx command group."""
 
 import base64
+import contextlib
 import json
 import os
 import uuid
@@ -515,13 +516,25 @@ def _retain_credential(store, session):
         store.write(retained)
 
 
-def _stop_obsolete_forwarders(store, allocation_id):
-    for session in [s for s in store.list() if s.get("allocation_id") == allocation_id]:
+def _stop_obsolete_forwarders(store, allocation_id, cycle_completed_at):
+    """Stop tunnels that predate the relay cycle; a newer connection is kept."""
+    obsolete = [
+        s for s in store.list()
+        if s.get("allocation_id") == allocation_id and _created_before(s, cycle_completed_at)
+    ]
+    for session in obsolete:
         _authorize_tunnel_cleanup(session)
         stop_local_forwarder(session)
         session.pop("forwarder_pid", None)
         session["status"] = "disconnected"
         store.write(session)
+
+
+def _created_before(session, moment):
+    created = session.get("created_at")
+    if isinstance(created, bool) or not isinstance(created, (int, float)):
+        return True  # Older records lack a creation time; treat them as obsolete.
+    return created <= moment
 
 
 def _reconnect_after_cycle(profile, store, session, device):
@@ -575,119 +588,130 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
         return
     operation = _pending_operation(pending, sessions, session_id, key_profile)
 
-    if abandon:
+    # One run at a time per allocation drives the state machine; a concurrent
+    # resume would otherwise advance a stale copy and redo cleanup.
+    with contextlib.ExitStack() as held:
+        if abandon:
+            if operation is None:
+                console.print("[dim]No pending CloudEx power cycle.[/dim]")
+                return
+            device = _device_name(operation=operation, allocation_id=operation["allocation_id"])
+            if not yes:
+                if not can_prompt:
+                    raise click.UsageError("--yes is required when standard input is not interactive.")
+                if not click.confirm("Discard the saved power-cycle state for {}? Nothing is sent to the DevKit.".format(device), default=False):
+                    return
+            held.enter_context(operations.lock(operation["allocation_id"]))
+            operations.delete(operation["allocation_id"])
+            console.print("Discarded the saved power-cycle state for {}.".format(device), markup=False)
+            return
+
         if operation is None:
-            console.print("[dim]No pending CloudEx power cycle.[/dim]")
-            return
-        device = _device_name(operation=operation, allocation_id=operation["allocation_id"])
-        if not yes:
-            if not can_prompt:
-                raise click.UsageError("--yes is required when standard input is not interactive.")
-            if not click.confirm("Discard the saved power-cycle state for {}? Nothing is sent to the DevKit.".format(device), default=False):
-                return
-        operations.delete(operation["allocation_id"])
-        console.print("Discarded the saved power-cycle state for {}.".format(device), markup=False)
-        return
-
-    if operation is None:
-        if key_profile:
-            profile = key_profile
-            session = _allocation_session(sessions, profile["allocation_id"])
-        elif sessions or session_id:
-            session = _select_recorded_sessions(
-                sessions, session_id, _choose_session,
-                "Multiple sessions are recorded; use --session ID.",
-            )
-            if not session:
-                console.print("[dim]No CloudEx DevKit selected.[/dim]")
-                return
-            session = session[0]
-            profile = _session_profile(session)
-        else:
-            profile = _require_key(None, can_prompt, "No CloudEx connection is recorded.")
-            session = None
-        allocation_id = profile["allocation_id"]
-        device = _device_name(session=session, allocation_id=allocation_id)
-        if not _confirm_power_cycle(device, yes, can_prompt):
-            console.print("Power cycle cancelled.")
-            return
-        operation = power.new_operation(allocation_id, session and session["session_id"], device)
-        try:
-            operations.create(operation)
-        except power.OperationExists:
-            raise click.ClickException(
-                "A power cycle for {} is already pending or in progress in another sima-cli run. "
-                "Rerun sima-cli -i cloudex power-cycle to resume it; no new cycle was sent.".format(device)
-            ) from None
-    else:
-        allocation_id = operation["allocation_id"]
-        session = _allocation_session(sessions, allocation_id, operation.get("session_id"))
-        if session and not key_profile:
-            profile = _session_profile(session)
-        else:
-            profile = _require_key(key_profile, can_prompt,
-                                   "The saved power cycle's CloudEx connection record is gone.")
-        if profile["allocation_id"] != allocation_id:
-            raise click.UsageError("That allocation key belongs to a different DevKit than the saved power cycle.")
-        device = _device_name(session, operation, allocation_id)
-        if operation["phase"] == power.PREPARED:
-            # The request may never have left this host: confirm again, but reuse its ID.
-            console.print("Resuming the saved power-cycle request for {}.".format(device), markup=False)
+            if key_profile:
+                profile = key_profile
+                session = _allocation_session(sessions, profile["allocation_id"])
+            elif sessions or session_id:
+                session = _select_recorded_sessions(
+                    sessions, session_id, _choose_session,
+                    "Multiple sessions are recorded; use --session ID.",
+                )
+                if not session:
+                    console.print("[dim]No CloudEx DevKit selected.[/dim]")
+                    return
+                session = session[0]
+                profile = _session_profile(session)
+            else:
+                profile = _require_key(None, can_prompt, "No CloudEx connection is recorded.")
+                session = None
+            allocation_id = profile["allocation_id"]
+            device = _device_name(session=session, allocation_id=allocation_id)
             if not _confirm_power_cycle(device, yes, can_prompt):
-                console.print("Power cycle cancelled; the saved request is kept.")
+                console.print("Power cycle cancelled.")
                 return
-        else:
-            console.print("Resuming the power cycle of {} (no new cycle will be sent).".format(device), markup=False)
-
-    api = CloudExAPI.from_profile(profile)
-    phase = operation["phase"]
-    if phase in (power.PREPARED, power.CYCLE_SUBMITTED):
-        with StageProgress("Requesting power cycle" if phase == power.PREPARED else "Checking power cycle status") as progress:
+            held.enter_context(operations.lock(allocation_id))
+            operation = power.new_operation(allocation_id, session and session["session_id"], device)
             try:
-                if phase == power.PREPARED:
-                    power.submit_cycle(api, operations, operation)
-                    progress.update("Power cycle in progress")
-                power.wait_for_cycle(api, operations, operation, progress)
-            except power.PowerCycleRejected:
-                progress.failure("Power cycle did not complete")
-                raise
-            except power.PowerCyclePending:
-                progress.warning("Power cycle status is not confirmed yet")
-                raise
-            progress.success("Relay cycle completed")
+                operations.create(operation)
+            except power.OperationExists:
+                raise click.ClickException(
+                    "A power cycle for {} is already pending or in progress in another sima-cli run. "
+                    "Rerun sima-cli -i cloudex power-cycle to resume it; no new cycle was sent.".format(device)
+                ) from None
+        else:
+            allocation_id = operation["allocation_id"]
+            held.enter_context(operations.lock(allocation_id))
+            # Re-read under the lock: another run may have advanced or finished it.
+            operation = operations.load(allocation_id)
+            if operation is None:
+                console.print("The saved power cycle was already finished by another sima-cli run.")
+                return
+            session = _allocation_session(sessions, allocation_id, operation.get("session_id"))
+            if session and not key_profile:
+                profile = _session_profile(session)
+            else:
+                profile = _require_key(key_profile, can_prompt,
+                                       "The saved power cycle's CloudEx connection record is gone.")
+            if profile["allocation_id"] != allocation_id:
+                raise click.UsageError("That allocation key belongs to a different DevKit than the saved power cycle.")
+            device = _device_name(session, operation, allocation_id)
+            if operation["phase"] == power.PREPARED:
+                # The request may never have left this host: confirm again, but reuse its ID.
+                console.print("Resuming the saved power-cycle request for {}.".format(device), markup=False)
+                if not _confirm_power_cycle(device, yes, can_prompt):
+                    console.print("Power cycle cancelled; the saved request is kept.")
+                    return
+            else:
+                console.print("Resuming the power cycle of {} (no new cycle will be sent).".format(device), markup=False)
+
+        api = CloudExAPI.from_profile(profile)
         phase = operation["phase"]
-
-    if no_reconnect:
-        operations.delete(allocation_id)
-        console.print("Relay power returned; {} may still be booting. CloudEx reconnection was skipped; "
-                      "the previous tunnel may be stale. Reconnect with sima-cli -i cloudex connect "
-                      "or remove it with sima-cli -i cloudex disconnect.".format(device), markup=False)
-        return
-
-    try:
-        if phase == power.CYCLE_COMPLETED:
-            console.print("[cyan]→[/cyan] Cleaning up the previous CloudEx connection")
-            _stop_obsolete_forwarders(store, allocation_id)
-            power.advance(operations, operation, power.WAITING_FOR_DEVICE)
+        if phase in (power.PREPARED, power.CYCLE_SUBMITTED):
+            with StageProgress("Requesting power cycle" if phase == power.PREPARED else "Checking power cycle status") as progress:
+                try:
+                    if phase == power.PREPARED:
+                        power.submit_cycle(api, operations, operation)
+                        progress.update("Power cycle in progress")
+                    power.wait_for_cycle(api, operations, operation, progress)
+                except power.PowerCycleRejected:
+                    progress.failure("Power cycle did not complete")
+                    raise
+                except power.PowerCyclePending:
+                    progress.warning("Power cycle status is not confirmed yet")
+                    raise
+                progress.success("Relay cycle completed")
             phase = operation["phase"]
-        if phase == power.WAITING_FOR_DEVICE:
-            with StageProgress("Waiting for {} to return".format(device)) as progress:
-                if power.wait_for_peer_cleanup(api, progress):
-                    progress.success("Previous CloudEx connection closed")
-                else:
-                    progress.warning("Previous CloudEx connection is still closing; reconnect will reconcile it")
-            power.advance(operations, operation, power.RECONNECTING)
-            phase = operation["phase"]
-        if phase == power.RECONNECTING:
-            connected = _reconnect_after_cycle(profile, store, session, device)
-            power.advance(operations, operation, power.COMPLETED)
-            console.print("  [dim]SSH[/dim]      [bold]ssh sima@{}[/bold]".format(connected["target"]))
-    except power.PowerCyclePending:
-        raise
-    except CloudExError as exc:
-        raise power.PowerCyclePending(power.PARTIAL_SUCCESS + "\nLast error: " + str(exc)) from exc
-    if operation["phase"] == power.COMPLETED:
-        operations.delete(allocation_id)
+
+        if no_reconnect:
+            operations.delete(allocation_id)
+            console.print("Relay power returned; {} may still be booting. CloudEx reconnection was skipped; "
+                          "the previous tunnel may be stale. Reconnect with sima-cli -i cloudex connect "
+                          "or remove it with sima-cli -i cloudex disconnect.".format(device), markup=False)
+            return
+
+        try:
+            if phase == power.CYCLE_COMPLETED:
+                console.print("[cyan]→[/cyan] Cleaning up the previous CloudEx connection")
+                _stop_obsolete_forwarders(store, allocation_id, power.cycle_completed_at(operation))
+                power.advance(operations, operation, power.WAITING_FOR_DEVICE)
+                phase = operation["phase"]
+            if phase == power.WAITING_FOR_DEVICE:
+                with StageProgress("Waiting for {} to return".format(device)) as progress:
+                    if power.wait_for_peer_cleanup(api, progress):
+                        progress.success("Previous CloudEx connection closed")
+                    else:
+                        progress.warning("Previous CloudEx connection is still closing; reconnect will reconcile it")
+                power.advance(operations, operation, power.RECONNECTING)
+                phase = operation["phase"]
+            if phase == power.RECONNECTING:
+                connected = _reconnect_after_cycle(profile, store, session, device)
+                power.advance(operations, operation, power.COMPLETED)
+                console.print("  [dim]SSH[/dim]      [bold]ssh sima@{}[/bold]".format(connected["target"]))
+        except power.PowerCyclePending:
+            raise
+        except CloudExError as exc:
+            raise power.PowerCyclePending(power.PARTIAL_SUCCESS + "\nLast error: " + str(exc)) from exc
+        if operation["phase"] == power.COMPLETED:
+            operations.delete(allocation_id)
 
 
 @cloudex_group.command("power-cycle")

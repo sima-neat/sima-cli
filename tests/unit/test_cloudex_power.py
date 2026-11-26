@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import json
 import os
 import stat
@@ -866,3 +867,81 @@ def test_failed_fallback_write_leaves_no_unreadable_record(tmp_path, monkeypatch
         store.create(power.new_operation(ALLOCATION, None, "x"))
     assert store.list() == []
     assert os.listdir(store.directory) == []
+
+
+def test_concurrent_run_for_the_same_allocation_is_refused(env):
+    _saved_operation(env, power.CYCLE_SUBMITTED)
+    env.store.write(_record())
+
+    with env.operations.lock(ALLOCATION):
+        result = invoke([])
+
+    assert result.exit_code == 1
+    assert "already handling the power cycle" in result.output
+    assert env.api.calls == []
+    env.connect.assert_not_called()
+
+
+def test_fresh_run_is_refused_while_another_run_holds_the_lock(env):
+    env.store.write(_record())
+
+    with env.operations.lock(ALLOCATION):
+        result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert env.api.posts() == []
+    assert not env.op_path.exists()
+
+
+def test_resume_rereads_the_record_under_the_lock(env, monkeypatch):
+    _saved_operation(env, power.PREPARED)
+    env.store.write(_record())
+    real_lock = power.OperationStore.lock
+
+    @contextlib.contextmanager
+    def lock_after_other_run_finished(store, allocation_id):
+        # Another run completed and removed the record while we waited to start.
+        store.delete(allocation_id)
+        with real_lock(store, allocation_id):
+            yield
+
+    monkeypatch.setattr(power.OperationStore, "lock", lock_after_other_run_finished)
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "already finished by another sima-cli run" in result.output
+    assert env.api.calls == []
+    assert not env.op_path.exists()
+
+
+def test_cleanup_keeps_connections_created_after_the_cycle(env):
+    operation = _saved_operation(env, power.CYCLE_COMPLETED)
+    operation["cycle_completed_at"] = 1_000
+    env.operations.write(operation)
+    env.store.write(dict(_record("b" * 32), created_at=900))
+    env.store.write(dict(_record("e" * 32), created_at=2_000))
+
+    result = invoke([])
+
+    assert result.exit_code == 0, result.output
+    stopped = [c.args[0]["session_id"] for c in commands.stop_local_forwarder.call_args_list]
+    assert stopped == ["b" * 32]
+
+
+def test_completed_cycle_records_its_completion_time(env):
+    env.store.write(_record())
+    seen = {}
+    real_stop = commands._stop_obsolete_forwarders
+
+    def capture(store, allocation_id, cutoff):
+        seen["cutoff"] = cutoff
+        seen["record"] = json.loads(env.op_path.read_text())
+        return real_stop(store, allocation_id, cutoff)
+
+    with patch.object(commands, "_stop_obsolete_forwarders", capture):
+        result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["record"]["phase"] == power.CYCLE_COMPLETED
+    assert seen["cutoff"] == seen["record"]["cycle_completed_at"]

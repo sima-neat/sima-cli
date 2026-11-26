@@ -545,6 +545,48 @@ def test_status_poll_on_a_removed_allocation_drops_the_submitted_cycle(env):
     env.connect.assert_not_called()
 
 
+def test_ended_allocation_authorizes_before_stopping_its_tunnel(env, monkeypatch):
+    _saved_operation(env, power.CYCLE_COMPLETED)
+    env.store.write(dict(_record(), expires_at=1, forwarder_pid=4242))
+    order = []
+    monkeypatch.setattr(commands, "_authorize_tunnel_cleanup", lambda s: order.append("authorize"))
+    commands.stop_local_forwarder.side_effect = lambda s: order.append("stop")
+
+    result = invoke([])
+
+    _assert_ended_and_forgotten(env, result)
+    assert order == ["authorize", "stop"]
+    assert "could not be stopped" not in result.output
+
+
+def test_ended_allocation_with_an_unstoppable_tunnel_says_so(env, monkeypatch):
+    _saved_operation(env, power.CYCLE_COMPLETED)
+    env.store.write(dict(_record(), expires_at=1, forwarder_pid=4242))
+    monkeypatch.setattr(commands, "_authorize_tunnel_cleanup", Mock())
+    commands.stop_local_forwarder.side_effect = CloudExError("administrator authorization was not granted")
+
+    result = invoke([])
+
+    assert result.exit_code == 1
+    output = result.output.replace("\n", " ")
+    assert "allocation has ended" in output
+    assert "could not be stopped" in output
+    assert "sima-cli -i cloudex disconnect --session bbbbbbbb" in output
+    assert not env.op_path.exists()
+    assert [s["session_id"] for s in env.store.list()] == ["b" * 32]
+
+
+def test_finished_cycle_rerun_after_the_allocation_ended_only_clears(env):
+    _saved_operation(env, power.COMPLETED)
+    env.store.write(dict(_record(), expires_at=1))
+
+    result = invoke([])
+
+    assert result.exit_code == 0, result.output
+    assert "allocation has ended" not in result.output
+    assert not env.op_path.exists()
+
+
 def test_transient_authentication_failure_is_still_resumable(env):
     _saved_operation(env, power.RECONNECTING)
     env.store.write(_record())

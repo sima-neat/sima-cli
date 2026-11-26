@@ -595,23 +595,32 @@ def _reconnect_after_cycle(profile, store, session, device):
 
 ALLOCATION_ENDED = (
     "The relay power cycle of {} completed, but its CloudEx allocation has ended, so it cannot be "
-    "reconnected. The saved power-cycle state and the ended connection record were removed; request "
-    "a new allocation in NeatOps."
+    "reconnected. The saved power-cycle state was removed; request a new allocation in NeatOps."
+)
+ALLOCATION_ENDED_TUNNEL_KEPT = (
+    " The ended connection's local tunnel could not be stopped; remove it with "
+    "sima-cli -i cloudex disconnect --session {}."
 )
 
 
 def _drop_ended_allocation(store, operations, allocation_id, device):
     """Forget an ended allocation's saved cycle so it never hijacks a later run."""
+    kept = []
     for recorded in store.list():
         if recorded.get("allocation_id") != allocation_id:
             continue
         try:
+            _authorize_tunnel_cleanup(recorded)
             stop_local_forwarder(recorded)
         except CloudExError:
-            continue  # keep a record whose forwarder still runs, for cloudex disconnect
+            kept.append(recorded["session_id"])  # its forwarder may still run
+            continue
         store.delete(recorded["session_id"])
     operations.delete(allocation_id)
-    raise power.AllocationEnded(ALLOCATION_ENDED.format(device))
+    message = ALLOCATION_ENDED.format(device)
+    if kept:
+        message += ALLOCATION_ENDED_TUNNEL_KEPT.format(kept[0][:8])
+    raise power.AllocationEnded(message)
 
 
 LOCK_UNSUPPORTED_WARNING = (
@@ -772,7 +781,7 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
                           "or remove it with sima-cli -i cloudex disconnect.".format(device), markup=False)
             return
 
-        if session and session_expired(session):
+        if phase != power.COMPLETED and session and session_expired(session):
             _drop_ended_allocation(store, operations, allocation_id, device)
         try:
             if phase == power.CYCLE_COMPLETED:

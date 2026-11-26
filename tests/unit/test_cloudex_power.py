@@ -812,3 +812,38 @@ def test_record_writes_sync_the_directory_entry(tmp_path, monkeypatch, method):
     getattr(store, method)(power.new_operation(ALLOCATION, None, "x"))
 
     assert synced, "the containing directory must be fsynced after the rename"
+
+
+def test_create_falls_back_to_exclusive_open_without_hard_links(tmp_path, monkeypatch):
+    def no_links(_source, _target):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(power.os, "link", no_links)
+    store = power.OperationStore(tmp_path)
+    first = power.new_operation(ALLOCATION, None, "x")
+
+    store.create(first)
+    with pytest.raises(power.OperationExists):
+        store.create(power.new_operation(ALLOCATION, None, "x"))
+
+    saved, = store.list()
+    assert saved["request_id"] == first["request_id"]
+    assert stat.S_IMODE(os.stat(store._path(ALLOCATION)).st_mode) == 0o600
+    assert [n for n in os.listdir(store.directory) if n.endswith(".tmp")] == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-only")
+def test_directory_sync_is_best_effort_where_unsupported(tmp_path, monkeypatch):
+    real_fsync = os.fsync
+
+    def no_directory_sync(descriptor):
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError(22, "Invalid argument")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(power.os, "fsync", no_directory_sync)
+    store = power.OperationStore(tmp_path)
+
+    store.write(power.new_operation(ALLOCATION, None, "x"))
+
+    assert len(store.list()) == 1

@@ -7,6 +7,7 @@ the local session whose record already carries the credential, the
 client-selected request ID, the service command ID, and the current phase.
 """
 
+import errno
 import json
 import os
 import re
@@ -30,6 +31,7 @@ POWER_COMMANDS_PATH = "/v1/p2p/power-commands"
 # conservative token so a malformed response cannot change the route.
 _COMMAND_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _HEX32 = re.compile(r"[0-9a-f]{32}")
+_DIRECTORY_SYNC_UNSUPPORTED = {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS}
 _UNPRINTABLE = re.compile(r"[\x00-\x1f\x7f]+")
 
 COMMAND_TIMEOUT_SECONDS = 300
@@ -132,6 +134,11 @@ class OperationStore:
         descriptor = os.open(self.directory, os.O_RDONLY)
         try:
             os.fsync(descriptor)
+        except OSError as exc:
+            # Some network and FUSE filesystems cannot sync a directory; the
+            # renamed entry is still the best durability they offer.
+            if exc.errno not in _DIRECTORY_SYNC_UNSUPPORTED:
+                raise CloudExError("CloudEx power-cycle state could not be synced to disk") from exc
         finally:
             os.close(descriptor)
 
@@ -146,9 +153,27 @@ class OperationStore:
             os.link(temporary, path)
         except FileExistsError:
             raise OperationExists(operation["allocation_id"]) from None
+        except OSError:
+            # No hard links on this filesystem (exFAT, some SMB/FUSE mounts):
+            # create the final name exclusively instead. A crash mid-write
+            # leaves an unreadable record, which blocks new cycles until abandoned.
+            self._create_in_place(operation, path)
         finally:
             os.unlink(temporary)
         self._sync_directory()
+
+    @staticmethod
+    def _create_in_place(operation, path):
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise OperationExists(operation["allocation_id"]) from None
+        except OSError as exc:
+            raise CloudExError("CloudEx power-cycle state could not be created") from exc
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(operation, stream, separators=(",", ":"), sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def write(self, operation):
         temporary, path = self._stage(operation)

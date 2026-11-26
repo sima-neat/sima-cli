@@ -1334,24 +1334,48 @@ def test_dangling_record_symlink_is_unreadable_not_absent(tmp_path):
         store.list()
 
 
-def test_watched_cutoff_is_the_last_poll_that_saw_the_cycle_running(tmp_path, monkeypatch):
-    api = Mock()
-    api.call.side_effect = [server_command("running"), server_command("completed")]
+def _polls_two_seconds_apart(monkeypatch, statuses):
+    """Each status reply arrives 2 s after the previous one."""
+    now = [100.0]
+    replies = iter(statuses)
+
+    def call(method, path, data=None, deadline=None):
+        now[0] += 2.0
+        return server_command(next(replies))
+
     monkeypatch.setattr(power, "sleep", Mock())
+    monkeypatch.setattr(power.time, "time", lambda: now[0])
+    return Mock(call=Mock(side_effect=call))
+
+
+def _wait_to_completion(tmp_path, api):
     store = power.OperationStore(tmp_path)
     operation = dict(power.new_operation(ALLOCATION, None, "x"), phase=power.CYCLE_SUBMITTED,
                      command_id=COMMAND, submitted_at=90.0)
     store.write(operation)
-    clock = iter([100.0, 102.0, 102.5, 102.5])  # two polls, then the record update
-    monkeypatch.setattr(power.time, "time", lambda: next(clock))
-
     power.wait_for_cycle(api, store, operation, Mock())
+    return store.load(ALLOCATION)
 
-    saved = store.load(ALLOCATION)
-    assert saved["cycle_completed_at"] == 100.0
+
+def test_watched_cutoff_is_the_last_reply_that_said_running(tmp_path, monkeypatch):
+    api = _polls_two_seconds_apart(monkeypatch, ["running", "running", "completed"])
+
+    saved = _wait_to_completion(tmp_path, api)
+
+    assert saved["cycle_completed_at"] == 104.0  # the second "running" reply, not "completed" at 106
     assert saved["completion_observed"] is True
     # Came up after the relay finished but before the "completed" reply: kept.
-    assert not commands._created_before({"connected_at": 101.0}, power.cycle_completed_at(saved))
+    assert not commands._created_before({"connected_at": 105.0}, power.cycle_completed_at(saved))
+
+
+def test_states_before_the_power_cut_never_set_the_cutoff(tmp_path, monkeypatch):
+    api = _polls_two_seconds_apart(monkeypatch, ["awaiting_disconnect", "queued", "received", "completed"])
+
+    saved = _wait_to_completion(tmp_path, api)
+
+    # No reply said "running": a tunnel made after "received" may have died in the cut.
+    assert saved["cycle_completed_at"] == 108.0
+    assert commands._created_before({"connected_at": 107.0}, power.cycle_completed_at(saved))
 
 
 def test_first_submission_time_keeps_subsecond_precision(tmp_path, monkeypatch):

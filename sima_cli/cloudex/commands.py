@@ -567,7 +567,11 @@ def _reconnect_after_cycle(profile, store, session, device):
                     # The failed attempt's ICE session holds the allocation until the
                     # appliance confirms its cleanup; a new one is refused before then.
                     remaining = deadline - time.monotonic()
-                    if remaining > 0 and power.wait_for_peer_cleanup(api, progress, timeout=remaining):
+                    try:
+                        cleared = remaining > 0 and power.wait_for_peer_cleanup(api, progress, timeout=remaining)
+                    except CloudExError:
+                        cleared = False  # report the reconnect failure, not the status probe
+                    if cleared:
                         continue
                 progress.warning("{} did not reconnect yet".format(device))
                 reason = power.api_error_message(exc) if isinstance(exc, APIError) else str(exc)

@@ -72,6 +72,10 @@ class DirectHandshakeError(CloudExError):
     """A direct path failed and may succeed with fresh ICE candidates."""
 
 
+class CleanupPendingError(CloudExError):
+    """The service still holds a closed session until the appliance confirms cleanup."""
+
+
 class DeviceNotJoinedError(DirectHandshakeError):
     """Setup expired while the service still reported the DevKit as not joined.
 
@@ -331,6 +335,17 @@ def _read_report(path):
     return report if isinstance(report, dict) else {}
 
 
+def _forwarder_stages_seen(log_path):
+    """Every known lifecycle stage the forwarder has logged, in any order."""
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return set()
+    prefix = "kerrigan-p2p-forwarder:"
+    stages = {line[len(prefix):].strip() if line.startswith(prefix) else line.strip() for line in lines}
+    return stages & SAFE_FORWARDER_STAGES
+
+
 def _forwarder_log_state(log_path):
     try:
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -551,10 +566,13 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
     last_stage = "; last host stage: " + stage if stage else ""
     diagnostics = _diagnostic_log_excerpt(log_path)
     log_output = "\nForwarder log ({}):\n{}".format(log_path, diagnostics) if diagnostics else ""
-    # The host's own log proves the DevKit joined even if the last status
-    # poll predates it.
-    joined = stage == "remote ICE credentials received"
-    error = DeviceNotJoinedError if device_waiting and not joined else DirectHandshakeError
+    # The service reports waiting_for_device until both roles join. Blame the
+    # DevKit only when the host's own log shows the host joined and never
+    # received the DevKit's credentials: the last status poll can predate them.
+    seen = _forwarder_stages_seen(log_path)
+    devkit_absent = ("joined authenticated signaling session" in seen
+                     and "remote ICE credentials received" not in seen)
+    error = DeviceNotJoinedError if device_waiting and devkit_absent else DirectHandshakeError
     raise error(
         "CloudEx connection setup deadline expired" + last_stage
         + "; host diagnostics: " + str(log_path) + log_output
@@ -852,7 +870,7 @@ def _active_allocation_session(api, progress, timeout=120):
             if not _cleanup_pending(exc):
                 raise
         if time.monotonic() >= deadline:
-            raise CloudExError("remote tunnel cleanup is still pending")
+            raise CleanupPendingError("remote tunnel cleanup is still pending")
         progress.update("Waiting for DevKit cleanup")
         time.sleep(1)
 
@@ -976,7 +994,7 @@ def disconnect_session(session, store, progress, authorize=True, preserve_log=Fa
                 store.write_recovery(session)
             else:
                 store.write(session)
-            raise CloudExError("remote tunnel cleanup is still pending")
+            raise CleanupPendingError("remote tunnel cleanup is still pending")
     store.delete(session_id, preserve_log=preserve_log)
     return "disconnected"
 

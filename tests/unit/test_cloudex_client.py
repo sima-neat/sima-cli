@@ -337,6 +337,12 @@ def test_wait_forwarder_timeout_prints_sanitized_diagnostic_log(tmp_path, monkey
     (["joined authenticated signaling session", "remote ICE credentials received"],
      "waiting_for_device", client.DirectHandshakeError),
     (["joined authenticated signaling session"], "gathering_candidates", client.DirectHandshakeError),
+    # The DevKit joined and the forwarder moved past that stage before failing.
+    (["joined authenticated signaling session", "remote ICE credentials received",
+      "selected ICE path direct", "WireGuard public key sent through signaling"],
+     "waiting_for_device", client.DirectHandshakeError),
+    # The host itself never reached signaling; the DevKit is not to blame.
+    (["session configuration accepted"], "waiting_for_device", client.DirectHandshakeError),
 ])
 def test_wait_forwarder_reports_a_devkit_that_never_joined(tmp_path, monkeypatch, stages, remote, expected):
     log = tmp_path / "forwarder.log"

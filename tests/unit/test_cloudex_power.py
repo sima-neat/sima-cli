@@ -11,8 +11,8 @@ from click.testing import CliRunner
 
 from sima_cli.cli import main
 from sima_cli.cloudex import commands, power
-from sima_cli.cloudex.client import (APIError, CloudExAPI, CloudExError, DeviceNotJoinedError,
-                                     DirectHandshakeError, SessionStore)
+from sima_cli.cloudex.client import (APIError, CleanupPendingError, CloudExAPI, CloudExError,
+                                     DeviceNotJoinedError, DirectHandshakeError, SessionStore)
 
 ALLOCATION = "a" * 32
 OTHER_ALLOCATION = "c" * 32
@@ -668,6 +668,32 @@ def test_retry_waits_for_the_failed_attempts_ice_session_to_clear(env):
     assert len(ice_checks) == 4
 
 
+def test_previous_tunnel_cleanup_pending_while_reconciling_is_waited_out(env):
+    # connect() reconciles the pre-cycle tunnel first; a booting DevKit cannot confirm its stop.
+    env.store.write(_record())
+    attempts = _connect_failing_with(env, [CleanupPendingError("remote tunnel cleanup is still pending")])
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert len(attempts) == 2
+
+
+def test_failed_cleanup_probe_reports_the_reconnect_failure(env):
+    env.store.write(_record())
+    _connect_failing_with(env, [_not_joined()])
+    gone = APIError(404, json.dumps({"error": "ICE session not found"}))
+    env.api.ice_sessions = [gone, APIError(503, json.dumps({"error": "busy"}))]
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    output = result.output.replace("\n", " ")
+    assert power.PARTIAL_SUCCESS in output
+    assert "Last error: CloudEx connection setup deadline expired" in output
+    assert json.loads(env.op_path.read_text())["phase"] == power.RECONNECTING
+
+
 def test_device_that_joined_and_then_failed_is_not_retried(env):
     env.store.write(_record())
     attempts = _connect_failing_with(env, [DirectHandshakeError("ICE connection state Failed")])
@@ -685,6 +711,7 @@ def test_legacy_device_offline_conflict_is_not_a_readiness_signal():
                                                  "in maintenance or no longer Development"}))
     assert not power.device_not_ready(offline)
     assert power.device_not_ready(_not_joined())
+    assert power.device_not_ready(CleanupPendingError("remote tunnel cleanup is still pending"))
     assert not power.device_not_ready(DirectHandshakeError("deadline expired"))
 
 

@@ -847,3 +847,22 @@ def test_directory_sync_is_best_effort_where_unsupported(tmp_path, monkeypatch):
     store.write(power.new_operation(ALLOCATION, None, "x"))
 
     assert len(store.list()) == 1
+
+
+def test_failed_fallback_write_leaves_no_unreadable_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(power.os, "link", Mock(side_effect=OSError(1, "Operation not permitted")))
+    real_fsync = os.fsync
+    store = power.OperationStore(tmp_path)
+    final = store._path(ALLOCATION)
+
+    def failing_fsync(descriptor):
+        if os.path.exists(final) and os.fstat(descriptor).st_ino == os.stat(final).st_ino:
+            raise OSError(28, "No space left on device")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(power.os, "fsync", failing_fsync)
+
+    with pytest.raises(CloudExError, match="could not be created"):
+        store.create(power.new_operation(ALLOCATION, None, "x"))
+    assert store.list() == []
+    assert os.listdir(store.directory) == []

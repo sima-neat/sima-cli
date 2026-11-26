@@ -170,10 +170,19 @@ class OperationStore:
             raise OperationExists(operation["allocation_id"]) from None
         except OSError as exc:
             raise CloudExError("CloudEx power-cycle state could not be created") from exc
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(operation, stream, separators=(",", ":"), sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(operation, stream, separators=(",", ":"), sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            # This run created the name exclusively, so removing it is safe and
+            # avoids leaving an unreadable record that blocks later runs.
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise CloudExError("CloudEx power-cycle state could not be created") from exc
 
     def write(self, operation):
         temporary, path = self._stage(operation)

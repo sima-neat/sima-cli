@@ -1124,8 +1124,8 @@ def test_unobserved_completion_still_waits_for_old_peer_cleanup(env):
 def test_completion_observed_flag_is_recorded(tmp_path, monkeypatch):
     monkeypatch.setattr(power, "sleep", Mock())
     store = power.OperationStore(tmp_path)
-    for states, observed in (([{"state": "running"}, {"state": "completed"}], True),
-                             ([{"state": "completed"}], False)):
+    for states, observed in (([server_command("running"), server_command("completed")], True),
+                             ([server_command("completed")], False)):
         api = Mock()
         api.call.side_effect = states
         operation = dict(power.new_operation(ALLOCATION, None, "x"), phase=power.CYCLE_SUBMITTED,

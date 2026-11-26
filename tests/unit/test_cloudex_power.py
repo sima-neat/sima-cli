@@ -1133,3 +1133,45 @@ def test_completion_observed_flag_is_recorded(tmp_path, monkeypatch):
         store.write(operation)
         power.wait_for_cycle(api, store, operation, Mock())
         assert store.load(ALLOCATION)["completion_observed"] is observed
+
+
+def test_retry_after_lost_response_keeps_the_first_submission_time(env, monkeypatch):
+    env.store.write(_record())
+    env.api.post_error = CloudExError("CloudEx API is unavailable")
+    monkeypatch.setattr(power.time, "time", lambda: 1_000)
+
+    first = invoke(["--yes"])
+
+    assert first.exit_code == 1
+    saved = json.loads(env.op_path.read_text())
+    assert saved["phase"] == power.PREPARED and saved["submitted_at"] == 1_000
+
+    env.api.post_error = None
+    env.api.states = ["completed"]  # already finished: completion is not watched live
+    monkeypatch.setattr(power.time, "time", lambda: 9_000)
+    seen = {}
+    real_stop = commands._stop_obsolete_forwarders
+
+    def capture(store, allocation_id, cutoff):
+        seen["cutoff"] = cutoff
+        return real_stop(store, allocation_id, cutoff)
+
+    monkeypatch.setattr(commands, "_stop_obsolete_forwarders", capture)
+    second = invoke(["--yes"])
+
+    assert second.exit_code == 0, second.output
+    first_body, second_body = [c[2] for c in env.api.posts()]
+    assert first_body == second_body
+    assert seen["cutoff"] == 1_000
+
+
+def test_submission_time_is_persisted_before_the_post(env):
+    env.store.write(_record())
+    seen = {}
+    env.api.on_post = lambda body: seen.update(json.loads(env.op_path.read_text()))
+
+    result = invoke(["--yes", "--no-reconnect"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["phase"] == power.PREPARED
+    assert isinstance(seen["submitted_at"], int)

@@ -339,6 +339,11 @@ def advance(store, operation, phase, **fields):
 
 def submit_cycle(api, store, operation):
     """POST the cycle once per request ID; any retry reuses the same body."""
+    if not isinstance(operation.get("submitted_at"), int):
+        # Persist the first attempt before it leaves this host. A retry after a
+        # lost response keeps it: the cycle cannot predate the first POST, and a
+        # later timestamp would make cleanup stop a tunnel opened after the cycle.
+        advance(store, operation, PREPARED, submitted_at=int(time.time()))
     try:
         response = api.call("POST", POWER_COMMANDS_PATH,
                             {"request_id": operation["request_id"], "action": "cycle"})
@@ -356,7 +361,7 @@ def submit_cycle(api, store, operation):
     command_id = response.get("command_id") if isinstance(response, dict) else None
     if not isinstance(command_id, str) or not _COMMAND_ID.fullmatch(command_id):
         raise PowerCyclePending("CloudEx API returned an invalid power command identifier")
-    advance(store, operation, CYCLE_SUBMITTED, command_id=command_id, submitted_at=int(time.time()))
+    advance(store, operation, CYCLE_SUBMITTED, command_id=command_id)
     return response.get("status")
 
 

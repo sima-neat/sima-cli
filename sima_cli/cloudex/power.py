@@ -218,6 +218,9 @@ class OperationStore:
     def lock(self, allocation_id):
         """Hold an exclusive, non-blocking per-allocation lock for one run.
 
+        Yields False when the filesystem cannot lock at all, so the caller can
+        warn that concurrent runs are no longer serialized.
+
         The OS releases it when the process exits, so a crash never leaves the
         allocation locked. The lock file is never removed, which keeps two runs
         from locking different inodes under the same name.
@@ -225,6 +228,7 @@ class OperationStore:
         os.makedirs(self.directory, mode=0o700, exist_ok=True)
         path = self._path(allocation_id)[:-len(".json")] + ".lock"
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        locked = True
         try:
             try:
                 _try_lock(descriptor)
@@ -237,7 +241,8 @@ class OperationStore:
                 # The filesystem cannot lock (NFS without lockd, some FUSE/SMB
                 # mounts). Refusing would strand resume and --abandon; exclusive
                 # record creation still prevents a second fresh cycle.
-            yield
+                locked = False
+            yield locked
         finally:
             os.close(descriptor)
 

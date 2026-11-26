@@ -956,6 +956,16 @@ def test_lock_unsupported_filesystem_does_not_block_runs(env, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert env.api.posts() == []
+    assert commands.LOCK_UNSUPPORTED_WARNING in result.output
+
+
+def test_supported_locking_prints_no_warning(env):
+    env.store.write(_record())
+
+    result = invoke(["--yes", "--no-reconnect"])
+
+    assert result.exit_code == 0, result.output
+    assert "does not support file locking" not in result.output
 
 
 def test_completion_first_seen_on_resume_keeps_tunnels_made_after_submission(env):

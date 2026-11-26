@@ -558,6 +558,18 @@ def _reconnect_after_cycle(profile, store, session, device):
             return connected
 
 
+LOCK_UNSUPPORTED_WARNING = (
+    "Warning: this filesystem does not support file locking, so concurrent sima-cli power-cycle "
+    "runs for this DevKit are not serialized. Avoid running more than one at a time; a second "
+    "power cycle is still never sent for a saved request."
+)
+
+
+def _lock_allocation(held, operations, allocation_id):
+    if not held.enter_context(operations.lock(allocation_id)):
+        console.print(LOCK_UNSUPPORTED_WARNING, style="yellow", markup=False, soft_wrap=True)
+
+
 def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon):
     can_prompt = _interactive_session_selection_available() and not key_stdin
     store = _store()
@@ -601,7 +613,7 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
                     raise click.UsageError("--yes is required when standard input is not interactive.")
                 if not click.confirm("Discard the saved power-cycle state for {}? Nothing is sent to the DevKit.".format(device), default=False):
                     return
-            held.enter_context(operations.lock(operation["allocation_id"]))
+            _lock_allocation(held, operations, operation["allocation_id"])
             operations.delete(operation["allocation_id"])
             console.print("Discarded the saved power-cycle state for {}.".format(device), markup=False)
             return
@@ -628,7 +640,7 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
             if not _confirm_power_cycle(device, yes, can_prompt):
                 console.print("Power cycle cancelled.")
                 return
-            held.enter_context(operations.lock(allocation_id))
+            _lock_allocation(held, operations, allocation_id)
             operation = power.new_operation(allocation_id, session and session["session_id"], device)
             try:
                 operations.create(operation)
@@ -639,7 +651,7 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
                 ) from None
         else:
             allocation_id = operation["allocation_id"]
-            held.enter_context(operations.lock(allocation_id))
+            _lock_allocation(held, operations, allocation_id)
             # Re-read under the lock: another run may have advanced or finished it.
             operation = operations.load(allocation_id)
             if operation is None:

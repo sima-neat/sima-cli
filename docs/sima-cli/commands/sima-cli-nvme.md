@@ -1,6 +1,6 @@
 # `sima-cli nvme`
 
-Perform NVMe operations on the Modalix DevKit.
+Perform NVMe operations on Modalix SoM and DVT DevKits with NVMe storage.
 
 Parent command: [`sima-cli`](./sima-cli.md)
 
@@ -25,7 +25,7 @@ None.
 ```text
 Usage: sima-cli nvme [OPTIONS] {format|remount}
 
-  Perform NVMe operations on the Modalix DevKit.
+  Perform NVMe operations on Modalix SoM and DVT DevKits with NVMe storage.
 
   Available operations:
 

@@ -102,7 +102,7 @@ pip install sima-cli
 | [`sima-cli modelzoo`](commands/sima-cli-modelzoo.md) | Access models from the Model Zoo. |
 | [`sima-cli neat`](commands/sima-cli-neat.md) | Discover, download, and install Neat build artifacts. |
 | [`sima-cli network`](commands/sima-cli-network.md) | Setup Network IP address on the DevKit |
-| [`sima-cli nvme`](commands/sima-cli-nvme.md) | Perform NVMe operations on the Modalix DevKit. |
+| [`sima-cli nvme`](commands/sima-cli-nvme.md) | Perform NVMe operations on Modalix SoM and DVT DevKits with NVMe storage. |
 | [`sima-cli packages`](commands/sima-cli-packages.md) | Manage sima-cli package registry (list, inspect, clean, etc.) |
 | [`sima-cli peripherals`](commands/sima-cli-peripherals.md) | Show the cameras and microphones plugged into this DevKit. |
 | [`sima-cli playbooks`](commands/sima-cli-playbooks.md) | Install and manage playbooks (Codex/Claude). |

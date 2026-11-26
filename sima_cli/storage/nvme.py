@@ -195,6 +195,9 @@ def nvme_remount():
         click.echo("❌ This command can only be run on the Modalix DevKit.")
         return
 
+    if not scan_nvme():
+        raise RuntimeError("No NVMe drive detected at /dev/nvme0n1.")
+
     try:
         mount_nvme()
 

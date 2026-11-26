@@ -1168,7 +1168,7 @@ NVME_OPERATIONS = ("format", "remount")
 @click.pass_context
 def nvme_cmd(ctx, operation):
     """
-    Perform NVMe operations on the Modalix DevKit.
+    Perform NVMe operations on Modalix SoM and DVT DevKits with NVMe storage.
 
     Available operations:
 

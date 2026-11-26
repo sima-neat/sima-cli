@@ -861,6 +861,11 @@ def _stop_forwarder(session):
         time.sleep(0.1)
 
 
+def stop_local_forwarder(session):
+    """Stop only this host's forwarder; leave remote and allocation state alone."""
+    _stop_forwarder(session)
+
+
 def session_expired(session, now=None):
     """Whether a recorded allocation has passed its locally signed deadline."""
     expires_at = session.get("expires_at")

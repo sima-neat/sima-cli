@@ -997,3 +997,58 @@ def test_completion_watched_live_uses_the_observed_time(tmp_path, monkeypatch):
     power.wait_for_cycle(api, store, operation, Mock())
 
     assert store.load(ALLOCATION)["cycle_completed_at"] == 5_000
+
+
+def _lock_that_runs(monkeypatch, action):
+    real_lock = power.OperationStore.lock
+
+    @contextlib.contextmanager
+    def lock(store, allocation_id):
+        action(store)  # what another run did while we waited for confirmation
+        with real_lock(store, allocation_id) as locked:
+            yield locked
+
+    monkeypatch.setattr(power.OperationStore, "lock", lock)
+
+
+def test_abandon_keeps_a_newer_operation_recorded_while_confirming(env, monkeypatch):
+    _saved_operation(env, power.CYCLE_SUBMITTED)
+    env.store.write(_record())
+    newer = dict(power.new_operation(ALLOCATION, "b" * 32, "modalix-123"),
+                 phase=power.CYCLE_SUBMITTED, command_id="p2p-power-newer")
+    _lock_that_runs(monkeypatch, lambda store: store.write(newer))
+
+    result = invoke(["--abandon", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing was discarded" in result.output
+    assert json.loads(env.op_path.read_text())["request_id"] == newer["request_id"]
+
+
+def test_abandon_keeps_a_record_repaired_while_confirming(env, monkeypatch):
+    env.op_path.parent.mkdir(parents=True, exist_ok=True)
+    env.op_path.write_text("{not json")
+    replacement = dict(power.new_operation(ALLOCATION, None, "modalix-123"),
+                       phase=power.CYCLE_SUBMITTED, command_id=COMMAND)
+    _lock_that_runs(monkeypatch, lambda store: store.write(replacement))
+
+    result = invoke(["--abandon", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing was discarded" in result.output
+    assert json.loads(env.op_path.read_text())["request_id"] == replacement["request_id"]
+
+
+def test_retained_newer_connection_skips_old_peer_wait(env):
+    operation = _saved_operation(env, power.WAITING_FOR_DEVICE)
+    operation["cycle_completed_at"] = 1_000
+    env.operations.write(operation)
+    env.store.write(dict(_record("e" * 32), created_at=2_000))
+    env.api.ice_sessions = [{"session_id": "f" * 32, "status": "connected_direct"}]
+
+    result = invoke([])
+
+    assert result.exit_code == 0, result.output
+    assert [c for c in env.api.calls if c[:2] == ("GET", "/v1/p2p/ice-sessions")] == []
+    assert "made after the power cycle is kept" in result.output
+    env.connect.assert_called_once()

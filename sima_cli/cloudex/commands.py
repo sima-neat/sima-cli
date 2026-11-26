@@ -537,6 +537,21 @@ def _created_before(session, moment):
     return created <= moment
 
 
+def _has_newer_connection(store, allocation_id, cycle_completed_at):
+    return any(
+        s.get("allocation_id") == allocation_id and not _created_before(s, cycle_completed_at)
+        for s in store.list()
+    )
+
+
+def _still_unreadable(operations, path):
+    try:
+        operations.list()
+    except power.UnreadableOperation as exc:
+        return exc.path == path
+    return False
+
+
 def _reconnect_after_cycle(profile, store, session, device):
     _authorize_supported_host()
     deadline = time.monotonic() + power.DEVICE_RETURN_TIMEOUT_SECONDS
@@ -595,7 +610,15 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
                 raise click.UsageError("--yes is required when standard input is not interactive.")
             if not click.confirm("Discard the unreadable power-cycle state {}? Nothing is sent to the DevKit.".format(exc.path), default=False):
                 return
-        operations.discard(exc.path)
+        with contextlib.ExitStack() as held:
+            allocation_id = os.path.basename(exc.path)[:-len(".json")]
+            if power.valid_allocation_id(allocation_id):
+                _lock_allocation(held, operations, allocation_id)
+            if not _still_unreadable(operations, exc.path):
+                console.print("The power-cycle state {} changed in another sima-cli run; nothing was "
+                              "discarded.".format(exc.path), markup=False, soft_wrap=True)
+                return
+            operations.discard(exc.path)
         console.print("Discarded unreadable power-cycle state {}.".format(exc.path), markup=False, soft_wrap=True)
         return
     operation = _pending_operation(pending, sessions, session_id, key_profile)
@@ -614,6 +637,13 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
                 if not click.confirm("Discard the saved power-cycle state for {}? Nothing is sent to the DevKit.".format(device), default=False):
                     return
             _lock_allocation(held, operations, operation["allocation_id"])
+            # Confirmation can take a while: delete only the request the user confirmed,
+            # never a newer one another run recorded meanwhile.
+            current = operations.load(operation["allocation_id"])
+            if current is None or current["request_id"] != operation["request_id"]:
+                console.print("The saved power-cycle state for {} changed in another sima-cli run; "
+                              "nothing was discarded.".format(device), markup=False)
+                return
             operations.delete(operation["allocation_id"])
             console.print("Discarded the saved power-cycle state for {}.".format(device), markup=False)
             return
@@ -708,7 +738,11 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
                 phase = operation["phase"]
             if phase == power.WAITING_FOR_DEVICE:
                 with StageProgress("Waiting for {} to return".format(device)) as progress:
-                    if power.wait_for_peer_cleanup(api, progress):
+                    if _has_newer_connection(store, allocation_id, power.cycle_completed_at(operation)):
+                        # The allocation's live ICE session belongs to a tunnel opened
+                        # after the cycle; it will never close, and connect() reuses it.
+                        progress.success("A CloudEx connection made after the power cycle is kept")
+                    elif power.wait_for_peer_cleanup(api, progress):
                         progress.success("Previous CloudEx connection closed")
                     else:
                         progress.warning("Previous CloudEx connection is still closing; reconnect will reconcile it")

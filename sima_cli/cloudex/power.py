@@ -286,6 +286,10 @@ class OperationStore:
         return operations
 
 
+def valid_allocation_id(value):
+    return isinstance(value, str) and bool(_HEX32.fullmatch(value))
+
+
 def _try_lock(descriptor):
     if os.name == "nt":
         import msvcrt

@@ -1120,9 +1120,22 @@ def test_cleanup_cutoff_uses_the_connection_time_not_the_attempt_start(env):
     assert stopped == ["b" * 32]
 
 
-def test_recovery_hints_name_the_internal_flag_the_command_requires():
-    assert "sima-cli -i cloudex power-cycle" in power.PARTIAL_SUCCESS
-    assert "sima-cli -i cloudex power-cycle" in commands.POWER_RESUME_HINT
+def test_resume_hints_name_the_internal_invocation(env, monkeypatch):
+    env.store.write(_record())
+    _connect_failing_with(env, [DirectHandshakeError("ICE connection state Failed")])
+
+    partial = invoke(["--yes"])
+
+    # The partial-success sentence stays as agreed in vulcan#238; the working command follows it.
+    assert power.PARTIAL_SUCCESS in partial.output.replace("\n", " ")
+    assert "Resume with: sima-cli -i cloudex power-cycle" in partial.output
+
+    env.api.states = [KeyboardInterrupt()]
+    env.operations.delete(ALLOCATION)
+    interrupted = invoke(["--yes"])
+
+    assert interrupted.exit_code == 130
+    assert "Rerun sima-cli -i cloudex power-cycle to resume" in interrupted.output
 
 
 def test_exact_server_response_shape_drives_submit_and_wait_to_completed(tmp_path, monkeypatch):

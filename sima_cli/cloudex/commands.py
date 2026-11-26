@@ -445,7 +445,8 @@ def disconnect_command(session_id, disconnect_all):
 
 
 POWER_INTERRUPTION = "Power will be interrupted for 5 seconds."
-POWER_RESUME_HINT = "Rerun sima-cli -i cloudex power-cycle to resume."
+RESUME_COMMAND = "sima-cli -i cloudex power-cycle"
+POWER_RESUME_HINT = "Rerun {} to resume.".format(RESUME_COMMAND)
 
 
 def _session_profile(session):
@@ -804,7 +805,11 @@ def power_cycle_command(session_id, key_file, key_stdin, yes, no_reconnect, aban
         raise click.ClickException(str(exc)) from exc
     except power.PowerCyclePending as exc:
         message = str(exc)
-        if not message.startswith(power.PARTIAL_SUCCESS):
+        if message.startswith(power.PARTIAL_SUCCESS):
+            # The agreed partial-success sentence (vulcan#238) names the public
+            # command; while CloudEx is internal-only, also give the one that works.
+            message += "\nResume with: " + RESUME_COMMAND
+        else:
             message += ". The power-cycle state is saved. " + POWER_RESUME_HINT
         console.print(message, style="yellow", markup=False, soft_wrap=True)
         raise click.exceptions.Exit(1)

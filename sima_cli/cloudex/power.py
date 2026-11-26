@@ -48,7 +48,7 @@ DEVICE_RETURN_POLL_SECONDS = 5
 PREVIOUS_CLEANUP_PENDING_ERROR = "previous ICE session cleanup is pending"
 
 PARTIAL_SUCCESS = ("Power cycle completed; CloudEx reconnection is still pending. "
-                   "Rerun sima-cli -i cloudex power-cycle to resume.")
+                   "Rerun sima-cli cloudex power-cycle to resume.")
 
 sleep = time.sleep
 

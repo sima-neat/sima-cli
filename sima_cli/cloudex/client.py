@@ -808,7 +808,8 @@ def connect(profile, store, progress, attempts=None, transport="auto", *, report
                 raise CloudExError("CloudEx response did not include a WireGuard target")
             session.update(
                 status="connected",
-                connected_at=int(time.time()),
+                # Sub-second: the power-cycle cleanup orders this against the cycle.
+                connected_at=time.time(),
                 expires_at=expires_at,
                 ice_path=report.get("path", "unknown"),
                 target=target,

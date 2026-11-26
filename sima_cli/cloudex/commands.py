@@ -549,8 +549,12 @@ def _has_newer_connection(store, allocation_id, cycle_completed_at):
 
 
 def _still_unreadable(operations, path):
+    allocation_id = os.path.basename(path)[:-len(".json")]
     try:
-        operations.list()
+        if power.valid_allocation_id(allocation_id):
+            operations.load(allocation_id)
+        else:
+            operations.list()
     except power.UnreadableOperation as exc:
         return exc.path == path
     return False
@@ -604,20 +608,21 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
     operations = power.OperationStore(store.root)
     sessions = store.list()
     key_profile = _read_allocation_profile(key_file, key_stdin) if (key_file or key_stdin) else None
+    target = (_resolve_session(sessions, session_id)["allocation_id"] if session_id
+              else key_profile["allocation_id"] if key_profile else None)
     try:
-        pending = operations.list()
+        if target:
+            # Records are per allocation: a damaged one for another DevKit must
+            # not block the DevKit the user selected.
+            selected = operations.load(target)
+            pending = [selected] if selected else []
+        else:
+            pending = operations.list()
     except power.UnreadableOperation as exc:
         if not abandon:
             raise
-        target = (_resolve_session(sessions, session_id)["allocation_id"] if session_id
-                  else key_profile["allocation_id"] if key_profile else None)
-        if target and os.path.basename(exc.path) != target + ".json":
-            # Never discard another DevKit's unconfirmed cycle on a targeted request:
-            # its next run would then be free to send a second physical cycle.
-            raise click.ClickException(
-                "Another DevKit's power-cycle state {} is unreadable. Inspect it, then discard it with "
-                "sima-cli -i cloudex power-cycle --abandon (without --session or a key).".format(exc.path)
-            )
+        # A targeted request reads only its own record, so it can never discard
+        # another DevKit's unconfirmed cycle (whose next run could cycle again).
         if not yes:
             if not can_prompt:
                 raise click.UsageError("--yes is required when standard input is not interactive.")

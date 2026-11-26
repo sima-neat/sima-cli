@@ -855,9 +855,35 @@ def test_targeted_abandon_never_discards_another_allocations_unreadable_record(e
 
     result = invoke(["--abandon", "--session", "bbb", "--yes"])
 
-    assert result.exit_code == 1
-    assert "Another DevKit's power-cycle state" in result.output
+    assert result.exit_code == 0, result.output
+    assert "No pending CloudEx power cycle" in result.output
     assert other.exists()
+    assert env.api.calls == []
+
+
+def test_selected_devkit_cycles_past_another_allocations_unreadable_record(env):
+    env.store.write(_record())
+    other = env.op_path.parent / (OTHER_ALLOCATION + ".json")
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text("{not json")
+
+    result = invoke(["--session", "bbb", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert len(env.api.posts()) == 1
+    assert other.read_text() == "{not json"
+
+
+def test_unselected_run_still_reports_any_unreadable_record(env):
+    env.store.write(_record())
+    other = env.op_path.parent / (OTHER_ALLOCATION + ".json")
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text("{not json")
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert "unreadable" in result.output
     assert env.api.calls == []
 
 
@@ -1120,6 +1146,38 @@ def test_cleanup_cutoff_uses_the_connection_time_not_the_attempt_start(env):
     assert stopped == ["b" * 32]
 
 
+def test_tunnel_up_within_the_cycles_second_is_ordered_by_subsecond_time(tmp_path, monkeypatch):
+    api = Mock()
+    api.call.side_effect = [server_command("running"), server_command("completed")]
+    monkeypatch.setattr(power, "sleep", Mock())
+    monkeypatch.setattr(power.time, "time", lambda: 1_000.25)
+    store = power.OperationStore(tmp_path)
+    operation = power.new_operation(ALLOCATION, None, "x")
+    store.write(operation)
+
+    operation.update(phase=power.CYCLE_SUBMITTED, command_id=COMMAND, submitted_at=999.5)
+    store.write(operation)
+    power.wait_for_cycle(api, store, operation, Mock())
+
+    cutoff = power.cycle_completed_at(store.load(ALLOCATION))
+    assert cutoff == 1_000.25
+    assert not commands._created_before({"created_at": 999, "connected_at": 1_000.75}, cutoff)
+    assert commands._created_before({"created_at": 990, "connected_at": 1_000.10}, cutoff)
+
+
+def test_first_submission_time_keeps_subsecond_precision(tmp_path, monkeypatch):
+    api = Mock()
+    api.call.return_value = server_command("queued")
+    monkeypatch.setattr(power.time, "time", lambda: 1_234.5)
+    store = power.OperationStore(tmp_path)
+    operation = power.new_operation(ALLOCATION, None, "x")
+    store.write(operation)
+
+    power.submit_cycle(api, store, operation)
+
+    assert store.load(ALLOCATION)["submitted_at"] == 1_234.5
+
+
 def test_resume_hints_name_the_internal_invocation(env, monkeypatch):
     env.store.write(_record())
     _connect_failing_with(env, [DirectHandshakeError("ICE connection state Failed")])
@@ -1320,4 +1378,4 @@ def test_submission_time_is_persisted_before_the_post(env):
 
     assert result.exit_code == 0, result.output
     assert seen["phase"] == power.PREPARED
-    assert isinstance(seen["submitted_at"], int)
+    assert isinstance(seen["submitted_at"], (int, float)) and not isinstance(seen["submitted_at"], bool)

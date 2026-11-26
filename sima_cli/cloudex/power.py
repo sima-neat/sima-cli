@@ -247,7 +247,33 @@ class OperationStore:
             os.close(descriptor)
 
     def load(self, allocation_id):
-        return next((o for o in self.list() if o["allocation_id"] == allocation_id), None)
+        """Return this allocation's pending operation, or None; other records are not read."""
+        try:
+            return self._read(self._path(allocation_id))
+        except FileNotFoundError:
+            return None
+
+    def _read(self, path):
+        name = os.path.basename(path)
+        try:
+            with open(path, encoding="utf-8") as stream:
+                operation = json.load(stream)
+            valid = (
+                isinstance(operation, dict)
+                and operation.get("allocation_id") == name[:-5]
+                and _HEX32.fullmatch(operation.get("allocation_id") or "")
+                and _HEX32.fullmatch(operation.get("request_id") or "")
+                and operation.get("phase") in PHASES
+                and (operation["phase"] == PREPARED
+                     or _COMMAND_ID.fullmatch(operation.get("command_id") or ""))
+            )
+        except FileNotFoundError:
+            raise
+        except (OSError, ValueError, TypeError):
+            valid = False
+        if not valid:
+            raise UnreadableOperation(path)
+        return operation
 
     def list(self):
         """Return every pending operation; an unreadable one is an error, not absent.
@@ -265,24 +291,10 @@ class OperationStore:
         for name in names:
             if not name.endswith(".json"):
                 continue
-            path = os.path.join(self.directory, name)
             try:
-                with open(path, encoding="utf-8") as stream:
-                    operation = json.load(stream)
-                valid = (
-                    isinstance(operation, dict)
-                    and operation.get("allocation_id") == name[:-5]
-                    and _HEX32.fullmatch(operation.get("allocation_id") or "")
-                    and _HEX32.fullmatch(operation.get("request_id") or "")
-                    and operation.get("phase") in PHASES
-                    and (operation["phase"] == PREPARED
-                         or _COMMAND_ID.fullmatch(operation.get("command_id") or ""))
-                )
-            except (OSError, ValueError, TypeError):
-                valid = False
-            if not valid:
-                raise UnreadableOperation(path)
-            operations.append(operation)
+                operations.append(self._read(os.path.join(self.directory, name)))
+            except FileNotFoundError:
+                continue  # removed by a concurrent run since the listing
         return operations
 
 
@@ -301,22 +313,28 @@ def _try_lock(descriptor):
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+def _timestamp(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _submitted_at(operation):
     # Older records lack submitted_at; while in cycle_submitted, updated_at is that moment.
     for key in ("submitted_at", "updated_at", "created_at"):
-        value = operation.get(key)
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-    return int(time.time())
+        if _timestamp(operation.get(key)):
+            return operation[key]
+    return time.time()
 
 
 def cycle_completed_at(operation):
-    """When the relay cycle finished; older records fall back to their last update."""
+    """When the relay cycle finished; older records fall back to their last update.
+
+    Kept with sub-second precision, like a tunnel's connected_at, so a tunnel
+    that came up within the same second as the cycle is not taken for older.
+    """
     for key in ("cycle_completed_at", "updated_at"):
-        value = operation.get(key)
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-    return int(time.time())
+        if _timestamp(operation.get(key)):
+            return operation[key]
+    return time.time()
 
 
 def new_operation(allocation_id, session_id, device):
@@ -339,11 +357,11 @@ def advance(store, operation, phase, **fields):
 
 def submit_cycle(api, store, operation):
     """POST the cycle once per request ID; any retry reuses the same body."""
-    if not isinstance(operation.get("submitted_at"), int):
+    if not _timestamp(operation.get("submitted_at")):
         # Persist the first attempt before it leaves this host. A retry after a
         # lost response keeps it: the cycle cannot predate the first POST, and a
         # later timestamp would make cleanup stop a tunnel opened after the cycle.
-        advance(store, operation, PREPARED, submitted_at=int(time.time()))
+        advance(store, operation, PREPARED, submitted_at=time.time())
     try:
         response = api.call("POST", POWER_COMMANDS_PATH,
                             {"request_id": operation["request_id"], "action": "cycle"})
@@ -397,7 +415,7 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
         if state not in COMMAND_STATES:
             raise PowerCyclePending("CloudEx API returned an invalid power command state")
         if state == "completed":
-            completed_by = int(time.time()) if watched_in_progress else _submitted_at(operation)
+            completed_by = time.time() if watched_in_progress else _submitted_at(operation)
             advance(store, operation, CYCLE_COMPLETED, cycle_completed_at=completed_by,
                     completion_observed=watched_in_progress)
             return

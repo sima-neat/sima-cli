@@ -724,3 +724,38 @@ def test_retained_record_after_failed_reconnect_drops_stopped_forwarder(env, mon
     assert "forwarder_pid" not in retained
     assert retained["status"] == "disconnected"
     assert retained["api_secret"] == SECRET  # the credential survives for resume
+
+
+def test_targeted_abandon_never_discards_another_allocations_unreadable_record(env):
+    env.store.write(_record())
+    other = env.op_path.parent / (OTHER_ALLOCATION + ".json")
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text('{"phase":"from_a_newer_client"}')
+
+    result = invoke(["--abandon", "--session", "bbb", "--yes"])
+
+    assert result.exit_code == 1
+    assert "Another DevKit's power-cycle state" in result.output
+    assert other.exists()
+    assert env.api.calls == []
+
+
+def test_targeted_abandon_discards_its_own_unreadable_record(env):
+    env.store.write(_record())
+    env.op_path.parent.mkdir(parents=True, exist_ok=True)
+    env.op_path.write_text("{not json")
+
+    result = invoke(["--abandon", "--session", "bbb", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not env.op_path.exists()
+
+
+def test_unremovable_unreadable_entry_is_a_clean_error(env):
+    env.op_path.mkdir(parents=True)
+
+    result = invoke(["--abandon", "--yes"])
+
+    assert result.exit_code == 1
+    assert "could not be removed" in result.output
+    assert env.op_path.exists()

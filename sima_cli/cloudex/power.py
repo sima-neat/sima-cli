@@ -130,6 +130,8 @@ class OperationStore:
             os.unlink(path)
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            raise CloudExError("power-cycle state {} could not be removed".format(path)) from exc
 
     def list(self):
         """Return every pending operation; an unreadable one is an error, not absent.

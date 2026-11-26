@@ -550,11 +550,21 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
     store = _store()
     operations = power.OperationStore(store.root)
     sessions = store.list()
+    key_profile = _read_allocation_profile(key_file, key_stdin) if (key_file or key_stdin) else None
     try:
         pending = operations.list()
     except power.UnreadableOperation as exc:
         if not abandon:
             raise
+        target = (_resolve_session(sessions, session_id)["allocation_id"] if session_id
+                  else key_profile["allocation_id"] if key_profile else None)
+        if target and os.path.basename(exc.path) != target + ".json":
+            # Never discard another DevKit's unconfirmed cycle on a targeted request:
+            # its next run would then be free to send a second physical cycle.
+            raise click.ClickException(
+                "Another DevKit's power-cycle state {} is unreadable. Inspect it, then discard it with "
+                "sima-cli -i cloudex power-cycle --abandon (without --session or a key).".format(exc.path)
+            )
         if not yes:
             if not can_prompt:
                 raise click.UsageError("--yes is required when standard input is not interactive.")
@@ -563,7 +573,6 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
         operations.discard(exc.path)
         console.print("Discarded unreadable power-cycle state {}.".format(exc.path), markup=False, soft_wrap=True)
         return
-    key_profile = _read_allocation_profile(key_file, key_stdin) if (key_file or key_stdin) else None
     operation = _pending_operation(pending, sessions, session_id, key_profile)
 
     if abandon:

@@ -508,7 +508,11 @@ def _retain_credential(store, session):
     attempt lets a later rerun resume without asking for the key again.
     """
     if session and not any(s.get("allocation_id") == session["allocation_id"] for s in store.list()):
-        store.write(session)
+        # Restore only the credential-bearing record, never the stopped
+        # forwarder's PID or a connected status that is no longer true.
+        retained = dict(session, status="disconnected")
+        retained.pop("forwarder_pid", None)
+        store.write(retained)
 
 
 def _stop_obsolete_forwarders(store, allocation_id):
@@ -546,7 +550,19 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
     store = _store()
     operations = power.OperationStore(store.root)
     sessions = store.list()
-    pending = operations.list()
+    try:
+        pending = operations.list()
+    except power.UnreadableOperation as exc:
+        if not abandon:
+            raise
+        if not yes:
+            if not can_prompt:
+                raise click.UsageError("--yes is required when standard input is not interactive.")
+            if not click.confirm("Discard the unreadable power-cycle state {}? Nothing is sent to the DevKit.".format(exc.path), default=False):
+                return
+        operations.discard(exc.path)
+        console.print("Discarded unreadable power-cycle state {}.".format(exc.path), markup=False, soft_wrap=True)
+        return
     key_profile = _read_allocation_profile(key_file, key_stdin) if (key_file or key_stdin) else None
     operation = _pending_operation(pending, sessions, session_id, key_profile)
 

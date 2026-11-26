@@ -692,3 +692,35 @@ def test_invalid_command_id_is_not_interpolated_into_a_path(tmp_path):
     with pytest.raises(power.PowerCyclePending):
         power.submit_cycle(api, store, operation)
     assert store.list()[0]["phase"] == power.PREPARED
+
+
+def test_abandon_discards_an_unreadable_record(env):
+    env.op_path.parent.mkdir(parents=True, exist_ok=True)
+    env.op_path.write_text("{not json")
+
+    result = invoke(["--abandon", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Discarded unreadable power-cycle state" in result.output
+    assert not env.op_path.exists()
+    assert env.api.calls == []
+
+
+def test_retained_record_after_failed_reconnect_drops_stopped_forwarder(env, monkeypatch):
+    env.store.write(dict(_record(), forwarder_pid=4242))
+
+    def offline_connect(profile, store, progress, **kwargs):
+        for old in store.list():
+            store.delete(old["session_id"])
+        raise APIError(409, json.dumps({"error": power.DEVICE_OFFLINE_ERROR}))
+
+    env.connect.side_effect = offline_connect
+    monkeypatch.setattr(power, "DEVICE_RETURN_TIMEOUT_SECONDS", 0)
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    retained, = env.store.list()
+    assert "forwarder_pid" not in retained
+    assert retained["status"] == "disconnected"
+    assert retained["api_secret"] == SECRET  # the credential survives for resume

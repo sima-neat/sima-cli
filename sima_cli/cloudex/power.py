@@ -56,6 +56,17 @@ class PowerCyclePending(CloudExError):
     """The outcome is not yet known; the saved operation must be resumed."""
 
 
+class UnreadableOperation(CloudExError):
+    """A saved record cannot be trusted; only explicit abandonment clears it."""
+
+    def __init__(self, path):
+        self.path = path
+        super().__init__(
+            "CloudEx power-cycle state {} is unreadable; inspect it, then remove it or run "
+            "sima-cli -i cloudex power-cycle --abandon".format(path)
+        )
+
+
 def sanitize(value, limit=300):
     """Render service-provided text safely for a terminal."""
     if isinstance(value, dict):
@@ -111,6 +122,15 @@ class OperationStore:
         except FileNotFoundError:
             pass
 
+    def discard(self, path):
+        """Remove an unreadable record named by UnreadableOperation."""
+        if os.path.dirname(path) != self.directory or not path.endswith(".json"):
+            raise CloudExError("refusing to remove a file outside the power-cycle state directory")
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
     def list(self):
         """Return every pending operation; an unreadable one is an error, not absent.
 
@@ -143,10 +163,7 @@ class OperationStore:
             except (OSError, ValueError, TypeError):
                 valid = False
             if not valid:
-                raise CloudExError(
-                    "CloudEx power-cycle state {} is unreadable; inspect it, then remove it or run "
-                    "sima-cli -i cloudex power-cycle --abandon".format(path)
-                )
+                raise UnreadableOperation(path)
             operations.append(operation)
         return operations
 

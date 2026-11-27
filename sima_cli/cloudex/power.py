@@ -462,13 +462,12 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
     """Poll the submitted command to its terminal state."""
     path = POWER_COMMANDS_PATH + "/" + operation["command_id"]
     deadline = time.monotonic() + (COMMAND_TIMEOUT_SECONDS if timeout is None else timeout)
-    # Seen in progress in this run: the cutoff is the last reply that still said
-    # "running" (the relay may already be cutting power then, and the cycle ends
-    # after it), else the "completed" reply itself; an earlier state such as
-    # "queued" precedes the cut, so a tunnel made after it may be dead. Seen
-    # completed on the first poll (e.g. on resume): it may have finished long
-    # ago, so only the submission time is a safe bound.
-    watched_in_progress = False
+    # A reply that said "running" bounds the cycle's end from below (the relay
+    # may already be cutting power, and the cycle ends after it): the last one is
+    # a precise cutoff. Without one (a jump from "queued" to "completed", or
+    # completed on the first poll of a resume) the end is unknown, so the cutoff
+    # is the submission: the service refuses new peers from then until the cycle
+    # is final, so a tunnel whose attempt started later came up after the cycle.
     last_running = None
     while True:
         try:
@@ -495,12 +494,10 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
         if state not in COMMAND_STATES:
             raise PowerCyclePending("CloudEx API returned an invalid power command state")
         if state == "completed":
-            if not watched_in_progress:
-                completed_by = _submitted_at(operation)
-            else:
-                completed_by = last_running if last_running is not None else time.time()
+            observed = last_running is not None
+            completed_by = last_running if observed else _submitted_at(operation)
             advance(store, operation, CYCLE_COMPLETED, cycle_completed_at=completed_by,
-                    completion_observed=watched_in_progress)
+                    completion_observed=observed)
             return
         if state in {"failed", "rejected"}:
             # The command is final; keeping it would block every later attempt.
@@ -508,7 +505,6 @@ def wait_for_cycle(api, store, operation, progress, timeout=None):
             reason = sanitize(status.get("error")) or "no reason was reported"
             label = "rejected" if state == "rejected" else "failed"
             raise PowerCycleRejected("Power cycle {} (command {}): {}".format(label, operation["command_id"], reason))
-        watched_in_progress = True
         if state == "running":
             last_running = time.time()
         progress.update(_STATE_LABELS[state])

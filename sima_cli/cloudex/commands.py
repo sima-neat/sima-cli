@@ -518,11 +518,11 @@ def _retain_credential(store, session):
         store.write(retained)
 
 
-def _stop_obsolete_forwarders(store, allocation_id, cycle_completed_at):
+def _stop_obsolete_forwarders(store, allocation_id, cycle_completed_at, by_attempt=False):
     """Stop tunnels that predate the relay cycle; a newer connection is kept."""
     obsolete = [
         s for s in store.list()
-        if s.get("allocation_id") == allocation_id and _created_before(s, cycle_completed_at)
+        if s.get("allocation_id") == allocation_id and _created_before(s, cycle_completed_at, by_attempt)
     ]
     for session in obsolete:
         _authorize_tunnel_cleanup(session)
@@ -532,10 +532,13 @@ def _stop_obsolete_forwarders(store, allocation_id, cycle_completed_at):
         store.write(session)
 
 
-def _created_before(session, moment):
-    # A tunnel is as new as its connection, not its attempt: a connect() that
-    # started before the cycle may have come up after it.
-    for key in ("connected_at", "created_at"):
+def _created_before(session, moment, by_attempt=False):
+    # Against a cutoff observed during the cycle, a tunnel is as new as its
+    # connection: a connect() that started before may have come up after it.
+    # Against the submission (by_attempt), its attempt start decides: the
+    # service refuses new peers from submission until the cycle is final, and
+    # disconnects the one it found, so an attempt begun before is dead.
+    for key in (("created_at",) if by_attempt else ("connected_at", "created_at")):
         value = session.get(key)
         if not isinstance(value, bool) and isinstance(value, (int, float)):
             return value <= moment
@@ -788,7 +791,8 @@ def _run_power_cycle(session_id, key_file, key_stdin, yes, no_reconnect, abandon
         try:
             if phase == power.CYCLE_COMPLETED:
                 console.print("[cyan]→[/cyan] Cleaning up the previous CloudEx connection")
-                _stop_obsolete_forwarders(store, allocation_id, power.cycle_completed_at(operation))
+                _stop_obsolete_forwarders(store, allocation_id, power.cycle_completed_at(operation),
+                                          by_attempt=operation.get("completion_observed") is not True)
                 power.advance(operations, operation, power.WAITING_FOR_DEVICE)
                 phase = operation["phase"]
             if phase == power.WAITING_FOR_DEVICE:

@@ -1542,10 +1542,10 @@ def test_completed_cycle_records_its_completion_time(env):
     seen = {}
     real_stop = commands._stop_obsolete_forwarders
 
-    def capture(store, allocation_id, cutoff):
+    def capture(store, allocation_id, cutoff, **kwargs):
         seen["cutoff"] = cutoff
         seen["record"] = json.loads(env.op_path.read_text())
-        return real_stop(store, allocation_id, cutoff)
+        return real_stop(store, allocation_id, cutoff, **kwargs)
 
     with patch.object(commands, "_stop_obsolete_forwarders", capture):
         result = invoke(["--yes"])
@@ -1592,20 +1592,30 @@ def test_completion_first_seen_on_resume_keeps_tunnels_made_after_submission(env
     assert stopped == ["b" * 32]
 
 
-def test_cleanup_cutoff_uses_the_connection_time_not_the_attempt_start(env):
+def test_submission_cutoff_judges_tunnels_by_their_attempt_start(env):
+    # Completion was not watched, so the cutoff is the submission. The service refuses
+    # new peers from then until the cycle is final and disconnects the one it found.
     operation = _saved_operation(env, power.CYCLE_SUBMITTED)
-    operation["submitted_at"] = 1_000
+    operation["submitted_at"] = 1_000.0
     env.operations.write(operation)
     env.api.states = ["completed"]
     env.store.write(dict(_record("b" * 32), created_at=900, connected_at=905))
-    # A parallel connect() started before the cycle but its tunnel came up after it.
-    env.store.write(dict(_record("e" * 32), created_at=950, connected_at=1_500))
+    # In flight at submission: the service disconnected it before the cycle.
+    env.store.write(dict(_record("c" * 32), created_at=950, connected_at=1_010.5))
+    # Attempt begun after submission: it can only have come up after the cycle.
+    env.store.write(dict(_record("e" * 32), created_at=1_200, connected_at=1_205.5))
 
     result = invoke([])
 
     assert result.exit_code == 0, result.output
     stopped = [c.args[0]["session_id"] for c in commands.stop_local_forwarder.call_args_list]
-    assert stopped == ["b" * 32]
+    assert sorted(stopped) == ["b" * 32, "c" * 32]
+
+
+def test_observed_cutoff_still_judges_tunnels_by_connection_time():
+    # A parallel connect() begun before a watched "running" reply may come up after the cycle.
+    assert not commands._created_before({"created_at": 950, "connected_at": 1_500.0}, 1_000.0)
+    assert commands._created_before({"created_at": 950, "connected_at": 1_500.0}, 1_000.0, by_attempt=True)
 
 
 def test_tunnel_up_within_the_cycles_second_is_ordered_by_subsecond_time(tmp_path, monkeypatch):
@@ -1680,15 +1690,17 @@ def test_watched_cutoff_is_the_last_reply_that_said_running(tmp_path, monkeypatc
     assert not commands._created_before({"connected_at": 105.0}, power.cycle_completed_at(saved))
 
 
-def test_states_before_the_power_cut_never_set_the_cutoff(tmp_path, monkeypatch):
+def test_jump_from_queued_to_completed_falls_back_to_the_submission(tmp_path, monkeypatch):
+    # No reply said "running": when the cycle ended is unknown (PR #438 review).
     api = _polls_two_seconds_apart(monkeypatch, ["awaiting_disconnect", "queued", "received", "completed"])
 
     saved = _wait_to_completion(tmp_path, api)
 
-    # No reply said "running": a tunnel made after "received" may have died in the cut.
-    assert saved["cycle_completed_at"] == 108.0
-    assert commands._created_before({"connected_at": 107.0}, power.cycle_completed_at(saved))
-
+    assert saved["cycle_completed_at"] == 90.0  # submitted_at, not the "completed" reply at 108
+    assert saved["completion_observed"] is False
+    # Up after the cycle but before the "completed" reply: its attempt began after submission.
+    assert not commands._created_before({"created_at": 104, "connected_at": 106.0},
+                                        power.cycle_completed_at(saved), by_attempt=True)
 
 def test_first_submission_time_keeps_subsecond_precision(tmp_path, monkeypatch):
     api = Mock()
@@ -1881,9 +1893,9 @@ def test_retry_after_lost_response_keeps_the_first_submission_time(env, monkeypa
     seen = {}
     real_stop = commands._stop_obsolete_forwarders
 
-    def capture(store, allocation_id, cutoff):
+    def capture(store, allocation_id, cutoff, **kwargs):
         seen["cutoff"] = cutoff
-        return real_stop(store, allocation_id, cutoff)
+        return real_stop(store, allocation_id, cutoff, **kwargs)
 
     monkeypatch.setattr(commands, "_stop_obsolete_forwarders", capture)
     second = invoke(["--yes"])

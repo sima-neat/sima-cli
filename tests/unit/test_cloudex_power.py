@@ -1112,6 +1112,32 @@ def test_in_progress_after_a_timed_out_attempt_keeps_the_request(tmp_path, monke
     assert store.list()[0]["request_id"] == operation["request_id"]
 
 
+def test_gateway_throttling_after_a_timed_out_attempt_keeps_the_request(tmp_path, monkeypatch):
+    throttled = Mock(ok=False, status_code=429, text=json.dumps({"message": "Too Many Requests"}))
+    api = _real_api_posting(monkeypatch, [requests.Timeout()] + [throttled] * 3)
+    store = power.OperationStore(tmp_path)
+    operation = power.new_operation(ALLOCATION, None, "x")
+    store.write(operation)
+
+    with pytest.raises(power.PowerCyclePending):
+        power.submit_cycle(api, store, operation)
+    assert store.list()[0]["request_id"] == operation["request_id"]
+
+
+def test_cooldown_after_a_timed_out_attempt_is_still_final(tmp_path, monkeypatch):
+    # The application's 429 follows the request-ID lookup: an accepted attempt would be replayed.
+    cooldown = Mock(ok=False, status_code=429,
+                    text=json.dumps({"error": "Wait a minute before cycling this DevKit again"}))
+    api = _real_api_posting(monkeypatch, [requests.Timeout()] + [cooldown] * 3)
+    store = power.OperationStore(tmp_path)
+    operation = power.new_operation(ALLOCATION, None, "x")
+    store.write(operation)
+
+    with pytest.raises(power.PowerCycleRejected):
+        power.submit_cycle(api, store, operation)
+    assert store.list() == []
+
+
 def test_uncertainty_does_not_leak_into_the_next_call(monkeypatch):
     api = _real_api_posting(monkeypatch, [requests.Timeout(), Mock(ok=True, json=Mock(return_value={})),
                                           Mock(ok=True, json=Mock(return_value={}))])

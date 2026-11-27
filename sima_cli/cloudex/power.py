@@ -57,6 +57,9 @@ REFUSED_BEFORE_REPLAY_LOOKUP = {401, 403}
 # call gave up on an attempt without an answer: that attempt may have committed
 # in between and be the cycle "in progress". Other 409s and 429 prove the request was not accepted.
 IN_PROGRESS_ERROR = "A power cycle is already in progress"
+# The application's own 429 also follows the lookup; any other 429 (gateway
+# throttling) is answered before it and says nothing about an earlier attempt.
+COOLDOWN_ERROR = "Wait a minute before cycling this DevKit again"
 ALLOCATION_ENDED_ERRORS = {
     (401, "Invalid allocation credential"),
     (409, "Allocation is not ready or has expired"),
@@ -407,6 +410,11 @@ def submit_cycle(api, store, operation):
                 "sima-cli -i cloudex power-cycle --abandon discards it"
             ) from exc
         maybe_accepted = retry or call_retried
+        if exc.status == 429 and call_retried and api_error_message(exc) != COOLDOWN_ERROR:
+            raise PowerCyclePending(
+                "the service is throttling requests ({}), and an earlier attempt may have been accepted, "
+                "so the same request will be retried".format(api_error_message(exc))
+            ) from exc
         if (exc.status in REFUSED_BEFORE_REPLAY_LOOKUP and (maybe_accepted or allocation_ended(exc))) \
                 or (retry and exc.status == 404):
             if allocation_ended(exc):

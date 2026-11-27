@@ -49,6 +49,11 @@ PREVIOUS_CLEANUP_PENDING_ERROR = "previous ICE session cleanup is pending"
 # What the service answers once an allocation has ended: a released or expired
 # one still authenticates for a day but is refused (409), then is removed (401).
 # Other 401s (a skewed clock, a replayed nonce) are transient and not listed.
+# The service authenticates before it looks up an already accepted request ID,
+# so a 401/403 says nothing about an earlier attempt, including one the HTTP
+# client itself retried after a timeout or 5xx. A 409 or 429 comes after that
+# lookup, so the request was never accepted.
+REFUSED_BEFORE_REPLAY_LOOKUP = {401, 403}
 ALLOCATION_ENDED_ERRORS = {
     (401, "Invalid allocation credential"),
     (409, "Allocation is not ready or has expired"),
@@ -374,7 +379,10 @@ def advance(store, operation, phase, **fields):
 
 def submit_cycle(api, store, operation):
     """POST the cycle once per request ID; any retry reuses the same body."""
-    if not _timestamp(operation.get("submitted_at")):
+    # A rerun of a request that may already have left this host in an earlier
+    # run: that attempt can have been accepted even though no response arrived.
+    retry = _timestamp(operation.get("submitted_at"))
+    if not retry:
         # Persist the first attempt before it leaves this host. A retry after a
         # lost response keeps it: the cycle cannot predate the first POST, and a
         # later timestamp would make cleanup stop a tunnel opened after the cycle.
@@ -383,6 +391,23 @@ def submit_cycle(api, store, operation):
         response = api.call("POST", POWER_COMMANDS_PATH,
                             {"request_id": operation["request_id"], "action": "cycle"})
     except APIError as exc:
+        # A missing route is configuration, not a lost reply; it is final unless
+        # a request may already have been accepted before power control was disabled.
+        if exc.status in REFUSED_BEFORE_REPLAY_LOOKUP or (retry and exc.status == 404):
+            if allocation_ended(exc):
+                # Nothing is ever sent once the allocation is gone.
+                store.delete(operation["allocation_id"])
+                raise AllocationEnded(
+                    "The DevKit's allocation has ended; no power cycle is sent after an allocation ends. "
+                    "The saved power-cycle state was removed."
+                ) from exc
+            # Refused before the service looked the saved request up, so an earlier
+            # attempt may still have been accepted: keep its request ID for the retry.
+            raise PowerCyclePending(
+                "the service refused the request before checking whether it was already accepted ({}); an earlier attempt "
+                "may have been accepted, so the same request will be retried. If the DevKit was not "
+                "power-cycled, sima-cli -i cloudex power-cycle --abandon discards it".format(api_error_message(exc))
+            ) from exc
         if exc.status == 404:
             store.delete(operation["allocation_id"])
             raise PowerCycleRejected("CloudEx power control is not enabled for this allocation") from exc

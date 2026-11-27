@@ -432,6 +432,85 @@ def test_authoritative_rejection_clears_record(env, status, detail):
     env.connect.assert_not_called()
 
 
+REPLAYED = APIError(401, json.dumps({"error": "invalid, expired, or replayed authentication"}))
+
+
+def test_lost_response_then_transient_401_keeps_the_request_id_for_resume(env):
+    # Regression (PR #438 review): the first POST may have been accepted.
+    env.store.write(_record())
+    env.api.post_error = CloudExError("CloudEx API is unavailable")
+    first = invoke(["--yes"])
+    assert first.exit_code == 1
+    request_id = json.loads(env.op_path.read_text())["request_id"]
+
+    env.api.post_error = REPLAYED
+    second = invoke(["--yes"])
+
+    assert second.exit_code == 1
+    saved = json.loads(env.op_path.read_text())
+    assert (saved["phase"], saved["request_id"]) == (power.PREPARED, request_id)
+    assert "--abandon" in second.output.replace("\n", " ")
+
+    env.api.post_error = None
+    third = invoke(["--yes"])
+
+    assert third.exit_code == 0, third.output
+    assert {c[2]["request_id"] for c in env.api.posts()} == {request_id}
+
+
+@pytest.mark.parametrize("error", [
+    REPLAYED,
+    APIError(403, json.dumps({"error": "An allocation credential is required"})),
+])
+def test_authentication_refusal_never_discards_the_request(env, error):
+    # The HTTP client may itself have retried a POST the service had accepted.
+    env.store.write(_record())
+    env.api.post_error = error
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert json.loads(env.op_path.read_text())["phase"] == power.PREPARED
+
+
+def test_ended_allocation_on_submit_drops_the_request(env):
+    env.store.write(_record())
+    env.api.post_error = APIError(401, json.dumps({"error": "Invalid allocation credential"}))
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert "allocation has ended" in result.output
+    assert not env.op_path.exists()
+
+
+def test_missing_route_on_a_retry_keeps_the_request(env):
+    operation = _saved_operation(env, power.PREPARED)
+    operation["submitted_at"] = 1_000.0
+    env.operations.write(operation)
+    env.store.write(_record())
+    env.api.post_error = APIError(404, json.dumps({"error": "route not found"}))
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert json.loads(env.op_path.read_text())["request_id"] == operation["request_id"]
+
+
+def test_conflict_on_a_retry_proves_nothing_was_accepted(env):
+    # 409/429 come after the service's lookup of the saved request ID.
+    operation = _saved_operation(env, power.PREPARED)
+    operation["submitted_at"] = 1_000.0
+    env.operations.write(operation)
+    env.store.write(_record())
+    env.api.post_error = APIError(429, json.dumps({"error": "Wait a minute before cycling this DevKit again"}))
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert not env.op_path.exists()
+
+
 @pytest.mark.parametrize("phase", [
     power.CYCLE_SUBMITTED, power.CYCLE_COMPLETED, power.WAITING_FOR_DEVICE, power.RECONNECTING,
 ])

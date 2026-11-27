@@ -1668,6 +1668,33 @@ def test_submission_cutoff_judges_tunnels_by_their_attempt_start(env):
     assert sorted(stopped) == ["b" * 32, "c" * 32]
 
 
+def test_reusing_a_newer_tunnel_drops_the_stopped_pre_cycle_record(env):
+    _saved_operation(env, power.RECONNECTING)
+    env.store.write(dict(_record("b" * 32), status="disconnected"))  # stopped before the cycle
+    newer = dict(_record("e" * 32), status="connected", target="10.252.9.2")
+    env.store.write(newer)
+    env.connect.side_effect = lambda profile, store, progress, **kwargs: newer  # reused as is
+
+    result = invoke([])
+
+    assert result.exit_code == 0, result.output
+    assert [s["session_id"] for s in env.store.list()] == ["e" * 32]
+
+
+def test_reconnect_keeps_another_allocations_and_running_records(env):
+    _saved_operation(env, power.RECONNECTING)
+    env.store.write(dict(_record("b" * 32), status="disconnected", forwarder_pid=4242))
+    env.store.write(dict(_record("c" * 32, allocation_id=OTHER_ALLOCATION), status="disconnected"))
+    newer = dict(_record("e" * 32), status="connected")
+    env.store.write(newer)
+    env.connect.side_effect = lambda profile, store, progress, **kwargs: newer
+
+    result = invoke([])
+
+    assert result.exit_code == 0, result.output
+    assert sorted(s["session_id"] for s in env.store.list()) == ["b" * 32, "c" * 32, "e" * 32]
+
+
 def test_watched_running_cutoff_reaches_cleanup_as_connection_time(env, monkeypatch):
     env.store.write(_record())  # default fake replies: running, then completed
     seen = {}

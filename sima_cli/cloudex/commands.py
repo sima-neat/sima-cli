@@ -594,8 +594,23 @@ def _reconnect_after_cycle(profile, store, session, device):
                 raise power.PowerCyclePending(power.PARTIAL_SUCCESS + "\nLast error: " + reason) from exc
             finally:
                 _retain_credential(store, session)
+            _drop_stopped_siblings(store, connected)
             progress.success("{} power-cycled and CloudEx reconnected".format(device))
             return connected
+
+
+def _drop_stopped_siblings(store, connected):
+    """Forget the allocation's stopped pre-cycle records once a tunnel is up again.
+
+    connect() reuses a tunnel opened after the cycle without reconciling older
+    records, so the one retained for resuming would otherwise stay listed and
+    make the next run ask which session to use.
+    """
+    for recorded in store.list():
+        if (recorded.get("allocation_id") == connected.get("allocation_id")
+                and recorded.get("session_id") != connected.get("session_id")
+                and recorded.get("status") == "disconnected" and "forwarder_pid" not in recorded):
+            store.delete(recorded["session_id"])
 
 
 ALLOCATION_ENDED = (

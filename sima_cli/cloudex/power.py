@@ -260,7 +260,8 @@ class OperationStore:
         allocation locked. The lock file is never removed, which keeps two runs
         from locking different inodes under the same name.
         """
-        os.makedirs(self.directory, mode=0o700, exist_ok=True)
+        # A first run locks before it records: create the directory durably here.
+        self._ensure_directory()
         path = self._path(allocation_id)[:-len(".json")] + ".lock"
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
         locked = True

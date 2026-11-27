@@ -1443,7 +1443,8 @@ def test_first_record_syncs_the_parents_of_created_directories(tmp_path, monkeyp
     store = power.OperationStore(root)
     synced = _track_directory_syncs(monkeypatch)
 
-    store.create(power.new_operation(ALLOCATION, None, "x"))
+    with store.lock(ALLOCATION):  # the command's order: lock, then record
+        store.create(power.new_operation(ALLOCATION, None, "x"))
 
     for parent in (tmp_path, tmp_path / "home", root):
         assert os.stat(parent).st_ino in synced

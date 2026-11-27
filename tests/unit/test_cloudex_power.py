@@ -656,6 +656,38 @@ def test_allocation_removed_while_waiting_for_the_old_peer(env):
     env.connect.assert_not_called()
 
 
+def test_peer_cleanup_wait_stops_at_once_for_an_ended_allocation():
+    api = Mock()
+    api.call.side_effect = EXPIRED
+    with pytest.raises(APIError):
+        power.wait_for_peer_cleanup(api, Mock(), timeout=600)
+    assert api.call.call_count == 1
+
+
+def test_expired_allocation_while_waiting_for_the_old_peer_is_dropped(env):
+    _saved_operation(env, power.WAITING_FOR_DEVICE)
+    env.store.write(_record())
+    env.api.ice_sessions = [EXPIRED]
+
+    result = invoke([])
+
+    _assert_ended_and_forgotten(env, result)
+    env.connect.assert_not_called()
+    assert power.sleep.call_count == 0
+
+
+def test_expired_allocation_between_reconnect_attempts_is_dropped(env):
+    _saved_operation(env, power.RECONNECTING)
+    env.store.write(_record())
+    attempts = _connect_failing_with(env, [_not_joined()])
+    env.api.ice_sessions = [EXPIRED]
+
+    result = invoke([])
+
+    _assert_ended_and_forgotten(env, result)
+    assert len(attempts) == 1
+
+
 def test_status_poll_on_a_removed_allocation_drops_the_submitted_cycle(env):
     _saved_operation(env, power.CYCLE_SUBMITTED)
     env.store.write(_record())
@@ -1195,6 +1227,31 @@ def test_cooldown_after_a_timed_out_attempt_is_still_final(tmp_path, monkeypatch
     store.write(operation)
 
     with pytest.raises(power.PowerCycleRejected):
+        power.submit_cycle(api, store, operation)
+    assert store.list() == []
+
+
+def test_missing_route_after_a_timed_out_attempt_keeps_the_request(tmp_path, monkeypatch):
+    # The first attempt may have been accepted before power control was disabled.
+    route_gone = Mock(ok=False, status_code=404, text=json.dumps({"error": "route not found"}))
+    api = _real_api_posting(monkeypatch, [requests.Timeout(), route_gone])
+    store = power.OperationStore(tmp_path)
+    operation = power.new_operation(ALLOCATION, None, "x")
+    store.write(operation)
+
+    with pytest.raises(power.PowerCyclePending):
+        power.submit_cycle(api, store, operation)
+    assert store.list()[0]["request_id"] == operation["request_id"]
+
+
+def test_missing_route_on_a_single_first_attempt_is_final(tmp_path, monkeypatch):
+    route_gone = Mock(ok=False, status_code=404, text=json.dumps({"error": "route not found"}))
+    api = _real_api_posting(monkeypatch, [route_gone])
+    store = power.OperationStore(tmp_path)
+    operation = power.new_operation(ALLOCATION, None, "x")
+    store.write(operation)
+
+    with pytest.raises(power.PowerCycleRejected, match="not enabled"):
         power.submit_cycle(api, store, operation)
     assert store.list() == []
 

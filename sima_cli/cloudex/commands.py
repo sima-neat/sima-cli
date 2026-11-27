@@ -578,7 +578,9 @@ def _reconnect_after_cycle(profile, store, session, device):
                     remaining = deadline - time.monotonic()
                     try:
                         cleared = remaining > 0 and power.wait_for_peer_cleanup(api, progress, timeout=remaining)
-                    except CloudExError:
+                    except CloudExError as probe:
+                        if power.allocation_ended(probe):
+                            raise  # the caller drops the ended allocation's saved cycle
                         cleared = False  # report the reconnect failure, not the status probe
                     if cleared:
                         continue

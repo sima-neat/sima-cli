@@ -418,7 +418,7 @@ def submit_cycle(api, store, operation):
                 "want it to be, sima-cli -i cloudex power-cycle --abandon discards it".format(api_error_message(exc))
             ) from exc
         if (exc.status in REFUSED_BEFORE_REPLAY_LOOKUP and (maybe_accepted or allocation_ended(exc))) \
-                or (retry and exc.status == 404):
+                or (maybe_accepted and exc.status == 404):
             if allocation_ended(exc):
                 # Nothing is ever sent once the allocation is gone.
                 store.delete(operation["allocation_id"])
@@ -530,8 +530,8 @@ def wait_for_peer_cleanup(api, progress, timeout=None):
         except APIError as exc:
             if exc.status == 404:
                 return True
-            if exc.status != 409:
-                raise
+            if exc.status != 409 or allocation_ended(exc):
+                raise  # an ended allocation has nothing left to wait for
         if time.monotonic() >= deadline:
             return False
         progress.update("Waiting for the previous CloudEx connection to close")

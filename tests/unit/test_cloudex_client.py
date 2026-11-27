@@ -668,11 +668,11 @@ def test_inspect_session_flags_an_expired_lease_whose_tunnel_still_works(tmp_pat
     assert (status["connected"], status["status"], status["reason"]) == (True, "connected", client.LEASE_EXPIRED)
 
 
-def test_inspect_session_keeps_an_unverified_tunnel_disconnected_with_a_reason(tmp_path, monkeypatch):
+def test_inspect_session_marks_an_unverified_tunnel_without_claiming_disconnection(tmp_path, monkeypatch):
     status = _inspect(tmp_path, monkeypatch, session_record(), report={"status": "connected"}, remote="unavailable")
 
     assert status["connected"] is False
-    assert (status["status"], status["reason"]) == ("disconnected", "CloudEx unreachable")
+    assert (status["status"], status["reason"]) == ("link unverified", "CloudEx unreachable")
 
 
 def test_inspect_session_explains_a_cleanup_pending_record(tmp_path, monkeypatch):
@@ -1110,3 +1110,39 @@ def test_auto_connect_moves_to_relay_after_one_direct_preferred_attempt(tmp_path
     assert transports == ["p2p", "routed", "routed"]
     assert result["ice_path"] == "relay"
     assert client.disconnect_session.call_count == 2
+
+
+@pytest.mark.parametrize('local,remote,running,expected', [
+    ('reconnecting', 'connected_direct', True, 'reconnecting'),
+    ('connected', 'connected_direct', True, 'connected'),
+    ('connected', 'unavailable', True, 'link unverified'),
+    ('failed', 'connected_direct', False, 'recovery failed'),
+    ('recovery-failed', 'connected_direct', True, 'recovery failed'),
+    ('connected', 'expired', True, 'disconnected'),
+])
+def test_inspect_session_exposes_link_recovery_without_teardown(tmp_path, monkeypatch, local, remote, running, expected):
+    store = client.SessionStore(tmp_path / 'cloudex')
+    session = session_record()
+    monkeypatch.setattr(client, '_read_report', lambda _: {'status': local, 'path': 'direct'})
+    monkeypatch.setattr(client, '_forwarder_running', lambda _: running)
+    api = Mock()
+    api.call.side_effect = client.CloudExError('unavailable') if remote == 'unavailable' else None
+    api.call.return_value = {'status': remote}
+    monkeypatch.setattr(client.CloudExAPI, 'from_session', Mock(return_value=api))
+    result = client.inspect_session(session, store)
+    assert result['status'] == expected
+    assert result['connected'] == (expected == 'connected')
+    if local == 'reconnecting':
+        api.call.assert_not_called()
+
+
+@pytest.mark.parametrize('status', ['reconnecting', 'link unverified'])
+def test_connect_during_recovery_preserves_existing_session(tmp_path, monkeypatch, status):
+    store = client.SessionStore(tmp_path / 'cloudex')
+    session = session_record(); store.write(session)
+    monkeypatch.setattr(client, 'inspect_session', lambda *_: {'connected': False, 'status': status})
+    disconnect = Mock(); monkeypatch.setattr(client, 'disconnect_session', disconnect)
+    with pytest.raises(client.CloudExError, match='allocation and workload were preserved'):
+        client._reconcile_existing_connection(allocation_profile(), store, Mock())
+    disconnect.assert_not_called()
+    assert store.list()[0]['session_id'] == session['session_id']

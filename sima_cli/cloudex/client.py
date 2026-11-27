@@ -598,6 +598,12 @@ def _reconcile_existing_connection(profile, store, progress):
         if session.get("allocation_id") == profile["allocation_id"]
     ]
     inspected = [(session, inspect_session(session, store)) for session in existing]
+    if any(status["status"] in {"reconnecting", "link unverified"} for _, status in inspected):
+        raise CloudExError(
+            "Existing CloudEx session is reconnecting or its link cannot be verified. "
+            "The allocation and workload were preserved; check cloudex status before retrying. "
+            "Use an explicit disconnect or release to end the session."
+        )
     for session, status in inspected:
         if status["connected"]:
             progress.update("Existing CloudEx tunnel is already connected")
@@ -1000,13 +1006,24 @@ def inspect_session(session, store):
     _runtime, _config, report_path, _log = store.runtime_paths(session["session_id"])
     report = _read_report(report_path)
     running = _forwarder_running(session.get("forwarder_pid"))
-    remote_status = _remote_status(session, store)
     local_status = report.get("status", session.get("status", "unknown"))
+    expired = session_expired(session)
+    # Report local recovery immediately even when the API is blackholed.
+    # Retrying connect must not tear down this still-owned running session.
+    if running and local_status == "reconnecting" and not expired:
+        return {"connected": False, "status": "reconnecting",
+                "reason": "Waiting for the existing network path to recover",
+                "path": report.get("path", session.get("ice_path", "unknown")),
+                "remote_status": "not checked while reconnecting"}
+    remote_status = _remote_status(session, store)
     connected = running and local_status == "connected" and remote_status.startswith("connected_")
     status = (
         "connected"
         if connected
-        else "cleanup pending" if session.get("status") == "cleanup-pending" else "disconnected"
+        else "cleanup pending" if session.get("status") == "cleanup-pending"
+        else "link unverified" if running and not expired and local_status == "connected" and remote_status == "unavailable"
+        else "recovery failed" if local_status in {"failed", "recovery-failed"} and not expired
+        else "disconnected"
     )
     return {
         "connected": connected,

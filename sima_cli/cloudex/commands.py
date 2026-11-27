@@ -187,7 +187,8 @@ def _session_table(rows, show_benchmark=False):
         table.add_column("H→D", justify="right")
         table.add_column("D→H", justify="right")
     for session, status, _measurement in rows:
-        state = "[green]● connected[/green]" if status["connected"] else "[red]● {}[/red]".format(status["status"])
+        color = "yellow" if status["status"] in {"reconnecting", "link unverified"} else "red"
+        state = "[green]● connected[/green]" if status["connected"] else "[{0}]● {1}[/{0}]".format(color, status["status"])
         if status.get("reason"):
             state += "\n[dim]{}[/dim]".format(escape(status["reason"]))
         path = status["path"]

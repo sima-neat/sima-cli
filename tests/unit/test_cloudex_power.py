@@ -1612,6 +1612,22 @@ def test_submission_cutoff_judges_tunnels_by_their_attempt_start(env):
     assert sorted(stopped) == ["b" * 32, "c" * 32]
 
 
+def test_watched_running_cutoff_reaches_cleanup_as_connection_time(env, monkeypatch):
+    env.store.write(_record())  # default fake replies: running, then completed
+    seen = {}
+    real_stop = commands._stop_obsolete_forwarders
+
+    def capture(store, allocation_id, cutoff, by_attempt=False):
+        seen["by_attempt"] = by_attempt
+        return real_stop(store, allocation_id, cutoff, by_attempt)
+
+    monkeypatch.setattr(commands, "_stop_obsolete_forwarders", capture)
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["by_attempt"] is False
+
+
 def test_observed_cutoff_still_judges_tunnels_by_connection_time():
     # A parallel connect() begun before a watched "running" reply may come up after the cycle.
     assert not commands._created_before({"created_at": 950, "connected_at": 1_500.0}, 1_000.0)

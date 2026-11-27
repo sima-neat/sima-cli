@@ -67,6 +67,7 @@ class FakeAPI:
         self.get_error = None
         self.ice_sessions = [APIError(404, '{"error":"not found"}')]
         self.profiles = []
+        self.last_attempts = 1
 
     def from_profile(self, profile):
         self.profiles.append(profile)
@@ -462,15 +463,26 @@ def test_lost_response_then_transient_401_keeps_the_request_id_for_resume(env):
     REPLAYED,
     APIError(403, json.dumps({"error": "An allocation credential is required"})),
 ])
-def test_authentication_refusal_never_discards_the_request(env, error):
-    # The HTTP client may itself have retried a POST the service had accepted.
+def test_authentication_refusal_after_an_abandoned_attempt_keeps_the_request(env, error):
+    # The HTTP client retried within the call: its first attempt may have been accepted.
     env.store.write(_record())
     env.api.post_error = error
+    env.api.last_attempts = 2
 
     result = invoke(["--yes"])
 
     assert result.exit_code == 1
     assert json.loads(env.op_path.read_text())["phase"] == power.PREPARED
+
+
+def test_authentication_refusal_of_a_single_first_attempt_is_final(env):
+    env.store.write(_record())
+    env.api.post_error = REPLAYED
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert not env.op_path.exists()
 
 
 def test_ended_allocation_on_submit_drops_the_request(env):
@@ -497,16 +509,38 @@ def test_missing_route_on_a_retry_keeps_the_request(env):
     assert json.loads(env.op_path.read_text())["request_id"] == operation["request_id"]
 
 
-def test_in_progress_conflict_keeps_the_request_id(env):
+IN_PROGRESS = APIError(409, json.dumps({"error": "A power cycle is already in progress"}))
+
+
+def test_in_progress_conflict_after_an_abandoned_attempt_keeps_the_request_id(env):
     # An attempt the HTTP client abandoned may have committed and be "in progress".
     env.store.write(_record())
-    env.api.post_error = APIError(409, json.dumps({"error": "A power cycle is already in progress"}))
+    env.api.post_error = IN_PROGRESS
+    env.api.last_attempts = 3
 
     result = invoke(["--yes"])
 
     assert result.exit_code == 1
     assert json.loads(env.op_path.read_text())["phase"] == power.PREPARED
-    assert "--abandon" in result.output.replace("\n", " ")
+    output = result.output.replace("\n", " ")
+    assert "cycles the DevKit once more if the current cycle was someone else's" in output
+    assert "--abandon" in output
+
+
+@pytest.mark.parametrize("rerun", [False, True])
+def test_in_progress_conflict_without_a_retry_is_another_requests_cycle(env, rerun):
+    if rerun:  # an earlier run's committed request would have been replayed, not refused
+        operation = _saved_operation(env, power.PREPARED)
+        operation["submitted_at"] = 1_000.0
+        env.operations.write(operation)
+    env.store.write(_record())
+    env.api.post_error = IN_PROGRESS
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert "A power cycle is already in progress" in result.output
+    assert not env.op_path.exists()
 
 
 def test_conflict_on_a_retry_proves_nothing_was_accepted(env):
@@ -1031,6 +1065,7 @@ def test_submit_signs_every_retry_with_a_fresh_nonce_and_identical_body(tmp_path
     power.submit_cycle(api, store, operation)
 
     first, second = request.call_args_list
+    assert api.last_attempts == 2
     assert first.kwargs["data"] == second.kwargs["data"]
     assert json.loads(first.kwargs["data"]) == {"request_id": operation["request_id"], "action": "cycle"}
     assert first.kwargs["headers"]["x-p2p-nonce"] != second.kwargs["headers"]["x-p2p-nonce"]

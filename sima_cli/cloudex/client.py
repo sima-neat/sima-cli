@@ -132,6 +132,9 @@ class CloudExAPI:
         self.requester = requester
         self.secret = secret
         self.allocation_id = allocation_id
+        # HTTP attempts the last call made: a later one may follow an attempt
+        # the service went on to complete after this client gave up on it.
+        self.last_attempts = 0
 
     @classmethod
     def from_profile(cls, profile):
@@ -154,6 +157,7 @@ class CloudExAPI:
     def call(self, method, path, data=None, deadline=None):
         body = json.dumps(data, separators=(",", ":")).encode() if data is not None else b""
         for attempt in range(4):
+            self.last_attempts = attempt + 1
             remaining = deadline - time.time() if deadline is not None else None
             if remaining is not None and remaining <= 0:
                 raise CloudExError("CloudEx API request timed out during connection setup")

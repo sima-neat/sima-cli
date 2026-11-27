@@ -50,12 +50,12 @@ PREVIOUS_CLEANUP_PENDING_ERROR = "previous ICE session cleanup is pending"
 # one still authenticates for a day but is refused (409), then is removed (401).
 # Other 401s (a skewed clock, a replayed nonce) are transient and not listed.
 # The service authenticates before it looks up an already accepted request ID,
-# so a 401/403 says nothing about an earlier attempt, including one the HTTP
-# client itself abandoned after a timeout or 5xx and retried.
+# so a 401/403 says nothing about an earlier attempt: one from an earlier run,
+# or one the HTTP client abandoned after a timeout or 5xx and retried.
 REFUSED_BEFORE_REPLAY_LOOKUP = {401, 403}
-# Answered after that lookup, but an abandoned attempt with this same request
-# ID may have committed in between and now be the cycle "in progress". Other
-# 409s and 429 prove the request was not accepted.
+# Answered after that lookup, so it is another request's cycle, unless this
+# call retried: an attempt it abandoned may have committed in between and be
+# the cycle "in progress". Other 409s and 429 prove the request was not accepted.
 IN_PROGRESS_ERROR = "A power cycle is already in progress"
 ALLOCATION_ENDED_ERRORS = {
     (401, "Invalid allocation credential"),
@@ -396,8 +396,18 @@ def submit_cycle(api, store, operation):
     except APIError as exc:
         # A missing route is configuration, not a lost reply; it is final unless
         # a request may already have been accepted before power control was disabled.
-        in_progress = exc.status == 409 and api_error_message(exc) == IN_PROGRESS_ERROR
-        if exc.status in REFUSED_BEFORE_REPLAY_LOOKUP or in_progress or (retry and exc.status == 404):
+        attempts = getattr(api, "last_attempts", 1)
+        call_retried = isinstance(attempts, int) and attempts > 1
+        if (exc.status == 409 and api_error_message(exc) == IN_PROGRESS_ERROR and call_retried):
+            raise PowerCyclePending(
+                "a power cycle is already in progress on this DevKit; it may be this request (an earlier "
+                "attempt timed out) or another one. A rerun sends this same request again, which cycles the "
+                "DevKit once more if the current cycle was someone else's. If you do not want another cycle, "
+                "sima-cli -i cloudex power-cycle --abandon discards it"
+            ) from exc
+        maybe_accepted = retry or call_retried
+        if (exc.status in REFUSED_BEFORE_REPLAY_LOOKUP and (maybe_accepted or allocation_ended(exc))) \
+                or (retry and exc.status == 404):
             if allocation_ended(exc):
                 # Nothing is ever sent once the allocation is gone.
                 store.delete(operation["allocation_id"])

@@ -12,7 +12,8 @@ from click.testing import CliRunner
 from sima_cli.cli import main
 from sima_cli.cloudex import commands, power
 from sima_cli.cloudex.client import (APIError, CleanupPendingError, CloudExAPI, CloudExError,
-                                     DeviceNotJoinedError, DirectHandshakeError, SessionStore)
+                                     DeviceNotJoinedError, DeviceStartFailedError, DirectHandshakeError,
+                                     SessionStore)
 
 ALLOCATION = "a" * 32
 OTHER_ALLOCATION = "c" * 32
@@ -967,6 +968,54 @@ def test_failed_cleanup_probe_reports_the_reconnect_failure(env):
     assert power.PARTIAL_SUCCESS in output
     assert "Last error: CloudEx connection setup deadline expired" in output
     assert json.loads(env.op_path.read_text())["phase"] == power.RECONNECTING
+
+
+def _start_failed():
+    # What Kerrigan's devices.p2p.ice.start reports while the DevKit is still booting.
+    return DeviceStartFailedError("allocation missing, expired or in use; host diagnostics: x")
+
+
+def test_booting_devkit_whose_ice_start_fails_is_retried_until_it_connects(env):
+    env.store.write(_record())
+    attempts = _connect_failing_with(env, [_start_failed(), _start_failed(), _start_failed()])
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert len(attempts) == 4
+    assert "power-cycled and CloudEx reconnected" in result.output
+    assert power.PARTIAL_SUCCESS not in result.output.replace("\n", " ")
+    assert env.store.list(), "the allocation is never released"
+
+
+def test_ice_start_failing_until_the_deadline_is_partial_success(env, monkeypatch):
+    env.store.write(_record())
+    _connect_failing_with(env, [_start_failed() for _ in range(5)])
+    monkeypatch.setattr(power, "DEVICE_RETURN_TIMEOUT_SECONDS", 0)
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    output = result.output.replace("\n", " ")
+    assert power.PARTIAL_SUCCESS in output
+    assert "allocation missing, expired or in use" in output
+    assert json.loads(env.op_path.read_text())["phase"] == power.RECONNECTING
+
+
+def test_ice_start_failure_wrapped_in_a_cleanup_error_is_still_retried(env):
+    env.store.write(_record())
+    try:
+        try:
+            raise _start_failed()
+        except DeviceStartFailedError as inner:
+            raise CloudExError("Connection failed and cleanup is pending: x") from inner
+    except CloudExError as wrapped:
+        attempts = _connect_failing_with(env, [wrapped])
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert len(attempts) == 2
 
 
 def test_device_that_joined_and_then_failed_is_not_retried(env):

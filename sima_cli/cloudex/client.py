@@ -72,6 +72,15 @@ class DirectHandshakeError(CloudExError):
     """A direct path failed and may succeed with fresh ICE candidates."""
 
 
+class DeviceStartFailedError(CloudExError):
+    """The service reported that the DevKit side of the ICE session failed to start.
+
+    Kerrigan fails devices.p2p.ice.start at once, without waiting, while a
+    DevKit is still booting after a power cycle (or its old peer is still
+    recorded), so the power-cycle reconnect retries it; a plain connect does not.
+    """
+
+
 class CleanupPendingError(CloudExError):
     """The service still holds a closed session until the appliance confirms cleanup."""
 
@@ -558,7 +567,7 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
                     detail = remote.get("last_error")
                     if not isinstance(detail, str) or not detail.strip():
                         detail = "DevKit ICE startup failed"
-                    raise CloudExError(
+                    raise DeviceStartFailedError(
                         detail.replace("\n", " ")[:300] + "; host diagnostics: " + str(log_path)
                     )
                 if remote_state == "waiting_for_device":

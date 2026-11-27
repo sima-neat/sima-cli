@@ -564,6 +564,45 @@ def test_wait_forwarder_surfaces_devkit_failure_and_diagnostic_paths(tmp_path):
 
     assert device_log in str(raised.value)
     assert str(log) in str(raised.value)
+    # Distinct for the power-cycle reconnect, and never retried by connect() itself.
+    assert type(raised.value) is client.DeviceStartFailedError
+    assert not isinstance(raised.value, client.DirectHandshakeError)
+
+
+def test_plain_connect_fails_fast_when_the_devkit_side_fails_to_start(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path / "cloudex")
+    forwarder = tmp_path / "forwarder"
+    forwarder.write_text("binary")
+    forwarder.chmod(0o755)
+    allocated = {"session_id": "d" * 32, "expires_at": 9999999999, "target_id": "ll2",
+                 "wireguard": {"remote_address": "10.252.1.2/32"}}
+    api = Mock(url=allocation_profile()["api_url"], requester=allocation_profile()["requester"],
+               secret=allocation_profile()["allocation_secret"],
+               allocation_id=allocation_profile()["allocation_id"])
+    posts = []
+
+    def api_call(method, path, _data=None, **_kwargs):
+        if method == "POST":
+            posts.append(path)
+            return allocated
+        if method == "DELETE":
+            return {"status": "closing"}
+        return {"status": "closed", "cleanup_confirmed": True}
+
+    api.call.side_effect = api_call
+    monkeypatch.setattr(installer, "ensure_forwarder", Mock(return_value=forwarder))
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+    monkeypatch.setattr(client.subprocess, "Popen", Mock(return_value=Mock(pid=123, poll=Mock(return_value=None))))
+    monkeypatch.setattr(client, "_stop_forwarder", Mock())
+    monkeypatch.setattr(client, "_wait_forwarder", Mock(side_effect=client.DeviceStartFailedError(
+        "allocation missing, expired or in use; host diagnostics: x")))
+
+    with pytest.raises(client.DeviceStartFailedError, match="allocation missing"):
+        client.connect(allocation_profile(), store, Mock())  # auto transport: up to 3 attempts
+
+    assert [p for p in posts if p == "/v1/p2p/ice-sessions"] == ["/v1/p2p/ice-sessions"]
 
 
 def test_connect_installs_develop_forwarder_when_missing(tmp_path, monkeypatch):

@@ -15,7 +15,8 @@ import re
 import time
 import uuid
 
-from .client import APIError, CleanupPendingError, CloudExError, DEFAULT_ROOT, DeviceNotJoinedError
+from .client import (APIError, CleanupPendingError, CloudExError, DEFAULT_ROOT, DeviceNotJoinedError,
+                     DeviceStartFailedError)
 
 PREPARED = "prepared"
 CYCLE_SUBMITTED = "cycle_submitted"
@@ -552,7 +553,8 @@ def device_not_ready(error):
     """Whether a failed reconnect means the DevKit has not come back yet.
 
     `/v1/p2p/ice-sessions` never checks the DevKit before accepting a session.
-    A DevKit that is still booting shows up as a session it never joins, or as
+    A DevKit that is still booting shows up as a session it never joins, as a
+    session whose DevKit side failed to start (Kerrigan does not wait), or as
     a previous session's cleanup still waiting on the appliance (seen by the
     client while reconciling, or by the service refusing a new session).
     connect() may wrap these in a cleanup error, so follow the cause chain.
@@ -560,7 +562,7 @@ def device_not_ready(error):
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
-        if isinstance(error, (DeviceNotJoinedError, CleanupPendingError)):
+        if isinstance(error, (DeviceNotJoinedError, DeviceStartFailedError, CleanupPendingError)):
             return True
         if (isinstance(error, APIError) and error.status == 409
                 and api_error_message(error) == PREVIOUS_CLEANUP_PENDING_ERROR):

@@ -410,10 +410,11 @@ def submit_cycle(api, store, operation):
                 "sima-cli -i cloudex power-cycle --abandon discards it"
             ) from exc
         maybe_accepted = retry or call_retried
-        if exc.status == 429 and call_retried and api_error_message(exc) != COOLDOWN_ERROR:
+        if exc.status == 429 and maybe_accepted and api_error_message(exc) != COOLDOWN_ERROR:
             raise PowerCyclePending(
                 "the service is throttling requests ({}), and an earlier attempt may have been accepted, "
-                "so the same request will be retried".format(api_error_message(exc))
+                "so the same request will be retried. If the DevKit was not power-cycled and you no longer "
+                "want it to be, sima-cli -i cloudex power-cycle --abandon discards it".format(api_error_message(exc))
             ) from exc
         if (exc.status in REFUSED_BEFORE_REPLAY_LOOKUP and (maybe_accepted or allocation_ended(exc))) \
                 or (retry and exc.status == 404):

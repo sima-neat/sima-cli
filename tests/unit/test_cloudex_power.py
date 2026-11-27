@@ -1124,6 +1124,18 @@ def test_gateway_throttling_after_a_timed_out_attempt_keeps_the_request(tmp_path
     assert store.list()[0]["request_id"] == operation["request_id"]
 
 
+def test_gateway_throttling_on_a_rerun_keeps_the_request(tmp_path, monkeypatch):
+    throttled = Mock(ok=False, status_code=429, text=json.dumps({"message": "Too Many Requests"}))
+    api = _real_api_posting(monkeypatch, [throttled] * 4)
+    store = power.OperationStore(tmp_path)
+    operation = dict(power.new_operation(ALLOCATION, None, "x"), submitted_at=1_000.0)
+    store.write(operation)
+
+    with pytest.raises(power.PowerCyclePending, match="--abandon"):
+        power.submit_cycle(api, store, operation)
+    assert store.list()[0]["request_id"] == operation["request_id"]
+
+
 def test_cooldown_after_a_timed_out_attempt_is_still_final(tmp_path, monkeypatch):
     # The application's 429 follows the request-ID lookup: an accepted attempt would be replayed.
     cooldown = Mock(ok=False, status_code=429,

@@ -67,7 +67,7 @@ class FakeAPI:
         self.get_error = None
         self.ice_sessions = [APIError(404, '{"error":"not found"}')]
         self.profiles = []
-        self.last_attempts = 1
+        self.last_uncertain = False
 
     def from_profile(self, profile):
         self.profiles.append(profile)
@@ -467,7 +467,7 @@ def test_authentication_refusal_after_an_abandoned_attempt_keeps_the_request(env
     # The HTTP client retried within the call: its first attempt may have been accepted.
     env.store.write(_record())
     env.api.post_error = error
-    env.api.last_attempts = 2
+    env.api.last_uncertain = True
 
     result = invoke(["--yes"])
 
@@ -516,7 +516,7 @@ def test_in_progress_conflict_after_an_abandoned_attempt_keeps_the_request_id(en
     # An attempt the HTTP client abandoned may have committed and be "in progress".
     env.store.write(_record())
     env.api.post_error = IN_PROGRESS
-    env.api.last_attempts = 3
+    env.api.last_uncertain = True
 
     result = invoke(["--yes"])
 
@@ -1065,7 +1065,7 @@ def test_submit_signs_every_retry_with_a_fresh_nonce_and_identical_body(tmp_path
     power.submit_cycle(api, store, operation)
 
     first, second = request.call_args_list
-    assert api.last_attempts == 2
+    assert api.last_uncertain is True  # the 503 attempt's outcome is unknown
     assert first.kwargs["data"] == second.kwargs["data"]
     assert json.loads(first.kwargs["data"]) == {"request_id": operation["request_id"], "action": "cycle"}
     assert first.kwargs["headers"]["x-p2p-nonce"] != second.kwargs["headers"]["x-p2p-nonce"]
@@ -1077,6 +1077,48 @@ def test_submit_signs_every_retry_with_a_fresh_nonce_and_identical_body(tmp_path
         assert SECRET not in json.dumps(headers)
     assert store.list()[0]["phase"] == power.CYCLE_SUBMITTED
     assert store.list()[0]["command_id"] == COMMAND
+
+
+def _real_api_posting(monkeypatch, replies):
+    monkeypatch.setattr("sima_cli.cloudex.client.time.sleep", Mock())
+    monkeypatch.setattr(requests, "request", Mock(side_effect=replies))
+    return CloudExAPI("https://p2p.example.test", "user-1", SECRET, ALLOCATION)
+
+
+def _in_progress_reply():
+    return Mock(ok=False, status_code=409, text=json.dumps({"error": "A power cycle is already in progress"}))
+
+
+def test_definite_in_progress_replies_are_another_requests_cycle(tmp_path, monkeypatch):
+    # The HTTP client retries 409 itself; four definite answers prove nothing was accepted.
+    api = _real_api_posting(monkeypatch, [_in_progress_reply() for _ in range(4)])
+    store = power.OperationStore(tmp_path)
+    operation = power.new_operation(ALLOCATION, None, "x")
+    store.write(operation)
+
+    with pytest.raises(power.PowerCycleRejected):
+        power.submit_cycle(api, store, operation)
+    assert store.list() == []
+
+
+def test_in_progress_after_a_timed_out_attempt_keeps_the_request(tmp_path, monkeypatch):
+    api = _real_api_posting(monkeypatch, [requests.Timeout()] + [_in_progress_reply() for _ in range(3)])
+    store = power.OperationStore(tmp_path)
+    operation = power.new_operation(ALLOCATION, None, "x")
+    store.write(operation)
+
+    with pytest.raises(power.PowerCyclePending):
+        power.submit_cycle(api, store, operation)
+    assert store.list()[0]["request_id"] == operation["request_id"]
+
+
+def test_uncertainty_does_not_leak_into_the_next_call(monkeypatch):
+    api = _real_api_posting(monkeypatch, [requests.Timeout(), Mock(ok=True, json=Mock(return_value={})),
+                                          Mock(ok=True, json=Mock(return_value={}))])
+    api.call("GET", "/v1/p2p/ice-sessions")
+    assert api.last_uncertain is True
+    api.call("GET", "/v1/p2p/ice-sessions")
+    assert api.last_uncertain is False
 
 
 def test_invalid_command_id_is_not_interpolated_into_a_path(tmp_path):

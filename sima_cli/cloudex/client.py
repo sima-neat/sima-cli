@@ -132,9 +132,10 @@ class CloudExAPI:
         self.requester = requester
         self.secret = secret
         self.allocation_id = allocation_id
-        # HTTP attempts the last call made: a later one may follow an attempt
-        # the service went on to complete after this client gave up on it.
-        self.last_attempts = 0
+        # Whether the last call gave up on an attempt whose outcome is unknown
+        # (no reply, or a 5xx) before retrying: the service may still have
+        # completed it. A 409/429 reply is a definite answer and does not count.
+        self.last_uncertain = False
 
     @classmethod
     def from_profile(cls, profile):
@@ -156,8 +157,8 @@ class CloudExAPI:
 
     def call(self, method, path, data=None, deadline=None):
         body = json.dumps(data, separators=(",", ":")).encode() if data is not None else b""
+        self.last_uncertain = False
         for attempt in range(4):
-            self.last_attempts = attempt + 1
             remaining = deadline - time.time() if deadline is not None else None
             if remaining is not None and remaining <= 0:
                 raise CloudExError("CloudEx API request timed out during connection setup")
@@ -184,6 +185,7 @@ class CloudExAPI:
             except requests.RequestException as exc:
                 if attempt == 3:
                     raise CloudExError("CloudEx API is unavailable") from exc
+                self.last_uncertain = True
             else:
                 if response.ok:
                     try:
@@ -193,6 +195,8 @@ class CloudExAPI:
                 detail = response.text[:4096]
                 if attempt == 3 or response.status_code not in {409, 429, 500, 502, 503, 504}:
                     raise APIError(response.status_code, detail)
+                if response.status_code >= 500:
+                    self.last_uncertain = True
             delay = 0.5 * (attempt + 1)
             if deadline is not None:
                 delay = min(delay, max(0, deadline - time.time()))

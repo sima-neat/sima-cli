@@ -54,8 +54,8 @@ PREVIOUS_CLEANUP_PENDING_ERROR = "previous ICE session cleanup is pending"
 # or one the HTTP client abandoned after a timeout or 5xx and retried.
 REFUSED_BEFORE_REPLAY_LOOKUP = {401, 403}
 # Answered after that lookup, so it is another request's cycle, unless this
-# call retried: an attempt it abandoned may have committed in between and be
-# the cycle "in progress". Other 409s and 429 prove the request was not accepted.
+# call gave up on an attempt without an answer: that attempt may have committed
+# in between and be the cycle "in progress". Other 409s and 429 prove the request was not accepted.
 IN_PROGRESS_ERROR = "A power cycle is already in progress"
 ALLOCATION_ENDED_ERRORS = {
     (401, "Invalid allocation credential"),
@@ -396,8 +396,9 @@ def submit_cycle(api, store, operation):
     except APIError as exc:
         # A missing route is configuration, not a lost reply; it is final unless
         # a request may already have been accepted before power control was disabled.
-        attempts = getattr(api, "last_attempts", 1)
-        call_retried = isinstance(attempts, int) and attempts > 1
+        # Only an attempt this call gave up on without an answer can have been
+        # accepted unseen; the HTTP client also retries definite 409/429 replies.
+        call_retried = getattr(api, "last_uncertain", False) is True
         if (exc.status == 409 and api_error_message(exc) == IN_PROGRESS_ERROR and call_retried):
             raise PowerCyclePending(
                 "a power cycle is already in progress on this DevKit; it may be this request (an earlier "

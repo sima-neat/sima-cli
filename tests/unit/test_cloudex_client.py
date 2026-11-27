@@ -201,7 +201,7 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     monkeypatch.setattr(client.subprocess, "Popen", popen)
     wait_forwarder = Mock(return_value={"status": "connected", "path": path})
     monkeypatch.setattr(client, "_wait_forwarder", wait_forwarder)
-    monkeypatch.setattr(client.time, "time", Mock(return_value=1000))
+    monkeypatch.setattr(client.time, "time", Mock(return_value=1000.25))
 
     cleanup = Mock()
     monkeypatch.setattr(client, "disconnect_session", cleanup)
@@ -223,6 +223,8 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     assert result["ice_path"] == path
     assert result["expires_at"] == 9999999999.0
     assert store.list()[0]["api_secret"] == allocation_profile()["allocation_secret"]
+    # Sub-second: power-cycle cleanup orders this tunnel against the relay cycle.
+    assert store.list()[0]["connected_at"] == 1000.25
     assert not store.runtime_paths(result["session_id"])[1].exists()
     command = popen.call_args.args[0]
     assert command[:3] == ["sudo", "-n", "--"]
@@ -236,10 +238,10 @@ def test_connect_persists_connected_session_and_removes_ephemeral_config(tmp_pat
     assert "start_new_session" not in popen.call_args.kwargs
     api.call.assert_called_once_with(
         "POST", "/v1/p2p/ice-sessions", {"request_id": result["session_id"]},
-        deadline=1060,
+        deadline=1060.25,
     )
     assert result["remote_session_id"] == "d" * 32
-    assert wait_forwarder.call_args.args[4] == 1060
+    assert wait_forwarder.call_args.args[4] == 1060.25
 
 
 @pytest.mark.parametrize("version,expected", [
@@ -329,6 +331,35 @@ def test_wait_forwarder_timeout_prints_sanitized_diagnostic_log(tmp_path, monkey
     assert "last host stage: WireGuard public key received through signaling" in message
     assert "ICE connection state Failed" in message
     assert "untrusted output" not in message
+
+
+@pytest.mark.parametrize("stages, remote, expected", [
+    (["joined authenticated signaling session"], "waiting_for_device", client.DeviceNotJoinedError),
+    # The host saw the DevKit's credentials even though the last poll predates them.
+    (["joined authenticated signaling session", "remote ICE credentials received"],
+     "waiting_for_device", client.DirectHandshakeError),
+    (["joined authenticated signaling session"], "gathering_candidates", client.DirectHandshakeError),
+    # The DevKit joined and the forwarder moved past that stage before failing.
+    (["joined authenticated signaling session", "remote ICE credentials received",
+      "selected ICE path direct", "WireGuard public key sent through signaling"],
+     "waiting_for_device", client.DirectHandshakeError),
+    # The host itself never reached signaling; the DevKit is not to blame.
+    (["session configuration accepted"], "waiting_for_device", client.DirectHandshakeError),
+])
+def test_wait_forwarder_reports_a_devkit_that_never_joined(tmp_path, monkeypatch, stages, remote, expected):
+    log = tmp_path / "forwarder.log"
+    log.write_text("".join("kerrigan-p2p-forwarder: {}\n".format(stage) for stage in stages))
+    clock = Mock(return_value=1998.9)
+    monkeypatch.setattr(client.time, "time", clock)
+    monkeypatch.setattr(client.time, "sleep", lambda _seconds: setattr(clock, "return_value", 1999))
+
+    with pytest.raises(client.DirectHandshakeError, match="deadline expired") as raised:
+        client._wait_forwarder(
+            "b" * 32, Mock(poll=Mock(return_value=None)), tmp_path / "report.json", log, 1999, Mock(),
+            remote_status=lambda _deadline: {"status": remote},
+        )
+
+    assert type(raised.value) is expected
 
 
 @pytest.mark.parametrize("confirmation", ["report", "log"])
@@ -533,6 +564,45 @@ def test_wait_forwarder_surfaces_devkit_failure_and_diagnostic_paths(tmp_path):
 
     assert device_log in str(raised.value)
     assert str(log) in str(raised.value)
+    # Distinct for the power-cycle reconnect, and never retried by connect() itself.
+    assert type(raised.value) is client.DeviceStartFailedError
+    assert not isinstance(raised.value, client.DirectHandshakeError)
+
+
+def test_plain_connect_fails_fast_when_the_devkit_side_fails_to_start(tmp_path, monkeypatch):
+    store = client.SessionStore(tmp_path / "cloudex")
+    forwarder = tmp_path / "forwarder"
+    forwarder.write_text("binary")
+    forwarder.chmod(0o755)
+    allocated = {"session_id": "d" * 32, "expires_at": 9999999999, "target_id": "ll2",
+                 "wireguard": {"remote_address": "10.252.1.2/32"}}
+    api = Mock(url=allocation_profile()["api_url"], requester=allocation_profile()["requester"],
+               secret=allocation_profile()["allocation_secret"],
+               allocation_id=allocation_profile()["allocation_id"])
+    posts = []
+
+    def api_call(method, path, _data=None, **_kwargs):
+        if method == "POST":
+            posts.append(path)
+            return allocated
+        if method == "DELETE":
+            return {"status": "closing"}
+        return {"status": "closed", "cleanup_confirmed": True}
+
+    api.call.side_effect = api_call
+    monkeypatch.setattr(installer, "ensure_forwarder", Mock(return_value=forwarder))
+    monkeypatch.setattr(client, "authorize_admin", Mock())
+    monkeypatch.setattr(client.CloudExAPI, "from_profile", Mock(return_value=api))
+    monkeypatch.setattr(client.CloudExAPI, "from_session", Mock(return_value=api))
+    monkeypatch.setattr(client.subprocess, "Popen", Mock(return_value=Mock(pid=123, poll=Mock(return_value=None))))
+    monkeypatch.setattr(client, "_stop_forwarder", Mock())
+    monkeypatch.setattr(client, "_wait_forwarder", Mock(side_effect=client.DeviceStartFailedError(
+        "allocation missing, expired or in use; host diagnostics: x")))
+
+    with pytest.raises(client.DeviceStartFailedError, match="allocation missing"):
+        client.connect(allocation_profile(), store, Mock())  # auto transport: up to 3 attempts
+
+    assert [p for p in posts if p == "/v1/p2p/ice-sessions"] == ["/v1/p2p/ice-sessions"]
 
 
 def test_connect_installs_develop_forwarder_when_missing(tmp_path, monkeypatch):

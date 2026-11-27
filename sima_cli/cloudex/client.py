@@ -72,6 +72,27 @@ class DirectHandshakeError(CloudExError):
     """A direct path failed and may succeed with fresh ICE candidates."""
 
 
+class DeviceStartFailedError(CloudExError):
+    """The service reported that the DevKit side of the ICE session failed to start.
+
+    Kerrigan fails devices.p2p.ice.start at once, without waiting, while a
+    DevKit is still booting after a power cycle (or its old peer is still
+    recorded), so the power-cycle reconnect retries it; a plain connect does not.
+    """
+
+
+class CleanupPendingError(CloudExError):
+    """The service still holds a closed session until the appliance confirms cleanup."""
+
+
+class DeviceNotJoinedError(DirectHandshakeError):
+    """Setup expired while the service still reported the DevKit as not joined.
+
+    `/v1/p2p/ice-sessions` accepts a session without checking the DevKit, so a
+    DevKit that is still booting shows up only as a session it never joins.
+    """
+
+
 def decode_key(value):
     """Decode and validate an allocation key without persisting the key itself."""
     try:
@@ -120,6 +141,10 @@ class CloudExAPI:
         self.requester = requester
         self.secret = secret
         self.allocation_id = allocation_id
+        # Whether the last call gave up on an attempt whose outcome is unknown
+        # (no reply, or a 5xx) before retrying: the service may still have
+        # completed it. A 409/429 reply is a definite answer and does not count.
+        self.last_uncertain = False
 
     @classmethod
     def from_profile(cls, profile):
@@ -141,6 +166,7 @@ class CloudExAPI:
 
     def call(self, method, path, data=None, deadline=None):
         body = json.dumps(data, separators=(",", ":")).encode() if data is not None else b""
+        self.last_uncertain = False
         for attempt in range(4):
             remaining = deadline - time.time() if deadline is not None else None
             if remaining is not None and remaining <= 0:
@@ -168,6 +194,7 @@ class CloudExAPI:
             except requests.RequestException as exc:
                 if attempt == 3:
                     raise CloudExError("CloudEx API is unavailable") from exc
+                self.last_uncertain = True
             else:
                 if response.ok:
                     try:
@@ -177,6 +204,8 @@ class CloudExAPI:
                 detail = response.text[:4096]
                 if attempt == 3 or response.status_code not in {409, 429, 500, 502, 503, 504}:
                     raise APIError(response.status_code, detail)
+                if response.status_code >= 500:
+                    self.last_uncertain = True
             delay = 0.5 * (attempt + 1)
             if deadline is not None:
                 delay = min(delay, max(0, deadline - time.time()))
@@ -321,6 +350,17 @@ def _read_report(path):
     except (OSError, ValueError):
         return {}
     return report if isinstance(report, dict) else {}
+
+
+def _forwarder_stages_seen(log_path):
+    """Every known lifecycle stage the forwarder has logged, in any order."""
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return set()
+    prefix = "kerrigan-p2p-forwarder:"
+    stages = {line[len(prefix):].strip() if line.startswith(prefix) else line.strip() for line in lines}
+    return stages & SAFE_FORWARDER_STAGES
 
 
 def _forwarder_log_state(log_path):
@@ -484,6 +524,7 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
                     remote_status=None, *, relay_deadline=None):
     previous = None
     next_remote_check = 0.0
+    device_waiting = False
     while True:
         # Read local state even at the deadline. The forwarder can complete
         # between the previous poll and the end of the setup window.
@@ -521,11 +562,12 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
                 remote = None
             if isinstance(remote, dict):
                 remote_state = remote.get("status")
+                device_waiting = remote_state == "waiting_for_device"
                 if remote_state == "failed":
                     detail = remote.get("last_error")
                     if not isinstance(detail, str) or not detail.strip():
                         detail = "DevKit ICE startup failed"
-                    raise CloudExError(
+                    raise DeviceStartFailedError(
                         detail.replace("\n", " ")[:300] + "; host diagnostics: " + str(log_path)
                     )
                 if remote_state == "waiting_for_device":
@@ -541,7 +583,14 @@ def _wait_forwarder(session_id, process, report_path, log_path, deadline, progre
     last_stage = "; last host stage: " + stage if stage else ""
     diagnostics = _diagnostic_log_excerpt(log_path)
     log_output = "\nForwarder log ({}):\n{}".format(log_path, diagnostics) if diagnostics else ""
-    raise DirectHandshakeError(
+    # The service reports waiting_for_device until both roles join. Blame the
+    # DevKit only when the host's own log shows the host joined and never
+    # received the DevKit's credentials: the last status poll can predate them.
+    seen = _forwarder_stages_seen(log_path)
+    devkit_absent = ("joined authenticated signaling session" in seen
+                     and "remote ICE credentials received" not in seen)
+    error = DeviceNotJoinedError if device_waiting and devkit_absent else DirectHandshakeError
+    raise error(
         "CloudEx connection setup deadline expired" + last_stage
         + "; host diagnostics: " + str(log_path) + log_output
     )
@@ -776,7 +825,8 @@ def connect(profile, store, progress, attempts=None, transport="auto", *, report
                 raise CloudExError("CloudEx response did not include a WireGuard target")
             session.update(
                 status="connected",
-                connected_at=int(time.time()),
+                # Sub-second: the power-cycle cleanup orders this against the cycle.
+                connected_at=time.time(),
                 expires_at=expires_at,
                 ice_path=report.get("path", "unknown"),
                 target=target,
@@ -838,7 +888,7 @@ def _active_allocation_session(api, progress, timeout=120):
             if not _cleanup_pending(exc):
                 raise
         if time.monotonic() >= deadline:
-            raise CloudExError("remote tunnel cleanup is still pending")
+            raise CleanupPendingError("remote tunnel cleanup is still pending")
         progress.update("Waiting for DevKit cleanup")
         time.sleep(1)
 
@@ -859,6 +909,11 @@ def _stop_forwarder(session):
         if time.monotonic() >= deadline:
             raise CloudExError("local tunnel cleanup is still pending")
         time.sleep(0.1)
+
+
+def stop_local_forwarder(session):
+    """Stop only this host's forwarder; leave remote and allocation state alone."""
+    _stop_forwarder(session)
 
 
 def session_expired(session, now=None):
@@ -957,7 +1012,7 @@ def disconnect_session(session, store, progress, authorize=True, preserve_log=Fa
                 store.write_recovery(session)
             else:
                 store.write(session)
-            raise CloudExError("remote tunnel cleanup is still pending")
+            raise CleanupPendingError("remote tunnel cleanup is still pending")
     store.delete(session_id, preserve_log=preserve_log)
     return "disconnected"
 

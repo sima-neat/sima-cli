@@ -497,8 +497,20 @@ def test_missing_route_on_a_retry_keeps_the_request(env):
     assert json.loads(env.op_path.read_text())["request_id"] == operation["request_id"]
 
 
+def test_in_progress_conflict_keeps_the_request_id(env):
+    # An attempt the HTTP client abandoned may have committed and be "in progress".
+    env.store.write(_record())
+    env.api.post_error = APIError(409, json.dumps({"error": "A power cycle is already in progress"}))
+
+    result = invoke(["--yes"])
+
+    assert result.exit_code == 1
+    assert json.loads(env.op_path.read_text())["phase"] == power.PREPARED
+    assert "--abandon" in result.output.replace("\n", " ")
+
+
 def test_conflict_on_a_retry_proves_nothing_was_accepted(env):
-    # 409/429 come after the service's lookup of the saved request ID.
+    # 429 (and 409s other than "in progress") come after the service's lookup.
     operation = _saved_operation(env, power.PREPARED)
     operation["submitted_at"] = 1_000.0
     env.operations.write(operation)

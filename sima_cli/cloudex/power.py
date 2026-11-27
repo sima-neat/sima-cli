@@ -51,9 +51,12 @@ PREVIOUS_CLEANUP_PENDING_ERROR = "previous ICE session cleanup is pending"
 # Other 401s (a skewed clock, a replayed nonce) are transient and not listed.
 # The service authenticates before it looks up an already accepted request ID,
 # so a 401/403 says nothing about an earlier attempt, including one the HTTP
-# client itself retried after a timeout or 5xx. A 409 or 429 comes after that
-# lookup, so the request was never accepted.
+# client itself abandoned after a timeout or 5xx and retried.
 REFUSED_BEFORE_REPLAY_LOOKUP = {401, 403}
+# Answered after that lookup, but an abandoned attempt with this same request
+# ID may have committed in between and now be the cycle "in progress". Other
+# 409s and 429 prove the request was not accepted.
+IN_PROGRESS_ERROR = "A power cycle is already in progress"
 ALLOCATION_ENDED_ERRORS = {
     (401, "Invalid allocation credential"),
     (409, "Allocation is not ready or has expired"),
@@ -393,7 +396,8 @@ def submit_cycle(api, store, operation):
     except APIError as exc:
         # A missing route is configuration, not a lost reply; it is final unless
         # a request may already have been accepted before power control was disabled.
-        if exc.status in REFUSED_BEFORE_REPLAY_LOOKUP or (retry and exc.status == 404):
+        in_progress = exc.status == 409 and api_error_message(exc) == IN_PROGRESS_ERROR
+        if exc.status in REFUSED_BEFORE_REPLAY_LOOKUP or in_progress or (retry and exc.status == 404):
             if allocation_ended(exc):
                 # Nothing is ever sent once the allocation is gone.
                 store.delete(operation["allocation_id"])
@@ -401,12 +405,12 @@ def submit_cycle(api, store, operation):
                     "The DevKit's allocation has ended; no power cycle is sent after an allocation ends. "
                     "The saved power-cycle state was removed."
                 ) from exc
-            # Refused before the service looked the saved request up, so an earlier
-            # attempt may still have been accepted: keep its request ID for the retry.
+            # An earlier attempt may still have been accepted: keep its request ID,
+            # which the service answers with that command if it exists.
             raise PowerCyclePending(
-                "the service refused the request before checking whether it was already accepted ({}); an earlier attempt "
-                "may have been accepted, so the same request will be retried. If the DevKit was not "
-                "power-cycled, sima-cli -i cloudex power-cycle --abandon discards it".format(api_error_message(exc))
+                "the service refused the request ({}), but an earlier attempt may have been accepted, so "
+                "the same request will be retried. If the DevKit was not power-cycled and you no longer "
+                "want it to be, sima-cli -i cloudex power-cycle --abandon discards it".format(api_error_message(exc))
             ) from exc
         if exc.status == 404:
             store.delete(operation["allocation_id"])

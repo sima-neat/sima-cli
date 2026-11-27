@@ -143,10 +143,29 @@ class OperationStore:
             raise CloudExError("invalid allocation identifier in power-cycle state")
         return os.path.join(self.directory, allocation_id + ".json")
 
-    def _stage(self, operation):
-        """Write a fully synced private copy beside its final name."""
+    def _ensure_directory(self):
+        """Create the record directory so that its own entry survives a crash.
+
+        Syncing a record and its directory is not enough on a first run: the
+        entry naming a newly created directory lives in its parent, and losing
+        it after the POST would lose the request ID.
+        """
+        missing = []
+        directory = self.directory
+        while not os.path.isdir(directory):
+            missing.append(directory)
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                break
+            directory = parent
         os.makedirs(self.directory, mode=0o700, exist_ok=True)
         os.chmod(self.directory, 0o700)
+        for created in missing:
+            _fsync_directory(os.path.dirname(created))
+
+    def _stage(self, operation):
+        """Write a fully synced private copy beside its final name."""
+        self._ensure_directory()
         path = self._path(operation["allocation_id"])
         # A unique name keeps concurrent writers from sharing one temporary file.
         temporary = "{}.{}.tmp".format(path, uuid.uuid4().hex)
@@ -158,19 +177,8 @@ class OperationStore:
         return temporary, path
 
     def _sync_directory(self):
-        """Make the new directory entry itself survive a crash, not only its contents."""
-        if os.name == "nt":
-            return
-        descriptor = os.open(self.directory, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        except OSError as exc:
-            # Some network and FUSE filesystems cannot sync a directory; the
-            # renamed entry is still the best durability they offer.
-            if exc.errno not in _DIRECTORY_SYNC_UNSUPPORTED:
-                raise CloudExError("CloudEx power-cycle state could not be synced to disk") from exc
-        finally:
-            os.close(descriptor)
+        """Make a created, replaced or removed entry itself survive a crash."""
+        _fsync_directory(self.directory)
 
     def create(self, operation):
         """Record a new operation only if none exists for its allocation.
@@ -224,7 +232,10 @@ class OperationStore:
         try:
             os.unlink(self._path(allocation_id))
         except FileNotFoundError:
-            pass
+            return
+        # A removal lost in a crash would resurrect a request the user abandoned
+        # (or one already finished), and a later --yes run would submit it.
+        self._sync_directory()
 
     def discard(self, path):
         """Remove an unreadable record named by UnreadableOperation."""
@@ -233,9 +244,10 @@ class OperationStore:
         try:
             os.unlink(path)
         except FileNotFoundError:
-            pass
+            return
         except OSError as exc:
             raise CloudExError("power-cycle state {} could not be removed".format(path)) from exc
+        self._sync_directory()
 
     @contextlib.contextmanager
     def lock(self, allocation_id):
@@ -322,6 +334,22 @@ class OperationStore:
             except FileNotFoundError:
                 continue  # removed by a concurrent run since the listing
         return operations
+
+
+def _fsync_directory(path):
+    """Sync a directory's entries; skipped where the platform or filesystem cannot."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        # Some network and FUSE filesystems cannot sync a directory; the
+        # renamed entry is still the best durability they offer.
+        if exc.errno not in _DIRECTORY_SYNC_UNSUPPORTED:
+            raise CloudExError("CloudEx power-cycle state could not be synced to disk") from exc
+    finally:
+        os.close(descriptor)
 
 
 def valid_allocation_id(value):

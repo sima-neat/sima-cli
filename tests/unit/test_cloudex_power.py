@@ -1423,6 +1423,61 @@ def test_record_writes_sync_the_directory_entry(tmp_path, monkeypatch, method):
     assert synced, "the containing directory must be fsynced after the rename"
 
 
+def _track_directory_syncs(monkeypatch):
+    synced = []
+    real_fsync = os.fsync
+
+    def tracking_fsync(descriptor):
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            synced.append(os.stat(descriptor).st_ino)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(power.os, "fsync", tracking_fsync)
+    return synced
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-only")
+def test_first_record_syncs_the_parents_of_created_directories(tmp_path, monkeypatch):
+    # The entries naming new directories live in their parents.
+    root = tmp_path / "home" / "cloudex"
+    store = power.OperationStore(root)
+    synced = _track_directory_syncs(monkeypatch)
+
+    store.create(power.new_operation(ALLOCATION, None, "x"))
+
+    for parent in (tmp_path, tmp_path / "home", root):
+        assert os.stat(parent).st_ino in synced
+    assert os.stat(store.directory).st_ino in synced
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-only")
+def test_existing_directory_syncs_no_parent(tmp_path, monkeypatch):
+    store = power.OperationStore(tmp_path)
+    store.write(power.new_operation(ALLOCATION, None, "x"))
+    synced = _track_directory_syncs(monkeypatch)
+
+    store.write(power.new_operation(ALLOCATION, None, "x"))
+
+    assert synced == [os.stat(store.directory).st_ino]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-only")
+@pytest.mark.parametrize("remove", ["delete", "discard"])
+def test_record_removal_syncs_the_directory(tmp_path, monkeypatch, remove):
+    # Otherwise a crash could resurrect an abandoned request for a later --yes run.
+    store = power.OperationStore(tmp_path)
+    store.write(power.new_operation(ALLOCATION, None, "x"))
+    synced = _track_directory_syncs(monkeypatch)
+
+    if remove == "delete":
+        store.delete(ALLOCATION)
+    else:
+        store.discard(store._path(ALLOCATION))
+
+    assert synced == [os.stat(store.directory).st_ino]
+    assert store.list() == []
+
+
 def test_create_falls_back_to_exclusive_open_without_hard_links(tmp_path, monkeypatch):
     def no_links(_source, _target):
         raise OSError(1, "Operation not permitted")

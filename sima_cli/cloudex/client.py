@@ -601,7 +601,7 @@ def _reconcile_existing_connection(profile, store, progress):
     if any(status["status"] in {"reconnecting", "link unverified"} for _, status in inspected):
         raise CloudExError(
             "Existing CloudEx session is reconnecting or its link cannot be verified. "
-            "The allocation and workload were preserved; check cloudex status before retrying. "
+            "The allocation and workload were preserved; check cloudex list before retrying. "
             "Use an explicit disconnect or release to end the session."
         )
     for session, status in inspected:

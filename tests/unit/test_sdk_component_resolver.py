@@ -92,9 +92,11 @@ def test_incompatible_override_stops_before_installation():
 
 def test_setup_command_exits_nonzero_without_success_on_component_failure():
     from sima_cli.sdk.commands import setup
-    with patch("sima_cli.sdk.commands._resolve_devkit_credentials", return_value=(None, None)), \
-         patch("sima_cli.sdk.commands.setup_and_start", side_effect=RuntimeError("SDK setup incomplete: Claude installation failed")):
+    with patch("sima_cli.sdk.commands.check_and_start_docker"), \
+         patch("sima_cli.sdk.commands._resolve_devkit_credentials", return_value=(None, None)), \
+         patch("sima_cli.sdk.commands.setup_and_start", side_effect=RuntimeError("SDK setup incomplete: Claude installation failed")) as setup_start:
         outcome = CliRunner().invoke(setup, ["--noninteractive"], obj={})
+    setup_start.assert_called_once()
     assert outcome.exit_code != 0
     assert "SDK setup incomplete" in outcome.output
     assert "All selected containers started successfully" not in outcome.output

@@ -706,8 +706,11 @@ def flash_emmc(
     click.echo(f"📡 Selected client: {selected_ip}")
     remote_dir = "/tmp"
 
+    skip_troot = getattr(client_manager, "skip_troot", False)
     troot_command = None
-    if troot_image_path:
+    if skip_troot:
+        click.echo("⚠️  Skipping tRoot programming (--skip-troot); flashing eMMC only.")
+    elif troot_image_path:
         _, running_version, _, _, _ = get_remote_board_info(
             selected_ip, passwd=DEFAULT_PASSWORD
         )
@@ -743,7 +746,7 @@ def flash_emmc(
     try:
         ssh = init_ssh_session(selected_ip, password=DEFAULT_PASSWORD)
 
-        if troot_image_path:
+        if troot_image_path and not skip_troot:
             _print_troot_programming_warning()
             run_remote_command(ssh, troot_command, check=True)
 
@@ -810,13 +813,14 @@ class ClientManager:
     POLL_INTERVAL = 3
     MAX_TRANSFER_ATTEMPTS = 3
 
-    def __init__(self, configuration=None):
+    def __init__(self, configuration=None, skip_troot=False):
         self.clients = {}  # keyed by original TFTP address; current_ip may change
         self.lock = threading.Lock()
         self.discovery_lock = threading.Lock()
         self.shutdown_event = threading.Event()
         self.monitor_threads = []
         self.configuration = configuration
+        self.skip_troot = skip_troot
         self.seed_ip = configuration.devkit if configuration is not None else None
 
     def add_client(self, ip, filename):
@@ -1493,6 +1497,7 @@ def setup_netboot(
     images: Optional[str] = None,
     delete_cache: bool = False,
     auto_confirm_reboot: bool = False,
+    skip_troot: bool = False,
 ):
     """
     Download and serve a bootable image for network boot over TFTP with client monitoring.
@@ -1507,6 +1512,7 @@ def setup_netboot(
         swtype (str): The software type, either yocto or elxr.
         images (str): Optional read-only directory containing local netboot source artifacts.
         delete_cache (bool): Delete the managed cache entry after the netboot session exits.
+        skip_troot (bool): Flash only eMMC after accepting a session-wide warning.
         auto_confirm_reboot (bool): Skip setup confirmation for autoflash with an explicit
             DevKit IP, and skip reboot confirmation after a manual flash.
 
@@ -1525,6 +1531,15 @@ def setup_netboot(
     if env_type == 'board':
         click.secho("❌ Netboot is not supported on the DevKit, use macOS or Linux host instead.", fg="red")
         exit(1)
+
+    if skip_troot:
+        click.secho(
+            "⚠️  --skip-troot leaves the existing tRoot firmware unchanged. "
+            "An incompatible tRoot version may prevent the flashed OS from booting. "
+            "This applies to every manual (f) and automatic flash in this session.",
+            fg="yellow",
+        )
+        click.confirm("Accept the risk and flash only eMMC in this session?", default=False, abort=True)
 
     cache_dir = None
     cache_lease = None
@@ -1588,7 +1603,7 @@ def setup_netboot(
         if server_ip and not any(ip == server_ip for _, ip in ip_candidates):
             ip_candidates.append(('route to selected DevKit', server_ip))
 
-        client_manager = ClientManager(configuration=configuration)
+        client_manager = ClientManager(configuration=configuration, skip_troot=skip_troot)
 
         server = InteractiveTftpServer(tftproot=extract_dir, client_manager=client_manager)
         startup_errors = []

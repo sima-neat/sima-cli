@@ -4315,20 +4315,21 @@ table ip6 nm-shared-enx6c1ff720d573 {
             capture_output=True,
             check=False,
         )
-        install_script = run_command.call_args_list[1].args[0][-1]
+        install_script = run_command.call_args_list[-1].args[0][-1]
+        prepare_script = run_command.call_args_list[-2].args[0][-1]
         self.assertIn("export HOME=/home/docker", install_script)
         self.assertIn("export SIMA_CLI_AUTO_ACCEPT_UPDATE=1", install_script)
         self.assertIn("export PATH=\"$HOME/.sima-cli/.venv/bin:$HOME/.local/bin:$PATH\"", install_script)
         self.assertIn("SIMA_CLI_BIN=\"$HOME/.sima-cli/.venv/bin/sima-cli\"", install_script)
-        self.assertIn("/etc/sudoers.d/sima-cli-user", install_script)
-        self.assertIn("'docker ALL=(ALL:ALL) NOPASSWD:ALL'", install_script)
-        self.assertIn("su -s /bin/bash docker -c 'sudo -n true'", install_script)
-        self.assertIn("trap cleanup_model_sdk_install EXIT", install_script)
-        self.assertLess(install_script.index("/etc/sudoers.d/sima-cli-user"), install_script.index("su -s /bin/bash docker -c"))
-        self.assertLess(install_script.index("sudo -n true"), install_script.index("\"$SIMA_CLI_BIN\" install -v 2.0.0 tools/model-compiler/amd64"))
-        self.assertLess(install_script.index("trap cleanup_model_sdk_install EXIT"), install_script.index("su -s /bin/bash docker -c"))
-        self.assertIn("chown -R docker:docker \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true", install_script)
-        self.assertIn("su -s /bin/bash docker -c", install_script)
+        self.assertIn("/etc/sudoers.d/sima-cli-user", prepare_script)
+        self.assertIn("'docker ALL=(ALL:ALL) NOPASSWD:ALL'", prepare_script)
+        self.assertIn("sudo -n true", install_script)
+        self.assertLess(install_script.index("sudo -n true"), install_script.index('"$SIMA_CLI_BIN" install'))
+        for command in run_command.call_args_list:
+            script = command.args[0][-1]
+            self.assertNotIn("chown", script)
+            self.assertNotIn("trap ", script)
+            self.assertNotIn("su -s", script)
         self.assertIn("\"$SIMA_CLI_BIN\" install -v 2.0.0 tools/model-compiler/amd64", install_script)
         self.assertNotIn("libllvm", install_script)
         self.assertEqual(run_command.call_args_list, [
@@ -4353,6 +4354,10 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "-lc",
                 unittest.mock.ANY,
             ]),
+            unittest.mock.call([
+                "docker", "exec", "-u", "docker", "container", "bash", "-lc",
+                unittest.mock.ANY,
+            ]),
         ])
 
     def test_model_sdk_extension_installs_aarch64_for_2_1_1(self):
@@ -4372,7 +4377,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
                 "docker",
                 "exec",
                 "-u",
-                "root",
+                "docker",
                 "container",
                 "bash",
                 "-lc",
@@ -4384,7 +4389,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             run_command.call_args_list[-1].args[0][-1],
         )
         self.assertIn(
-            "su -s /bin/bash docker -c",
+            "sudo -n true",
             run_command.call_args_list[-1].args[0][-1],
         )
 
@@ -4400,7 +4405,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ensure_model_sdk_extension_installed("container", "docker")
 
         install_script = run_command.call_args_list[-1].args[0][-1]
-        self.assertEqual(run_command.call_count, 1)
+        self.assertEqual(run_command.call_count, 2)
         self.assertIn(
             '"$SIMA_CLI_BIN" neat install model-compiler/amd64@v2.1.3.1',
             install_script,
@@ -4430,7 +4435,7 @@ table ip6 nm-shared-enx6c1ff720d573 {
             ensure_model_sdk_extension_installed("container", "docker", auto_install=True)
 
         prompt.assert_not_called()
-        self.assertEqual(run_command.call_count, 1)
+        self.assertEqual(run_command.call_count, 2)
 
     def test_edgematic_studio_choice_honours_the_skip_option(self):
         with patch("sima_cli.sdk.utils.platform.machine", return_value="x86_64"):

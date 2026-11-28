@@ -97,7 +97,7 @@ def test_setup_installs_resolved_compiler(catalog_response, sdk, expected, machi
          patch('sima_cli.sdk.utils.discover_archive', return_value=None), \
          patch('sima_cli.sdk.utils.run_command', return_value=True) as run:
         ensure_model_sdk_extension_installed('container', 'docker', auto_install=True)
-    assert run.call_count == 1
+    assert run.call_count == 2
     script = run.call_args.args[0][-1]
     assert '"$SIMA_CLI_BIN" neat install model-compiler/{}@v{}'.format(arch, expected) in script
     assert '@v2.1.3' not in script
@@ -113,6 +113,33 @@ def test_setup_unmapped_sdk_stops_before_prompt_or_install(catalog_response):
         ensure_model_sdk_extension_installed('container', 'docker', auto_install=True)
     prompt.assert_not_called()
     run.assert_not_called()
+
+
+@pytest.mark.parametrize('failed_step', [0, 1])
+def test_compiler_setup_stops_on_failure_without_ownership_cleanup(catalog_response, capsys, failed_step):
+    release = Mock(returncode=0, stdout='SDK Version = 3.0.0.2\n')
+    with patch('sima_cli.sdk.utils._get_container_image_ref', return_value='ghcr.io/sima-neat/sdk:v3.0.0.2'), \
+         patch('sima_cli.sdk.utils.discover_archive', return_value=None), \
+         patch('sima_cli.sdk.utils.subprocess.run', side_effect=[release, Mock(returncode=0, stdout='aarch64\n')]), \
+         patch('sima_cli.sdk.utils.run_command', side_effect=[None] * failed_step + [SystemExit(1)]) as run:
+        with pytest.raises(SystemExit) as error:
+            ensure_model_sdk_extension_installed(
+                'container', 'ashok.sudarsanam', auto_install=True, uid=502, gid=20,
+            )
+
+    assert error.value.code == 1
+    assert run.call_count == failed_step + 1
+    prepare = run.call_args_list[0].args[0]
+    assert prepare[:7] == ['docker', 'exec', '-u', 'root', 'container', 'bash', '-lc']
+    assert '/etc/sudoers.d/sima-cli-user' in prepare[-1]
+    for call in run.call_args_list:
+        assert 'chown' not in call.args[0][-1]
+        assert 'trap ' not in call.args[0][-1]
+    if failed_step == 1:
+        install = run.call_args_list[1].args[0]
+        assert install[:7] == ['docker', 'exec', '-u', 'ashok.sudarsanam', 'container', 'bash', '-lc']
+        assert 'model-compiler/arm64@v3.0.0.2' in install[-1]
+    assert '✅ Model Compiler extension installed' not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('catalog', [[], {}, {'schema_version': 2, 'revision': 6},

@@ -34,7 +34,7 @@ None.
 - [`sima-cli modelzoo`](./sima-cli-modelzoo.md): Access models from the Model Zoo.
 - [`sima-cli neat`](./sima-cli-neat.md): Discover, download, and install Neat build artifacts.
 - [`sima-cli network`](./sima-cli-network.md): Setup Network IP address on the DevKit
-- [`sima-cli nvme`](./sima-cli-nvme.md): Perform NVMe operations on the Modalix DevKit.
+- [`sima-cli nvme`](./sima-cli-nvme.md): Perform NVMe operations on Modalix SoM and DVT DevKits with NVMe storage.
 - [`sima-cli packages`](./sima-cli-packages.md): Manage sima-cli package registry (list, inspect, clean, etc.)
 - [`sima-cli peripherals`](./sima-cli-peripherals.md): Show the cameras and microphones plugged into this DevKit.
 - [`sima-cli playbooks`](./sima-cli-playbooks.md): Install and manage playbooks (Codex/Claude).
@@ -72,7 +72,7 @@ Commands:
   modelzoo     Access models from the Model Zoo.
   neat         Discover, download, and install Neat build artifacts.
   network      Setup Network IP address on the DevKit
-  nvme         Perform NVMe operations on the Modalix DevKit.
+  nvme         Perform NVMe operations on Modalix SoM and DVT DevKits...
   packages     Manage sima-cli package registry (list, inspect, clean, etc.)
   peripherals  Show the cameras and microphones plugged into this DevKit.
   playbooks    Install and manage playbooks (Codex/Claude).

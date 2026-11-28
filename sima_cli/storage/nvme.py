@@ -14,6 +14,24 @@ def scan_nvme():
         pass
     return None
 
+def get_nvme_filesystem_device():
+    """Use partition 1, or an existing filesystem directly on the NVMe disk."""
+    partition = "/dev/nvme0n1p1"
+    if os.path.exists(partition):
+        return partition
+    disk = "/dev/nvme0n1"
+    try:
+        output = subprocess.check_output(
+            ["sudo", "blkid", "-p", "-o", "export", disk], text=True
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError("No existing NVMe filesystem found; the drive was not modified.") from error
+    properties = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    if properties.get("USAGE") != "filesystem" or not properties.get("TYPE") or properties.get("PTTYPE"):
+        raise RuntimeError("No existing NVMe filesystem found; the drive was not modified.")
+    return disk
+
+
 def get_lba_format_index():
     try:
         lba_output = subprocess.check_output("sudo nvme id-ns -H /dev/nvme0n1 | grep 'Relative Performance'", shell=True, text=True)
@@ -34,7 +52,7 @@ def format_nvme(lbaf_index):
     for cmd in cmds:
         subprocess.run(cmd, shell=True, check=True)
 
-def add_nvme_to_fstab():
+def add_nvme_to_fstab(device="/dev/nvme0n1p1"):
     """
     Safely update /etc/fstab with the correct UUID entry for NVMe.
 
@@ -47,7 +65,6 @@ def add_nvme_to_fstab():
     - Reloads systemd to apply changes
     """
 
-    device = "/dev/nvme0n1p1"
     fstab_path = "/etc/fstab"
     tmp_path = "/tmp/fstab.new"
 
@@ -114,6 +131,7 @@ def add_nvme_to_fstab():
         click.echo(f"❌ Unexpected error: {e}")
 
 def mount_nvme():
+    device = get_nvme_filesystem_device()
     try:
         # Unmount if already mounted
         mount_check = subprocess.run("mountpoint -q /media/nvme", shell=True)
@@ -125,10 +143,10 @@ def mount_nvme():
         subprocess.run("sudo mkdir -p /media/nvme", shell=True, check=True)
 
         # Mount the NVMe partition
-        subprocess.run("sudo mount /dev/nvme0n1p1 /media/nvme", shell=True, check=True)
+        subprocess.run(["sudo", "mount", device, "/media/nvme"], check=True)
 
         # Add to fstab and remount all
-        add_nvme_to_fstab()
+        add_nvme_to_fstab(device)
         subprocess.run("sudo systemctl daemon-reload", shell=True, check=True)
         subprocess.run("sudo mount -a", shell=True, check=True)
         
@@ -194,6 +212,9 @@ def nvme_remount():
     if not is_modalix_devkit():
         click.echo("❌ This command can only be run on the Modalix DevKit.")
         return
+
+    if not scan_nvme():
+        raise RuntimeError("No NVMe drive detected at /dev/nvme0n1.")
 
     try:
         mount_nvme()

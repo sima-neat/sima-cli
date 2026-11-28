@@ -131,11 +131,11 @@ def is_devkit_running_elxr() -> bool:
 
 def is_modalix_devkit() -> bool:
     """
-    Determines whether the current system is a Modalix DevKit (SoM)
-    by checking if "Modalix SoM" is present in /proc/device-tree/model.
+    Determine whether the system is a Modalix SoM or DVT DevKit
+    using /proc/device-tree/model. NVMe availability is checked separately.
 
     Returns:
-        bool: True if running on a Modalix DevKit (SoM), False otherwise.
+        bool: True for Modalix SoM and DVT boards, False otherwise.
     """
     model_path = "/proc/device-tree/model"
     if not os.path.exists(model_path):
@@ -144,7 +144,7 @@ def is_modalix_devkit() -> bool:
     try:
         with open(model_path, "r") as f:
             line = f.readline().strip()
-            return "Modalix SoM" in line
+            return any(model in line for model in ("Modalix SoM", "Modalix DVT"))
     except Exception:
         return False
     

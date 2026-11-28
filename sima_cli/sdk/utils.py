@@ -1428,32 +1428,24 @@ def ensure_model_sdk_extension_installed(
                 f"export LOGNAME={shlex.quote(login_name)}; "
                 f"cd {shlex.quote(bundle)}; bash ./install_modelsdk_wheels.sh"
             )
-        install_script = (
-            "set -e; "
-            f"export HOME={shlex.quote(home_directory)}; "
-            f"{_sudoers_drop_in_script(login_name)}; "
-            "cleanup_model_sdk_install() { "
-            f"chown -R {shlex.quote(owner)} \"$HOME/extension-installation\" \"$HOME/.sima-cli\" 2>/dev/null || true; "
-            f"if [ -d /sdk-extensions ]; then chown -R {shlex.quote(owner)} /sdk-extensions || true; fi; "
-            f"if [ -d \"$HOME/sdk-extensions\" ]; then chown -R {shlex.quote(owner)} \"$HOME/sdk-extensions\" || true; fi; "
-            "}; "
-            "trap cleanup_model_sdk_install EXIT; "
-            "mkdir -p \"$HOME/extension-installation\"; "
-            "cleanup_model_sdk_install; "
-            f"su -s /bin/bash {shlex.quote(login_name)} -c 'sudo -n true'; "
-            f"su -s /bin/bash {shlex.quote(login_name)} -c {shlex.quote(user_install_script)}"
-        )
+        # Only sudo configuration needs root. Keep compiler installation and
+        # host-backed extension access under the mapped user, without recursively
+        # changing ownership of existing extensions or CLI state.
+        run_command([
+            "docker", "exec", "-u", "root", sdk_container_name, "bash", "-lc",
+            f"set -e; {_sudoers_drop_in_script(login_name)}",
+        ])
         print(f"ℹ️  Installing Model Compiler extension for SDK base version {base_version}...")
         run_command(
             [
                 "docker",
                 "exec",
                 "-u",
-                "root",
+                login_name,
                 sdk_container_name,
                 "bash",
                 "-lc",
-                install_script,
+                f"set -e; sudo -n true; {user_install_script}",
             ]
         )
         print(f"✅ Model Compiler extension installed for SDK base version {base_version}.")
